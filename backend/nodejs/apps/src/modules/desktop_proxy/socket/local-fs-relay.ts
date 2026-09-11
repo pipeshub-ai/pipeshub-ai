@@ -24,6 +24,14 @@ import {
 /** Extra slack over the desktop's own budget, so a hang reads as a timeout here. */
 const ACK_GRACE_MS = 5_000;
 /**
+ * Mirrors the bound the route validators enforce. Repeated here because the
+ * relay is reachable from callers that never passed through Zod, and a budget
+ * chosen by the caller decides how long a half-filled transfer buffer stays
+ * pinned in the heap.
+ */
+const MIN_TIMEOUT_MS = 1_000;
+const MAX_TIMEOUT_MS = 300_000;
+/**
  * Ceiling on a single file. Node buffers the whole transfer in memory before
  * answering the content route, so this bounds heap at
  * MAX_CONTENT_BYTES x MAX_CONCURRENT_CONTENT_PER_DEVICE per connected machine.
@@ -55,6 +63,15 @@ interface PendingContent {
 
 function claimKey(orgId: string, userId: string, connectorId: string): string {
   return `${orgId}:${userId}:${connectorId}`;
+}
+
+function clampTimeoutMs(timeoutMs: number): number {
+  const requested = Number(timeoutMs);
+  if (!Number.isFinite(requested) || requested < MIN_TIMEOUT_MS) {
+    return MIN_TIMEOUT_MS;
+  }
+  if (requested > MAX_TIMEOUT_MS) return MAX_TIMEOUT_MS;
+  return requested;
 }
 
 function toBuffer(data: LocalFsContentChunkPayload['data']): Buffer | null {
@@ -169,14 +186,19 @@ export class LocalFsRelay {
     payload: LocalFsPullRequestPayload,
   ): Promise<LocalFsPullResult> {
     const socket = this.resolveSocket(orgId, userId, connectorId);
+    const timeoutMs = clampTimeoutMs(payload.timeoutMs);
+    const budgetMs = timeoutMs + ACK_GRACE_MS;
     let ack: LocalFsPullAck;
     try {
       ack = (await socket
-        .timeout(payload.timeoutMs + ACK_GRACE_MS)
-        .emitWithAck('localfs:file-events:pull', payload)) as LocalFsPullAck;
+        .timeout(budgetMs)
+        .emitWithAck('localfs:file-events:pull', {
+          ...payload,
+          timeoutMs,
+        })) as LocalFsPullAck;
     } catch (error) {
       throw new DesktopTimeoutError(
-        `Desktop did not ack the pull within ${payload.timeoutMs + ACK_GRACE_MS}ms ` +
+        `Desktop did not ack the pull within ${budgetMs}ms ` +
           `(connector=${connectorId} run=${payload.runId} batch=${payload.batchIndex})`,
       );
     }
@@ -237,16 +259,18 @@ export class LocalFsRelay {
       );
     }
 
+    const timeoutMs = clampTimeoutMs(payload.timeoutMs);
+    const budgetMs = timeoutMs + ACK_GRACE_MS;
     const requestId = `lfc-${Date.now()}-${this.nextRequestId++}`;
     const transfer = new Promise<Buffer>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.failContent(
           requestId,
           new DesktopTimeoutError(
-            `Desktop did not finish streaming ${payload.relPath} within ${payload.timeoutMs}ms`,
+            `Desktop did not finish streaming ${payload.relPath} within ${timeoutMs}ms`,
           ),
         );
-      }, payload.timeoutMs + ACK_GRACE_MS);
+      }, budgetMs);
       if (timer.unref) timer.unref();
       this.pendingContent.set(requestId, {
         socket,
@@ -270,9 +294,10 @@ export class LocalFsRelay {
     let ack: LocalFsContentAck;
     try {
       ack = (await socket
-        .timeout(payload.timeoutMs + ACK_GRACE_MS)
+        .timeout(budgetMs)
         .emitWithAck('localfs:content:fetch', {
           ...payload,
+          timeoutMs,
           requestId,
           maxBytes: MAX_CONTENT_BYTES,
           chunkBytes: CONTENT_CHUNK_BYTES,

@@ -11,7 +11,7 @@ import {
   DesktopOfflineError,
   DesktopRemoteError,
   DesktopTimeoutError,
-} from '../../../../src/modules/desktop_proxy/types/local-fs-pull.types'
+} from '../../../../src/modules/desktop_proxy/types/local-fs.types'
 
 const STATUS_BAD_REQUEST = 400
 const STATUS_OFFLINE = 409
