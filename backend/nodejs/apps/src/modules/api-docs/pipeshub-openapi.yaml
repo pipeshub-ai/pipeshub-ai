@@ -34104,6 +34104,34 @@ paths:
         '401':
           description: Unauthorized
 
+  /configurationManager/smtpConfig/status:
+    get:
+      tags:
+        - SMTP Configuration
+      summary: Get SMTP configuration status
+      description: |
+        Returns only whether SMTP is configured — no host, credentials, or other
+        details. Unlike `GET /configurationManager/smtpConfig`, this is not
+        admin-gated: any authenticated org member can call it, since members
+        can invite users (`user:invite` scope) and need to know up front
+        whether an invite would succeed without being able to read the SMTP
+        config itself.
+      operationId: getSMTPConfigStatus
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: SMTP configuration status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+        '401':
+          description: Unauthorized
+
   # -------------------- Authentication Configuration --------------------
   /configurationManager/authConfig/azureAd:
     post:

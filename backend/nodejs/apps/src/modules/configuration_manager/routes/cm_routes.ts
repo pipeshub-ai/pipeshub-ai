@@ -15,6 +15,7 @@ import {
   getMicrosoftAuthConfig,
   getOAuthConfig,
   getSmtpConfig,
+  getSmtpConfigStatus,
   getSsoAuthConfig,
   getStorageConfig,
   setAzureAdAuthConfig,
@@ -355,6 +356,19 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/internal/smtpConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
     getSmtpConfig(keyValueStoreService),
+  );
+
+  /**
+   * GET /smtpConfig/status
+   * Boolean-only SMTP status, no secrets or host/port details — safe for any
+   * authenticated org member. Non-admins can invite users but cannot read
+   * `/smtpConfig` (admin-gated), so the Users page uses this to decide
+   * whether to disable Invite instead of hitting a 403 on the full config.
+   */
+  router.get(
+    '/smtpConfig/status',
+    authMiddleware.authenticate,
+    getSmtpConfigStatus(keyValueStoreService),
   );
 
   // auth config routes
