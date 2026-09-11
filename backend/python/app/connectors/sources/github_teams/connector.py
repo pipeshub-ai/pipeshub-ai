@@ -60,6 +60,7 @@ from app.connectors.core.registry.filters import (
     OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
+    require_single_value,
 )
 from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
 from app.models.entities import Record
@@ -137,10 +138,11 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.REPO_IDS.value,
-            display_name="Repositories",
-            description="Limit sync to specific repositories (full_name, e.g. my-org/my-repo)",
-            filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
+            display_name="Repository",
+            description="Select the repository to sync (one per connector instance)",
+            filter_type=FilterType.SELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
+            required=True,
         ))
         .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,
@@ -305,6 +307,7 @@ class GitHubTeamsConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "githubteams", self.connector_id, self.logger
             )
+            require_single_value(self.sync_filters, SyncFilterKey.REPO_IDS, "Repository")
             # PipesHub users reach this connector through the org's "All" team,
             # not a per-user edge. The record-access query pre-filters on
             # `connectorId IN user_apps_ids`, which is satisfied via
