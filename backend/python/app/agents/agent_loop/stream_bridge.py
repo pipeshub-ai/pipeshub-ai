@@ -312,6 +312,31 @@ async def run_agent_loop_stream(
     async def _produce() -> None:
         agent: Any = None
         try:
+            # Same census short-circuit as the chat bridge. Without it, asking a
+            # custom agent "how many documents do we have" falls to the model,
+            # which counts from a sample of passages and can answer "none" for a
+            # knowledge base that has documents in it (#2975).
+            from app.modules.agents.enumeration.run import (
+                EnumerationFinalizationError,
+                try_answer_enumeration,
+            )
+            try:
+                if context.has_knowledge and await try_answer_enumeration(
+                    query=query_info.get("query", ""), context=context,
+                    retrieval_service=retrieval_service, graph_provider=graph_provider,
+                    filters=query_info.get("filters"),
+                    event_sink=event_sink, log=log,
+                ):
+                    return
+            except EnumerationFinalizationError:
+                # An answer may already have reached the client; running the
+                # agent too would answer the same question twice.
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "enumeration path failed, falling back to agent: %s", exc, exc_info=True
+                )
+
             factory = PipesHubAgentFactory()
             agent, _runtime, goal, clarifying_questions = await factory.create(
                 context, llm, query_info.get("chatMode", "quick"),
