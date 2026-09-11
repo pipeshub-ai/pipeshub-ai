@@ -130,7 +130,7 @@ function UsersPageContent() {
   const [isChangingRole, setIsChangingRole] = useState(false);
 
   // SMTP is required to send invite emails — the invite APIs 500 without it.
-  // `null` = not yet checked; treat as configured to avoid a disabled-button flash.
+  // `null` = not yet checked; block new invite sends until status is known.
   const [isSmtpConfigured, setIsSmtpConfigured] = useState<boolean | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -141,7 +141,7 @@ function UsersPageContent() {
       cancelled = true;
     };
   }, []);
-  const smtpBlocksInvite = isSmtpConfigured === false;
+  const smtpBlocksInvite = isSmtpConfigured !== true;
 
   const {
     users,
@@ -1203,7 +1203,7 @@ function UsersPageContent() {
       </Flex>
 
       {/* Invite Users Sidebar */}
-      <InviteUsersSidebar onInviteSuccess={fetchUsers} isSmtpConfigured={isSmtpConfigured !== false} />
+      <InviteUsersSidebar onInviteSuccess={fetchUsers} isSmtpConfigured={isSmtpConfigured === true} />
 
       {/* User Profile Sidebar */}
       <UserProfileSidebar />

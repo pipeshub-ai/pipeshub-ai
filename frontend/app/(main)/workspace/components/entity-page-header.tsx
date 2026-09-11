@@ -97,7 +97,7 @@ export function EntityPageHeader({
 
         {ctaTooltip ? (
           <Tooltip content={ctaTooltip}>
-            <span className="inline-flex">{ctaButton}</span>
+            <span style={{ display: 'inline-flex' }}>{ctaButton}</span>
           </Tooltip>
         ) : (
           ctaButton

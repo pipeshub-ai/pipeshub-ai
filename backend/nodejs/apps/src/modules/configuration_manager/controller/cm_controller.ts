@@ -536,21 +536,31 @@ export const createSmtpConfig =
     }
   };
 
+/** Loads, decrypts, and parses the stored SMTP config. Returns `null` when none is set. */
+const getParsedSmtpConfig = async (
+  keyValueStoreService: KeyValueStoreService,
+): Promise<Record<string, unknown> | null> => {
+  const configManagerConfig = loadConfigurationManagerConfig();
+  const encryptedSmtpConfig = await keyValueStoreService.get<string>(
+    configPaths.smtp,
+  );
+  if (!encryptedSmtpConfig) {
+    return null;
+  }
+  return JSON.parse(
+    EncryptionService.getInstance(
+      configManagerConfig.algorithm,
+      configManagerConfig.secretKey,
+    ).decrypt(encryptedSmtpConfig),
+  ) as Record<string, unknown>;
+};
+
 export const getSmtpConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedSmtpConfig = await keyValueStoreService.get<string>(
-        configPaths.smtp,
-      );
-      if (encryptedSmtpConfig) {
-        const smtpConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedSmtpConfig),
-        );
+      const smtpConfig = await getParsedSmtpConfig(keyValueStoreService);
+      if (smtpConfig) {
         const hideSecrets = shouldHideSecrets();
         res
           .status(200)
@@ -577,22 +587,10 @@ export const getSmtpConfigStatus =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedSmtpConfig = await keyValueStoreService.get<string>(
-        configPaths.smtp,
+      const smtpConfig = await getParsedSmtpConfig(keyValueStoreService);
+      const configured = Boolean(
+        smtpConfig?.host && smtpConfig?.port && smtpConfig?.fromEmail,
       );
-      let configured = false;
-      if (encryptedSmtpConfig) {
-        const smtpConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedSmtpConfig),
-        ) as Record<string, unknown>;
-        configured = Boolean(
-          smtpConfig?.host && smtpConfig?.port && smtpConfig?.fromEmail,
-        );
-      }
       res.status(200).json({ configured }).end();
     } catch (error: any) {
       logger.error('Error getting smtp config status', { error });
