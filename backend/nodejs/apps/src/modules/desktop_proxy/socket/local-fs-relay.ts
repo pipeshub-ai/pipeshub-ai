@@ -19,7 +19,7 @@ import {
   LocalFsPullAck,
   LocalFsPullRequestPayload,
   LocalFsPullResult,
-} from '../types/local-fs-pull.types';
+} from '../types/local-fs.types';
 
 /** Extra slack over the desktop's own budget, so a hang reads as a timeout here. */
 const ACK_GRACE_MS = 5_000;
@@ -95,11 +95,28 @@ export class LocalFsRelay {
     const ack: DesktopRegisterAck = { accepted: [], rejected: [] };
     const orgId = socket.data.orgId;
     const userId = socket.data.userId;
-    if (deviceId) socket.data.deviceId = String(deviceId);
+    const requested = (connectorIds || [])
+      .map((raw) => String(raw || '').trim())
+      .filter((connectorId) => connectorId.length > 0);
 
-    for (const raw of connectorIds || []) {
-      const connectorId = String(raw || '').trim();
-      if (!connectorId) continue;
+    const normalizedDeviceId = String(deviceId ?? '').trim();
+    if (!normalizedDeviceId) {
+      // An unidentified machine can never be pinned onto the sync point, so
+      // nothing would stop a second one taking the folder over and pruning
+      // everything this one synced on its next FULL run.
+      for (const connectorId of requested) {
+        ack.rejected.push({ connectorId, reason: 'MISSING_DEVICE_ID' });
+      }
+      this.logger.warn('Local FS desktop registered without a deviceId', {
+        orgId,
+        userId,
+        rejected: ack.rejected.length,
+      });
+      return ack;
+    }
+    socket.data.deviceId = normalizedDeviceId;
+
+    for (const connectorId of requested) {
       const key = claimKey(orgId, userId, connectorId);
       const holder = this.claims.get(key);
       if (holder && holder !== socket && holder.connected) {
@@ -183,10 +200,25 @@ export class LocalFsRelay {
       );
     }
     const { ok: _ok, ...result } = ack;
-    return {
-      ...result,
-      deviceId: result.deviceId ?? socket.data.deviceId ?? null,
-    };
+    const registeredDeviceId = socket.data.deviceId ?? null;
+    const ackDeviceId = String(result.deviceId ?? '').trim();
+    if (ackDeviceId && registeredDeviceId && ackDeviceId !== registeredDeviceId) {
+      throw new DesktopRemoteError(
+        'DEVICE_ID_MISMATCH',
+        `Connector ${connectorId} is registered to device ${registeredDeviceId}, ` +
+          `but ${ackDeviceId} answered the pull`,
+        false,
+      );
+    }
+    const deviceId = ackDeviceId || registeredDeviceId;
+    if (!deviceId) {
+      throw new DesktopRemoteError(
+        'MISSING_DEVICE_ID',
+        `Desktop answered the pull for connector ${connectorId} without identifying itself`,
+        false,
+      );
+    }
+    return { ...result, deviceId };
   }
 
   async requestContent(
