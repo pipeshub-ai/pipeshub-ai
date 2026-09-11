@@ -22,6 +22,7 @@ from app.utils.pattern_match import (
     cancel_task_if_running,
     cap_pattern_match_blocks,
     execute_pattern_match_pipeline,
+    generate_grep_command_via_llm,
     merge_pattern_match_results,
 )
 from app.utils.chat_helpers import (
@@ -166,8 +167,46 @@ async def execute_search(
 
         pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
         if config_service is not None and not disable_pattern_match:
-            pattern_match_task = asyncio.create_task(
-                execute_pattern_match_pipeline(
+            llm = state.get("llm")
+
+            async def _pattern_match_with_llm_grep() -> list[dict[str, Any]]:
+                """Generate grep commands via LLM, run pipelines in parallel, dedup."""
+                llm_grep_cmds: list[str] | None = None
+                if llm is not None:
+                    llm_grep_cmds = await generate_grep_command_via_llm(
+                        query=query, llm=llm, logger_instance=logger_instance,
+                    )
+
+                if llm_grep_cmds and len(llm_grep_cmds) > 1:
+                    pipelines = [
+                        execute_pattern_match_pipeline(
+                            query=query,
+                            config_service=config_service,
+                            org_id=org_id,
+                            user_id=user_id,
+                            graph_provider=graph_provider,
+                            filters=filter_groups,
+                            logger_instance=logger_instance,
+                            grep_command=cmd,
+                            skip_grep_validation=True,
+                        )
+                        for cmd in llm_grep_cmds
+                    ]
+                    results_lists = await asyncio.gather(*pipelines, return_exceptions=True)
+                    seen_vrids: set[str] = set()
+                    merged: list[dict[str, Any]] = []
+                    for result in results_lists:
+                        if isinstance(result, Exception):
+                            continue
+                        for rec in result:
+                            vrid = rec.get("virtual_record_id")
+                            if vrid and vrid not in seen_vrids:
+                                seen_vrids.add(vrid)
+                                merged.append(rec)
+                    return merged
+
+                single_cmd = llm_grep_cmds[0] if llm_grep_cmds else None
+                return await execute_pattern_match_pipeline(
                     query=query,
                     config_service=config_service,
                     org_id=org_id,
@@ -175,8 +214,11 @@ async def execute_search(
                     graph_provider=graph_provider,
                     filters=filter_groups,
                     logger_instance=logger_instance,
+                    grep_command=single_cmd,
+                    skip_grep_validation=single_cmd is not None,
                 )
-            )
+
+            pattern_match_task = asyncio.create_task(_pattern_match_with_llm_grep())
 
         is_service_account = bool(state.get("is_service_account", False))
 
@@ -294,16 +336,7 @@ async def execute_search(
             config_service=config_service,
             graph_provider=graph_provider,
         )
-        is_multimodal_llm = False
-        try:
-            llm_config = state.get("llm")
-            if hasattr(llm_config, "model_name"):
-                model_name = str(llm_config.model_name).lower()
-                is_multimodal_llm = any(m in model_name for m in [
-                    "gpt-4-vision", "gpt-4o", "claude-3", "gemini-pro-vision",
-                ])
-        except Exception:
-            pass
+        is_multimodal_llm = bool(state.get("is_multimodal_llm", False))
 
         virtual_record_id_to_result: dict[str, Any] = {}
         flattened_results = await get_flattened_results(

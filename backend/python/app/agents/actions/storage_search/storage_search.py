@@ -248,6 +248,9 @@ _RECORD_FILENAME_RE = re.compile(r"record_([0-9a-f\-]+)\.json$", re.IGNORECASE)
 # (e.g. grep -r output "grp/doc/sid/record_<vrid>.json:match"), used to gate
 # raw command output on per-record access.
 _VRID_IN_TEXT_RE = re.compile(r"record_([0-9a-f\-]+)\.json", re.IGNORECASE)
+# Matches grep -c output: a file path ending in .json followed by :count.
+# Used to parse match counts for relevance ranking.
+_GREP_COUNT_RE = re.compile(r"^(.*\.json):(\d+)$", re.IGNORECASE)
 
 
 class FindRecordsInput(BaseModel):
@@ -485,11 +488,43 @@ def _build_date_filtered_command(command: str, record_date: str) -> tuple[bool, 
     return True, date_filter
 
 
+async def _read_stdout_capped(
+    proc: "asyncio.subprocess.Process",
+    max_bytes: int,
+) -> bytes:
+    """Read up to *max_bytes* from *proc.stdout*, then kill the process.
+
+    This gives early termination for large-output commands (e.g. grep over
+    100K+ files): once enough output is collected, the process is killed
+    instead of waiting for it to scan every remaining file.
+    """
+    assert proc.stdout is not None
+    chunks: list[bytes] = []
+    total = 0
+    while total < max_bytes:
+        chunk = await proc.stdout.read(min(8192, max_bytes - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2)
+        except asyncio.TimeoutError:
+            pass
+    return b"".join(chunks)
+
+
 async def _run_subprocess(
     command: str,
     *,
     cwd: str,
     timeout: int = _EXEC_TIMEOUT_SECS,
+    max_stdout_bytes: int = 0,
 ) -> tuple[bool, str]:
     """Execute a validated pipeline without a shell and return (success, output).
 
@@ -502,6 +537,11 @@ async def _run_subprocess(
 
     The whole pipeline shares a single ``timeout`` deadline; every spawned
     process is killed if it is exceeded.
+
+    When *max_stdout_bytes* > 0, the **first** pipeline stage's stdout is
+    capped at that many bytes and the process is killed once the limit is
+    reached.  This prevents a grep over 100K+ files from running to
+    completion when only the first few hundred matches are needed.
     """
     stage_tokens: list[list[str]] = []
     for stage in _split_pipeline_stages(command):
@@ -519,6 +559,7 @@ async def _run_subprocess(
     stdin_data: bytes | None = None
     last_proc: asyncio.subprocess.Process | None = None
     last_stderr = b""
+    killed_early = False
 
     try:
         for i, tokens in enumerate(stage_tokens):
@@ -533,10 +574,22 @@ async def _run_subprocess(
             remaining = deadline - loop.time()
             if remaining <= 0:
                 raise TimeoutError
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(input=stdin_data if i > 0 else None),
-                timeout=remaining,
-            )
+
+            if max_stdout_bytes > 0 and i == 0:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+                stdout_bytes = await asyncio.wait_for(
+                    _read_stdout_capped(proc, max_stdout_bytes),
+                    timeout=remaining,
+                )
+                stderr_bytes = b""
+                killed_early = True
+            else:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(input=stdin_data if i > 0 else None),
+                    timeout=remaining,
+                )
+
             stdin_data = stdout_bytes
             last_proc = proc
             last_stderr = stderr_bytes
@@ -544,6 +597,9 @@ async def _run_subprocess(
         stdout = (stdin_data or b"").decode("utf-8", errors="replace")
         stderr = last_stderr.decode("utf-8", errors="replace")
         exit_code = last_proc.returncode if last_proc else 0
+
+        if killed_early and stdout.strip():
+            return True, _truncate(stdout, _MAX_OUTPUT_CHARS)
 
         if exit_code == 0:
             output = stdout if stdout.strip() else "No matches found."
@@ -1080,6 +1136,7 @@ class StoragePatternMatch:
         connector_id: str,
         command: str,
         max_results: int = 10,
+        max_stdout_bytes: int = 0,
     ) -> tuple[bool, str]:
         """Run a command and parse record file paths from output into structured metadata."""
         org_id = self.state.get("org_id", "")
@@ -1103,7 +1160,9 @@ class StoragePatternMatch:
         logger.info("[find_records] connector_dir=%s", connector_dir)
 
         # Execute the command
-        success, output = await _run_subprocess(command, cwd=connector_dir)
+        success, output = await _run_subprocess(
+            command, cwd=connector_dir, max_stdout_bytes=max_stdout_bytes,
+        )
         logger.info(
             "[find_records] subprocess result: success=%s output_len=%d output_preview=%r",
             success, len(output), output[:500],
@@ -1126,15 +1185,35 @@ class StoragePatternMatch:
             })
 
         # Extract candidate record file paths (cheap regex, no file opens).
+        # Handles both grep -l output (plain paths) and grep -c output
+        # (path:count) so results can be ranked by keyword density.
         lines = [
             line.strip() for line in output.splitlines()
             if line.strip() and not line.startswith("[...output truncated")
         ]
-        line_vrids: list[tuple[str, str]] = []
+        line_vrids: list[tuple[str, str, int]] = []  # (path, vrid, match_count)
         for line in lines:
-            fm = _RECORD_FILENAME_RE.match(os.path.basename(line))
+            path = line
+            match_count = 1  # default for grep -l (no count info)
+
+            csm = _GREP_COUNT_RE.match(line)
+            if csm:
+                candidate_path = csm.group(1)
+                count = int(csm.group(2))
+                if count == 0:
+                    continue
+                if _RECORD_FILENAME_RE.match(os.path.basename(candidate_path)):
+                    path = candidate_path
+                    match_count = count
+
+            fm = _RECORD_FILENAME_RE.match(os.path.basename(path))
             if fm:
-                line_vrids.append((line, fm.group(1)))
+                line_vrids.append((path, fm.group(1), match_count))
+
+        # Sort by match count descending so the most relevant files win
+        # the max_results cap instead of arbitrary filesystem-order files.
+        line_vrids.sort(key=lambda x: x[2], reverse=True)
+
         logger.info(
             "[find_records] lines=%d line_vrids=%d", len(lines), len(line_vrids),
         )
@@ -1146,14 +1225,14 @@ class StoragePatternMatch:
                 "raw_output_lines": len(lines),
                 "message": (
                     "Command ran successfully but no record file paths (record_*.json) "
-                    "were found in the output. Ensure your command uses -l flag (list files) "
-                    "or outputs file paths. Use run_command if you need raw output instead."
+                    "were found in the output. Ensure your command uses -l or -c flag "
+                    "and targets record files. Use run_command if you need raw output."
                 ),
             })
 
         # Permission gate: keep only records the requesting user may access.
         # Fail closed if the check cannot be performed.
-        accessible = await self._check_accessible_vrids([v for _, v in line_vrids])
+        accessible = await self._check_accessible_vrids([v for _, v, _c in line_vrids])
         if accessible is None:
             return False, (
                 "Error: cannot verify record access (permission service "
@@ -1163,17 +1242,19 @@ class StoragePatternMatch:
         records: list[dict[str, str]] = []
         paths_found = 0
         seen: set[str] = set()
-        for line, vrid in line_vrids:
+        for path, vrid, match_count in line_vrids:
             if vrid not in accessible or vrid in seen:
                 continue
             seen.add(vrid)
             paths_found += 1
             if len(records) >= max_results:
                 continue
-            meta = await _extract_record_metadata(line, connector_dir, graph_provider=None)
+            meta = await _extract_record_metadata(path, connector_dir, graph_provider=None)
             if meta:
                 # Authoritative record_id from the permission check.
                 meta["record_id"] = accessible[vrid] or meta.get("record_id", "")
+                if match_count > 1:
+                    meta["match_count"] = str(match_count)
                 records.append(meta)
 
         if not records:

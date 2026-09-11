@@ -8,16 +8,26 @@ import pytest
 
 from app.utils.pattern_match import (
     DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+    GrepCommandResult,
+    _LLM_GREP_TIMEOUT,
+    _MAX_GREP_OUTPUT_LINES,
+    _MAX_LLM_GREP_COMMANDS,
+    _PATTERN_MATCH_TIMEOUT,
     _build_synthetic_search_results,
     _fetch_pattern_record,
     _get_frontend_url,
+    _pre_validate_llm_grep,
+    _record_in_time_range,
     build_grep_command_from_query,
+    cancel_task_if_running,
     cap_pattern_match_blocks,
     check_pattern_match_eligible,
     execute_pattern_match_pipeline,
+    generate_grep_command_via_llm,
     merge_pattern_match_results,
     resolve_connector_ids_for_search,
     run_pattern_match,
+    validate_grep_command,
 )
 
 
@@ -30,7 +40,7 @@ class TestBuildGrepCommand:
     def test_extracts_keywords(self):
         cmd = build_grep_command_from_query("What are the revenue projections for Q2?")
         assert cmd is not None
-        assert "grep -rli" in cmd
+        assert "grep -rci" in cmd
         assert "revenue" in cmd
         assert "projections" in cmd
 
@@ -74,6 +84,108 @@ class TestBuildGrepCommand:
         assert cmd is not None
         assert "pre-release" in cmd
         assert "version" in cmd
+
+
+# ===========================================================================
+# validate_grep_command
+# ===========================================================================
+
+
+class TestValidateGrepCommand:
+    def test_valid_grep_command(self):
+        cmd = 'grep -rli "budget" .'
+        assert validate_grep_command(cmd) == cmd
+
+    def test_valid_pipe_command(self):
+        cmd = 'grep -rl "budget" . | grep -l "forecast"'
+        assert validate_grep_command(cmd) == cmd
+
+    def test_valid_or_pattern(self):
+        cmd = 'grep -rli "budget\\|forecast" .'
+        assert validate_grep_command(cmd) == cmd
+
+    def test_valid_rg_command(self):
+        cmd = 'rg -li "budget" .'
+        assert validate_grep_command(cmd) == cmd
+
+    def test_valid_egrep_command(self):
+        cmd = 'egrep -rli "budget|forecast" .'
+        assert validate_grep_command(cmd) == cmd
+
+    def test_valid_fgrep_command(self):
+        cmd = 'fgrep -rli "exact match" .'
+        assert validate_grep_command(cmd) == cmd
+
+    def test_empty_string_returns_none(self):
+        assert validate_grep_command("") is None
+
+    def test_whitespace_only_returns_none(self):
+        assert validate_grep_command("   ") is None
+
+    def test_null_byte_rejected(self):
+        assert validate_grep_command("grep -rli \x00 .") is None
+
+    def test_oversized_command_rejected(self):
+        assert validate_grep_command("grep " + "a" * 996) is None
+
+    def test_max_length_passes(self):
+        cmd = "grep " + "a" * 995
+        assert validate_grep_command(cmd) == cmd
+
+    def test_stripped_whitespace(self):
+        assert validate_grep_command("  grep -rli test .  ") == "grep -rli test ."
+
+    def test_backtick_rejected(self):
+        assert validate_grep_command("grep -rli `whoami` .") is None
+
+    def test_dollar_sign_rejected(self):
+        assert validate_grep_command('grep -rli "$HOME" .') is None
+
+    def test_semicolon_rejected(self):
+        assert validate_grep_command('grep -rli "test" .; rm -rf /') is None
+
+    def test_double_ampersand_rejected(self):
+        assert validate_grep_command('grep -rli "test" . && rm -rf /') is None
+
+    def test_double_pipe_rejected(self):
+        assert validate_grep_command('grep -rli "test" . || rm -rf /') is None
+
+    def test_output_redirection_rejected(self):
+        assert validate_grep_command('grep -rli "test" . >> /tmp/out') is None
+
+    def test_non_grep_binary_rejected(self):
+        assert validate_grep_command("rm -rf /") is None
+
+    def test_non_grep_binary_in_pipe_rejected(self):
+        assert validate_grep_command('grep -rl "test" . | rm -rf /') is None
+
+    def test_empty_pipe_segment_rejected(self):
+        assert validate_grep_command('grep -rli "test" . |') is None
+
+    def test_newline_rejected(self):
+        assert validate_grep_command("grep -rli test .\nrm -rf /") is None
+
+    def test_carriage_return_rejected(self):
+        assert validate_grep_command("grep -rli test .\rrm -rf /") is None
+
+    def test_process_substitution_rejected(self):
+        assert validate_grep_command("grep -rli <(cat /etc/passwd) .") is None
+
+    def test_command_substitution_rejected(self):
+        assert validate_grep_command('grep -rli "$(whoami)" .') is None
+
+    def test_variable_expansion_rejected(self):
+        assert validate_grep_command('grep -rli "${HOME}" .') is None
+
+    def test_cat_in_pipe_rejected(self):
+        assert validate_grep_command('cat /etc/passwd | grep "root"') is None
+
+    def test_multi_pipe_all_grep_passes(self):
+        cmd = 'grep -rl "budget" . | grep -l "forecast" | grep -li "2024"'
+        assert validate_grep_command(cmd) == cmd
+
+    def test_unbalanced_quotes_rejected(self):
+        assert validate_grep_command('grep -rli "unclosed .') is None
 
 
 # ===========================================================================
@@ -942,3 +1054,1021 @@ class TestCapPatternMatchBlocks:
         )
 
         assert len(out) <= 10
+
+
+# ===========================================================================
+# cancel_task_if_running
+# ===========================================================================
+
+
+class TestCancelTaskIfRunning:
+    @pytest.mark.asyncio
+    async def test_none_task_is_noop(self):
+        await cancel_task_if_running(None)
+
+    @pytest.mark.asyncio
+    async def test_already_done_task_is_noop(self):
+        task = asyncio.ensure_future(asyncio.sleep(0))
+        await task
+        await cancel_task_if_running(task)
+
+    @pytest.mark.asyncio
+    async def test_running_task_is_cancelled(self):
+        task = asyncio.ensure_future(asyncio.sleep(100))
+        await cancel_task_if_running(task)
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_task_raising_exception_is_suppressed(self):
+        async def _boom():
+            await asyncio.sleep(100)
+
+        task = asyncio.ensure_future(_boom())
+        await cancel_task_if_running(task)
+        assert task.cancelled()
+
+
+# ===========================================================================
+# build_grep_command_from_query — additional edge cases
+# ===========================================================================
+
+
+class TestBuildGrepCommandEdgeCases:
+    def test_special_characters_stripped(self):
+        """Regex findall only captures word chars and hyphens, so parens/quotes
+        are implicitly stripped — verify the command is still valid."""
+        cmd = build_grep_command_from_query('What is the "revenue" (annual)?')
+        assert cmd is not None
+        assert "revenue" in cmd
+        assert "annual" in cmd
+        assert '"' not in cmd.split('"')[1].replace(r"\|", "")
+
+    def test_mixed_case_normalized(self):
+        cmd = build_grep_command_from_query("Revenue PROJECTIONS Budget")
+        assert cmd is not None
+        assert "revenue" in cmd
+        assert "projections" in cmd
+        assert "budget" in cmd
+
+    def test_unicode_words_extracted(self):
+        """Unicode letters are not matched by [a-zA-Z0-9_-], so queries with
+        only non-Latin keywords return None."""
+        cmd = build_grep_command_from_query("什么是收入预测")
+        assert cmd is None
+
+    def test_single_long_keyword(self):
+        cmd = build_grep_command_from_query("infrastructure")
+        assert cmd is not None
+        assert "infrastructure" in cmd
+
+    def test_all_numeric_short_words(self):
+        """Numeric tokens < 3 chars are filtered."""
+        cmd = build_grep_command_from_query("42 is 7 ok")
+        assert cmd is None
+
+
+# ===========================================================================
+# _record_in_time_range — edge cases
+# ===========================================================================
+
+
+class TestRecordInTimeRange:
+    def test_no_time_range_returns_true(self):
+        assert _record_in_time_range({}, None) is True
+        assert _record_in_time_range({}, {}) is True
+
+    def test_created_after_exact_boundary(self):
+        record = {"source_created_at": 1000}
+        assert _record_in_time_range(record, {"source_created_after_ms": 1000}) is True
+
+    def test_created_after_fails(self):
+        record = {"source_created_at": 999}
+        assert _record_in_time_range(record, {"source_created_after_ms": 1000}) is False
+
+    def test_created_before_exact_boundary(self):
+        record = {"source_created_at": 1000}
+        assert _record_in_time_range(record, {"source_created_before_ms": 1000}) is True
+
+    def test_created_before_fails(self):
+        record = {"source_created_at": 1001}
+        assert _record_in_time_range(record, {"source_created_before_ms": 1000}) is False
+
+    def test_updated_after_ms(self):
+        record = {"source_updated_at": 2000}
+        assert _record_in_time_range(record, {"source_updated_after_ms": 1500}) is True
+
+    def test_updated_before_ms(self):
+        record = {"source_updated_at": 2000}
+        assert _record_in_time_range(record, {"source_updated_before_ms": 2500}) is True
+
+    def test_missing_timestamp_fails_when_bound_present(self):
+        assert _record_in_time_range({}, {"source_created_after_ms": 1000}) is False
+
+    def test_string_timestamp_is_coerced(self):
+        record = {"source_created_at": "1500"}
+        assert _record_in_time_range(record, {"source_created_after_ms": 1000}) is True
+
+    def test_invalid_timestamp_fails(self):
+        record = {"source_created_at": "not-a-number"}
+        assert _record_in_time_range(record, {"source_created_after_ms": 1000}) is False
+
+    def test_multiple_bounds_all_must_pass(self):
+        record = {"source_created_at": 1500, "source_updated_at": 2000}
+        time_range = {
+            "source_created_after_ms": 1000,
+            "source_created_before_ms": 2000,
+            "source_updated_after_ms": 1500,
+            "source_updated_before_ms": 2500,
+        }
+        assert _record_in_time_range(record, time_range) is True
+
+    def test_multiple_bounds_one_fails(self):
+        record = {"source_created_at": 1500, "source_updated_at": 3000}
+        time_range = {
+            "source_created_after_ms": 1000,
+            "source_updated_before_ms": 2500,
+        }
+        assert _record_in_time_range(record, time_range) is False
+
+
+# ===========================================================================
+# _build_synthetic_search_results — multiple records with blocks
+# ===========================================================================
+
+
+class TestBuildSyntheticMultipleRecords:
+    def test_multiple_records_produce_blocks(self):
+        records = [
+            {"virtual_record_id": "vr-1"},
+            {"virtual_record_id": "vr-2"},
+        ]
+        vrid_map = {
+            "vr-1": {"block_containers": {"blocks": [{"text": "a"}, {"text": "b"}]}},
+            "vr-2": {"block_containers": {"blocks": [{"text": "c"}]}},
+        }
+        logger = MagicMock()
+        results = _build_synthetic_search_results(records, vrid_map, "org-1", logger)
+        assert len(results) == 3
+        vr1_blocks = [r for r in results if r["metadata"]["virtualRecordId"] == "vr-1"]
+        vr2_blocks = [r for r in results if r["metadata"]["virtualRecordId"] == "vr-2"]
+        assert len(vr1_blocks) == 2
+        assert len(vr2_blocks) == 1
+
+    def test_record_with_empty_blocks_gets_placeholder(self):
+        records = [{"virtual_record_id": "vr-1"}]
+        vrid_map = {"vr-1": {"block_containers": {"blocks": []}}}
+        logger = MagicMock()
+        results = _build_synthetic_search_results(records, vrid_map, "org-1", logger)
+        assert len(results) == 1
+        assert results[0]["metadata"]["blockIndex"] == 0
+        assert results[0]["metadata"]["isBlockGroup"] is False
+
+    def test_record_not_in_vrid_map_skipped(self):
+        records = [{"virtual_record_id": "vr-missing"}]
+        vrid_map = {}
+        logger = MagicMock()
+        results = _build_synthetic_search_results(records, vrid_map, "org-1", logger)
+        assert results == []
+
+    def test_org_id_in_metadata(self):
+        records = [{"virtual_record_id": "vr-1"}]
+        vrid_map = {"vr-1": {"block_containers": {"blocks": [{"text": "a"}]}}}
+        logger = MagicMock()
+        results = _build_synthetic_search_results(records, vrid_map, "org-99", logger)
+        assert results[0]["metadata"]["orgId"] == "org-99"
+
+
+# ===========================================================================
+# cap_pattern_match_blocks — additional edge cases
+# ===========================================================================
+
+
+class TestCapPatternMatchBlocksEdgeCases:
+    def test_single_record_over_budget_trimmed(self):
+        blocks = [{"virtual_record_id": "vr-1"} for _ in range(20)]
+        vrid_map = {"vr-1": {"data": True}}
+        logger = MagicMock()
+        result = cap_pattern_match_blocks(
+            blocks, budget=5, virtual_record_id_to_result=vrid_map, logger_instance=logger
+        )
+        assert len(result) == 5
+        assert "vr-1" in vrid_map
+
+    def test_multiple_records_fair_distribution(self):
+        blocks = (
+            [{"virtual_record_id": "vr-1"} for _ in range(10)]
+            + [{"virtual_record_id": "vr-2"} for _ in range(10)]
+        )
+        vrid_map = {"vr-1": {}, "vr-2": {}}
+        logger = MagicMock()
+        result = cap_pattern_match_blocks(
+            blocks, budget=6, virtual_record_id_to_result=vrid_map, logger_instance=logger
+        )
+        assert len(result) == 6
+        vr1_count = sum(1 for b in result if b["virtual_record_id"] == "vr-1")
+        vr2_count = sum(1 for b in result if b["virtual_record_id"] == "vr-2")
+        assert vr1_count >= 1
+        assert vr2_count >= 1
+
+    def test_orphaned_vrids_pruned_from_map(self):
+        blocks = (
+            [{"virtual_record_id": "vr-1"} for _ in range(10)]
+            + [{"virtual_record_id": "vr-2"} for _ in range(10)]
+        )
+        vrid_map = {"vr-1": {"data": True}, "vr-2": {"data": True}}
+        logger = MagicMock()
+        cap_pattern_match_blocks(
+            blocks, budget=1, virtual_record_id_to_result=vrid_map, logger_instance=logger
+        )
+        assert len(vrid_map) == 1
+
+    def test_blocks_without_vrid_key_handled(self):
+        blocks = [{"no_vrid": True}]
+        vrid_map = {}
+        logger = MagicMock()
+        result = cap_pattern_match_blocks(
+            blocks, budget=10, virtual_record_id_to_result=vrid_map, logger_instance=logger
+        )
+        assert len(result) == 1
+
+
+# ===========================================================================
+# run_pattern_match — additional edge cases
+# ===========================================================================
+
+
+class TestRunPatternMatchEdgeCases:
+    @pytest.mark.asyncio
+    async def test_exception_in_one_connector_does_not_break_others(self):
+        """When one connector raises an exception, results from others are
+        still collected."""
+        storage_tool = AsyncMock()
+
+        async def _find_records(connector_id, command, max_results, **kwargs):
+            if connector_id == "c-bad":
+                raise RuntimeError("boom")
+            return (True, json.dumps({"records": [{"virtual_record_id": f"vr-{connector_id}"}]}))
+
+        storage_tool.find_records = _find_records
+
+        with patch(
+            "app.utils.pattern_match.StoragePatternMatch",
+            return_value=storage_tool,
+        ), patch(
+            "app.utils.pattern_match._validate_command",
+            return_value=(True, None),
+        ):
+            result = await run_pattern_match(
+                config_service=AsyncMock(),
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=AsyncMock(),
+                command='grep -rli "test" .',
+                connector_ids=["c-good", "c-bad", "c-ok"],
+                logger_instance=MagicMock(),
+            )
+        assert len(result) >= 1
+
+
+# ===========================================================================
+# execute_pattern_match_pipeline with grep_command (agent-provided command)
+# ===========================================================================
+
+
+class TestExecutePatternMatchPipelineWithGrepCommand:
+    @pytest.mark.asyncio
+    async def test_valid_grep_command_passed_directly(self):
+        """A valid grep command is passed directly to run_pattern_match."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[{"virtual_record_id": "vr-1"}],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="is it?",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command='grep -rli "deployment checklist" .',
+            )
+
+        mock_run.assert_called_once()
+        command_used = mock_run.call_args.kwargs["command"]
+        assert command_used.startswith('grep -rli "deployment checklist" .')
+        assert "| head" in command_used
+
+    @pytest.mark.asyncio
+    async def test_grep_command_overrides_stop_word_query(self):
+        """grep_command works even when the query would produce no keywords."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="is it?",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command='grep -rli "config" .',
+            )
+
+        mock_run.assert_called_once()
+        command_used = mock_run.call_args.kwargs["command"]
+        assert command_used.startswith('grep -rli "config" .')
+        assert "| head" in command_used
+
+    @pytest.mark.asyncio
+    async def test_grep_command_none_falls_back_to_auto(self):
+        """When grep_command is None, the auto-derived command from query is used."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="revenue projections analysis",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command=None,
+            )
+
+        mock_run.assert_called_once()
+        command_used = mock_run.call_args.kwargs["command"]
+        assert "revenue" in command_used
+
+    @pytest.mark.asyncio
+    async def test_empty_grep_command_falls_back_to_auto(self):
+        """Empty string grep_command falls back to auto-derived."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="revenue projections",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command="",
+            )
+
+        mock_run.assert_called_once()
+        command_used = mock_run.call_args.kwargs["command"]
+        assert "revenue" in command_used
+
+    @pytest.mark.asyncio
+    async def test_unsafe_command_falls_back_to_auto(self):
+        """A command with injection chars is rejected and falls back to auto."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="revenue analysis",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command='grep -rli "test" .; rm -rf /',
+            )
+
+        mock_run.assert_called_once()
+        command_used = mock_run.call_args.kwargs["command"]
+        assert "revenue" in command_used
+
+    @pytest.mark.asyncio
+    async def test_non_grep_binary_rejected_falls_back(self):
+        """A command starting with a non-grep binary is rejected."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="budget analysis",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command="cat /etc/passwd",
+            )
+
+        mock_run.assert_called_once()
+        command_used = mock_run.call_args.kwargs["command"]
+        assert "budget" in command_used
+        assert "passwd" not in command_used
+
+    @pytest.mark.asyncio
+    async def test_pipe_command_passed_directly(self):
+        """Pipe commands (AND logic) between grep binaries pass validation."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        and_cmd = 'grep -rl "budget" . | grep -l "forecast"'
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="budget forecast",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command=and_cmd,
+            )
+
+        mock_run.assert_called_once()
+        command_used = mock_run.call_args.kwargs["command"]
+        assert command_used.startswith(and_cmd)
+        assert "| head" in command_used
+
+    @pytest.mark.asyncio
+    async def test_auto_appends_head_when_absent(self):
+        """Commands without head/tail get | head -N appended for scale safety."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="budget analysis",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command='grep -rli "budget" .',
+            )
+
+        command_used = mock_run.call_args.kwargs["command"]
+        assert command_used == f'grep -rli "budget" . | head -{_MAX_GREP_OUTPUT_LINES}'
+
+    @pytest.mark.asyncio
+    async def test_head_in_pipe_rejected_falls_back_to_auto(self):
+        """Commands with non-grep pipe binaries fall back to auto-derived.
+        Full binary validation for pipe stages is in _validate_command."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="budget analysis",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command='grep -rli "budget" . | head -50',
+            )
+
+        command_used = mock_run.call_args.kwargs["command"]
+        assert "budget" in command_used
+        assert command_used.endswith(f"| head -{_MAX_GREP_OUTPUT_LINES}")
+
+    @pytest.mark.asyncio
+    async def test_auto_derived_command_gets_head_appended(self):
+        """Auto-derived grep commands also get | head -N appended."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="revenue projections",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+            )
+
+        command_used = mock_run.call_args.kwargs["command"]
+        assert "revenue" in command_used
+        assert command_used.endswith(f"| head -{_MAX_GREP_OUTPUT_LINES}")
+
+
+# ===========================================================================
+# Scale constants
+# ===========================================================================
+
+
+class TestScaleConstants:
+    def test_timeout_sufficient_for_large_datasets(self):
+        assert _PATTERN_MATCH_TIMEOUT >= 30
+
+    def test_output_line_limit_set(self):
+        assert _MAX_GREP_OUTPUT_LINES >= 100
+
+    def test_llm_grep_timeout_set(self):
+        assert _LLM_GREP_TIMEOUT == 5.0
+
+    def test_max_llm_grep_commands_set(self):
+        assert _MAX_LLM_GREP_COMMANDS == 3
+
+
+# ===========================================================================
+# _pre_validate_llm_grep
+# ===========================================================================
+
+
+class TestPreValidateLlmGrep:
+    def test_valid_grep(self):
+        assert _pre_validate_llm_grep('grep -rci "MCP" .') is True
+
+    def test_valid_grep_with_xargs(self):
+        assert _pre_validate_llm_grep('grep -rli "MCP" . | xargs grep -ci "server"') is True
+
+    def test_empty_string(self):
+        assert _pre_validate_llm_grep("") is False
+
+    def test_whitespace_only(self):
+        assert _pre_validate_llm_grep("   ") is False
+
+    def test_too_long(self):
+        assert _pre_validate_llm_grep("grep " + "a" * 1000) is False
+
+    def test_backtick_rejected(self):
+        assert _pre_validate_llm_grep("grep `whoami` .") is False
+
+    def test_dollar_sign_rejected(self):
+        assert _pre_validate_llm_grep('grep "$HOME" .') is False
+
+    def test_semicolon_rejected(self):
+        assert _pre_validate_llm_grep('grep "x" .; rm -rf /') is False
+
+    def test_double_ampersand_rejected(self):
+        assert _pre_validate_llm_grep('grep "x" . && echo') is False
+
+    def test_double_pipe_rejected(self):
+        assert _pre_validate_llm_grep('grep "x" . || echo') is False
+
+    def test_non_grep_binary_rejected(self):
+        assert _pre_validate_llm_grep("cat /etc/passwd") is False
+
+    def test_rm_rejected(self):
+        assert _pre_validate_llm_grep("rm -rf /") is False
+
+    def test_rg_accepted(self):
+        assert _pre_validate_llm_grep('rg -i "term" .') is True
+
+    def test_egrep_accepted(self):
+        assert _pre_validate_llm_grep('egrep -rci "term" .') is True
+
+    def test_fgrep_accepted(self):
+        assert _pre_validate_llm_grep('fgrep -rci "term" .') is True
+
+
+# ===========================================================================
+# generate_grep_command_via_llm
+# ===========================================================================
+
+
+class TestGenerateGrepCommandViaLlm:
+    @pytest.mark.asyncio
+    async def test_success_returns_single_command_list(self):
+        mock_result = GrepCommandResult(
+            reasoning="MCP server is a product name, search for it",
+            grep_commands=['grep -rci "MCP\\|server\\|PipesHub" .'],
+        )
+        logger = MagicMock()
+
+        with patch(
+            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await generate_grep_command_via_llm(
+                query="How to setup MCP server connection with PipesHub?",
+                llm=MagicMock(),
+                logger_instance=logger,
+            )
+
+        assert result == ['grep -rci "MCP\\|server\\|PipesHub" .']
+
+    @pytest.mark.asyncio
+    async def test_success_returns_multiple_commands(self):
+        mock_result = GrepCommandResult(
+            reasoning="OAuth and SAML are different auth protocols",
+            grep_commands=[
+                'grep -rci "oauth\\|sso" .',
+                'grep -rci "saml\\|authentication" .',
+            ],
+        )
+        logger = MagicMock()
+
+        with patch(
+            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await generate_grep_command_via_llm(
+                query="OAuth SSO login setup",
+                llm=MagicMock(),
+                logger_instance=logger,
+            )
+
+        assert result == [
+            'grep -rci "oauth\\|sso" .',
+            'grep -rci "saml\\|authentication" .',
+        ]
+
+    @pytest.mark.asyncio
+    async def test_caps_at_max_commands(self):
+        mock_result = GrepCommandResult(
+            reasoning="too many",
+            grep_commands=[
+                'grep -rci "a" .',
+                'grep -rci "b" .',
+                'grep -rci "c" .',
+                'grep -rci "d" .',
+            ],
+        )
+        logger = MagicMock()
+
+        with patch(
+            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await generate_grep_command_via_llm(
+                query="test",
+                llm=MagicMock(),
+                logger_instance=logger,
+            )
+
+        assert result is not None
+        assert len(result) == 3
+
+    @pytest.mark.asyncio
+    async def test_filters_invalid_keeps_valid(self):
+        mock_result = GrepCommandResult(
+            reasoning="mixed validity",
+            grep_commands=[
+                'grep -rci "valid" .',
+                'cat /etc/passwd',
+                'grep -rci "also_valid" .',
+            ],
+        )
+        logger = MagicMock()
+
+        with patch(
+            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await generate_grep_command_via_llm(
+                query="test",
+                llm=MagicMock(),
+                logger_instance=logger,
+            )
+
+        assert result == ['grep -rci "valid" .', 'grep -rci "also_valid" .']
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_none(self):
+        logger = MagicMock()
+
+        async def _slow_invoke(*args, **kwargs):
+            await asyncio.sleep(100)
+
+        with patch(
+            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
+            side_effect=_slow_invoke,
+        ):
+            result = await generate_grep_command_via_llm(
+                query="test query",
+                llm=MagicMock(),
+                logger_instance=logger,
+            )
+
+        assert result is None
+        logger.info.assert_any_call(
+            "generate_grep_command_via_llm: timed out after %.1fs", _LLM_GREP_TIMEOUT,
+        )
+
+    @pytest.mark.asyncio
+    async def test_llm_exception_returns_none(self):
+        logger = MagicMock()
+
+        with patch(
+            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("LLM is down"),
+        ):
+            result = await generate_grep_command_via_llm(
+                query="test query",
+                llm=MagicMock(),
+                logger_instance=logger,
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_none_structured_output_returns_none(self):
+        logger = MagicMock()
+
+        with patch(
+            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            result = await generate_grep_command_via_llm(
+                query="test query",
+                llm=MagicMock(),
+                logger_instance=logger,
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_all_commands_invalid_returns_none(self):
+        mock_result = GrepCommandResult(
+            reasoning="all invalid",
+            grep_commands=[
+                'grep -rci "test" .; rm -rf /',
+                "cat /etc/passwd",
+            ],
+        )
+        logger = MagicMock()
+
+        with patch(
+            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await generate_grep_command_via_llm(
+                query="test query",
+                llm=MagicMock(),
+                logger_instance=logger,
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_xargs_command_passes_pre_validation(self):
+        mock_result = GrepCommandResult(
+            reasoning="AND search needs xargs",
+            grep_commands=['grep -rli "MCP" . | xargs grep -ci "server"'],
+        )
+        logger = MagicMock()
+
+        with patch(
+            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await generate_grep_command_via_llm(
+                query="MCP server setup",
+                llm=MagicMock(),
+                logger_instance=logger,
+            )
+
+        assert result == ['grep -rli "MCP" . | xargs grep -ci "server"']
+
+    @pytest.mark.asyncio
+    async def test_empty_commands_list_returns_none(self):
+        mock_result = GrepCommandResult(
+            reasoning="no commands",
+            grep_commands=[],
+        )
+        logger = MagicMock()
+
+        with patch(
+            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await generate_grep_command_via_llm(
+                query="test query",
+                llm=MagicMock(),
+                logger_instance=logger,
+            )
+
+        assert result is None
+
+
+# ===========================================================================
+# execute_pattern_match_pipeline — skip_grep_validation
+# ===========================================================================
+
+
+class TestExecutePatternMatchPipelineSkipValidation:
+    @pytest.mark.asyncio
+    async def test_xargs_command_passes_with_skip_validation(self):
+        """An xargs command that validate_grep_command would reject
+        passes through when skip_grep_validation=True."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        xargs_cmd = 'grep -rli "MCP" . | xargs grep -ci "server"'
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="MCP server",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command=xargs_cmd,
+                skip_grep_validation=True,
+            )
+
+        mock_run.assert_called_once()
+        command_used = mock_run.call_args.kwargs["command"]
+        assert "xargs" in command_used
+        assert command_used.startswith(xargs_cmd)
+
+    @pytest.mark.asyncio
+    async def test_xargs_command_rejected_without_skip_validation(self):
+        """An xargs command is rejected by validate_grep_command and
+        falls back to auto-derived when skip_grep_validation=False."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        xargs_cmd = 'grep -rli "MCP" . | xargs grep -ci "server"'
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="MCP server setup",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command=xargs_cmd,
+                skip_grep_validation=False,
+            )
+
+        mock_run.assert_called_once()
+        command_used = mock_run.call_args.kwargs["command"]
+        assert "xargs" not in command_used
+        assert "server" in command_used or "setup" in command_used
+
+    @pytest.mark.asyncio
+    async def test_none_command_falls_back_to_auto_regardless_of_skip(self):
+        """When grep_command is None, auto-derived command is used
+        regardless of skip_grep_validation."""
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"storageType": "local"}
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(
+            return_value=[{"_key": "app-1"}]
+        )
+
+        with patch(
+            "app.utils.pattern_match.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run:
+            await execute_pattern_match_pipeline(
+                query="revenue projections",
+                config_service=config_service,
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=graph_provider,
+                filters=None,
+                logger_instance=MagicMock(),
+                grep_command=None,
+                skip_grep_validation=True,
+            )
+
+        mock_run.assert_called_once()
+        command_used = mock_run.call_args.kwargs["command"]
+        assert "revenue" in command_used

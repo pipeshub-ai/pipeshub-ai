@@ -1156,6 +1156,31 @@ describe('AmazonS3Adapter', () => {
     })
   })
 
+  // -------------------------------------------------------------------------
+  // getObjectUrl
+  // -------------------------------------------------------------------------
+  describe('getObjectUrl', () => {
+    it('should return a URL containing the bucket, region, and key', () => {
+      const adapter = createAdapter()
+      const url = adapter.getObjectUrl('records/conn-1/file.txt')
+      expect(url).to.be.a('string')
+      expect(url).to.equal('https://my-bucket.s3.us-east-1.amazonaws.com/records/conn-1/file.txt')
+    })
+
+    it('should URL-encode special characters in key segments', () => {
+      const adapter = createAdapter()
+      const url = adapter.getObjectUrl('records/conn-1/my file.txt')
+      expect(url).to.include('my%20file.txt')
+      expect(url).to.not.include(' ')
+    })
+
+    it('should preserve forward slashes in path', () => {
+      const adapter = createAdapter()
+      const url = adapter.getObjectUrl('a/b/c/d/file.pdf')
+      expect(url).to.include('a/b/c/d/file.pdf')
+    })
+  })
+
 })
 
 // We can't easily import the actual S3 adapter because it creates a real S3 client,

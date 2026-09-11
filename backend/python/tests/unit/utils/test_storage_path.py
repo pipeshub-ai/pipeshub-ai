@@ -542,3 +542,214 @@ class TestWebConnectorHierarchicalPath:
         gp = _make_graph_provider()
         result = await build_hierarchical_storage_path(record, gp)
         assert result == "records/conn-1/file.txt"
+
+
+# ---------------------------------------------------------------------------
+# sanitize_path_segment — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizePathSegmentEdgeCases:
+    def test_double_quote_replaced(self) -> None:
+        assert sanitize_path_segment('file"name') == "file_name"
+
+    def test_all_unsafe_chars_in_one(self) -> None:
+        result = sanitize_path_segment('a/b\\c:d*e?f"g<h>i|j')
+        assert "/" not in result
+        assert "\\" not in result
+        assert ":" not in result
+        assert "*" not in result
+        assert "?" not in result
+        assert '"' not in result
+        assert "<" not in result
+        assert ">" not in result
+        assert "|" not in result
+
+    def test_unicode_characters_preserved(self) -> None:
+        assert sanitize_path_segment("日本語ファイル") == "日本語ファイル"
+
+    def test_empty_string(self) -> None:
+        assert sanitize_path_segment("") == ""
+
+    def test_only_unsafe_chars(self) -> None:
+        assert sanitize_path_segment('/:*?"<>|') == "________"
+
+    def test_spaces_preserved(self) -> None:
+        assert sanitize_path_segment("my file name") == "my file name"
+
+    def test_dots_preserved(self) -> None:
+        assert sanitize_path_segment("file.txt") == "file.txt"
+
+    def test_exact_100_chars_untouched(self) -> None:
+        name = "a" * 100
+        assert sanitize_path_segment(name) == name
+        assert len(sanitize_path_segment(name)) == 100
+
+
+# ---------------------------------------------------------------------------
+# build_hierarchical_storage_path — deep hierarchy
+# ---------------------------------------------------------------------------
+
+
+class TestDeepHierarchy:
+    @pytest.mark.asyncio
+    async def test_many_ancestor_segments(self) -> None:
+        """A record with many ancestors produces a valid deep path."""
+        record = _Record(connector_id="conn-1", record_name="leaf.txt")
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(
+            return_value="root/level1/level2/level3/level4/leaf.txt"
+        )
+        result = await build_hierarchical_storage_path(
+            record, gp, virtual_record_id="vrid-1"
+        )
+        assert result == "records/conn-1/root/level1/level2/level3/level4/leaf.txt"
+
+    @pytest.mark.asyncio
+    async def test_path_with_unsafe_chars_in_ancestors(self) -> None:
+        """Unsafe chars in ancestor names are sanitized."""
+        record = _Record(connector_id="conn-1", record_name="file.txt")
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(
+            return_value="folder:A/sub<B>/file.txt"
+        )
+        result = await build_hierarchical_storage_path(
+            record, gp, virtual_record_id="vrid-1"
+        )
+        assert result == "records/conn-1/folder_A/sub_B_/file.txt"
+
+
+# ---------------------------------------------------------------------------
+# build_hierarchical_storage_path — group + path combined
+# ---------------------------------------------------------------------------
+
+
+class TestGroupPlusPathCombined:
+    @pytest.mark.asyncio
+    async def test_group_and_record_path_both_present(self) -> None:
+        record = _Record(
+            connector_id="conn-1",
+            record_group_id="grp-1",
+            record_name="doc.pdf",
+        )
+        gp = _make_graph_provider()
+        gp.get_record_group_by_id = AsyncMock(
+            return_value={"groupName": "Sales"}
+        )
+        gp.get_record_path = AsyncMock(return_value="sub/doc.pdf")
+        result = await build_hierarchical_storage_path(
+            record, gp, virtual_record_id="vrid-1"
+        )
+        assert result == "records/conn-1/Sales/sub/doc.pdf"
+
+    @pytest.mark.asyncio
+    async def test_group_lookup_fails_path_still_works(self) -> None:
+        record = _Record(
+            connector_id="conn-1",
+            record_group_id="grp-1",
+            record_name="doc.pdf",
+        )
+        gp = _make_graph_provider()
+        gp.get_record_group_by_id = AsyncMock(side_effect=Exception("DB error"))
+        gp.get_record_path = AsyncMock(return_value="folder/doc.pdf")
+        logger = MagicMock()
+        result = await build_hierarchical_storage_path(
+            record, gp, virtual_record_id="vrid-1", logger=logger
+        )
+        assert result == "records/conn-1/folder/doc.pdf"
+        assert logger.warning.called
+
+
+# ---------------------------------------------------------------------------
+# _build_web_storage_path — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestBuildWebStoragePathEdgeCases:
+    def test_query_params_stripped(self) -> None:
+        """Query params are not part of the parsed path."""
+        result = _build_web_storage_path(
+            "conn-1", "https://example.com/page?utm=abc"
+        )
+        assert result == "records/conn-1/example.com/page"
+        assert "utm" not in result
+
+    def test_fragment_stripped(self) -> None:
+        result = _build_web_storage_path(
+            "conn-1", "https://example.com/page#section"
+        )
+        assert result == "records/conn-1/example.com/page"
+
+    def test_encoded_chars_in_path(self) -> None:
+        result = _build_web_storage_path(
+            "conn-1", "https://example.com/path%20with%20spaces/file"
+        )
+        assert result is not None
+        assert "conn-1" in result
+
+    def test_url_with_only_host(self) -> None:
+        result = _build_web_storage_path("conn-1", "https://example.com")
+        assert result == "records/conn-1/example.com"
+
+    def test_scheme_only_returns_none(self) -> None:
+        result = _build_web_storage_path("conn-1", "not-a-url")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# build_hierarchical_storage_path — record_path does not end with name
+# ---------------------------------------------------------------------------
+
+
+class TestRecordPathNotEndingWithName:
+    @pytest.mark.asyncio
+    async def test_path_without_name_suffix(self) -> None:
+        """When record_path doesn't end with record_name, the entire path
+        is split into segments."""
+        record = _Record(
+            connector_id="conn-1",
+            record_name="renamed.txt",
+        )
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="folder/original.txt")
+        result = await build_hierarchical_storage_path(
+            record, gp, virtual_record_id="vrid-1"
+        )
+        assert result == "records/conn-1/folder/original.txt"
+
+    @pytest.mark.asyncio
+    async def test_path_with_only_separators(self) -> None:
+        """Path that is only slashes results in no segments added."""
+        record = _Record(connector_id="conn-1", record_name="file.txt")
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="///")
+        result = await build_hierarchical_storage_path(
+            record, gp, virtual_record_id="vrid-1"
+        )
+        assert result == "records/conn-1/file.txt"
+
+
+# ---------------------------------------------------------------------------
+# build_hierarchical_storage_path — enum connector_name
+# ---------------------------------------------------------------------------
+
+
+class TestEnumConnectorName:
+    @pytest.mark.asyncio
+    async def test_enum_web_connector_uses_weburl(self) -> None:
+        """When connector_name is an enum with value 'WEB', weburl path is used."""
+        from enum import Enum
+
+        class CN(Enum):
+            WEB = "WEB"
+
+        record = _Record(
+            connector_id="conn-web",
+            connector_name=CN.WEB,
+            weburl="https://docs.example.com/guide",
+        )
+        gp = _make_graph_provider()
+        result = await build_hierarchical_storage_path(
+            record, gp, virtual_record_id="vrid-1"
+        )
+        assert result == "records/conn-web/docs.example.com/guide"

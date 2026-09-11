@@ -671,3 +671,197 @@ class TestDeferredBlobMoveFlushing:
         assert mock_cleanup.move_record_tree.await_count == 50
         assert max_in_flight > 1, "Expected genuine concurrent execution, not sequential"
         assert max_in_flight <= 8
+
+
+# ---------------------------------------------------------------------------
+# delete_connector_storage
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteConnectorStorage:
+    @pytest.mark.asyncio
+    async def test_successful_delete_returns_count(self):
+        """Happy path: DELETE returns 200 with deleted count."""
+        cleanup = _make_cleanup()
+
+        resp_ctx = AsyncMock()
+        resp_ctx.status = 200
+        resp_ctx.json = AsyncMock(return_value={"deleted": 5})
+        resp_ctx.__aenter__ = AsyncMock(return_value=resp_ctx)
+        resp_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        session = AsyncMock()
+        session.delete = MagicMock(return_value=resp_ctx)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("app.connectors.core.base.data_processor.storage_cleanup.aiohttp.ClientSession", return_value=session):
+            result = await cleanup.delete_connector_storage("org-1", "conn-1")
+
+        assert result == 5
+
+    @pytest.mark.asyncio
+    async def test_delete_non_200_raises(self):
+        """Non-200 response raises an exception."""
+        cleanup = _make_cleanup()
+
+        resp_ctx = AsyncMock()
+        resp_ctx.status = 500
+        resp_ctx.text = AsyncMock(return_value="Internal Server Error")
+        resp_ctx.__aenter__ = AsyncMock(return_value=resp_ctx)
+        resp_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        session = AsyncMock()
+        session.delete = MagicMock(return_value=resp_ctx)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("app.connectors.core.base.data_processor.storage_cleanup.aiohttp.ClientSession", return_value=session):
+            with pytest.raises(Exception, match="Connector storage delete failed"):
+                await cleanup.delete_connector_storage("org-1", "conn-1")
+
+    @pytest.mark.asyncio
+    async def test_delete_zero_count(self):
+        """Connector with no storage docs returns 0."""
+        cleanup = _make_cleanup()
+
+        resp_ctx = AsyncMock()
+        resp_ctx.status = 200
+        resp_ctx.json = AsyncMock(return_value={"deleted": 0})
+        resp_ctx.__aenter__ = AsyncMock(return_value=resp_ctx)
+        resp_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        session = AsyncMock()
+        session.delete = MagicMock(return_value=resp_ctx)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("app.connectors.core.base.data_processor.storage_cleanup.aiohttp.ClientSession", return_value=session):
+            result = await cleanup.delete_connector_storage("org-1", "conn-1")
+
+        assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# _get_auth_headers_and_endpoint — error paths
+# ---------------------------------------------------------------------------
+
+
+class TestGetAuthHeadersAndEndpoint:
+    @pytest.mark.asyncio
+    async def test_missing_jwt_secret_raises_value_error(self):
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            side_effect=[
+                {"scopedJwtSecret": ""},
+                {"cm": {"endpoint": "http://localhost:3001"}},
+            ]
+        )
+        cleanup = _make_cleanup(config_service=config_service)
+        with pytest.raises(ValueError, match="Missing scoped JWT secret"):
+            await cleanup._get_auth_headers_and_endpoint("org-1")
+
+    @pytest.mark.asyncio
+    async def test_missing_endpoint_raises_value_error(self):
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            side_effect=[
+                {"scopedJwtSecret": "secret"},
+                {"cm": {"endpoint": ""}},
+            ]
+        )
+        cleanup = _make_cleanup(config_service=config_service)
+        with pytest.raises(ValueError, match="Missing CM endpoint"):
+            await cleanup._get_auth_headers_and_endpoint("org-1")
+
+
+# ---------------------------------------------------------------------------
+# move_record_tree — HTTP error
+# ---------------------------------------------------------------------------
+
+
+class TestMoveRecordTreeHTTPError:
+    @pytest.mark.asyncio
+    async def test_non_200_response_raises(self):
+        cleanup = _make_cleanup()
+
+        resp_ctx = AsyncMock()
+        resp_ctx.status = 500
+        resp_ctx.text = AsyncMock(return_value="Internal Server Error")
+        resp_ctx.__aenter__ = AsyncMock(return_value=resp_ctx)
+        resp_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        session = AsyncMock()
+        session.post = MagicMock(return_value=resp_ctx)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("app.connectors.core.base.data_processor.storage_cleanup.aiohttp.ClientSession", return_value=session):
+            with pytest.raises(Exception, match="move-tree failed"):
+                await cleanup.move_record_tree("org-1", "old/path", "new/path")
+
+    @pytest.mark.asyncio
+    async def test_successful_move(self):
+        cleanup = _make_cleanup()
+
+        resp_ctx = AsyncMock()
+        resp_ctx.status = 200
+        resp_ctx.__aenter__ = AsyncMock(return_value=resp_ctx)
+        resp_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        session = AsyncMock()
+        session.post = MagicMock(return_value=resp_ctx)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("app.connectors.core.base.data_processor.storage_cleanup.aiohttp.ClientSession", return_value=session):
+            await cleanup.move_record_tree("org-1", "old/path", "new/path")
+
+        call_args = session.post.call_args
+        body = call_args[1]["json"]
+        assert body["oldPath"] == "old/path"
+        assert body["newPath"] == "new/path"
+
+
+# ---------------------------------------------------------------------------
+# StorageCleanupHelper.build_record_path delegation
+# ---------------------------------------------------------------------------
+
+
+class TestBuildRecordPathDelegation:
+    @pytest.mark.asyncio
+    async def test_delegates_to_shared_utility(self):
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="folder/file.txt")
+        gp.get_record_group_by_id = AsyncMock(return_value=None)
+        cleanup = _make_cleanup(graph_provider=gp)
+
+        record = SimpleNamespace(
+            connector_id="conn-1",
+            id="rec-1",
+            record_name="file.txt",
+            virtual_record_id="vrid-1",
+            record_group_id=None,
+            connector_name=None,
+            weburl=None,
+        )
+        result = await cleanup.build_record_path(record)
+        assert result == "records/conn-1/folder/file.txt"
+
+    @pytest.mark.asyncio
+    async def test_forwards_transaction(self):
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="folder/file.txt")
+        cleanup = _make_cleanup(graph_provider=gp)
+
+        record = SimpleNamespace(
+            connector_id="conn-1",
+            id="rec-1",
+            record_name="file.txt",
+            virtual_record_id="vrid-1",
+            record_group_id=None,
+            connector_name=None,
+            weburl=None,
+        )
+        await cleanup.build_record_path(record, transaction="tx-123")
+        gp.get_record_path.assert_called_once_with("rec-1", transaction="tx-123")

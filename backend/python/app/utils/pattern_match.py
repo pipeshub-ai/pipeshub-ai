@@ -6,6 +6,10 @@ import logging
 import re
 from typing import Any
 
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import BaseModel
+
 from app.agents.actions.storage_search.storage_search import (
     StoragePatternMatch,
     _validate_command,
@@ -17,7 +21,8 @@ from app.config.constants.service import config_node_constants
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.chat_helpers import get_flattened_results, get_record
 
-_PATTERN_MATCH_TIMEOUT = 15
+_PATTERN_MATCH_TIMEOUT = 30
+_LLM_GREP_TIMEOUT = 5.0
 _MAX_PATTERN_MATCH_RECORDS = 5
 # Fallback budget when a caller has no per-request limit to pass (e.g. limit=None).
 # Pattern match fans out per-connector (max_results=10 each) and then expands each
@@ -44,8 +49,85 @@ _STOP_WORDS = frozenset({
 })
 
 
+_ALLOWED_GREP_BINARIES = frozenset({"grep", "egrep", "fgrep", "rg"})
+_MAX_GREP_COMMAND_LENGTH = 1000
+_MAX_GREP_OUTPUT_LINES = 200
+_MAX_GREP_STDOUT_BYTES = 50_000
+
+
+def validate_grep_command(raw_command: str) -> str | None:
+    """Lightweight validation that the LLM-provided command is a grep search.
+
+    Checks structural validity and that the first binary is a grep variant.
+    Full security validation (injection, dangerous flags, binary allowlist
+    for pipe stages) is handled by ``_validate_command`` in storage_search.py
+    which runs before subprocess execution.
+
+    Returns the cleaned command or None if rejected.
+    """
+    command = raw_command.strip()
+    if not command:
+        return None
+    if len(command) > _MAX_GREP_COMMAND_LENGTH:
+        return None
+    for ch in ("`", "$", ";", "\n", "\r", "\x00"):
+        if ch in command:
+            return None
+    for seq in ("&&", "||", ">>", "<(", ">(", "$(", "${"):
+        if seq in command:
+            return None
+    segments = _split_pipe_outside_quotes(command)
+    if segments is None:
+        return None
+    for segment in segments:
+        if not segment:
+            return None
+        words = segment.split()
+        if not words or words[0] not in _ALLOWED_GREP_BINARIES:
+            return None
+    return command
+
+
+def _split_pipe_outside_quotes(command: str) -> list[str] | None:
+    """Split a command on ``|`` only when the pipe is outside quotes.
+
+    Returns the list of segments, or None if quotes are unbalanced.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            current.append(ch)
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+            current.append(ch)
+        elif ch == "\\" and i + 1 < len(command):
+            current.append(ch)
+            current.append(command[i + 1])
+            i += 1
+        elif ch == "|" and not in_single and not in_double:
+            segments.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+        i += 1
+    if in_single or in_double:
+        return None
+    segments.append("".join(current).strip())
+    return segments
+
+
 def build_grep_command_from_query(query: str) -> str | None:
     """Extract keywords from a user query and build a grep command.
+
+    Uses ``-c`` (count mode) so ``find_records`` can rank matched files
+    by keyword density instead of returning them in arbitrary filesystem
+    order.
 
     Returns None if no meaningful keywords (>= 3 chars, not stop words)
     can be extracted.
@@ -56,7 +138,122 @@ def build_grep_command_from_query(query: str) -> str | None:
         return None
     keywords = keywords[:5]
     pattern = r"\|".join(keywords)
-    return f'grep -rli "{pattern}" .'
+    return f'grep -rci "{pattern}" .'
+
+
+class GrepCommandResult(BaseModel):
+    reasoning: str
+    grep_commands: list[str]
+
+
+_MAX_LLM_GREP_COMMANDS = 3
+
+_GREP_GENERATION_SYSTEM_PROMPT = """\
+You are generating filesystem search commands to find JSON documents relevant to a user query.
+
+Think step by step:
+1. What specific terms, product names, features, or concepts MUST appear in documents that answer this query?
+2. Should ALL terms appear in the same file (AND), or ANY of them (OR)?
+3. What's the most precise grep command to find those files?
+4. Would a DIFFERENT search angle (different terms, synonyms, related concepts) find additional relevant documents that the first command would miss?
+
+How many commands to return:
+- Return exactly 1 command for most queries. One well-crafted command is usually sufficient.
+- Return 2-3 commands ONLY when genuinely different search strategies would surface different documents. Examples:
+  - A query about "OAuth SSO login" might need one command for "oauth\\|sso" and another for "saml\\|authentication"
+  - A query about "revenue Q3 2024" might need one for "revenue\\|earnings" and another for "Q3\\|third.quarter\\|2024"
+- Do NOT return multiple commands that search for subsets of the same terms — that is redundant.
+- Do NOT return multiple commands just because the query has several words — combine related terms into one OR pattern.
+- Each command must find documents the OTHER commands would miss. If command 2 would match a strict subset of command 1's results, drop it.
+
+Command rules:
+- Search current directory: .
+- Always use case-insensitive flag (-i)
+- For the final grep in the chain, use -ci flags (count + case-insensitive) so results can be ranked by relevance
+- Single concept: grep -rci "term" .
+- Multiple required terms (AND): grep -rli "term1" . | xargs grep -ci "term2"
+- Alternative terms (OR): grep -rci "term1\\|term2" .
+- Combined: grep -rli "term1" . | xargs grep -ci "term2\\|term3"
+- Allowed binaries: grep, egrep, fgrep, rg, xargs ONLY
+- No shell operators: ; && || $ ` > <
+- Max 1000 characters per command
+- Prefer specific product/feature names over generic words
+- Do NOT include common words like "how", "what", "setup", "use" as search terms"""
+
+
+def _pre_validate_llm_grep(command: str) -> bool:
+    """Lightweight pre-validation before the full _validate_command runs later."""
+    if not command or not command.strip():
+        return False
+    command = command.strip()
+    if len(command) > _MAX_GREP_COMMAND_LENGTH:
+        return False
+    for ch in ("`", "$", ";", "\n", "\r", "\x00"):
+        if ch in command:
+            return False
+    for seq in ("&&", "||", ">>", "<(", ">(", "$(", "${"):
+        if seq in command:
+            return False
+    first_word = command.split()[0] if command.split() else ""
+    if first_word not in {"grep", "egrep", "fgrep", "rg"}:
+        return False
+    return True
+
+
+async def generate_grep_command_via_llm(
+    query: str,
+    llm: BaseChatModel,
+    logger_instance: logging.Logger,
+) -> list[str] | None:
+    """Generate targeted grep commands via LLM structured output.
+
+    Returns a list of 1-3 validated grep command strings on success,
+    None on timeout, LLM failure, or when all commands fail pre-validation.
+    The caller is responsible for full security validation via ``_validate_command``.
+    """
+    from app.utils.streaming import invoke_with_structured_output_and_reflection
+
+    messages = [
+        SystemMessage(content=_GREP_GENERATION_SYSTEM_PROMPT),
+        HumanMessage(content=f'User query: "{query}"'),
+    ]
+
+    try:
+        result = await asyncio.wait_for(
+            invoke_with_structured_output_and_reflection(
+                llm, messages, GrepCommandResult,
+            ),
+            timeout=_LLM_GREP_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger_instance.info("generate_grep_command_via_llm: timed out after %.1fs", _LLM_GREP_TIMEOUT)
+        return None
+    except Exception as exc:
+        logger_instance.warning("generate_grep_command_via_llm: LLM call failed: %s", exc)
+        return None
+
+    if result is None:
+        logger_instance.info("generate_grep_command_via_llm: LLM returned no structured output")
+        return None
+
+    valid_commands: list[str] = []
+    for cmd in result.grep_commands[:_MAX_LLM_GREP_COMMANDS]:
+        if _pre_validate_llm_grep(cmd):
+            valid_commands.append(cmd.strip())
+        else:
+            logger_instance.warning(
+                "generate_grep_command_via_llm: pre-validation failed for: %r",
+                cmd[:100] if cmd else "",
+            )
+
+    if not valid_commands:
+        return None
+
+    logger_instance.info(
+        "generate_grep_command_via_llm: generated %d command(s): %r",
+        len(valid_commands), valid_commands,
+    )
+    return valid_commands
 
 
 async def check_pattern_match_eligible(
@@ -110,13 +307,41 @@ async def execute_pattern_match_pipeline(
     graph_provider: IGraphDBProvider,
     filters: dict[str, Any] | None,
     logger_instance: logging.Logger,
+    grep_command: str | None = None,
+    skip_grep_validation: bool = False,
 ) -> list[dict]:
     """Full pipeline: build grep → eligibility check → resolve connectors → run.
 
     Designed to be fired in parallel with semantic search via asyncio.gather.
     Returns raw (unfiltered) pattern match records; caller must merge/permission-check.
+
+    When *grep_command* is provided (a full grep command from the LLM
+    agent), it is validated for safety (read-only, allowed binaries,
+    no injection) and used directly. Falls back to auto-deriving
+    keywords from *query* when not provided or rejected.
+
+    When *skip_grep_validation* is True and *grep_command* is provided,
+    the lightweight ``validate_grep_command`` check is skipped — the
+    command still goes through ``_validate_command`` in ``run_pattern_match``
+    which is the real security gate and allows xargs.
     """
-    grep_command = build_grep_command_from_query(query)
+    if grep_command:
+        if skip_grep_validation:
+            pass
+        else:
+            validated = validate_grep_command(grep_command)
+            if validated:
+                grep_command = validated
+            else:
+                logger_instance.warning(
+                    "pattern_match pipeline: grep_command rejected (unsafe): %r",
+                    grep_command[:100],
+                )
+                grep_command = build_grep_command_from_query(query)
+    else:
+        grep_command = build_grep_command_from_query(query)
+    if grep_command and "| head" not in grep_command and "| tail" not in grep_command:
+        grep_command = f"{grep_command} | head -{_MAX_GREP_OUTPUT_LINES}"
     if not grep_command:
         logger_instance.info("pattern_match pipeline: no grep command from query=%r", query[:80])
         return []
@@ -177,6 +402,7 @@ async def run_pattern_match(
             connector_id=connector_id,
             command=command,
             max_results=10,
+            max_stdout_bytes=_MAX_GREP_STDOUT_BYTES,
         )
         logger_instance.info(
             "pattern_match _search_connector: cid=%s success=%s output_len=%d",
@@ -276,9 +502,10 @@ async def merge_pattern_match_results(
     max_records: int = _MAX_PATTERN_MATCH_RECORDS,
     time_range: dict[str, int] | None = None,
 ) -> list[dict]:
-    """Dedup → permission check → fetch blob → time-range filter → flatten.
+    """Dedup → permission check → time-range filter → fetch blob → flatten.
 
-    Returns enriched block entries compatible with final_results.
+    When *time_range* is set, graph records are fetched first (lightweight)
+    and filtered before the expensive blob fetch.
     """
     seen: set[str] = set()
     unique: list[dict] = []
@@ -322,31 +549,27 @@ async def merge_pattern_match_results(
 
     frontend_url = await _get_frontend_url(blob_store)
 
-    fetch_tasks = []
+    record_ids = [accessible_vrids[r["virtual_record_id"]] for r in accessible_records]
+    batch_records = await graph_provider.get_records_by_record_ids(
+        record_ids=record_ids, org_id=org_id,
+    )
+    graph_by_key: dict[str, dict] = {
+        r.get("_key") or r.get("id", ""): r for r in batch_records
+    }
+    graph_by_vrid: dict[str, dict] = {}
     for rec in accessible_records:
         vrid = rec["virtual_record_id"]
-        record_id = accessible_vrids[vrid]
-        fetch_tasks.append(
-            _fetch_pattern_record(
-                vrid=vrid,
-                record_id=record_id,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-                blob_store=blob_store,
-                org_id=org_id,
-                graph_provider=graph_provider,
-                frontend_url=frontend_url,
-                logger_instance=logger_instance,
-            )
-        )
-    await asyncio.gather(*fetch_tasks, return_exceptions=True)
+        rid = accessible_vrids[vrid]
+        if rid in graph_by_key:
+            graph_by_vrid[vrid] = graph_by_key[rid]
 
     if time_range:
         before_count = len(accessible_records)
         accessible_records = [
             r for r in accessible_records
-            if _record_in_time_range(
-                virtual_record_id_to_result.get(r.get("virtual_record_id", ""), {}),
-                time_range,
+            if r["virtual_record_id"] in graph_by_vrid
+            and _graph_record_in_time_range(
+                graph_by_vrid[r["virtual_record_id"]], time_range
             )
         ]
         if len(accessible_records) < before_count:
@@ -355,6 +578,23 @@ async def merge_pattern_match_results(
                 before_count - len(accessible_records),
                 before_count,
             )
+        if not accessible_records:
+            return []
+
+    fetch_tasks = [
+        _fetch_pattern_record(
+            vrid=r["virtual_record_id"],
+            graph_record=graph_by_vrid.get(r["virtual_record_id"]),
+            virtual_record_id_to_result=virtual_record_id_to_result,
+            blob_store=blob_store,
+            org_id=org_id,
+            graph_provider=graph_provider,
+            frontend_url=frontend_url,
+            logger_instance=logger_instance,
+        )
+        for r in accessible_records
+    ]
+    await asyncio.gather(*fetch_tasks, return_exceptions=True)
 
     synthetic = _build_synthetic_search_results(
         accessible_records, virtual_record_id_to_result, org_id, logger_instance
@@ -463,10 +703,22 @@ async def _get_frontend_url(blob_store: Any) -> str | None:
     return None
 
 
+def _graph_record_in_time_range(
+    graph_record: dict[str, Any],
+    time_range: dict[str, int] | None,
+) -> bool:
+    adapted = {
+        "source_created_at": graph_record.get("sourceCreatedAtTimestamp"),
+        "source_updated_at": graph_record.get("sourceLastModifiedTimestamp"),
+    }
+    return _record_in_time_range(adapted, time_range)
+
+
 async def _fetch_pattern_record(
     *,
     vrid: str,
-    record_id: str,
+    record_id: str | None = None,
+    graph_record: dict | None = None,
     virtual_record_id_to_result: dict,
     blob_store: Any,
     org_id: str,
@@ -475,10 +727,11 @@ async def _fetch_pattern_record(
     logger_instance: logging.Logger,
 ) -> None:
     try:
-        graph_record = await graph_provider.get_document(
-            document_key=record_id,
-            collection=CollectionNames.RECORDS.value,
-        )
+        if graph_record is None:
+            graph_record = await graph_provider.get_document(
+                document_key=record_id,
+                collection=CollectionNames.RECORDS.value,
+            )
         if not graph_record:
             return
         await get_record(
