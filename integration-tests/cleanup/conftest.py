@@ -172,29 +172,27 @@ async def _wait_for_embeddings(vector_store, virtual_id: str, record_id: str) ->
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def record_in_a_nested_folder(
+async def record_in_a_folder(
     kb_client: KBClient, vector_store, mongo_store, test_org_id: str
 ) -> AsyncGenerator[dict[str, Any], None]:
-    """A record two folders deep, for the recursive delete scenario.
+    """A record inside a folder, for the folder-delete scenario.
 
-    The nesting is the point. Deleting a folder has to reach records inside its
-    sub-folders, and a record sitting directly in the deleted folder would pass
-    a test that only ever removes one level.
+    One level deep, because that is as deep as the API goes. A folder cannot be
+    put inside another folder: `POST /{kb_id}/folder` ignores a `parentId` in
+    the body and creates at the root, and the route that does take a parent is
+    not exposed by the gateway. So a "nested" fixture would silently build two
+    sibling folders and test nothing.
     """
-    kb = kb_client.create_kb(f"cleanup-folders-{uuid.uuid4().hex[:8]}")
+    kb = kb_client.create_kb(f"cleanup-folder-{uuid.uuid4().hex[:8]}")
     kb_id = kb["id"]
 
     try:
-        outer = kb_client.create_folder(kb_id, f"outer-{uuid.uuid4().hex[:6]}")
-        outer_id = _folder_id(outer)
-        inner = kb_client.create_folder(
-            kb_id, f"inner-{uuid.uuid4().hex[:6]}", parent_id=outer_id
-        )
-        inner_id = _folder_id(inner)
+        folder = kb_client.create_folder(kb_id, f"folder-{uuid.uuid4().hex[:6]}")
+        folder_id = _folder_id(folder)
 
-        name = f"nested-{uuid.uuid4().hex[:6]}.md"
+        name = f"in-folder-{uuid.uuid4().hex[:6]}.md"
         upload = kb_client.upload_file(
-            kb_id, name, POLICY, folder_id=inner_id, mimetype="text/markdown"
+            kb_id, name, POLICY, folder_id=folder_id, mimetype="text/markdown"
         )
         assert upload["summary"]["failed"] == 0, f"Upload failed: {upload}"
         record_id = upload["records"][0]["recordId"]
@@ -206,8 +204,7 @@ async def record_in_a_nested_folder(
         vendor = await mongo_store.storage_vendor_under_path(prefix) or "local"
         yield {
             "kb_id": kb_id,
-            "outer_folder_id": outer_id,
-            "inner_folder_id": inner_id,
+            "folder_id": folder_id,
             "record_id": record_id,
             "record_name": name,
             "virtual_record_id": virtual_record_id,
