@@ -2185,7 +2185,7 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     async def test_shared_link_second_call_unexpected_error(self, connector):
         entry = _make_file_entry()
@@ -2209,7 +2209,7 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     async def test_first_shared_link_call_unexpected_error(self, connector):
         entry = _make_file_entry()
@@ -2227,7 +2227,25 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
+
+    async def test_fallback_url_encodes_special_characters(self, connector):
+        entry = _make_file_entry(path="/folder/a#b?c.pdf")
+        connector.data_source.files_get_temporary_link = AsyncMock(
+            return_value=_make_dropbox_response(success=True, data=MagicMock(link="https://tmp"))
+        )
+        connector.data_source.sharing_create_shared_link_with_settings = AsyncMock(
+            return_value=_make_dropbox_response(success=False, error="rate_limit_exceeded")
+        )
+        connector.data_source.files_get_metadata = AsyncMock(
+            return_value=_make_dropbox_response(success=False)
+        )
+
+        result = await connector._process_dropbox_entry(
+            entry, "user1", "user@test.com", "rg1", False
+        )
+        assert result is not None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/a%23b%3Fc.pdf"
 
     async def test_parent_path_resolution(self, connector):
         entry = _make_file_entry(path="/a/b/file.pdf")
@@ -2321,10 +2339,9 @@ class TestProcessDropboxEntryBranches:
         assert "user@test.com" in emails
 
     async def test_permissions_single_group_is_shared(self, connector):
-        """When a single group permission is returned, the source code tries to compare
-        permission type with PermissionType.GROUP which doesn't exist, causing an
-        AttributeError. This is caught by the try/except, which falls back to owner
-        permission, and is_shared remains False (its default)."""
+        """When the only permission returned is a group permission, the file is
+        considered shared, since access is granted via the group rather than
+        directly to the syncing user."""
         entry = _make_file_entry()
         connector.data_source.files_get_temporary_link = AsyncMock(
             return_value=_make_dropbox_response(success=True, data=MagicMock(link="https://tmp"))
@@ -2353,9 +2370,7 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        # PermissionType.GROUP doesn't exist, so the code raises AttributeError,
-        # falls back to owner permission, and is_shared stays False
-        assert result.record.is_shared is False
+        assert result.record.is_shared is True
 
     async def test_permission_fetch_exception_fallback(self, connector):
         entry = _make_file_entry()
