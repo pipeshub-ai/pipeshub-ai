@@ -15,12 +15,33 @@ from app.utils.aimodels import (
     _is_openai_gpt5_model,
     _is_qwen_38_or_later,
     _reasoning_effort_kwargs,
+    embedding_config_hash,
     get_default_embedding_model,
     get_embedding_model,
     get_generator_model,
     is_multimodal_llm,
 )
 from app.utils.llm_api_mode_store import REASONING_MANDATORY_FALLBACK_EFFORT, LLMApiMode
+
+
+class TestEmbeddingConfigHash:
+    @pytest.mark.parametrize("request_format", ["input", "vllm_messages"])
+    def test_request_format_change_invalidates_cache(self, request_format):
+        config = [{"provider": "openAICompatible", "configuration": {
+            "model": "test-model", "multimodalRequestFormat": "auto",
+        }}]
+        original_hash = embedding_config_hash(config)
+        config[0]["configuration"]["multimodalRequestFormat"] = request_format
+
+        assert embedding_config_hash(config) != original_hash
+
+    @pytest.mark.parametrize("request_format", [None, "", "auto"])
+    def test_default_request_formats_have_same_hash(self, request_format):
+        config = [{"provider": "openAICompatible", "configuration": {"model": "test-model"}}]
+        original_hash = embedding_config_hash(config)
+        config[0]["configuration"]["multimodalRequestFormat"] = request_format
+
+        assert embedding_config_hash(config) == original_hash
 
 
 # ---------------------------------------------------------------------------
