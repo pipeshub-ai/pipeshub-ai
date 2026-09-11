@@ -49,10 +49,7 @@ class TestInitialize:
         mock_redis = AsyncMock()
         mock_redis.ping = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.producer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(p._provider, "create_client", return_value=mock_redis):
             await p.initialize()
 
         mock_redis.ping.assert_awaited_once()
@@ -62,9 +59,9 @@ class TestInitialize:
     async def test_skips_if_already_initialized(self, producer):
         producer.redis = MagicMock()
 
-        with patch("app.services.messaging.redis_streams.producer.Redis") as MockRedis:
+        with patch.object(producer._provider, "create_client") as mock_create:
             await producer.initialize()
-            MockRedis.assert_not_called()
+            mock_create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_double_check_after_lock(self, logger, config):
@@ -73,15 +70,12 @@ class TestInitialize:
         mock_redis.ping = AsyncMock()
         call_count = 0
 
-        def redis_factory(**kwargs):
+        def redis_factory(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             return mock_redis
 
-        with patch(
-            "app.services.messaging.redis_streams.producer.Redis",
-            side_effect=redis_factory,
-        ):
+        with patch.object(p._provider, "create_client", side_effect=redis_factory):
             await asyncio.gather(p.initialize(), p.initialize())
 
         assert call_count == 1
@@ -92,10 +86,7 @@ class TestInitialize:
         mock_redis = AsyncMock()
         mock_redis.ping = AsyncMock(side_effect=Exception("unreachable"))
 
-        with patch(
-            "app.services.messaging.redis_streams.producer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(p._provider, "create_client", return_value=mock_redis):
             with pytest.raises(Exception, match="unreachable"):
                 await p.initialize()
 
@@ -178,10 +169,7 @@ class TestSendMessage:
         mock_redis.ping = AsyncMock()
         mock_redis.xadd = AsyncMock(return_value="1-0")
 
-        with patch(
-            "app.services.messaging.redis_streams.producer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(p._provider, "create_client", return_value=mock_redis):
             result = await p.send_message("t", {"d": 1})
 
         assert result is True
@@ -236,10 +224,7 @@ class TestStartStop:
         mock_redis = AsyncMock()
         mock_redis.ping = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.producer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(p._provider, "create_client", return_value=mock_redis):
             await p.start()
 
         assert p.redis is mock_redis
@@ -248,9 +233,9 @@ class TestStartStop:
     async def test_start_skips_when_redis_exists(self, producer):
         producer.redis = MagicMock()
 
-        with patch("app.services.messaging.redis_streams.producer.Redis") as MockRedis:
+        with patch.object(producer._provider, "create_client") as mock_create:
             await producer.start()
-            MockRedis.assert_not_called()
+            mock_create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_calls_cleanup(self, producer):

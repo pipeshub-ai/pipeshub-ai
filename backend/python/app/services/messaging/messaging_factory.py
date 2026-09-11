@@ -1,3 +1,4 @@
+import os
 from logging import Logger
 from typing import TYPE_CHECKING
 
@@ -31,6 +32,10 @@ from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
+from app.services.distributed.interface import (
+    IDistributedLeaseManager,
+    IRetryTracker,
+)
 from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.interface import (
     FairnessKeyExtractor,
@@ -87,6 +92,33 @@ def lane_topics_for(topic: str, broker_type: MessageBrokerType | None = None) ->
     return router.lane_topics(topic)
 
 
+def _reject_namespaced_redis_streams() -> None:
+    """Refuse `REDIS_KEY_NAMESPACE` + `MESSAGE_BROKER=redis` (R9).
+
+    The namespace isolates KV keys, caches, retry counters, leases and the
+    BullMQ queue, but NOT Redis Streams: stream names round-trip through
+    `xreadgroup` into `xack`, and the indexing consumer derives lane numbers
+    from them, so prefixing them is a change with real message-loss risk that
+    has to land on its own.
+
+    Until it does, two releases pointed at one endpoint would share every
+    stream *and* consumer group -- so a message produced by release A can be
+    delivered to release B's consumer and acked there, and A never sees it.
+    Setting the namespace is an explicit request for isolation, so failing
+    fast is the honest answer; silently not isolating routes work to the
+    wrong deployment.
+    """
+    namespace = os.getenv("REDIS_KEY_NAMESPACE", "").strip()
+    if namespace:
+        raise ValueError(
+            f"REDIS_KEY_NAMESPACE={namespace!r} does not isolate Redis Streams, "
+            "so two deployments sharing this endpoint would consume each "
+            "other's messages. Use a separate Redis/Valkey instance per "
+            "deployment for MESSAGE_BROKER=redis, or switch to "
+            "MESSAGE_BROKER=kafka."
+        )
+
+
 class MessagingFactory:
     """Factory for creating messaging service instances.
 
@@ -101,7 +133,7 @@ class MessagingFactory:
         logger: Logger,
         redis_config: RedisConfig,
         ttl_seconds: int = RetryManager.DEFAULT_TTL_SECONDS,
-    ) -> RetryManager:
+    ) -> IRetryTracker:
         """Create a RetryManager for persistent failure retry tracking.
 
         This RetryManager stores retry counts in Redis and can be used by both Kafka
@@ -138,6 +170,8 @@ class MessagingFactory:
             broker_type = get_message_broker_type()
 
         producer: IMessagingProducer
+        if broker_type == MessageBrokerType.REDIS:
+            _reject_namespaced_redis_streams()
         if broker_type == MessageBrokerType.KAFKA:
             if config is None:
                 raise ValueError("Kafka producer config is required")
@@ -175,9 +209,9 @@ class MessagingFactory:
         config: KafkaConsumerConfig | RedisStreamsConfig | None = None,
         broker_type: MessageBrokerType | None = None,
         consumer_type: ConsumerType = ConsumerType.SIMPLE,
-        retry_manager: RetryManager | None = None,
+        retry_manager: IRetryTracker | None = None,
         producer: IMessagingProducer | None = None,
-        concurrency_manager: DistributedConcurrencyManager | None = None,
+        concurrency_manager: IDistributedLeaseManager | None = None,
         governor: "ResourceGovernor | None" = None,
         backpressure_coordinator: "BackpressureCoordinator | None" = None,
         fair_scheduler_config: FairSchedulerConfig | None = None,
@@ -228,6 +262,8 @@ class MessagingFactory:
             fields=effective_fair_config.key_fields
         )
 
+        if broker_type == MessageBrokerType.REDIS:
+            _reject_namespaced_redis_streams()
         if broker_type == MessageBrokerType.KAFKA:
             if config is None:
                 raise ValueError("Kafka consumer config is required")

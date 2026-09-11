@@ -21,6 +21,8 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import Request
+from neo4j.exceptions import TransientError
+
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
@@ -38,7 +40,7 @@ from app.config.constants.arangodb import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
-    from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+    from app.services.cache.interface import IAccessibleRecordsCache
 from app.config.constants.neo4j import (
     COLLECTION_TO_LABEL,
     EDGE_COLLECTION_TO_RELATIONSHIP,
@@ -82,11 +84,16 @@ from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
     _distinct_connector_types,
 )
-from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
+from app.services.graph_db.neo4j.neo4j_client import (
+    DEFAULT_MAX_CONNECTION_POOL_SIZE,
+    Neo4jClient,
+)
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
     build_page_records_for_vector_membership_backfill_cypher,
 )
+from app.utils.env_config import env_int
+from app.utils.env_utils import env_bool
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants
@@ -108,7 +115,7 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         logger: Logger,
         config_service: ConfigurationService,
-        accessible_records_cache: "AccessibleRecordsCache | None" = None,
+        accessible_records_cache: "IAccessibleRecordsCache | None" = None,
     ) -> None:
         """
         Initialize Neo4j provider.
@@ -151,7 +158,17 @@ class Neo4jProvider(IGraphDBProvider):
                 username=username,
                 password=password,
                 database=database,
-                logger=self.logger
+                logger=self.logger,
+                # The one driver knob that has to match the server (its bolt
+                # thread pool); the timeouts around it are constants.
+                max_connection_pool_size=env_int(
+                    "NEO4J_MAX_CONNECTION_POOL_SIZE", DEFAULT_MAX_CONNECTION_POOL_SIZE
+                ),
+                # Real transactions (abort rolls back) instead of one
+                # auto-commit per query. Off for one release: they hold node
+                # locks until commit, so shared-node writes can deadlock and
+                # retry where they used to interleave.
+                explicit_transactions=env_bool("NEO4J_EXPLICIT_TRANSACTIONS", False),
             )
 
             # Connect
@@ -281,6 +298,15 @@ class Neo4jProvider(IGraphDBProvider):
             raise RuntimeError("Neo4j client not connected")
 
         await self.client.commit_transaction(transaction)
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        """Only meaningful with explicit transactions: a deadlock or lock
+        timeout then rolled back cleanly and the whole block can be re-run.
+        With auto-commit sessions the earlier statements already landed, so
+        re-running the block would apply them twice."""
+        if self.client is None or not self.client.explicit_transactions:
+            return False
+        return isinstance(error, TransientError)
 
     async def rollback_transaction(self, transaction: str) -> None:
         """
@@ -16616,10 +16642,10 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (team:{team_label} {{id: $teamId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL
+            WHERE member_user IS NOT NULL AND member_user.isActive = true
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
-                 collect(DISTINCT {{
+                 collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
                      id: member_user.id,
                      userId: member_user.userId,
                      userName: member_user.fullName,
@@ -16627,7 +16653,7 @@ class Neo4jProvider(IGraphDBProvider):
                      role: member_permission.role,
                      joinedAt: member_permission.createdAtTimestamp,
                      isOwner: member_permission.role = 'OWNER'
-                 }}) AS team_members
+                 }} END) AS team_members
             RETURN {{
                 id: team.id,
                 name: team.name,
@@ -16704,9 +16730,9 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
             WHERE 1=1 {search_where} {extra_where}
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL
+            WHERE member_user IS NOT NULL AND member_user.isActive = true
             WITH team, properties(p) AS current_user_permission,
-                 collect(DISTINCT {{
+                 collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
                      id: member_user.id,
                      userId: member_user.userId,
                      userName: member_user.fullName,
@@ -16714,7 +16740,7 @@ class Neo4jProvider(IGraphDBProvider):
                      role: member_permission.role,
                      joinedAt: member_permission.createdAtTimestamp,
                      isOwner: member_permission.role = 'OWNER'
-                 }}) AS team_members
+                 }} END) AS team_members
             WITH team, current_user_permission, team_members, size(team_members) AS member_count
             ORDER BY team.createdAtTimestamp DESC
             SKIP $offset
@@ -16813,10 +16839,10 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL {search_where}
+            WHERE member_user IS NOT NULL AND member_user.isActive = true {search_where}
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
-                 collect(DISTINCT {{
+                 collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
                      id: member_user.id,
                      userId: member_user.userId,
                      userName: member_user.fullName,
@@ -16824,7 +16850,7 @@ class Neo4jProvider(IGraphDBProvider):
                      role: member_permission.role,
                      joinedAt: member_permission.createdAtTimestamp,
                      isOwner: member_permission.role = 'OWNER'
-                 }}) AS all_members
+                 }} END) AS all_members
             RETURN {{
                 id: team.id,
                 name: team.name,

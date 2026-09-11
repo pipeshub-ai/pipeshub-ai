@@ -669,6 +669,22 @@ class TestIsLocalCpuEmbedding:
         vs.embedding_provider = "openai"
         assert vs._is_local_cpu_embedding() is False
 
+    def test_ollama_on_private_endpoint_is_local(self):
+        """A self-hosted provider on a private address shares this deployment's
+        CPU, so it must get the local batch/concurrency/timeout budget."""
+        from app.utils.aimodels import EmbeddingProvider
+        vs = _make_vectorstore()
+        vs.embedding_provider = EmbeddingProvider.OLLAMA.value
+        vs.embedding_endpoint = "http://ollama:11434"
+        assert vs._is_local_cpu_embedding() is True
+
+    def test_ollama_on_public_endpoint_is_not_local(self):
+        from app.utils.aimodels import EmbeddingProvider
+        vs = _make_vectorstore()
+        vs.embedding_provider = EmbeddingProvider.OLLAMA.value
+        vs.embedding_endpoint = "https://ollama.example.com"
+        assert vs._is_local_cpu_embedding() is False
+
 
 # ===================================================================
 # _process_document_chunks
@@ -704,6 +720,36 @@ class TestProcessDocumentChunks:
         await vs._process_document_chunks(chunks, "rec-1", "test_collection")
 
         vs._embed_and_upsert_documents.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_large_documents_split_below_char_budget(self):
+        """A batch is bounded by characters, not just document count: 50 whole
+        50k-char blocks in one embedding call is what blew the per-batch
+        timeout, and no document may be dropped while splitting them up."""
+        from langchain_core.documents import Document
+
+        from app.modules.transformers.vectorstore import (
+            _DEFAULT_DOCUMENT_BATCH_CHARS,
+            _DEFAULT_DOCUMENT_BATCH_SIZE,
+        )
+
+        vs = _make_vectorstore()
+        vs.embedding_provider = "openai"
+        batches = []
+        vs._embed_and_upsert_documents = AsyncMock(
+            side_effect=lambda batch, *_: batches.append(batch)
+        )
+
+        chunks = [
+            Document(page_content="x" * 50_000, metadata={})
+            for _ in range(_DEFAULT_DOCUMENT_BATCH_SIZE)
+        ]
+        await vs._process_document_chunks(chunks, "rec-1", "test_collection")
+
+        assert sum(len(b) for b in batches) == len(chunks)
+        assert len(batches) > 1
+        for batch in batches:
+            assert sum(len(d.page_content) for d in batch) <= _DEFAULT_DOCUMENT_BATCH_CHARS
 
     @pytest.mark.asyncio
     async def test_record_not_found_skips_embedding(self):

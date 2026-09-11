@@ -234,3 +234,34 @@ async def test_health_check_returns_true_on_ok() -> None:
         result = await client.health_check()
 
     assert result is True
+
+
+@pytest.mark.asyncio
+async def test_an_unparseable_document_is_not_retried_and_leaves_the_breaker_closed() -> None:
+    """A 422 PARSE_FAILED is a fact about the document. Reported as a 500 it
+    was retried, counted against the circuit breaker, and five in a row
+    failed every other record fast for the breaker's cooldown."""
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0)
+    calls = 0
+
+    async def _request(method, url, **kwargs) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _make_response(
+            422,
+            {"success": False, "error": {"code": "PARSE_FAILED", "message": "cannot parse", "details": {}}},
+        )
+
+    fake_httpx = AsyncMock()
+    fake_httpx.__aenter__ = AsyncMock(return_value=fake_httpx)
+    fake_httpx.__aexit__ = AsyncMock(return_value=False)
+    fake_httpx.request = _request
+
+    with patch.object(client, "_make_client", return_value=fake_httpx):
+        with pytest.raises(ParsingClientError) as exc_info:
+            await client.parse(file_content=b"data", record_name="broken.yaml")
+
+    assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
+    assert calls == 1, "a document error must not be retried"
+    assert not client.circuit_breaker.is_open
+    assert client.circuit_breaker._consecutive_failures == 0

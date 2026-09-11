@@ -96,7 +96,15 @@ _STOP_REASON_TRUNCATED = {"length", "max_tokens"}
 # library network/timeout errors plus each SDK's consistent
 # "*Connection*"/"*Timeout*" naming convention covers the common transient
 # cases without a hard dependency on any one provider's package.
-_NETWORK_ERROR_NAME_HINTS = ("connectionerror", "connecttimeout", "readtimeout", "timeouterror", "apitimeouterror", "apiconnectionerror")
+# "protocolerror" covers httpx/httpcore's `RemoteProtocolError` — "peer closed
+# connection without sending complete message body", the way a gateway
+# dropping a stream mid-response actually surfaces. It carries no HTTP status
+# and is not an OSError, so without this it read as a permanent failure and a
+# transient blip killed the turn instead of being retried.
+_NETWORK_ERROR_NAME_HINTS = (
+    "connectionerror", "connecttimeout", "readtimeout", "timeouterror",
+    "apitimeouterror", "apiconnectionerror", "protocolerror", "incompleteread",
+)
 
 # Substrings providers/gateways actually emit when reasoning + bound function
 # tools can't both go through the API shape the request used. Matched
@@ -380,7 +388,17 @@ class LangChainTransport(LLMTransport):
             return None
         return self._to_langchain(messages, system, relocate=True)
 
-    def _wrap_error(self, exc: Exception, context: str) -> TransportError:
+    def _wrap_error(
+        self, exc: Exception, context: str, *, retryable: bool | None = None,
+    ) -> TransportError:
+        """Wrap a provider exception as a `TransportError`.
+
+        `retryable=False` forces a non-retryable result regardless of the
+        exception type. `stream()` passes it once any delta has reached the
+        client: `retry_model_call` (the PRE_MODEL_CALL wrapper) re-runs the
+        WHOLE model call, so a transient error arriving mid-stream would
+        otherwise replay text the user has already seen.
+        """
         status_code = getattr(exc, "status_code", None)
         # 529 is Anthropic's non-standard "overloaded_error" status —
         # capacity exhaustion across all customers, not this request's
@@ -392,9 +410,11 @@ class LangChainTransport(LLMTransport):
         # default (`transport/base.py`) and the native
         # `AnthropicTransport._RETRYABLE_STATUS_CODES` — retryable=True
         # here only gets a retry if that config list also allows the code.
-        retryable = (
-            status_code in (429, 500, 502, 503, 504, 529) if status_code else _is_network_error(exc)
-        )
+        if retryable is None:
+            retryable = (
+                status_code in (429, 500, 502, 503, 504, 529)
+                if status_code else _is_network_error(exc)
+            )
         return TransportError(
             f"LangChain transport error ({context}): {exc}",
             status_code=status_code,
@@ -739,6 +759,12 @@ class LangChainTransport(LLMTransport):
         lc_llm = self._bind_tools(tools)
 
         chunks: list[AIMessage] = []
+        # Whether a StreamEvent actually reached the caller. Distinct from
+        # `chunks`, which counts what the PROVIDER sent: OpenAI-family
+        # streams open with a role-only chunk carrying empty content, so a
+        # disconnect in the first moments buffers a chunk while the client
+        # has seen nothing. Retryability turns on this, not on `chunks`.
+        emitted = False
         fallback_llm: BaseChatModel | None = None
         fallback_mode: str | None = None
         original_exc: Exception | None = None
@@ -751,12 +777,14 @@ class LangChainTransport(LLMTransport):
                     chunks.append(chunk)
                     text = getattr(chunk, "content", None)
                     if isinstance(text, str) and text:
+                        emitted = True
                         yield TextDeltaEvent(delta=text)
                     elif isinstance(text, list):
                         for block in text:
                             if isinstance(block, dict) and block.get("type") == "text":
                                 delta = block.get("text", "")
                                 if delta:
+                                    emitted = True
                                     yield TextDeltaEvent(delta=delta)
 
                     # Extended-thinking / reasoning deltas (Claude extended
@@ -770,6 +798,7 @@ class LangChainTransport(LLMTransport):
                         if block.get("type") == "reasoning":
                             reasoning_delta = block.get("reasoning", "")
                             if reasoning_delta:
+                                emitted = True
                                 yield ThinkingDeltaEvent(delta=reasoning_delta)
 
                     # Tool-call argument deltas — used by Agent.step()'s streaming
@@ -795,6 +824,7 @@ class LangChainTransport(LLMTransport):
                         # still tells the loop nothing, so it is still skipped.
                         if not args_delta and not name and not tc_id:
                             continue
+                        emitted = True
                         yield ToolCallDeltaEvent(
                             index=tc_chunk.get("index") or 0,
                             id=tc_id,
@@ -818,7 +848,19 @@ class LangChainTransport(LLMTransport):
                     )
                     raise self._wrap_error(original_exc, "stream") from original_exc
                 if chunks:
-                    raise self._wrap_error(exc, "stream") from exc
+                    # Still no INTERNAL retry once the provider has sent
+                    # anything: `chunks` is not reset between attempts, so
+                    # re-streaming would aggregate both attempts into one
+                    # response.
+                    #
+                    # The OUTER retry wrapper is a different question. It
+                    # re-runs the whole call, which only hurts if the client
+                    # already saw output — so that is gated on `emitted`,
+                    # letting a disconnect after nothing but a role-only
+                    # chunk still be retried.
+                    raise self._wrap_error(
+                        exc, "stream", retryable=False if emitted else None,
+                    ) from exc
                 relocated = self._tool_image_fallback(exc, messages, system)
                 if relocated is not None:
                     original_exc = exc

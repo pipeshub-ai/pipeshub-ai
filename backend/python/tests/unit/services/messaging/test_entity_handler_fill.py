@@ -170,3 +170,36 @@ class TestCreateKbConnectorMissingConnectorsMap:
         # The "Creating connectors_map" info log must have fired.
         info_msgs = [c.args[0] for c in svc.logger.info.call_args_list if c.args]
         assert any("Creating connectors_map" in msg for msg in info_msgs)
+
+
+class TestDefaultKbTransactionRollsBackOnCancellation:
+    """The explicit begin/commit in `_get_or_create_knowledge_base` had the
+    same `except Exception` gap as `GraphDataStore.transaction()`: a
+    cancellation skipped the rollback and leaked the transaction's Neo4j
+    session (a pooled connection, never returned)."""
+
+    @pytest.mark.asyncio
+    async def test_cancellation_mid_transaction_rolls_back(self) -> None:
+        import asyncio
+
+        svc = _make_service()
+        gp = svc.graph_provider
+        gp.get_nodes_by_filters = AsyncMock(return_value=[])  # no existing KB -> create path
+        gp.begin_transaction = AsyncMock(return_value="txn-kb")
+        gp.batch_upsert_nodes = AsyncMock()
+
+        async def _hang(*_a, **_k) -> None:
+            await asyncio.sleep(10)  # cancelled here, mid-transaction
+
+        gp.batch_create_edges = AsyncMock(side_effect=_hang)
+
+        task = asyncio.create_task(
+            svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+        )
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        gp.rollback_transaction.assert_awaited_once_with("txn-kb")
+        gp.commit_transaction.assert_not_awaited()

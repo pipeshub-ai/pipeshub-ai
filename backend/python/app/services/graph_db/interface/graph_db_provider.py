@@ -168,6 +168,12 @@ class IGraphDBProvider(ABC):
         """Roll back a database transaction."""
         pass
 
+    def is_transient_error(self, error: BaseException) -> bool:
+        """Whether *error* means a rolled-back transaction block can simply
+        be re-run (a deadlock, a lock timeout). Backends whose transactions
+        cannot guarantee nothing landed answer False."""
+        return False
+
     # ==================== Document Operations ====================
 
     @abstractmethod

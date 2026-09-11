@@ -2755,6 +2755,19 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
             if not web_url and recordId:
                 web_url = f"/record/{recordId}"
 
+            record_updated_at_ms = record.get("updated_at")
+            if record_updated_at_ms is None:
+                record_updated_at_ms = record.get("updatedAtTimestamp")
+            record_updated_at_iso = None
+            if record_updated_at_ms is not None:
+                try:
+                    from datetime import datetime, timezone
+                    record_updated_at_iso = datetime.fromtimestamp(
+                        int(record_updated_at_ms) / 1000, tz=timezone.utc
+                    ).isoformat()
+                except (ValueError, TypeError, OSError, OverflowError):
+                    pass
+
             enhanced_metadata = {
                         "orgId": meta.get("orgId") or record.get("org_id", ""),
                         "recordId": recordId,
@@ -2775,6 +2788,7 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                         "webUrl": web_url,
                         "previewRenderable": preview_renderable,
                         "hideWeburl": hide_weburl,
+                        "updatedAt": record_updated_at_iso,
                     }
             if extension == "xlsx" or meta.get("sheetName"):
                 if isinstance(data, dict):

@@ -82,7 +82,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
       this.bucketName = bucket;
       this.region = sanitizedRegion;
 
-      this.logger.info(
+      this.logger.debug(
         this.usingIamRole
           ? 'S3 adapter initialized using default AWS credential chain (IAM role)'
           : 'S3 adapter initialized using explicit AWS credentials',

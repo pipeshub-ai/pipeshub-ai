@@ -204,6 +204,26 @@ class TestMarkRecordStatusEdgeCases:
         with pytest.raises(Exception, match="fail"):
             await ep.mark_record_status(doc, ProgressStatus.EMPTY)
 
+    @pytest.mark.asyncio
+    async def test_silent_write_failure_raises_indexing_error(self):
+        """A write that fails without raising (update_node returns False,
+        e.g. a transient graph DB write failure) must not be swallowed.
+
+        Without this, mark_record_status would report success on a status
+        that was never actually persisted — leaving the record stuck at its
+        prior status forever, since reconciliation only revisits QUEUED/
+        IN_PROGRESS records and the caller would still yield completion
+        events as if the write had succeeded.
+        """
+        from app.exceptions.indexing_exceptions import IndexingError  # noqa: PLC0415
+
+        ep, _, _, gp = _make_event_processor()
+        gp.update_node = AsyncMock(return_value=False)
+        doc = {"_key": "k8"}
+
+        with pytest.raises(IndexingError):
+            await ep.mark_record_status(doc, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
+
 
 # ===========================================================================
 # _check_duplicate_by_md5 - Additional Edge Cases

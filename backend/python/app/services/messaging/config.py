@@ -559,6 +559,11 @@ class RedisConfig(BaseModel):
     port: int = 6379
     password: str | None = None
     db: int = 0
+    # Set through the admin UI and stored in the encrypted KV config. Kept on
+    # the model so it reaches `RedisConnectionConfig.from_host_port(tls=...)`:
+    # an install that enabled TLS there has no `REDIS_TLS_ENABLED` env var,
+    # and dropping the flag connects it in plaintext.
+    tls: bool = False
 
 
 class RedisStreamsConfig(RedisConfig):

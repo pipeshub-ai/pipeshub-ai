@@ -58,6 +58,14 @@ export const REASONING_EFFORT_VALUES = [
 
 export type ReasoningEffort = (typeof REASONING_EFFORT_VALUES)[number];
 
+// `chatSessions` discriminator predicates. Applied at buildFilter /
+// buildAgentConversationFilter call sites and at every id-only mutation
+// (findByIdAndUpdate → findOneAndUpdate) now that both session types share
+// one collection — without this, a plain-chat route could mutate an agent
+// session (or vice versa) purely by guessing/reusing an _id.
+export const EXCLUDE_AGENT = { sessionType: 'chat' } as const;
+export const ONLY_AGENT = { sessionType: 'agent' } as const;
+
 export const PIPESHUB_CHAT_MODE = {
   WEB_SEARCH: 'web_search',
   INTERNAL_SEARCH: 'internal_search',

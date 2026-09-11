@@ -12314,8 +12314,9 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Success response from getAIModelsProviders. Returns the full stored
-        models bucket map (masked when secrets are hidden).
+        Success response from getAIModelsProviders. Returns the stored models
+        bucket map. Each entry's `configuration` includes only `model`,
+        `modelFriendlyName`, and `dimensions` when those keys were stored.
       required:
         - status
         - models
@@ -12338,6 +12339,8 @@ components:
       description: |
         Success response from getModelsByType. Returns stored provider entries
         for a single model type bucket (not the flattened available-models shape).
+        Each entry's `configuration` includes only `model`, `modelFriendlyName`,
+        and `dimensions` when stored.
       required:
         - status
         - models
@@ -12834,12 +12837,13 @@ components:
       description: |
         Provider-specific configuration stored on each AI model entry.
 
-        **Passthrough contract:** `additionalProperties` is intentionally `true` at this
-        level only. Node validation uses Zod `configurationSchema` with `.passthrough()`
-        so provider-specific keys reach the Python backend unchanged. The canonical field
-        list for each provider lives in `backend/python/app/config/ai_models/providers/`;
-        new providers may add keys without updating this spec. Do not set
-        `additionalProperties: false` here unless every registry field is enumerated.
+        **Read shape:** user-facing GET responses return only `model`,
+        `modelFriendlyName`, and `dimensions` (when stored). Values are copied as-is;
+        other keys including credentials are omitted.
+
+        **Write shape:** create and update still accept the full provider payload
+        (Zod `configurationSchema` with `.passthrough()`). An omitted key retains
+        the stored value; send an empty string to clear one.
 
         Properties below are the documented union of the Zod base shape and registry-defined
         configuration keys (all optional unless required by a given provider at runtime).
@@ -26775,14 +26779,18 @@ paths:
                     type: object
                     additionalProperties: false
                     description: |
-                      The full conversation document after the title update,
-                      returned as stored in MongoDB.
+                      The conversation document after the title update, as
+                      stored in the `chatSessions` collection.
+
+                      Carries no `messages`: they live in `chatSessionMessages`
+                      (see `chat.session.schema.ts`) and this route neither
+                      reads nor joins them. Fetch the conversation by id to
+                      get its messages.
                     required:
                       - _id
                       - userId
                       - orgId
                       - initiator
-                      - messages
                       - isShared
                       - isDeleted
                       - isArchived
@@ -26815,148 +26823,6 @@ paths:
                         type: string
                         format: objectId
                         description: User who started the conversation
-                      messages:
-                        type: array
-                        description: All messages stored on this conversation.
-                        items:
-                          type: object
-                          additionalProperties: false
-                          required:
-                            - _id
-                            - messageType
-                            - content
-                            - contentFormat
-                            - citations
-                            - followUpQuestions
-                            - feedback
-                            - referenceData
-                            - createdAt
-                            - updatedAt
-                          properties:
-                            _id:
-                              type: string
-                              format: objectId
-                            messageType:
-                              type: string
-                              enum: [user_query, bot_response, error, feedback, system, tool_call]
-                            content:
-                              type: string
-                            contentFormat:
-                              type: string
-                              enum: [MARKDOWN, JSON, HTML]
-                              default: MARKDOWN
-                            confidence:
-                              type: string
-                              nullable: true
-                              description: |
-                                AI confidence in the answer. Present only on
-                                `bot_response` messages, and only when the
-                                model emitted a trailing confidence block.
-
-                                This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
-                            citations:
-                              type: array
-                              description: |
-                                References to source documents used in the
-                                response, stored as raw citation pointers
-                                (not populated on this endpoint).
-                              items:
-                                $ref: '#/components/schemas/CitationReference'
-                            followUpQuestions:
-                              type: array
-                              items:
-                                $ref: '#/components/schemas/FollowUpQuestion'
-                            feedback:
-                              type: array
-                              items:
-                                $ref: '#/components/schemas/MessageFeedback'
-                            referenceData:
-                              type: array
-                              description: |
-                                Reference IDs surfaced from tool responses,
-                                used for follow-up queries.
-                              items:
-                                type: object
-                                additionalProperties: false
-                                properties:
-                                  name:
-                                    type: string
-                                    description: Display name shown to the user.
-                                  id:
-                                    type: string
-                                    description: Technical identifier (numeric ID, UUID, etc.).
-                                  type:
-                                    type: string
-                                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
-                                  app:
-                                    type: string
-                                    description: |
-                                      Source application (e.g. `jira`, `confluence`,
-                                      `sharepoint`, `slack`, `drive`, `gmail`).
-                                  webUrl:
-                                    type: string
-                                    description: URL to open the item in a browser.
-                                  metadata:
-                                    type: object
-                                    additionalProperties:
-                                      type: string
-                                    description: |
-                                      App-specific fields keyed by name (e.g. `key` for a Jira
-                                      project, `siteId` for a SharePoint document).
-                            modelInfo:
-                              $ref: '#/components/schemas/ConversationModelInfo'
-                            appliedFilters:
-                              type: object
-                              additionalProperties: false
-                              properties:
-                                apps:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
-                                kb:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
-                            attachments:
-                              type: array
-                              description: |
-                                Files uploaded for this message turn (see
-                                `POST /conversations/attachments/upload`).
-                              items:
-                                $ref: '#/components/schemas/ChatAttachmentRef'
-                            tools:
-                              type: array
-                              description: Tool call results invoked during this message turn.
-                              items:
-                                $ref: '#/components/schemas/MessageToolCall'
-                            reasoning:
-                              type: array
-                              description: Persisted chain-of-thought for this turn.
-                              items:
-                                $ref: '#/components/schemas/MessageReasoningTurn'
-                            parts:
-                              type: array
-                              description: Ordered agent-activity transcript for this turn.
-                              items:
-                                $ref: '#/components/schemas/MessagePart'
-                            metadata:
-                              type: object
-                              additionalProperties: false
-                              properties:
-                                processingTimeMs:
-                                  type: number
-                                modelVersion:
-                                  type: string
-                                aiTransactionId:
-                                  type: string
-                                reason:
-                                  type: string
-                            createdAt:
-                              type: string
-                              format: date-time
-                            updatedAt:
-                              type: string
-                              format: date-time
                       status:
                         type: string
                         enum: [None, Inprogress, Complete, Failed]
@@ -34478,7 +34344,9 @@ paths:
       tags:
         - AI Models Providers
       summary: Get models by type
-      description: Get all configured models of a specific type.
+      description: |
+        Get all configured models of a specific type. Each entry's `configuration`
+        includes only `model`, `modelFriendlyName`, and `dimensions` when stored.
       operationId: getModelsByType
       security:
         - bearerAuth: []
@@ -34903,7 +34771,13 @@ paths:
       tags:
         - AI Models Providers
       summary: Update AI model provider
-      description: Update an existing AI model provider configuration.
+      description: |
+        Update an existing AI model provider configuration.
+
+        Credential keys omitted from `configuration` retain their stored value,
+        which is how a client that never received them can save other edits. The
+        health check runs against the merged configuration. Send an empty string
+        to clear a credential.
       operationId: updateAIModelProvider
       security:
         - bearerAuth: []
@@ -34952,8 +34826,7 @@ paths:
         '404':
           description: |
             No AI models configuration in KV store, or no provider with the given modelKey.
-            Health-check runs before KV lookup, so unknown keys with invalid credentials may
-            return 400 from the health-check instead.
+            KV lookup and type-mismatch checks run before the health-check.
           content:
             application/json:
               schema:
@@ -36404,7 +36277,9 @@ paths:
         - Configuration Manager
       summary: Get AI models configuration
       description: |
-        Retrieve the AI models configuration for the organization.
+        Retrieve the AI models configuration for the organization. Each entry's
+        `configuration` includes only `model`, `modelFriendlyName`, and
+        `dimensions` when stored.
       operationId: getAIModelsConfig
       security:
         - bearerAuth: []
@@ -36459,7 +36334,8 @@ paths:
       description: |
         Retrieve all configured AI model provider entries grouped by model type
         (admin-only). Returns the stored KV shape under `models`, not the flattened
-        list from getAvailableModelsByType.
+        list from getAvailableModelsByType. Each entry's `configuration` includes
+        only `model`, `modelFriendlyName`, and `dimensions` when stored.
       operationId: getAIModelsProviders
       security:
         - bearerAuth: []

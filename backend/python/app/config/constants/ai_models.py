@@ -7,6 +7,12 @@ DEFAULT_EMBEDDING_SERVER_URL = f"http://localhost:{EMBEDDING_SERVER_PORT}"
 EMBEDDING_SERVER_MAX_RETRIES = 5
 EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS = 600.0
 
+# Bound on one HTTP attempt to a hosted embedding API. The provider SDKs
+# default to 600s and retry twice on top, so without this a single stalled
+# request consumes the caller's whole per-batch budget and reports as a
+# timeout with nothing to distinguish it from a slow model.
+REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS = 60.0
+
 class OCRProvider(Enum):
     AZURE_DI = "azureDI"
     VLM_OCR = "vlmOCR"

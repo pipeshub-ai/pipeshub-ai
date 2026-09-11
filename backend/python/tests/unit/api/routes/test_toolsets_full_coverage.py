@@ -1000,7 +1000,7 @@ class TestGetAuthenticatedToolsetsException:
         registry = _make_registry("slack")
 
         with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
-            result = await get_authenticated_toolsets("u1", "o1", cs, registry)
+            result, _auth = await get_authenticated_toolsets("u1", "o1", cs, registry)
 
         assert len(result) == 1
         assert result[0]["toolsetType"] == "slack"

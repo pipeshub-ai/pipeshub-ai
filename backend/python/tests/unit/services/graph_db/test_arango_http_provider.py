@@ -13936,6 +13936,14 @@ class TestGetTeamWithUsers:
         result = await connected_provider.get_team_with_users("t1", "uk1")
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_members_exclude_inactive_users(self, connected_provider) -> None:
+        """Removed users (isActive == false) must not be listed as team members."""
+        connected_provider.execute_query = AsyncMock(return_value=[{"id": "t1", "members": []}])
+        await connected_provider.get_team_with_users("t1", "uk1")
+        query = connected_provider.execute_query.call_args.args[0]
+        assert "FILTER user != null AND user.isActive == true" in query
+
 
 # ---------------------------------------------------------------------------
 # get_user_teams
@@ -13968,6 +13976,17 @@ class TestGetUserTeams:
         assert teams == []
         assert total == 0
 
+    @pytest.mark.asyncio
+    async def test_members_exclude_inactive_users(self, connected_provider) -> None:
+        """Member lists inside each team must skip removed users; the team
+        count itself is unaffected (it counts teams, not members)."""
+        connected_provider.execute_query = AsyncMock(side_effect=[[1], [{"id": "t1"}]])
+        await connected_provider.get_user_teams("uk1")
+        count_query = connected_provider.execute_query.call_args_list[0].args[0]
+        teams_query = connected_provider.execute_query.call_args_list[1].args[0]
+        assert "member_user.isActive == true" in teams_query
+        assert "isActive" not in count_query
+
 
 # ---------------------------------------------------------------------------
 # get_team_users
@@ -13995,6 +14014,16 @@ class TestGetTeamUsersExtended:
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.get_team_users("t1", "org1", "uk1")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_members_exclude_inactive_users(self, connected_provider) -> None:
+        """Removed users (isActive == false) must not be listed or counted."""
+        connected_provider.execute_query = AsyncMock(
+            return_value=[{"id": "t1", "members": [], "memberCount": 0}]
+        )
+        await connected_provider.get_team_users("t1", "org1", "uk1")
+        query = connected_provider.execute_query.call_args.args[0]
+        assert "FILTER user != null AND user.isActive == true" in query
 
 
 # ---------------------------------------------------------------------------

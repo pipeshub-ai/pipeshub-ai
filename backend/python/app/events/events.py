@@ -51,6 +51,7 @@ from app.services.vector_db.strategy import (
     resolve_write_collection_name,
 )
 from app.utils.cpu_offload import offload_if_large
+from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.libreoffice_convert import convert_with_libreoffice
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -537,7 +538,10 @@ class EventProcessor:
                 else None
             ),
         }
-        await self.update_record_fields(doc, fields)
+        success = await self.update_record_fields(doc, fields)
+        self._require_persisted(
+            success, f"Failed to persist status {status.value} for record", doc
+        )
         self.logger.debug(
             f"🔍 Record {record_id}: Successfully updated status to {status.value}"
         )
@@ -969,6 +973,18 @@ class EventProcessor:
 
             if not file_content or file_content == b"":
                 await self.mark_record_status(doc, ProgressStatus.EMPTY)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                return
+
+            metadata_file_match = match_metadata_file_signature(file_content)
+            if metadata_file_match:
+                self.logger.info(
+                    "❌ Skipping OS metadata file (%s): %s",
+                    metadata_file_match,
+                    record_name,
+                )
+                await self.mark_record_status(doc, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return

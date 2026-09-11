@@ -105,7 +105,23 @@ def _rlimit_preexec_fn(limits: ExecutionLimits):
 
     def _preexec() -> None:
         for res, value in (
-            (resource.RLIMIT_AS, limits.max_memory_bytes),
+            # RLIMIT_DATA, deliberately not RLIMIT_AS. A JIT reserves far
+            # more VIRTUAL address space than it ever commits, and V8 sizes
+            # that reservation from the limit it can see — so capping
+            # address space is non-monotonic and unpredictable. Measured in
+            # the app image running tsx: 1.5 GB and 6 GB both start fine
+            # while 3 GB dies with "Fatal process out of memory: Failed to
+            # reserve virtual memory for CodeRange" (exit 133). There is no
+            # value that is safe across limits, host memory and Node builds.
+            #
+            # RLIMIT_DATA bounds the data segment and (Linux 4.7+) private
+            # anonymous mappings, which is what actually tracks the memory a
+            # run uses: a runaway 4 GB allocation is still killed, and
+            # Python still raises MemoryError, while hello-world starts at
+            # every limit tried. macOS enforces it loosely, but the local
+            # backend is HOST isolation there anyway — these rlimits are
+            # defence in depth, not the boundary.
+            (resource.RLIMIT_DATA, limits.max_memory_bytes),
             (resource.RLIMIT_CPU, limits.max_cpu_seconds),
             (resource.RLIMIT_FSIZE, limits.max_file_size_bytes),
             (resource.RLIMIT_NPROC, limits.max_processes),

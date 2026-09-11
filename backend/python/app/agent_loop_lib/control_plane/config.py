@@ -160,10 +160,25 @@ class DockerBackendConfig(BaseModel):
     memory_limit_mb: int = 512
     cpu_limit: float = 0.5
     egress_network: str = "sandbox_egress"
-    network_disabled: bool = True
     pip_index_url: str = "https://pypi.org/simple"
     npm_registry: str = "https://registry.npmjs.org"
     working_dir_root: str | None = None  # None = system temp dir
+    # Node modules baked into the image, added to NODE_PATH so common
+    # packages need no per-sandbox install.
+    image_node_modules: str | None = None
+    # Whether the RUN container gets network access. The install container
+    # always joins `egress_network` regardless — a package install with no
+    # registry reachable is not an install.
+    allow_network: bool = False
+
+
+class GovernorConfig(BaseModel):
+    """Process-wide sandbox resource governance — see
+    ``sandbox/governor.py::SandboxResourceGovernor``. ``None`` on either
+    cap means unlimited for that dimension."""
+
+    max_total_sandboxes: int | None = 50
+    max_per_org: int | None = 10
 
 
 class CodingSandboxConfig(BaseModel):
@@ -184,6 +199,11 @@ class CodingSandboxConfig(BaseModel):
     e2b: E2BBackendConfig = Field(default_factory=E2BBackendConfig)
     docker: DockerBackendConfig = Field(default_factory=DockerBackendConfig)
 
+    # Per-backend config overrides — validated by each factory's
+    # ``config_model`` at registration time.  Typed fields above are merged
+    # as defaults (backward compat); explicit ``backend_options`` entries win.
+    backend_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
     # Environment/execution
     default_timeout: float = 30.0
     allow_network_on_install: bool = True
@@ -193,6 +213,10 @@ class CodingSandboxConfig(BaseModel):
     # Manager-enforced lifecycle limits (see sandbox/manager.py::SandboxLimits)
     max_concurrent: int | None = 5
     max_lifetime_s: float | None = 1800.0  # 30 minutes
+    provision_timeout_s: float = 60.0
+
+    # Process-wide resource governance
+    governor: GovernorConfig = Field(default_factory=GovernorConfig)
 
     # Artifact persistence — when set, files created by `run_code` are
     # automatically downloaded from the sandbox and saved to this directory
@@ -204,6 +228,33 @@ class CodingSandboxConfig(BaseModel):
     max_code_size: int = 50_000
     blocked_patterns: list[str] = Field(default_factory=list)
     allow_url_packages: bool = False
+
+    def effective_backend_options(self) -> dict[str, dict[str, Any]]:
+        """Per-backend config for `build_default_registry`, typed fields
+        first and `backend_options` layered on top.
+
+        The typed `local`/`e2b`/`docker` models remain the documented way
+        to configure a backend, so they have to reach the factory that
+        actually builds it. Without this projection a configured image or
+        rlimit is silently replaced by the factory default — which fails
+        open, since the factory defaults are more permissive than a
+        deployment that bothered to set limits.
+
+        `local.rlimits` is flattened because `LocalFactoryConfig` holds the
+        limits directly; a nested dict there would be dropped by pydantic
+        as an unknown field.
+        """
+        local = self.local.model_dump(exclude={"rlimits"})
+        local.update(self.local.rlimits.model_dump())
+
+        merged: dict[str, dict[str, Any]] = {
+            "local": local,
+            "e2b": self.e2b.model_dump(),
+            "docker": self.docker.model_dump(),
+        }
+        for name, overrides in self.backend_options.items():
+            merged.setdefault(name, {}).update(overrides)
+        return merged
 
 
 class OpikConfig(BaseModel):

@@ -1169,9 +1169,7 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
     user_id = user_context["user_id"]
 
     try:
-        owner_svc = await resolve_instance_owner_config_service(instance_id, config_service)
-        fallbacks = [owner_svc] if owner_svc is not None and owner_svc is not config_service else None
-        await mcp_token_refresh.refresh_credential_record(instance_id, user_id, config_service, fallbacks)
+        await mcp_token_refresh.refresh_credential_record(instance_id, user_id, config_service)
     except mcp_token_refresh.MCPTokenRefreshError as e:
         # Covers "no credential record", "no refresh token", "no tokenUrl", and "no
         # resolvable OAuth client" — all mean the caller must re-authenticate or an admin

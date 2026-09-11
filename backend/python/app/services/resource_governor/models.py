@@ -239,9 +239,7 @@ class PoolState:
     ``_growth_step`` diffs against to size the *next* step (plan section 4,
     "resource-delta probing").
 
-    Carried for every pool, but only read for the adapted ones: the index
-    pool holds its limit for the life of the process (policy.py
-    ``_is_index_pool``), so its state is never advanced.
+    Carried for every pool.
     """
 
     healthy_streak: int = 0
@@ -250,6 +248,15 @@ class PoolState:
     slow_start_step: int = 1
     prev_grow_mem_pressure: float | None = None
     prev_grow_cpu_utilisation: float | None = None
+    # Index pools only (policy.py "downstream brake"). ``hold_ewma`` is the
+    # smoothed mean time a permit is held; ``hold_baseline`` its low-water
+    # mark, drifting slowly upward so a genuinely slower workload becomes the
+    # new normal instead of holding growth forever. ``downstream_holdoff`` is
+    # how many clean samples (no downstream symptoms) growth still has to
+    # wait for after a downstream-caused shrink.
+    hold_ewma: float | None = None
+    hold_baseline: float | None = None
+    downstream_holdoff: int = 0
 
 
 @dataclass(frozen=True)

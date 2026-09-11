@@ -1,6 +1,4 @@
 import asyncio
-import hashlib
-import json
 import os
 import time
 import traceback
@@ -23,6 +21,12 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import config_node_constants
 from app.exceptions.fastapi_responses import Status
 from app.models.blocks import GroupType
+from app.modules.retrieval.result_merging import (
+    CollectionResults,
+    ResultMerger,
+    merge_collection_results,
+    merger_for,
+)
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.collection_registry import CollectionRegistry
@@ -31,20 +35,16 @@ from app.services.vector_db.models import (
     FusionMethod,
     HybridSearchRequest,
 )
-from app.modules.retrieval.result_merging import (
-    CollectionResults,
-    ResultMerger,
-    merge_collection_results,
-    merger_for,
-)
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import ContextAxis, QueryContext
 from app.sources.client.http.exception.exception import VectorDBEmptyError
 from app.utils.aimodels import (
+    embedding_config_hash,
     get_default_embedding_model,
     get_embedding_model,
     get_generator_model,
 )
+from app.utils.embedding_retry import await_with_retry
 from app.utils.chat_helpers import (
     GRAPH_BATCH_CHUNK_SIZE,
     get_flattened_results,
@@ -60,6 +60,8 @@ MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 # Applied when a caller passes no limit at all. Matches `search_with_filters`'s
 # own default so the None path and the omitted path retrieve the same amount.
 DEFAULT_SEARCH_LIMIT = 20
+
+_RETRIEVAL_EMBED_MAX_RETRIES = 3
 
 # Caps concurrent per-collection queries during search fan-out. One under the
 # default SingleCollectionStrategy; a multi-collection strategy must not turn
@@ -207,23 +209,6 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    @staticmethod
-    def _embedding_config_hash(embedding_configs: list[dict[str, Any]] | None) -> str:
-        """Deterministic hash of the embedding config for cache invalidation."""
-        if not embedding_configs:
-            return "default"
-        serialisable = []
-        for cfg in embedding_configs:
-            serialisable.append({
-                "provider": cfg.get("provider"),
-                "isDefault": cfg.get("isDefault"),
-                "model": (cfg.get("configuration") or {}).get("model"),
-                "endpoint": (cfg.get("configuration") or {}).get("endpoint"),
-            })
-        return hashlib.sha256(
-            json.dumps(serialisable, sort_keys=True).encode()
-        ).hexdigest()[:16]
-
     async def get_embedding_model_instance(self, use_cache: bool = False) -> Embeddings | None:
         """Return the dense embedding model, cached across calls while config is stable.
 
@@ -237,7 +222,7 @@ class RetrievalService:
                 config_node_constants.AI_MODELS.value, use_cache=use_cache
             )
             embedding_configs = (ai_models or {}).get("embedding")
-            config_hash = self._embedding_config_hash(embedding_configs)
+            config_hash = embedding_config_hash(embedding_configs)
 
             if (
                 self._cached_dense_embeddings is not None
@@ -904,7 +889,15 @@ class RetrievalService:
 
         sparse_embedder = await self._ensure_sparse_embedder()
 
-        dense_tasks = [dense_embeddings.aembed_query(query) for query in queries]
+        dense_tasks = [
+            await_with_retry(
+                lambda q=query: dense_embeddings.aembed_query(q),
+                max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
+                operation="aembed_query",
+                service_name="retrieval",
+            )
+            for query in queries
+        ]
         supports_sparse = self._capabilities.supports_sparse_vectors
         supports_text = self._capabilities.supports_server_side_text_search
 

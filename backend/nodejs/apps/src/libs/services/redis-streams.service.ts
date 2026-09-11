@@ -1,8 +1,11 @@
 import { injectable, unmanaged } from 'inversify';
-import { Redis, RedisOptions } from 'ioredis';
 
 import { MessageBrokerError } from '../errors/messaging.errors';
 import { Logger } from './logger.service';
+import { getRedisProvider } from './redis/connectionProviderFactory';
+import { redisConnectionConfigFromHostPort } from './redis/connectionConfig';
+import type { IRedisConnectionProvider, RedisClient } from './redis/connectionProvider.interface';
+import { StreamReadPlanner } from './redis/streamReadPlanner';
 import {
   IMessageProducer,
   IMessageConsumer,
@@ -104,27 +107,36 @@ function expandLaneStreams(topics: TopicDefinition[]): TopicDefinition[] {
   });
 }
 
-function buildRedisOptions(config: RedisBrokerConfig): RedisOptions {
-  return {
-    host: config.host,
-    port: config.port,
-    password: config.password,
-    db: config.db ?? 0,
-    retryStrategy: (times: number) => {
-      const maxRetryTime =
-        config.maxRetryTime ?? REDIS_STREAMS_DEFAULTS.maxRetryTime;
-      const delay = Math.min(times * 200, maxRetryTime);
-      return delay;
-    },
-    lazyConnect: true,
-  };
+function streamsProvider(config: RedisBrokerConfig): IRedisConnectionProvider {
+  return getRedisProvider(
+    redisConnectionConfigFromHostPort({
+      host: config.host,
+      port: config.port,
+      password: config.password,
+      db: config.db,
+    }),
+  );
+}
+
+/**
+ * Every Redis Streams connection is long-lived, holds group/consumer state,
+ * and blocks on XREADGROUP -- so it must always be a dedicated client
+ * (`createClient`, never the shared `getClient()`), lazily connected so
+ * callers control exactly when `connect()`/`disconnect()` happen (R12).
+ *
+ * XADD/XACK/XAUTOCLAIM are single-stream commands with no CROSSSLOT
+ * concern; the multi-stream XREADGROUP path in the consumer is the one
+ * that needs `StreamReadPlanner` (R1), not client construction itself.
+ */
+function createStreamsClient(config: RedisBrokerConfig): RedisClient {
+  return streamsProvider(config).createClient({ blocking: true });
 }
 
 @injectable()
 export abstract class BaseRedisStreamsProducerConnection
   implements IMessageProducer
 {
-  protected redis: Redis;
+  protected redis: RedisClient;
   protected initialized = false;
   protected maxLen: number;
 
@@ -133,7 +145,7 @@ export abstract class BaseRedisStreamsProducerConnection
     @unmanaged() protected readonly logger: Logger,
   ) {
     this.maxLen = config.maxLen ?? REDIS_STREAMS_DEFAULTS.maxLen;
-    this.redis = new Redis(buildRedisOptions(config));
+    this.redis = createStreamsClient(config);
   }
 
   async connect(): Promise<void> {
@@ -157,7 +169,7 @@ export abstract class BaseRedisStreamsProducerConnection
     }
     this.initialized = false;
     const closing = this.redis;
-    this.redis = new Redis(buildRedisOptions(this.config));
+    this.redis = createStreamsClient(this.config);
     try {
       await closing.quit();
       this.logger.info('Successfully disconnected Redis Streams producer');
@@ -165,6 +177,12 @@ export abstract class BaseRedisStreamsProducerConnection
       this.logger.error('Error disconnecting Redis Streams producer', {
         error: (error as Error).message,
       });
+    } finally {
+      // `finally`, not the try body: `quit()` on a client whose connection
+      // already dropped rejects, and releasing only on the success path
+      // retains one dead client per reconnect cycle -- exactly the leak this
+      // release exists to prevent.
+      streamsProvider(this.config).release(closing);
     }
   }
 
@@ -300,9 +318,9 @@ export abstract class BaseRedisStreamsProducerConnection
 export abstract class BaseRedisStreamsConsumerConnection
   implements IMessageConsumer
 {
-  protected redis: Redis;
+  protected redis: RedisClient;
   /** Dedicated connection for XACK so it is never queued behind a blocked XREADGROUP. */
-  protected ackRedis: Redis;
+  protected ackRedis: RedisClient;
   protected initialized = false;
   protected running = false;
   protected subscribedTopics: string[] = [];
@@ -310,6 +328,7 @@ export abstract class BaseRedisStreamsConsumerConnection
   protected consumerId: string;
   protected blockMs: number;
   protected count: number;
+  private readonly planner: StreamReadPlanner;
   private consumeLoopPromise: Promise<void> | null = null;
 
   constructor(
@@ -321,8 +340,9 @@ export abstract class BaseRedisStreamsConsumerConnection
     this.consumerId = config.clientId ?? 'consumer-' + crypto.randomUUID();
     this.blockMs = REDIS_STREAMS_DEFAULTS.blockMs;
     this.count = REDIS_STREAMS_DEFAULTS.count;
-    this.redis = new Redis(buildRedisOptions(config));
-    this.ackRedis = new Redis(buildRedisOptions(config));
+    this.redis = createStreamsClient(config);
+    this.ackRedis = createStreamsClient(config);
+    this.planner = new StreamReadPlanner(streamsProvider(config));
   }
 
   async connect(): Promise<void> {
@@ -352,9 +372,20 @@ export abstract class BaseRedisStreamsConsumerConnection
       }
       this.initialized = false;
       const closing = [this.redis, this.ackRedis];
-      this.redis = new Redis(buildRedisOptions(this.config));
-      this.ackRedis = new Redis(buildRedisOptions(this.config));
-      await Promise.all(closing.map((client) => client.quit()));
+      this.redis = createStreamsClient(this.config);
+      this.ackRedis = createStreamsClient(this.config);
+      // `allSettled` + release outside the failure path: `Promise.all` rejects
+      // as soon as either `quit()` does, so a single dropped connection used
+      // to leave BOTH replaced clients tracked forever.
+      const results = await Promise.allSettled(
+        closing.map((client) => client.quit()),
+      );
+      const provider = streamsProvider(this.config);
+      closing.forEach((client) => provider.release(client));
+      const failure = results.find((r) => r.status === 'rejected');
+      if (failure) {
+        throw (failure as PromiseRejectedResult).reason;
+      }
       this.logger.info('Successfully disconnected Redis Streams consumer');
     } catch (error) {
       this.logger.error('Error disconnecting Redis Streams consumer', {
@@ -511,6 +542,79 @@ export abstract class BaseRedisStreamsConsumerConnection
     this.logger.info('PEL drained, switching to new messages');
   }
 
+  /**
+   * One `XREADGROUP` per hash-slot group of `this.subscribedTopics` (R1).
+   *
+   * On standalone every stream is in one group, so this is exactly the
+   * single call this replaced, with the full `blockMs` budget and the
+   * per-stream `count` unaffected (COUNT applies per-stream, not per
+   * call). On Redis Cluster / MemoryDB, lane streams especially can span
+   * slots, so each group gets its own call with a fair share of the
+   * overall block budget -- an empty poll still costs at most `blockMs`
+   * total, not once per group.
+   */
+  private async xreadGroupGrouped(): Promise<unknown> {
+    const groups = this.planner.group(this.subscribedTopics);
+    if (groups.length === 0) {
+      return [];
+    }
+    if (groups.length === 1) {
+      // Single group: pass the raw client response through unmodified
+      // (may be `null` on an empty BLOCK timeout, handled by the caller).
+      // Guarded by the length check above: groups[0] is always defined here.
+      return this.xreadGroupCall(groups[0]!, this.blockMs);
+    }
+    const perGroupBlockMs = Math.max(1, Math.floor(this.blockMs / groups.length));
+    const combined: unknown[] = [];
+    let firstError: unknown = null;
+    for (const group of groups) {
+      // Each group is isolated: one slot's node being mid-failover must not
+      // discard what other groups already returned. `XREADGROUP >` hands a
+      // message out exactly once, so letting one group's failure reject the
+      // whole call would strand the successful groups' entries in the PEL
+      // until an idle-triggered XAUTOCLAIM pass -- or indefinitely, if new
+      // messages keep the consumer from ever going idle. Mirrors the Python
+      // consumers' `_read_new_messages`.
+      try {
+        const results = await this.xreadGroupCall(group, perGroupBlockMs);
+        if (results) {
+          combined.push(...(results as unknown[]));
+        }
+      } catch (error) {
+        this.logger.warn('XREADGROUP failed for slot group', {
+          stream: group[0],
+          streamCount: group.length,
+          error,
+        });
+        firstError = firstError ?? error;
+      }
+    }
+    // Only surface the failure when nothing at all came back, so the caller's
+    // existing backoff still kicks in on a genuinely broken cluster.
+    if (firstError !== null && combined.length === 0) {
+      throw firstError;
+    }
+    return combined;
+  }
+
+  private async xreadGroupCall(
+    streamNames: string[],
+    blockMs: number,
+  ): Promise<unknown> {
+    const streams = streamNames.flatMap((topic) => [topic, '>']);
+    return this.redis.xreadgroup(
+      'GROUP',
+      this.groupId,
+      this.consumerId,
+      'COUNT',
+      String(this.count),
+      'BLOCK',
+      String(blockMs),
+      'STREAMS',
+      ...streams,
+    );
+  }
+
   private async consumeLoop<T>(
     handler: (message: StreamMessage<T>) => Promise<void>,
   ): Promise<void> {
@@ -522,21 +626,9 @@ export abstract class BaseRedisStreamsConsumerConnection
           continue;
         }
 
-        const streams = this.subscribedTopics.flatMap((topic) => [topic, '>']);
+        const xreadResult = await this.xreadGroupGrouped();
 
-        const xreadResult = await this.redis.xreadgroup(
-          'GROUP',
-          this.groupId,
-          this.consumerId,
-          'COUNT',
-          String(this.count),
-          'BLOCK',
-          String(this.blockMs),
-          'STREAMS',
-          ...streams,
-        );
-
-        if (xreadResult === null) {
+        if (xreadResult === null || (Array.isArray(xreadResult) && xreadResult.length === 0)) {
           // Normal: BLOCK timeout expired with no new messages.
           continue;
         }
@@ -642,24 +734,20 @@ export abstract class BaseRedisStreamsConsumerConnection
 }
 
 export class RedisStreamsAdminService implements IMessageAdmin {
-  private redis: Redis;
+  private readonly provider: IRedisConnectionProvider;
+  private readonly redis: RedisClient;
   private logger: Logger;
 
   constructor(config: RedisBrokerConfig, logger: Logger) {
     this.logger = logger;
-    this.redis = new Redis({
-      ...buildRedisOptions(config),
-      lazyConnect: true,
-    });
+    this.provider = streamsProvider(config);
+    this.redis = this.provider.getClient();
   }
 
   async ensureTopicsExist(
     topics: TopicDefinition[] = REQUIRED_TOPICS,
   ): Promise<void> {
     try {
-      await this.redis.connect();
-      this.logger.info('Connected to Redis for stream administration');
-
       const failures: Array<{ topic: string; error: string }> = [];
       for (const topicDef of expandLaneStreams(topics)) {
         try {
@@ -702,41 +790,23 @@ export class RedisStreamsAdminService implements IMessageAdmin {
         error: (error as Error).message,
       });
       throw error;
-    } finally {
-      try {
-        await this.redis.quit();
-      } catch (disconnectError) {
-        this.logger.warn('Error disconnecting Redis admin client', {
-          error: disconnectError,
-        });
-      }
     }
   }
 
+  /**
+   * `provider.scanKeys()`, not a raw single-client SCAN (R2): on Redis
+   * Cluster / MemoryDB a single-node SCAN only sees that node's shard, and
+   * this must see every stream regardless of which shard it lives on.
+   */
   async listTopics(): Promise<string[]> {
-    try {
-      await this.redis.connect();
-      const streams: string[] = [];
-      let cursor = '0';
-      do {
-        const [nextCursor, keys] = await this.redis.scan(
-          cursor,
-          'MATCH',
-          '*',
-          'COUNT',
-          '100',
-        );
-        cursor = nextCursor;
-        for (const key of keys) {
-          const type = await this.redis.type(key);
-          if (type === 'stream') {
-            streams.push(key);
-          }
-        }
-      } while (cursor !== '0');
-      return streams;
-    } finally {
-      await this.redis.quit();
+    const client = this.provider.getClient();
+    const streams: string[] = [];
+    for await (const key of this.provider.scanKeys('*')) {
+      const type = await client.type(key);
+      if (type === 'stream') {
+        streams.push(key);
+      }
     }
+    return streams;
   }
 }

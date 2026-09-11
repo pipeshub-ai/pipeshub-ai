@@ -1,24 +1,33 @@
 import asyncio
 import json
 from logging import Logger
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from pydantic import JsonValue
-from redis.asyncio import Redis
 
 from app.services.messaging.config import RedisStreamsConfig
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 from app.utils.request_context import inject_envelope
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient
 
 
 class RedisStreamsProducer(IMessagingProducer):
     """Redis Streams implementation of messaging producer"""
 
-    def __init__(self, logger: Logger, config: RedisStreamsConfig) -> None:
+    def __init__(
+        self, logger: Logger, config: RedisStreamsConfig, provider: "IRedisConnectionProvider | None" = None
+    ) -> None:
         self.logger = logger
         self.config = config
-        self.redis: Redis | None = None
+        self._provider: "IRedisConnectionProvider" = provider or get_redis_provider(
+            RedisConnectionConfig.from_redis_config(config)
+        )
+        self.redis: "RedisClient | None" = None
         self._lock = asyncio.Lock()
 
     @override
@@ -31,13 +40,10 @@ class RedisStreamsProducer(IMessagingProducer):
                 return
 
             try:
-                self.redis = Redis(
-                    host=self.config.host,
-                    port=self.config.port,
-                    password=self.config.password,
-                    db=self.config.db,
-                    decode_responses=True,
-                )
+                # A caller-owned client, not the shared get_client(): this
+                # producer closes its own connection on cleanup(), which
+                # would strand every other user of a shared client.
+                self.redis = self._provider.create_client(ClientOptions(decode_responses=True))
                 await self.redis.ping()
                 self.logger.info(
                     "Redis Streams producer initialized at %s:%s",

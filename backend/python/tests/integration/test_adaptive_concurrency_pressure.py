@@ -21,6 +21,7 @@ import pytest
 
 from app.services.resource_governor import policy
 from app.services.resource_governor.controller import ResourceGovernor
+from app.services.resource_governor.feedback import DownstreamFeedback
 from app.services.resource_governor.models import Pool, ResourceSnapshot
 from app.services.resource_governor.policy import (
     INCIDENT_COOLDOWN_SECONDS,
@@ -142,12 +143,13 @@ class TestAdaptiveConcurrencyPressure:
         # this at ~20 permits on any believable mem_limit.
         #
         # The light ceiling is min(cpus * LIGHT_PARSE_SLOTS_PER_CPU,
-        # LIGHT_PARSE_MAX, env_parse), so LIGHT_PARSE_MAX is what decides it
-        # here: a generous CPU quota and env_parse leave the cap as the
-        # binding constraint. The gap that opens below is therefore half the
-        # cap, which is still large enough for the point of this test --
-        # closing it by doubling takes ~7 steps where a fixed +1 step would
-        # take ~128.
+        # LIGHT_PARSE_MAX, env_parse), then held to its index tier, so
+        # LIGHT_PARSE_MAX is what decides it here: a generous CPU quota,
+        # env_parse and env_index (the derived index total would otherwise
+        # cap it at 32) leave the cap as the binding constraint. The gap
+        # that opens below is therefore half the cap, which is still large
+        # enough for the point of this test -- closing it by doubling takes
+        # ~7 steps where a fixed +1 step would take ~128.
         light_ceiling = policy.LIGHT_PARSE_MAX
 
         def snapshot(mem_pressure: float) -> ResourceSnapshot:
@@ -157,6 +159,7 @@ class TestAdaptiveConcurrencyPressure:
         governor = ResourceGovernor(
             logger=logging.getLogger("test.integration.pressure.exponential_recovery"),
             env_parse=1000,
+            env_index=1000,
             probe=probe,
             sample_interval=SAMPLE_INTERVAL_SECONDS,
             clock=clock,
@@ -229,3 +232,65 @@ class TestAdaptiveConcurrencyPressure:
             await governor._sample_once()
 
         assert heavy_gate.limit == 2  # never drops below floor_for(HEAVY_PARSE, ceiling=8)
+
+
+@pytest.mark.asyncio
+class TestDownstreamPressure:
+    """The same real governor and gates, driven by a downstream symptom
+    instead of memory: a service reports an exhausted pool, the index pools
+    halve within one sample, and growth resumes only after two clean samples."""
+
+    async def test_downstream_pool_exhaustion_halves_index_and_recovers(self) -> None:
+        clock = ManualClock()
+        probe = ScriptedProbe([make_snapshot(mem_pressure=0.1)])
+        feedback = DownstreamFeedback()
+        governor = ResourceGovernor(
+            logger=logging.getLogger("test.integration.downstream"),
+            probe=probe,
+            feedback=feedback,
+            sample_interval=1.0,
+            clock=clock,
+        )
+        heavy_gate = governor.gate(Pool.INDEX_HEAVY)
+        light_gate = governor.gate(Pool.INDEX_LIGHT)
+        heavy_start = heavy_gate.limit
+        light_start = light_gate.limit
+        heavy_floor = policy.pressure_floor(Pool.INDEX_HEAVY, governor.ceilings.index_heavy)
+
+        # Keep both pools busy so growth would otherwise be immediate.
+        holders = [asyncio.create_task(_hold_gate(heavy_gate)) for _ in range(heavy_start)]
+        holders += [asyncio.create_task(_hold_gate(light_gate)) for _ in range(light_start)]
+        await asyncio.sleep(0)
+        assert heavy_gate.in_use == heavy_start
+
+        # ── Neo4j runs out of pooled connections ──────────────────────────
+        feedback.report_pool_exhausted("neo4j")
+        clock.now += 1.0
+        await governor._sample_once()
+        assert heavy_gate.limit == max(heavy_floor, heavy_start // 2)
+        assert light_gate.limit <= light_start
+        shrunk_heavy = heavy_gate.limit
+        # Permits already out are never revoked; new admissions wait.
+        assert heavy_gate.in_use == heavy_start
+        blocked = asyncio.create_task(_hold_gate(heavy_gate, timeout=None))
+        await asyncio.sleep(0)
+        assert heavy_gate.in_use == heavy_start, "no admission past the narrowed limit"
+
+        # ── Clean samples: cooldown, then two clean windows, then growth ──
+        clock.now += INCIDENT_COOLDOWN_SECONDS + 1.0
+        await governor._sample_once()  # first clean sample: still held
+        assert heavy_gate.limit == shrunk_heavy
+        clock.now += 1.0
+        await governor._sample_once()  # second clean sample: still held
+        assert heavy_gate.limit == shrunk_heavy
+        grown = False
+        for _ in range(12):
+            clock.now += 1.0
+            await governor._sample_once()
+            if heavy_gate.limit > shrunk_heavy:
+                grown = True
+                break
+        assert grown, "growth never resumed after the downstream incident cleared"
+
+        blocked.cancel()
+        await cancel_all(holders + [blocked])

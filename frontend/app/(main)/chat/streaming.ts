@@ -16,7 +16,7 @@
 import { startTransition } from 'react';
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
 import { debugLog } from './debug-logger';
@@ -776,10 +776,16 @@ export async function streamRegenerateForSlot(
   const slot = store.slots[slotId];
   if (!slot || !slot.convId) return;
 
-  // Resolve model: explicit override → context-scoped selection/default.
-  // Context is the slot's own agent (so regenerate for an agent thread
-  // always picks from that agent's models, never leaks assistant choices).
-  const regenCtxKey = ctxKeyFromAgent(slot.threadAgentId ?? null);
+  // Derive the effective agent id early — the slot may not have it yet when
+  // the URL carries the agentId (first message in a fresh tab).  All context-
+  // scoped lookups (model, reasoning effort) must use the same resolved id.
+  const rawAgentIdFromUrl =
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('agentId') : null;
+  const agentIdFromUrl = rawAgentIdFromUrl?.trim() ? rawAgentIdFromUrl : null;
+  const slotAgentId = slot.threadAgentId?.trim() || null;
+  const threadAgentId = slotAgentId ?? agentIdFromUrl;
+
+  const regenCtxKey = ctxKeyFromAgent(threadAgentId ?? null);
   let resolvedModel: ModelOverride | null =
     modelOverride ?? getEffectiveModel(regenCtxKey);
   if (!resolvedModel) {
@@ -859,11 +865,6 @@ export async function streamRegenerateForSlot(
     }
   }
 
-  const rawAgentIdFromUrl =
-    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('agentId') : null;
-  const agentIdFromUrl = rawAgentIdFromUrl?.trim() ? rawAgentIdFromUrl : null;
-  const slotAgentId = slot.threadAgentId?.trim() || null;
-  const threadAgentId = slotAgentId ?? agentIdFromUrl;
   /** Which API we use for reload — frozen at regen start (URL may change before `complete`) */
   const reloadViaAgentId = threadAgentId;
 
@@ -1051,9 +1052,12 @@ export async function streamRegenerateForSlot(
       const scopedCaps = useChatStore.getState().scopedAgentCapabilities[threadAgentId]
         ?? { internalSearch: true, webSearch: true };
       const agentRegenReasoningEffortOverride = useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
+      const agentRegenDefault = getAgentDefaultReasoningEffort(regenCtxKey);
       const agentRegenReasoningEffort =
         agentRegenReasoningEffortOverride ??
-        (isModelReasoningCapable(regenCtxKey, resolvedModel) ? DEFAULT_REASONING_EFFORT : undefined);
+        (isModelReasoningCapable(regenCtxKey, resolvedModel)
+          ? (agentRegenDefault ?? DEFAULT_REASONING_EFFORT)
+          : undefined);
       await ChatApi.streamAgentRegenerate(
         threadAgentId,
         slot.convId,

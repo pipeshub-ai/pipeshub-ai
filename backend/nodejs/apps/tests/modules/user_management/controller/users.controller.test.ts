@@ -39,6 +39,17 @@ function stubActorAsOrgAdmin() {
   } as any);
 }
 
+/** Users.find({ email }).select('_id orgId').lean().exec() used to fan-out ROLE_CHANGED. */
+function stubUserMemberships(
+  memberships: Array<{ _id: unknown; orgId: unknown }>,
+) {
+  return sinon.stub(Users, 'find').returns({
+    select: sinon.stub().returnsThis(),
+    lean: sinon.stub().returnsThis(),
+    exec: sinon.stub().resolves(memberships),
+  } as any);
+}
+
 describe('UserController', () => {
   let controller: UserController;
   let mockConfig: any;
@@ -937,9 +948,10 @@ describe('UserController', () => {
       } as any);
       findOneStub.onSecondCall().resolves(mockUser as any);
 
-      const activityCreate = sinon
-        .stub(UserActivities, 'create')
-        .resolves({} as any);
+      stubUserMemberships([{ _id: targetId, orgId: mockUser.orgId }]);
+      const activityInsert = sinon
+        .stub(UserActivities, 'insertMany')
+        .resolves([] as any);
       sinon.stub(NotificationContainer, 'getNotificationService').returns(null);
 
       await controller.updateUser(req, res, next);
@@ -948,7 +960,10 @@ describe('UserController', () => {
       expect(mockUser.role).to.equal('admin');
       expect(mockUser.save.calledOnce).to.be.true;
       expect(res.json.calledOnce).to.be.true;
-      expect(activityCreate.calledOnce).to.be.true;
+      expect(activityInsert.calledOnce).to.be.true;
+      expect(activityInsert.firstCall.args[0][0].activityType).to.equal(
+        userActivitiesType.ROLE_CHANGED,
+      );
     });
 
     it('should reject demoting the last admin before saving', async () => {
@@ -1074,9 +1089,15 @@ describe('UserController', () => {
         session: sinon.stub().callsFake(() => Promise.resolve(2)),
       } as any);
 
-      const activityCreate = sinon
-        .stub(UserActivities, 'create')
-        .resolves({} as any);
+      const otherOrgId = new mongoose.Types.ObjectId();
+      const otherUserId = '507f1f77bcf86cd799439014';
+      stubUserMemberships([
+        { _id: targetId, orgId: mockUser.orgId },
+        { _id: otherUserId, orgId: otherOrgId },
+      ]);
+      const activityInsert = sinon
+        .stub(UserActivities, 'insertMany')
+        .resolves([] as any);
       const emitForceLogout = sinon.stub().returns(true);
       sinon
         .stub(NotificationContainer, 'getNotificationService')
@@ -1089,12 +1110,16 @@ describe('UserController', () => {
       expect(withTransaction.calledOnce).to.be.true;
       expect(mockUser.save.calledOnce).to.be.true;
       expect(res.json.calledOnce).to.be.true;
-      expect(activityCreate.calledOnce).to.be.true;
-      expect(activityCreate.firstCall.args[0].activityType).to.equal(
-        userActivitiesType.ROLE_CHANGED,
-      );
-      expect(emitForceLogout.calledOnceWith(targetId, 'role_changed')).to.be
-        .true;
+      expect(activityInsert.calledOnce).to.be.true;
+      const written = activityInsert.firstCall.args[0];
+      expect(written).to.have.length(2);
+      expect(written.map((row: { userId: string }) => String(row.userId))).to.deep.equal([
+        targetId,
+        otherUserId,
+      ]);
+      expect(written[0].activityType).to.equal(userActivitiesType.ROLE_CHANGED);
+      expect(emitForceLogout.calledWith(targetId, 'role_changed')).to.be.true;
+      expect(emitForceLogout.calledWith(otherUserId, 'role_changed')).to.be.true;
     });
 
     it('should reject duplicate email when updating email', async () => {

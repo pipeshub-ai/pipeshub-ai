@@ -44,9 +44,9 @@ from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
     from app.services.cache.accessible_records_cache import (
-        AccessibleRecordsCache,
         AccessibleRecordsInvalidator,
     )
+    from app.services.cache.interface import IAccessibleRecordsCache
 
 
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
@@ -68,7 +68,7 @@ class ContainerUtils:
         self,
         logger: Logger,
         config_service: ConfigurationService,
-        accessible_records_cache: "AccessibleRecordsCache | None" = None,
+        accessible_records_cache: "IAccessibleRecordsCache | None" = None,
     ) -> IGraphDBProvider:
         """Async factory to create and connect graph database provider"""
         return await GraphDBProviderFactory.create_provider(
@@ -81,7 +81,7 @@ class ContainerUtils:
         self,
         logger: Logger,
         config_service: ConfigurationService,
-    ) -> "AccessibleRecordsCache":
+    ) -> "IAccessibleRecordsCache":
         """Async factory for the accessible-record map cache (never raises)."""
         from app.services.cache.accessible_records_cache import AccessibleRecordsCache
 
@@ -90,7 +90,7 @@ class ContainerUtils:
     async def create_accessible_records_invalidator(
         self,
         logger: Logger,
-        accessible_records_cache: "AccessibleRecordsCache",
+        accessible_records_cache: "IAccessibleRecordsCache",
         graph_provider: IGraphDBProvider,
     ) -> "AccessibleRecordsInvalidator":
         """Async factory for the invalidation façade used by writer services."""

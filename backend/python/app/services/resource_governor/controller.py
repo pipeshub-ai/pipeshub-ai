@@ -11,6 +11,11 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from app.services.resource_governor.feedback import (
+    DownstreamFeedback,
+    FeedbackWindow,
+    get_default_downstream_feedback,
+)
 from app.services.resource_governor.gate import AdmissionGate, StartRateLimiter
 from app.services.resource_governor.models import (
     Ceilings,
@@ -28,6 +33,8 @@ from app.services.resource_governor.policy import (
     INDEX_HEADROOM,
     INDEX_HEAVY_WORKING_SET_GB,
     INDEX_LIGHT_WORKING_SET_GB,
+    INDEX_SLOTS_PER_CPU,
+    INDEX_TOTAL_MAX,
     LIGHT_PARSE_SLOTS_PER_CPU,
     SAMPLE_INTERVAL_SECONDS,
     SAMPLE_JITTER_SECONDS,
@@ -68,6 +75,7 @@ class ResourceGovernor:
         worker_count: int = 1,
         reserve_embedding_cpus: bool = False,
         probe: ResourceProbe | None = None,
+        feedback: DownstreamFeedback | None = None,
         sample_interval: float = SAMPLE_INTERVAL_SECONDS,
         jitter: float = SAMPLE_JITTER_SECONDS,
         clock: Callable[[], float] = time.monotonic,
@@ -76,6 +84,7 @@ class ResourceGovernor:
     ) -> None:
         self._logger = logger
         self._probe = probe or build_probe()
+        self._feedback = feedback or get_default_downstream_feedback()
         self._sample_interval = sample_interval
         self._jitter = jitter
         self._clock = clock
@@ -134,6 +143,7 @@ class ResourceGovernor:
         self._stats_lock = threading.Lock()
         self._last_snapshot: ResourceSnapshot = initial_snapshot
         self._last_demand: dict[Pool, PoolDemand] = {pool: PoolDemand.empty() for pool in Pool}
+        self._last_feedback: FeedbackWindow = FeedbackWindow.empty()
 
         self._running = False
 
@@ -144,8 +154,11 @@ class ResourceGovernor:
             "index_heavy=%d index_light=%d) "
             "— parse ceilings are %.2f (heavy) / %.2f (light) slots per CPU capped by "
             "MAX_CONCURRENT_PARSING; each index ceiling is %.2fx its own parse tier, "
-            "with the two together capped by MAX_CONCURRENT_INDEXING, so a queue of "
-            "heavy records can never consume the budget light records need; every "
+            "with the two together capped by MAX_CONCURRENT_INDEXING or, when unset, "
+            "by %.1f slots per CPU (at most %d) so in-flight fan-out stays within what "
+            "the downstream pools can take; heavy is sized first and light keeps a "
+            "reserve, so a queue of heavy records can never consume the budget light "
+            "records need; every "
             "pool ramps from its floor toward its ceiling, and heavy_parse "
             "(~%.2fGiB/slot), index_heavy (~%.2fGiB/slot) and index_light "
             "(~%.2fGiB/slot) are additionally held to what free memory can hold",
@@ -164,6 +177,8 @@ class ResourceGovernor:
             HEAVY_PARSE_SLOTS_PER_CPU,
             LIGHT_PARSE_SLOTS_PER_CPU,
             INDEX_HEADROOM,
+            INDEX_SLOTS_PER_CPU,
+            INDEX_TOTAL_MAX,
             HEAVY_PARSE_WORKING_SET_GB,
             INDEX_HEAVY_WORKING_SET_GB,
             INDEX_LIGHT_WORKING_SET_GB,
@@ -240,6 +255,10 @@ class ResourceGovernor:
     def ceilings(self) -> Ceilings:
         return self._ceilings
 
+    def limit(self, pool: Pool) -> int:
+        """Current adaptive limit for *pool*. Safe from any thread."""
+        return self._registry.get(pool)
+
     # -- sampling loop -----------------------------------------------------
 
     async def run(self) -> None:
@@ -289,6 +308,7 @@ class ResourceGovernor:
         now = self._clock()
         snapshot = await asyncio.to_thread(self._probe.snapshot)
         demand = self._drain_all_demand()
+        feedback = self._feedback.drain()
 
         # Held across the registry snapshot, the limit calculation, and the
         # resulting writes so report_memory_incident() (called from another
@@ -305,6 +325,7 @@ class ResourceGovernor:
                 demand=demand,
                 now=now,
                 interval=self._sample_interval,
+                feedback=feedback,
             )
             self._state = new_state
 
@@ -317,13 +338,20 @@ class ResourceGovernor:
         with self._stats_lock:
             self._last_snapshot = snapshot
             self._last_demand = demand
+            self._last_feedback = feedback
 
+        if not feedback.is_empty:
+            self._logger.info(
+                "ResourceGovernor downstream feedback this interval: %s", feedback.describe(),
+            )
         if changed:
             self._logger.info(
-                "ResourceGovernor limits changed: %s (mem_pressure=%s cpu_util=%s source=%s)",
+                "ResourceGovernor limits changed: %s (mem_pressure=%s cpu_util=%s "
+                "downstream=%s source=%s)",
                 ", ".join(f"{pool.value}:{old}->{new}" for pool, old, new in changed),
                 _fmt_ratio(snapshot.mem_pressure),
                 _fmt_ratio(snapshot.cpu_utilisation),
+                feedback.describe(),
                 snapshot.source,
             )
             shrank = any(new_value < old_value for _, old_value, new_value in changed)
@@ -411,6 +439,7 @@ class ResourceGovernor:
         with self._stats_lock:
             snapshot = self._last_snapshot
             demand = dict(self._last_demand)
+            feedback = self._last_feedback
         with self._gates_lock:
             in_use = {pool.value: gate.in_use for pool, gate in self._gates.items()}
         return {
@@ -441,6 +470,7 @@ class ResourceGovernor:
             },
             "limits": {pool.value: limits.get(pool) for pool in Pool},
             "in_use": in_use,
+            "downstream_feedback": feedback.as_dict(),
             "demand": {
                 pool.value: {
                     "utilisation": demand[pool].utilisation(limits.get(pool), self._sample_interval),

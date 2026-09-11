@@ -14,7 +14,10 @@ import { ScheduledJobsBackfillMigration } from './migrations/scheduled_jobs_back
 import { ChatKbFiltersMigration } from './migrations/chat_kb_filters.migration';
 import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
+import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { Org } from '../../user_management/schema/org.schema';
+
+const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
 
 export interface MigrationDependencies {
   scheduler: CrawlingSchedulerService;
@@ -41,6 +44,7 @@ export class MigrationService {
     // await this.aiModelsMigration();  NO LONGER NEEDED
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     await this.chatKbFiltersMigration();
+    await this.chatSessionsMigration();
     await this.adminRoleMigration();
     await this.documentOrgIdMigration();
     this.logger.info('✅ Migration completed');
@@ -94,6 +98,38 @@ export class MigrationService {
     }
   }
 
+  async chatSessionsMigration(): Promise<void> {
+    this.logger.info('Migrating legacy conversations into chatSessions');
+    try {
+      const configuredBatchSize = Number.parseInt(
+        process.env.CHAT_SESSIONS_MIGRATION_BATCH_SIZE ?? '',
+        10,
+      );
+      const batchSize =
+        Number.isInteger(configuredBatchSize) && configuredBatchSize > 0
+          ? configuredBatchSize
+          : DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE;
+      const result = await new ChatSessionsMigration(
+        this.logger,
+        this.keyValueStoreService,
+        batchSize,
+      ).run();
+
+      if (result.errored > 0) {
+        this.logger.warn(
+          '⚠️  Chat sessions migration finished with errors — will retry unmigrated documents on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ Chat sessions migrated', result);
+      }
+    } catch (error) {
+      this.logger.error('Chat sessions migration failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
   async documentOrgIdMigration(): Promise<void> {
     this.logger.info('Migrating document orgId backfill');
     try {
@@ -135,7 +171,7 @@ export class MigrationService {
             'Marking connector sync schedule migration as done without backfill.',
         );
         await this.keyValueStoreService.set(
-          configPaths.connectorSyncScheduledJobsMigration,
+          configPaths.connectorSyncScheduledJobsMigrationV2,
           'true',
         );
         return;

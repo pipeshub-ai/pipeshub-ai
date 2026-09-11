@@ -13,8 +13,10 @@ import {
   updateTitle,
   updateFeedback,
   archiveConversation,
+  archiveAgentConversation,
   unarchiveConversation,
   listAllArchivesConversation,
+  searchArchivedConversations,
   search,
   searchHistory,
   getSearchById,
@@ -47,12 +49,14 @@ import {
   addMessageStreamToAgentConversationInternal,
   regenerateAgentAnswers,
   updateAgentFeedback,
+  unarchiveAgentConversation,
+  updateAgentConversationTitle,
   uploadChatAttachments,
   uploadChatAttachmentsInternal,
   deleteChatAttachment,
 } from '../../../../src/modules/enterprise_search/controller/es_controller'
-import { Conversation } from '../../../../src/modules/enterprise_search/schema/conversation.schema'
-import { AgentConversation } from '../../../../src/modules/enterprise_search/schema/agent.conversation.schema'
+import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
+import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
@@ -132,6 +136,10 @@ function createMockSession(): any {
 
 /**
  * Helper to create a mock Mongoose document that supports .save(), .toObject(), etc.
+ * NOTE: `chatSessions` no longer embeds `messages` (see chat.session.schema.ts) — any
+ * `messages` override passed here is for legacy-test-shape convenience only and is
+ * ignored by the controller; use `stubAppendMessagesOnce`/`stubGetMessagesOnce` etc.
+ * below to control the separate `ChatSessionMessage` collection.
  */
 function createMockConversationDoc(overrides: Record<string, any> = {}): any {
   const doc: any = {
@@ -140,7 +148,6 @@ function createMockConversationDoc(overrides: Record<string, any> = {}): any {
     userId: new mongoose.Types.ObjectId(VALID_OID),
     initiator: new mongoose.Types.ObjectId(VALID_OID),
     title: 'Test conversation',
-    messages: [],
     lastActivityAt: Date.now(),
     status: 'complete',
     isDeleted: false,
@@ -159,10 +166,74 @@ function createMockConversationDoc(overrides: Record<string, any> = {}): any {
 }
 
 /**
+ * Helper to create a mock `ChatSessionMessage` document — a plain object with a
+ * `.toObject()` method, matching what `ChatSessionMessage.insertMany(...)` /
+ * `.findOneAndReplace(...)` etc. return (non-`.lean()` documents) at the call sites
+ * `appendMessages`/`updateMessageById` feed into `.toObject()`.
+ */
+function createMockMessageDoc(overrides: Record<string, any> = {}): any {
+  const doc: any = {
+    _id: new mongoose.Types.ObjectId(),
+    sessionId: new mongoose.Types.ObjectId(VALID_OID),
+    orgId: new mongoose.Types.ObjectId(VALID_OID2),
+    seq: 1,
+    messageType: 'user_query',
+    content: '',
+    contentFormat: 'MARKDOWN',
+    citations: [],
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    toObject: sinon.stub(),
+    ...overrides,
+  }
+  doc.toObject.returns({ ...doc, toObject: undefined })
+  return doc
+}
+
+/**
+ * Stubs the two calls `appendMessages` makes so any controller code path that
+ * appends message(s) to a `ChatSession` (user query, AI response, error message,
+ * tool_call, etc.) resolves instantly instead of buffering against a real (absent)
+ * Mongo connection. Safe to call even when the test doesn't care about the
+ * inserted message shape — defaults to a single generic message doc.
+ */
+function restoreIfStubbed(obj: any, method: string) {
+  if (obj[method] && typeof obj[method].restore === 'function') {
+    obj[method].restore()
+  }
+}
+
+function stubAppendMessages(insertedMessages: any[] = [createMockMessageDoc()]): {
+  allocateSeqStub: sinon.SinonStub
+  insertManyStub: sinon.SinonStub
+} {
+  restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+  restoreIfStubbed(ChatSessionMessage, 'insertMany')
+  const allocateSeqStub = sinon
+    .stub(ChatSession, 'findOneAndUpdate')
+    .resolves({ nextSeq: insertedMessages.length || 1 } as any)
+  const insertManyStub = sinon
+    .stub(ChatSessionMessage, 'insertMany')
+    .resolves(insertedMessages as any)
+  return { allocateSeqStub, insertManyStub }
+}
+
+/**
+ * Stubs the `ChatSessionMessage.find().sort().skip().limit().populate().lean().exec()`
+ * chain that `getMessages` builds, for controller paths that read message history
+ * (previous-conversation formatting, regenerate validation, `getConversationById`, etc.).
+ */
+function stubGetMessages(model: typeof ChatSessionMessage, resolveValue: any[]): sinon.SinonStub {
+  restoreIfStubbed(model, 'find')
+  return stubMongooseFind(model, 'find', resolveValue)
+}
+
+/**
  * Stub model.findOne to return a thenable query that resolves to the given value.
  * Use this when the controller does `await model.findOne(query)` without calling `.exec()`.
  */
 function stubThenableFindOne(model: any, resolveValue: any): sinon.SinonStub {
+  restoreIfStubbed(model, 'findOne')
   const thenableQuery: any = {
     exec: sinon.stub().resolves(resolveValue),
     then(onFulfilled: any, onRejected?: any) {
@@ -175,10 +246,18 @@ function stubThenableFindOne(model: any, resolveValue: any): sinon.SinonStub {
   return sinon.stub(model, 'findOne').returns(thenableQuery)
 }
 
+/** Session + message lookups used by `performFeedbackUpdate`. */
+function stubFeedbackLookups(sessionDoc: any, messageDoc: any) {
+  stubThenableFindOne(ChatSession, sessionDoc)
+  restoreIfStubbed(ChatSessionMessage, 'findOne')
+  sinon.stub(ChatSessionMessage, 'findOne').resolves(messageDoc)
+}
+
 /**
  * Helper to stub Mongoose chaining methods for find operations.
  */
 function stubMongooseFind(model: any, methodName: string, resolveValue: any): sinon.SinonStub {
+  restoreIfStubbed(model, methodName)
   const chain: any = {
     sort: sinon.stub().returnsThis(),
     skip: sinon.stub().returnsThis(),
@@ -202,6 +281,39 @@ function createMockStream(): any {
 }
 
 describe('Enterprise Search Controller', () => {
+  beforeEach(() => {
+    // Default stubs so any code path that hits chatSessionMessages
+    // (appendMessages / getMessages / countDocuments / feedback) does not
+    // buffer against a real Mongo connection for 10s.
+    if (!(ChatSession.findOneAndUpdate as any).restore) {
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ nextSeq: 1 } as any)
+    }
+    if (!(ChatSessionMessage.insertMany as any).restore) {
+      sinon.stub(ChatSessionMessage, 'insertMany').resolves([createMockMessageDoc()] as any)
+    }
+    if (!(ChatSessionMessage.find as any).restore) {
+      stubMongooseFind(ChatSessionMessage, 'find', [])
+    }
+    if (!(ChatSessionMessage.countDocuments as any).restore) {
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(0)
+    }
+    if (!(ChatSessionMessage.findOne as any).restore) {
+      sinon.stub(ChatSessionMessage, 'findOne').resolves(createMockMessageDoc({ messageType: 'bot_response' }))
+    }
+    if (!(ChatSessionMessage.findById as any).restore) {
+      sinon.stub(ChatSessionMessage, 'findById').resolves(createMockMessageDoc({ seq: 1 }))
+    }
+    if (!(ChatSessionMessage.findOneAndReplace as any).restore) {
+      sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves(createMockMessageDoc())
+    }
+    if (!(ChatSessionMessage.findOneAndUpdate as any).restore) {
+      sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves(createMockMessageDoc())
+    }
+    if (!(ChatSessionMessage.aggregate as any).restore) {
+      sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
+    }
+  })
+
   afterEach(() => {
     sinon.restore()
   })
@@ -275,8 +387,10 @@ describe('Enterprise Search Controller', () => {
         ],
       })
 
-      // Stub Conversation constructor + save
-      const constructorStub = sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      // Stub ChatSession constructor + save
+      const constructorStub = sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      // appendMessages (user query, then AI response) -> allocateSeq + insertMany
+      stubAppendMessages([createMockMessageDoc({ messageType: 'bot_response', content: 'world' })])
 
       // Stub AIServiceCommand.execute
       const aiResponse = {
@@ -321,7 +435,8 @@ describe('Enterprise Search Controller', () => {
           { messageType: 'bot_response', content: 'world', citations: [] },
         ],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      stubAppendMessages()
 
       let capturedBody: any
       sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
@@ -358,7 +473,8 @@ describe('Enterprise Search Controller', () => {
           { messageType: 'bot_response', content: 'world', citations: [] },
         ],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      stubAppendMessages()
 
       let capturedBody: any
       sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
@@ -388,7 +504,8 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.save.resolves(mockDoc)
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      stubAppendMessages()
 
       sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('AI service down'))
 
@@ -411,7 +528,8 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.save.resolves(mockDoc)
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      stubAppendMessages()
 
       const connError = new Error('fetch failed')
       ;(connError as any).cause = { code: 'ECONNREFUSED' }
@@ -470,7 +588,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -505,7 +623,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       let capturedBody: any
@@ -540,7 +658,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -571,7 +689,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
       sinon.stub(searchUtils, 'markConversationFailed').resolves()
 
       const mockStream = createMockStream()
@@ -614,7 +732,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
       sinon.stub(AIServiceCommand.prototype, 'executeStream').rejects(new Error('Stream start failed'))
 
       const req = createMockRequest({
@@ -640,13 +758,13 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.save.resolves(mockDoc)
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
 
       // Stub Conversation.findOne for saveCompleteConversation
-      stubMongooseFind(Conversation, 'findOne', mockDoc)
+      stubMongooseFind(ChatSession, 'findOne', mockDoc)
 
       const req = createMockRequest({
         body: { query: 'hello' },
@@ -706,7 +824,7 @@ describe('Enterprise Search Controller', () => {
 
     it('should call next with error when conversationId is missing', async () => {
       const handler = addMessage(createMockAppConfig())
-      sinon.stub(Conversation, 'findOne').resolves(null)
+      sinon.stub(ChatSession, 'findOne').resolves(null)
       const req = createMockRequest({
         params: {},
         body: { query: 'test' },
@@ -739,7 +857,7 @@ describe('Enterprise Search Controller', () => {
       const handler = addMessage(createMockAppConfig())
 
       // addMessage uses plain `await Conversation.findOne(...)` (thenable, no .lean().exec())
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(null),
       } as any)
 
@@ -771,7 +889,7 @@ describe('Enterprise Search Controller', () => {
       mockDoc.messages = [...mockDoc.messages]
 
       // addMessage uses plain `await Conversation.findOne(...)` (thenable)
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -814,7 +932,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -870,7 +988,7 @@ describe('Enterprise Search Controller', () => {
       mockDoc.messages = [...mockDoc.messages]
 
       // addMessageStream uses plain `await Conversation.findOne(...)`
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -907,7 +1025,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -936,7 +1054,7 @@ describe('Enterprise Search Controller', () => {
     it('should handle conversation not found', async () => {
       const handler = addMessageStream(createMockAppConfig())
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(null),
       } as any)
 
@@ -1016,8 +1134,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
-      sinon.stub(Conversation, 'find').returns(findChain as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(1)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
       const req = createMockRequest({
         query: { page: '1', limit: '10', source: 'owned' },
@@ -1045,8 +1163,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().rejects(new Error('DB error')),
       }
-      sinon.stub(Conversation, 'find').returns(findChain as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(0)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
         query: { source: 'owned' },
@@ -1073,7 +1191,12 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when conversationId is missing', async () => {
-      sinon.stub(Conversation, 'aggregate').resolves([])
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(null),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
       const req = createMockRequest({ params: {} })
       const res = createMockResponse()
       const next = createMockNext()
@@ -1087,21 +1210,20 @@ describe('Enterprise Search Controller', () => {
       const mockConversation = {
         _id: VALID_OID,
         title: 'Test',
-        messages: [{ messageType: 'user_query', content: 'hi' }],
         initiator: VALID_OID,
         isShared: false,
         sharedWith: [],
         status: 'complete',
       }
-
-      sinon.stub(Conversation, 'aggregate').resolves([{ messageCount: 1 }])
       const findOneChain: any = {
         select: sinon.stub().returnsThis(),
-        populate: sinon.stub().returnsThis(),
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversation),
       }
-      sinon.stub(Conversation, 'findOne').returns(findOneChain as any)
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
+      stubGetMessages(ChatSessionMessage, [{ messageType: 'user_query', content: 'hi' }])
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1116,11 +1238,57 @@ describe('Enterprise Search Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
         expect(res.json.calledOnce).to.be.true
+        const payload = res.json.firstCall.args[0]
+        expect(payload.conversation).to.not.have.property('sessionType')
+        expect(payload.conversation).to.not.have.property('nextSeq')
       }
     })
 
-    it('should call next with NotFoundError when aggregate returns empty', async () => {
-      sinon.stub(Conversation, 'aggregate').resolves([])
+    it('should return 200 with an empty messages array for a zero-message session', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Empty',
+        initiator: VALID_OID,
+        isShared: false,
+        sharedWith: [],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(0)
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      const findStub = sinon.stub(ChatSessionMessage, 'find')
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '1', limit: '20' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(findStub.called).to.be.false
+      const payload = res.json.firstCall.args[0]
+      expect(payload.meta.messageCount).to.equal(0)
+      expect(payload.conversation.messages || []).to.have.lengthOf(0)
+    })
+
+    it('should call next with NotFoundError when the session does not exist', async () => {
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(null),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1164,9 +1332,10 @@ describe('Enterprise Search Controller', () => {
         _id: VALID_OID,
         messages: [{ citations: [{ citationId: VALID_OID3 }] }],
       }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
         _id: VALID_OID,
         updatedAt: new Date(),
       } as any)
@@ -1190,7 +1359,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next with NotFoundError when conversation not found', async () => {
-      sinon.stub(Conversation, 'findOne').resolves(null)
+      sinon.stub(ChatSession, 'findOne').resolves(null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1261,16 +1430,30 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [],
         isShared: false,
       }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      // shareConversationById does a bare `await ChatSession.findOne(...)` (no
+      // .exec()) — stubThenableFindOne matches that call shape; stubMongooseFind
+      // would leave `conversation` as the unresolved chain object.
+      const findOne = stubThenableFindOne(ChatSession, mockConversation)
 
       // Stub IAM user validation
       sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
 
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      // The controller now calls ChatSession.findOneAndUpdate({_id, ...EXCLUDE_AGENT}, ...),
+      // never findByIdAndUpdate.
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const update = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
         _id: VALID_OID,
         isShared: true,
         shareLink: undefined,
         sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+      } as any)
+
+      // shareConversationById does a bare `await ChatSessionMessage.find(...).lean()`
+      // (no .exec()) — stubMongooseFind's `.lean()` returns the chain itself, not a
+      // promise, so it would resolve to a non-array here; return a real promise.
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      const attachmentLookup = sinon.stub(ChatSessionMessage, 'find').returns({
+        lean: () => Promise.resolve([{ attachments: [{ recordId: 'rec-1' }] }]),
       } as any)
 
       const req = createMockRequest({
@@ -1283,7 +1466,18 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
+      // Cross-type isolation: both the initiator lookup and the update must be
+      // scoped to chat sessions only (never able to touch an agent session).
+      expect(findOne.firstCall.args[0].sessionType).to.equal('chat')
+      expect(update.firstCall.args[0]).to.deep.equal({ _id: VALID_OID, sessionType: 'chat' })
+      // Attachment permission grant reads message attachments from the
+      // separate chatSessionMessages collection, not conversation.messages.
+      expect(attachmentLookup.calledWith({ sessionId: VALID_OID }, { attachments: 1 })).to.be.true
+
       if (!next.called) {
+        const response = res.json.firstCall.args[0]
+        expect(response.isShared).to.equal(true)
+        expect(response.sharedWith).to.deep.equal([{ userId: VALID_OID2, accessLevel: 'read' }])
         expect(res.status.calledWith(200)).to.be.true
       }
     })
@@ -1291,7 +1485,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next when conversation not found', async () => {
       const handler = shareConversationById(createMockAppConfig())
 
-      sinon.stub(Conversation, 'findOne').resolves(null)
+      sinon.stub(ChatSession, 'findOne').resolves(null)
 
       sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
 
@@ -1372,8 +1566,8 @@ describe('Enterprise Search Controller', () => {
         _id: VALID_OID,
         sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
       }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         isShared: false,
         shareLink: undefined,
@@ -1399,7 +1593,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next with NotFoundError when conversation not found', async () => {
-      sinon.stub(Conversation, 'findOne').resolves(null)
+      sinon.stub(ChatSession, 'findOne').resolves(null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1433,7 +1627,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next when conversationId is missing', async () => {
       const mockSession = createMockSession()
       sinon.stub(mongoose, 'startSession').resolves(mockSession as any)
-      sinon.stub(Conversation, 'findOne').resolves(null)
+      sinon.stub(ChatSession, 'findOne').resolves(null)
 
       const req = createMockRequest({ params: {}, body: { title: 'New title' } })
       const res = createMockResponse()
@@ -1449,7 +1643,7 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(mongoose, 'startSession').resolves(mockSession as any)
 
       const mockDoc = createMockConversationDoc({ title: 'Old title' })
-      stubMongooseFind(Conversation, 'findOne', mockDoc)
+      stubMongooseFind(ChatSession, 'findOne', mockDoc)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1470,7 +1664,7 @@ describe('Enterprise Search Controller', () => {
       const mockSession = createMockSession()
       sinon.stub(mongoose, 'startSession').resolves(mockSession as any)
 
-      stubMongooseFind(Conversation, 'findOne', null)
+      stubMongooseFind(ChatSession, 'findOne', null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1516,17 +1710,18 @@ describe('Enterprise Search Controller', () => {
 
     it('should update feedback successfully on happy path', async () => {
       const messageId = new mongoose.Types.ObjectId()
-      const mockConversation = {
-        _id: VALID_OID,
-        messages: [
-          { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
-        ],
-      }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
-        _id: VALID_OID,
-        messages: [{ _id: messageId, feedback: [{ rating: 'positive' }] }],
-      } as any)
+      const mockConversation = { _id: VALID_OID }
+      // performFeedbackUpdate does a bare `await ChatSession.findOne(query, null, opts)`
+      // (no .exec()) — stubThenableFindOne matches that call shape.
+      const findOne = stubThenableFindOne(ChatSession, mockConversation)
+      restoreIfStubbed(ChatSessionMessage, 'findOne')
+      sinon.stub(ChatSessionMessage, 'findOne').resolves(
+        createMockMessageDoc({ _id: messageId, messageType: 'bot_response' }),
+      )
+      restoreIfStubbed(ChatSessionMessage, 'findOneAndUpdate')
+      const feedbackUpdate = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves(
+        createMockMessageDoc({ _id: messageId, feedback: [{ rating: 'positive' }] }),
+      )
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: messageId.toString() },
@@ -1538,13 +1733,20 @@ describe('Enterprise Search Controller', () => {
 
       await updateFeedback(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.conversationId).to.equal(VALID_OID)
+      expect(response.messageId).to.equal(messageId.toString())
+      // Cross-type isolation: the session lookup must scope to chat sessions only.
+      expect(findOne.firstCall.args[0].sessionType).to.equal('chat')
+      // Feedback is appended via appendMessageFeedback (findOneAndUpdate on the
+      // message itself), not a positional $push on an embedded array.
+      expect(feedbackUpdate.calledWith({ _id: messageId.toString() })).to.be.true
     })
 
     it('should call next when conversation not found for feedback', async () => {
-      stubMongooseFind(Conversation, 'findOne', null)
+      stubThenableFindOne(ChatSession, null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: VALID_OID3 },
@@ -1566,7 +1768,7 @@ describe('Enterprise Search Controller', () => {
           { _id: new mongoose.Types.ObjectId(), messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
         ],
       }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubFeedbackLookups(mockConversation, null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: VALID_OID3 },
@@ -1589,7 +1791,7 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'user_query', content: 'question', createdAt: Date.now() },
         ],
       }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubFeedbackLookups(mockConversation, { _id: messageId, messageType: 'user_query', content: 'question', createdAt: Date.now() })
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: messageId.toString() },
@@ -1628,14 +1830,14 @@ describe('Enterprise Search Controller', () => {
 
     it('should archive conversation successfully on happy path', async () => {
       const mockConversation = { _id: VALID_OID, isArchived: false }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       const execStub = sinon.stub().resolves({
         _id: VALID_OID,
         isArchived: true,
         updatedAt: new Date(),
       })
-      sinon.stub(Conversation, 'findByIdAndUpdate').returns({ exec: execStub } as any)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').returns({ exec: execStub } as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1655,7 +1857,7 @@ describe('Enterprise Search Controller', () => {
 
     it('should call next when conversation already archived', async () => {
       const mockConversation = { _id: VALID_OID, isArchived: true }
-      sinon.stub(Conversation, 'findOne').resolves(mockConversation as any)
+      sinon.stub(ChatSession, 'findOne').resolves(mockConversation as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1670,7 +1872,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when conversation not found', async () => {
-      sinon.stub(Conversation, 'findOne').resolves(null)
+      sinon.stub(ChatSession, 'findOne').resolves(null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1708,14 +1910,14 @@ describe('Enterprise Search Controller', () => {
 
     it('should unarchive conversation successfully', async () => {
       const mockConversation = { _id: VALID_OID, isArchived: true }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       const execStub = sinon.stub().resolves({
         _id: VALID_OID,
         isArchived: false,
         updatedAt: new Date(),
       })
-      sinon.stub(Conversation, 'findByIdAndUpdate').returns({ exec: execStub } as any)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').returns({ exec: execStub } as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1735,7 +1937,7 @@ describe('Enterprise Search Controller', () => {
 
     it('should call next when conversation not archived', async () => {
       const mockConversation = { _id: VALID_OID, isArchived: false }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1750,7 +1952,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when conversation not found for unarchive', async () => {
-      stubMongooseFind(Conversation, 'findOne', null)
+      stubMongooseFind(ChatSession, 'findOne', null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1789,8 +1991,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
-      sinon.stub(Conversation, 'find').returns(findChain as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(1)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
       const req = createMockRequest({
         query: {},
@@ -1828,7 +2030,7 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'bot_response', content: 'old answer', createdAt: Date.now() },
         ],
       })
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -2842,7 +3044,7 @@ describe('Enterprise Search Controller', () => {
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'test' }],
       })
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
@@ -2875,7 +3077,7 @@ describe('Enterprise Search Controller', () => {
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'test' }],
       })
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       let capturedBody: any
       sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
@@ -2906,7 +3108,7 @@ describe('Enterprise Search Controller', () => {
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'test' }],
       })
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Agent AI failed'))
 
@@ -2986,7 +3188,7 @@ describe('Enterprise Search Controller', () => {
       mockDoc.messages = [...mockDoc.messages]
 
       // addMessageStreamToAgentConversation uses plain `await AgentConversation.findOne(...)`
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -3016,7 +3218,7 @@ describe('Enterprise Search Controller', () => {
     it('should handle conversation not found', async () => {
       const handler = addMessageStreamToAgentConversation(createMockAppConfig())
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(null),
       } as any)
 
@@ -3089,7 +3291,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversation),
       }
-      sinon.stub(AgentConversation, 'findOne').returns(findChain as any)
+      sinon.stub(ChatSession, 'findOne').returns(findChain as any)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -3148,8 +3350,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
-      sinon.stub(AgentConversation, 'find').returns(findChain as any)
-      sinon.stub(AgentConversation, 'countDocuments').resolves(1)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
@@ -3178,8 +3380,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().rejects(new Error('DB error')),
       }
-      sinon.stub(AgentConversation, 'find').returns(findChain as any)
-      sinon.stub(AgentConversation, 'countDocuments').resolves(0)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
@@ -3224,21 +3426,21 @@ describe('Enterprise Search Controller', () => {
         _id: VALID_OID,
         title: 'Test',
         agentKey: 'agent-1',
-        messages: [{ messageType: 'user_query', content: 'hi' }],
         initiator: VALID_OID,
         isShared: false,
         sharedWith: [],
         status: 'complete',
       }
 
-      sinon.stub(AgentConversation, 'aggregate').resolves([{ messageCount: 1 }])
       const findOneChain: any = {
         select: sinon.stub().returnsThis(),
-        populate: sinon.stub().returnsThis(),
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversation),
       }
-      sinon.stub(AgentConversation, 'findOne').returns(findOneChain as any)
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
+      stubGetMessages(ChatSessionMessage, [{ messageType: 'user_query', content: 'hi' }])
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
@@ -3256,7 +3458,12 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next with NotFoundError when conversation not found', async () => {
-      sinon.stub(AgentConversation, 'aggregate').resolves([])
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(null),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
@@ -3286,7 +3493,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should return 200 when conversation is not found', async () => {
-      sinon.stub(AgentConversation, 'findOne').resolves(null)
+      sinon.stub(ChatSession, 'findOne').resolves(null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
@@ -3308,7 +3515,7 @@ describe('Enterprise Search Controller', () => {
         save: sinon.stub().resolves(),
       }
       mockConv.save.resolves(mockConv)
-      sinon.stub(AgentConversation, 'findOne').resolves(mockConv as any)
+      sinon.stub(ChatSession, 'findOne').resolves(mockConv as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
@@ -3334,10 +3541,6 @@ describe('Enterprise Search Controller', () => {
         { _id: new mongoose.Types.ObjectId(), messageType: 'bot_response', content: 'hi', createdAt: new Date() },
       ]
 
-      // Mock aggregate for count
-      sinon.stub(Conversation, 'aggregate').resolves([{ messageCount: 2 }])
-
-      // Mock findOne for conversation data
       const findChain: any = {
         select: sinon.stub().returnsThis(),
         populate: sinon.stub().returnsThis(),
@@ -3345,7 +3548,6 @@ describe('Enterprise Search Controller', () => {
         exec: sinon.stub().resolves({
           _id: new mongoose.Types.ObjectId(VALID_OID),
           title: 'Test',
-          messages: mockMessages,
           initiator: new mongoose.Types.ObjectId(VALID_OID),
           isShared: false,
           sharedWith: [],
@@ -3354,7 +3556,10 @@ describe('Enterprise Search Controller', () => {
           createdAt: new Date(),
         }),
       }
-      sinon.stub(Conversation, 'findOne').returns(findChain as any)
+      sinon.stub(ChatSession, 'findOne').returns(findChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(2)
+      stubGetMessages(ChatSessionMessage, mockMessages)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -3376,7 +3581,12 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when aggregate returns no results', async () => {
-      sinon.stub(Conversation, 'aggregate').resolves([])
+      const findChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(null),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findChain as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -3392,8 +3602,6 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle sort options from query params', async () => {
-      sinon.stub(Conversation, 'aggregate').resolves([{ messageCount: 1 }])
-
       const findChain: any = {
         select: sinon.stub().returnsThis(),
         populate: sinon.stub().returnsThis(),
@@ -3401,7 +3609,6 @@ describe('Enterprise Search Controller', () => {
         exec: sinon.stub().resolves({
           _id: new mongoose.Types.ObjectId(VALID_OID),
           title: 'Test',
-          messages: [{ _id: new mongoose.Types.ObjectId(), messageType: 'user_query', content: 'test', createdAt: new Date() }],
           initiator: new mongoose.Types.ObjectId(VALID_OID),
           isShared: false,
           sharedWith: [],
@@ -3410,7 +3617,12 @@ describe('Enterprise Search Controller', () => {
           createdAt: new Date(),
         }),
       }
-      sinon.stub(Conversation, 'findOne').returns(findChain as any)
+      sinon.stub(ChatSession, 'findOne').returns(findChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
+      stubGetMessages(ChatSessionMessage, [
+        { _id: new mongoose.Types.ObjectId(), messageType: 'user_query', content: 'test', createdAt: new Date() },
+      ])
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -3444,8 +3656,9 @@ describe('Enterprise Search Controller', () => {
       }
       mockConversation.save.resolves(mockConversation)
 
-      sinon.stub(Conversation, 'findOne').resolves(mockConversation as any)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves(mockConversation as any)
+      sinon.stub(ChatSession, 'findOne').resolves(mockConversation as any)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves(mockConversation as any)
       sinon.stub(Citation, 'updateMany').resolves({} as any)
 
       const req = createMockRequest({
@@ -3477,9 +3690,9 @@ describe('Enterprise Search Controller', () => {
         isShared: true,
       }
 
-      sinon.stub(Conversation, 'findOne').resolves(mockConversation as any)
+      sinon.stub(ChatSession, 'findOne').resolves(mockConversation as any)
       sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: mockConversation._id,
         isShared: true,
         sharedWith: [existingSharedUser],
@@ -3503,12 +3716,12 @@ describe('Enterprise Search Controller', () => {
     it('should call next when findByIdAndUpdate returns null', async () => {
       const handler = shareConversationById(createMockAppConfig())
 
-      sinon.stub(Conversation, 'findOne').resolves({
+      sinon.stub(ChatSession, 'findOne').resolves({
         _id: new mongoose.Types.ObjectId(VALID_OID),
         sharedWith: [],
       } as any)
       sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves(null)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves(null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -3531,9 +3744,9 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
       })
 
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
       sinon.stub(Users, 'find').resolves([{ _id: VALID_OID3, email: 'test@test.com' }] as any)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         isShared: false,
         sharedWith: [],
@@ -3567,9 +3780,9 @@ describe('Enterprise Search Controller', () => {
         ],
       })
 
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
       sinon.stub(Users, 'find').resolves([{ _id: VALID_OID3, email: 'test@test.com' }] as any)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         isShared: true,
         sharedWith: [{ userId: user4, accessLevel: 'write' }],
@@ -3602,7 +3815,7 @@ describe('Enterprise Search Controller', () => {
         ],
       })
 
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: messageId.toString() },
@@ -3717,8 +3930,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
-      sinon.stub(Conversation, 'find').returns(findChain1 as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(1)
+      sinon.stub(ChatSession, 'find').returns(findChain1 as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
       const req = createMockRequest({
         query: { page: '1', limit: '10', source: 'owned' },
@@ -3747,8 +3960,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
-      sinon.stub(Conversation, 'find').returns(findChain as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(0)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
         query: { conversationId: VALID_OID, source: 'owned' },
@@ -3785,8 +3998,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
-      sinon.stub(Conversation, 'find').returns(findChain as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(1)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
       const req = createMockRequest({
         query: { page: '1', limit: '10', source: 'shared' },
@@ -3830,8 +4043,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
-      sinon.stub(Conversation, 'find').returns(findChain as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(0)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
         query: {},
@@ -3865,7 +4078,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub(),
       }
-      const findStub = sinon.stub(AgentConversation, 'find')
+      const findStub = sinon.stub(ChatSession, 'find')
       findChain.exec.resolves(mockConversations)
       const findChain2: any = {
         sort: sinon.stub().returnsThis(),
@@ -3877,7 +4090,7 @@ describe('Enterprise Search Controller', () => {
       }
       findStub.onFirstCall().returns(findChain as any)
       findStub.onSecondCall().returns(findChain2 as any)
-      sinon.stub(AgentConversation, 'countDocuments').resolves(1)
+      sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
@@ -3905,7 +4118,7 @@ describe('Enterprise Search Controller', () => {
         { _id: new mongoose.Types.ObjectId(), messageType: 'bot_response', content: 'hi', createdAt: new Date() },
       ]
 
-      sinon.stub(AgentConversation, 'aggregate').resolves([{ messageCount: 2 }])
+      sinon.stub(ChatSession, 'aggregate').resolves([{ messageCount: 2 }])
 
       const findChain: any = {
         select: sinon.stub().returnsThis(),
@@ -3924,7 +4137,7 @@ describe('Enterprise Search Controller', () => {
           createdAt: new Date(),
         }),
       }
-      sinon.stub(AgentConversation, 'findOne').returns(findChain as any)
+      sinon.stub(ChatSession, 'findOne').returns(findChain as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
@@ -3950,7 +4163,7 @@ describe('Enterprise Search Controller', () => {
       const handler = streamChat(createMockAppConfig())
 
       const mockConversation = createMockConversationDoc()
-      sinon.stub(Conversation.prototype, 'save').resolves(mockConversation)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockConversation)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -3991,7 +4204,7 @@ describe('Enterprise Search Controller', () => {
           { _id: new mongoose.Types.ObjectId(), messageType: 'bot_response', content: 'first answer' },
         ],
       })
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -4019,7 +4232,7 @@ describe('Enterprise Search Controller', () => {
       const handler = createConversation(createMockAppConfig())
 
       const mockSaved = createMockConversationDoc()
-      sinon.stub(Conversation.prototype, 'save').resolves(mockSaved)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockSaved)
 
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 500,
@@ -4056,7 +4269,7 @@ describe('Enterprise Search Controller', () => {
         status: 'failed',
         agentKey: 'agent-1',
       })
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockSaved)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockSaved)
 
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 500,
@@ -4252,7 +4465,7 @@ describe('Enterprise Search Controller', () => {
           { _id: new mongoose.Types.ObjectId(), messageType: 'user_query', content: 'hello' },
         ],
       })
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 400,
@@ -4282,7 +4495,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const connError = new Error('fetch failed')
       ;(connError as any).cause = { code: 'ECONNREFUSED' }
@@ -4447,7 +4660,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -4487,7 +4700,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -4554,7 +4767,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -4589,7 +4802,7 @@ describe('Enterprise Search Controller', () => {
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -4628,7 +4841,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -4665,10 +4878,10 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       // Stub findOne for saveCompleteConversation
-      stubMongooseFind(Conversation, 'findOne', mockDoc)
+      stubMongooseFind(ChatSession, 'findOne', mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -4706,7 +4919,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -4744,7 +4957,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -4794,7 +5007,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -4839,7 +5052,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -4875,11 +5088,11 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
-      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      const { insertManyStub } = stubAppendMessages([createMockMessageDoc({ messageType: 'tool_call' })])
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -4904,11 +5117,11 @@ describe('Enterprise Search Controller', () => {
       mockStream.emit('data', Buffer.from(askChunk))
       await new Promise((resolve) => setTimeout(resolve, 50))
 
-      expect(findByIdAndUpdateStub.calledOnce).to.be.true
-      const updatePayload = findByIdAndUpdateStub.firstCall.args[1]
-      expect(updatePayload.$push.messages.messageType).to.equal('tool_call')
-      expect(updatePayload.$push.messages.tools[0].toolName).to.equal('ask_user_question')
-      expect(updatePayload.$push.messages.tools[0].toolResult).to.deep.equal(toolData)
+      const toolCallInsert = insertManyStub.getCalls().find((c: any) =>
+        c.args[0]?.some((m: any) => m.tools?.[0]?.toolName === 'ask_user_question'),
+      )
+      expect(toolCallInsert).to.exist
+      expect(toolCallInsert.args[0][0].tools[0].toolResult).to.deep.equal(toolData)
 
       const forwarded = res.write.args.map((a: any) => a[0]).join('')
       expect(forwarded).to.include('ask_user_question')
@@ -4927,11 +5140,11 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
-      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      const findByIdAndUpdateStub = sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({})
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -4967,11 +5180,11 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
-      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      const findByIdAndUpdateStub = sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({})
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5007,11 +5220,11 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
-      sinon.stub(AgentConversation, 'findByIdAndUpdate').rejects(new Error('DB write failed'))
+      sinon.stub(ChatSession, 'findByIdAndUpdate').rejects(new Error('DB write failed'))
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5052,7 +5265,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -5081,7 +5294,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next (via SSE error) when conversation not found', async () => {
       const handler = regenerateAnswers(createMockAppConfig())
 
-      stubMongooseFind(Conversation, 'findOne', null)
+      stubMongooseFind(ChatSession, 'findOne', null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: VALID_OID3 },
@@ -5114,7 +5327,11 @@ describe('Enterprise Search Controller', () => {
       const thenableResult: any = {
         then: (resolve: any) => resolve(mockConversation),
       }
-      sinon.stub(Conversation, 'findOne').returns(thenableResult)
+      sinon.stub(ChatSession, 'findOne').returns(thenableResult)
+      stubGetMessages(ChatSessionMessage, [
+        { _id: messageId, messageType: 'bot_response', content: 'old answer', createdAt: Date.now() },
+        { _id: userQueryId, messageType: 'user_query', content: 'hello', createdAt: Date.now() },
+      ])
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5161,7 +5378,11 @@ describe('Enterprise Search Controller', () => {
       const thenableResult: any = {
         then: (resolve: any) => resolve(mockConversation),
       }
-      sinon.stub(AgentConversation, 'findOne').returns(thenableResult)
+      sinon.stub(ChatSession, 'findOne').returns(thenableResult)
+      stubGetMessages(ChatSessionMessage, [
+        { _id: messageId, messageType: 'bot_response', content: 'old answer', createdAt: Date.now() },
+        { _id: userQueryId, messageType: 'user_query', content: 'hello', createdAt: Date.now() },
+      ])
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5209,7 +5430,7 @@ describe('Enterprise Search Controller', () => {
         ],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const aiResponse = {
         statusCode: 200,
@@ -5260,8 +5481,8 @@ describe('Enterprise Search Controller', () => {
         ],
       }
 
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         updatedAt: new Date(),
       } as any)
@@ -5316,7 +5537,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5348,7 +5569,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5379,7 +5600,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
       sinon.stub(AIServiceCommand.prototype, 'executeStream').rejects(new Error('Agent stream start failed'))
 
       const req = createMockRequest({
@@ -5404,8 +5625,8 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
-      stubMongooseFind(AgentConversation, 'findOne', mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      stubMongooseFind(ChatSession, 'findOne', mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5443,8 +5664,8 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
-      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      const { insertManyStub } = stubAppendMessages([createMockMessageDoc({ messageType: 'tool_call' })])
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5469,10 +5690,11 @@ describe('Enterprise Search Controller', () => {
       mockStream.emit('data', Buffer.from(askChunk))
       await new Promise((resolve) => setTimeout(resolve, 50))
 
-      expect(findByIdAndUpdateStub.calledOnce).to.be.true
-      const updatePayload = findByIdAndUpdateStub.firstCall.args[1]
-      expect(updatePayload.$push.messages.tools[0].toolName).to.equal('ask_user_question')
-      expect(updatePayload.$push.messages.tools[0].toolResult).to.deep.equal(toolData)
+      const toolCallInsert = insertManyStub.getCalls().find((c: any) =>
+        c.args[0]?.some((m: any) => m.tools?.[0]?.toolName === 'ask_user_question'),
+      )
+      expect(toolCallInsert).to.exist
+      expect(toolCallInsert.args[0][0].tools[0].toolResult).to.deep.equal(toolData)
 
       const forwarded = res.write.args.map((a: any) => a[0]).join('')
       expect(forwarded).to.include('ask_user_question')
@@ -5488,8 +5710,8 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
-      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      const findByIdAndUpdateStub = sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({})
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5522,8 +5744,8 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
-      sinon.stub(AgentConversation, 'findByIdAndUpdate').rejects(new Error('DB write failed'))
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').rejects(new Error('DB write failed'))
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5561,7 +5783,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5600,7 +5822,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       const executeStreamStub = sinon
@@ -5637,7 +5859,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       const executeStreamStub = sinon
@@ -5670,8 +5892,8 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
-      stubMongooseFind(AgentConversation, 'findOne', mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      stubMongooseFind(ChatSession, 'findOne', mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5709,7 +5931,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -5767,7 +5989,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next with NotFoundError when conversation not found', async () => {
       const handler = addMessageToAgentConversation(createMockAppConfig())
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(null),
       } as any)
 
@@ -5799,7 +6021,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -5841,7 +6063,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -5870,7 +6092,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -5903,7 +6125,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -5955,7 +6177,7 @@ describe('Enterprise Search Controller', () => {
           { messageType: 'bot_response', content: 'world', citations: [] },
         ],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const aiResponse = {
         statusCode: 200,
@@ -6039,7 +6261,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -6175,7 +6397,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -6217,7 +6439,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -6257,7 +6479,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -6301,7 +6523,7 @@ describe('Enterprise Search Controller', () => {
       const thenableResult: any = {
         then: (resolve: any) => resolve(mockConversation),
       }
-      sinon.stub(Conversation, 'findOne').returns(thenableResult)
+      sinon.stub(ChatSession, 'findOne').returns(thenableResult)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: VALID_OID3 },
@@ -6334,7 +6556,7 @@ describe('Enterprise Search Controller', () => {
       const thenableResult: any = {
         then: (resolve: any) => resolve(mockConversation),
       }
-      sinon.stub(Conversation, 'findOne').returns(thenableResult)
+      sinon.stub(ChatSession, 'findOne').returns(thenableResult)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: differentId.toString() },
@@ -6366,7 +6588,7 @@ describe('Enterprise Search Controller', () => {
       const thenableResult: any = {
         then: (resolve: any) => resolve(mockConversation),
       }
-      sinon.stub(Conversation, 'findOne').returns(thenableResult)
+      sinon.stub(ChatSession, 'findOne').returns(thenableResult)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: messageId.toString() },
@@ -6397,7 +6619,7 @@ describe('Enterprise Search Controller', () => {
       const thenableResult: any = {
         then: (resolve: any) => resolve(mockConversation),
       }
-      sinon.stub(Conversation, 'findOne').returns(thenableResult)
+      sinon.stub(ChatSession, 'findOne').returns(thenableResult)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: messageId.toString() },
@@ -6429,7 +6651,7 @@ describe('Enterprise Search Controller', () => {
       const thenableResult: any = {
         then: (resolve: any) => resolve(mockConversation),
       }
-      sinon.stub(Conversation, 'findOne').returns(thenableResult)
+      sinon.stub(ChatSession, 'findOne').returns(thenableResult)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: messageId.toString() },
@@ -6745,10 +6967,10 @@ describe('Enterprise Search Controller', () => {
   describe('archiveConversation (database error)', () => {
     it('should call next when findByIdAndUpdate returns null', async () => {
       const mockConversation = { _id: VALID_OID, isArchived: false }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       const execStub = sinon.stub().resolves(null)
-      sinon.stub(Conversation, 'findByIdAndUpdate').returns({ exec: execStub } as any)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').returns({ exec: execStub } as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -6769,10 +6991,10 @@ describe('Enterprise Search Controller', () => {
   describe('unarchiveConversation (database error)', () => {
     it('should call next when findByIdAndUpdate returns null', async () => {
       const mockConversation = { _id: VALID_OID, isArchived: true }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       const execStub = sinon.stub().resolves(null)
-      sinon.stub(Conversation, 'findByIdAndUpdate').returns({ exec: execStub } as any)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').returns({ exec: execStub } as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -6796,8 +7018,8 @@ describe('Enterprise Search Controller', () => {
         _id: VALID_OID,
         sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
       }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves(null)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves(null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -6824,8 +7046,9 @@ describe('Enterprise Search Controller', () => {
         isDeleted: false,
         messages: [],
       }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves(null)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves(null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -6850,7 +7073,7 @@ describe('Enterprise Search Controller', () => {
 
       const mockDoc = createMockConversationDoc({ title: 'Old title' })
       mockDoc.save.rejects(new Error('Save failed'))
-      stubMongooseFind(Conversation, 'findOne', mockDoc)
+      stubMongooseFind(ChatSession, 'findOne', mockDoc)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -6878,8 +7101,9 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
         ],
       }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves(null)
+      stubFeedbackLookups(mockConversation, { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() })
+      restoreIfStubbed(ChatSessionMessage, 'findOneAndUpdate')
+      sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves(null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: messageId.toString() },
@@ -6955,7 +7179,7 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [],
         isShared: false,
       }
-      sinon.stub(Conversation, 'findOne').resolves(mockConversation as any)
+      sinon.stub(ChatSession, 'findOne').resolves(mockConversation as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -6981,7 +7205,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -7027,7 +7251,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -7068,8 +7292,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().rejects(new Error('DB error')),
       }
-      sinon.stub(Conversation, 'find').returns(findChain as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(0)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
         query: {},
@@ -7088,8 +7312,13 @@ describe('Enterprise Search Controller', () => {
   // getAgentConversationById - database error
   // -----------------------------------------------------------------------
   describe('getAgentConversationById (database error)', () => {
-    it('should call next when aggregate throws', async () => {
-      sinon.stub(AgentConversation, 'aggregate').rejects(new Error('Aggregate failed'))
+    it('should call next when session lookup throws', async () => {
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().rejects(new Error('Query failed')),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
@@ -7109,8 +7338,13 @@ describe('Enterprise Search Controller', () => {
   // getConversationById - database error
   // -----------------------------------------------------------------------
   describe('getConversationById (database error)', () => {
-    it('should call next when aggregate throws', async () => {
-      sinon.stub(Conversation, 'aggregate').rejects(new Error('Aggregate failed'))
+    it('should call next when session lookup throws', async () => {
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().rejects(new Error('Query failed')),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -7135,7 +7369,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const responseError: any = new Error('Bad Request')
       responseError.response = {
@@ -7160,7 +7394,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const responseError: any = new Error('Unauthorized')
       responseError.response = {
@@ -7185,7 +7419,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const responseError: any = new Error('Forbidden')
       responseError.response = {
@@ -7210,7 +7444,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const responseError: any = new Error('Not Found')
       responseError.response = {
@@ -7235,7 +7469,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const responseError: any = new Error('Bad Gateway')
       responseError.response = {
@@ -7260,7 +7494,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const responseError: any = new Error('Service Unavailable')
       responseError.response = {
@@ -7285,7 +7519,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const responseError: any = new Error('Gateway Timeout')
       responseError.response = {
@@ -7310,7 +7544,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const responseError: any = new Error('Unknown')
       responseError.response = {
@@ -7335,7 +7569,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const requestError: any = new Error('No response')
       requestError.request = {}
@@ -7357,7 +7591,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const detailError: any = new Error('error')
       detailError.detail = 'Custom detail error'
@@ -7379,7 +7613,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const fetchError = new Error('fetch failed')
       sinon.stub(AIServiceCommand.prototype, 'execute').rejects(fetchError)
@@ -7402,7 +7636,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const responseError: any = new Error('Error')
       responseError.response = {
@@ -7443,7 +7677,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
         data: { answer: 'world', citations: [], followUpQuestions: [] },
@@ -7518,7 +7752,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -7553,7 +7787,7 @@ describe('Enterprise Search Controller', () => {
     it('should not call writeHead when headersSent is true', async () => {
       const handler = streamChat(createMockAppConfig())
 
-      sinon.stub(Conversation.prototype, 'save').rejects(new Error('DB crash'))
+      sinon.stub(ChatSession.prototype, 'save').rejects(new Error('DB crash'))
 
       const req = createMockRequest({
         body: { query: 'hello' },
@@ -7581,7 +7815,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -7620,7 +7854,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -7665,7 +7899,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -7706,7 +7940,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -7751,7 +7985,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -7792,7 +8026,7 @@ describe('Enterprise Search Controller', () => {
         ],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
         data: { answer: 'world', citations: [], followUpQuestions: [] },
@@ -8075,7 +8309,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -8133,8 +8367,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
-      sinon.stub(Conversation, 'find').returns(findChain as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(0)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
         query: {
@@ -8182,7 +8416,7 @@ describe('Enterprise Search Controller', () => {
       const mockConversation = createMockConversationDoc({
         messages: [],
       })
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: VALID_OID3 },
@@ -8210,7 +8444,7 @@ describe('Enterprise Search Controller', () => {
           { _id: msgId2, messageType: 'bot_response', content: 'answer', createdAt: new Date() },
         ],
       })
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: msgId1.toString() },
@@ -8236,7 +8470,7 @@ describe('Enterprise Search Controller', () => {
           { _id: msgId, messageType: 'user_query', content: 'hello', createdAt: new Date() },
         ],
       })
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: msgId.toString() },
@@ -8268,7 +8502,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const connError: any = new Error('fetch failed')
       connError.cause = { code: 'ECONNREFUSED' }
@@ -8297,7 +8531,7 @@ describe('Enterprise Search Controller', () => {
       const handler = streamChat(createMockAppConfig())
 
       // Make save return null to simulate failed creation
-      sinon.stub(Conversation.prototype, 'save').resolves(null as any)
+      sinon.stub(ChatSession.prototype, 'save').resolves(null as any)
 
       const req = createMockRequest({
         body: { query: 'hello' },
@@ -8321,7 +8555,7 @@ describe('Enterprise Search Controller', () => {
     it('should skip markAgentConversationFailed when savedConversation is null', async () => {
       const handler = streamAgentConversation(createMockAppConfig())
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(null as any)
+      sinon.stub(ChatSession.prototype, 'save').resolves(null as any)
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
@@ -8346,7 +8580,7 @@ describe('Enterprise Search Controller', () => {
     it('should not call writeHead when headersSent is true in catch block', async () => {
       const handler = addMessageStream(createMockAppConfig())
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (_resolve: any, reject: any) => { throw new Error('DB crash') },
       } as any)
 
@@ -8375,7 +8609,7 @@ describe('Enterprise Search Controller', () => {
     it('should not call writeHead when headersSent is true', async () => {
       const handler = addMessageStreamToAgentConversation(createMockAppConfig())
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: () => { throw new Error('DB crash') },
       } as any)
 
@@ -8403,7 +8637,7 @@ describe('Enterprise Search Controller', () => {
     it('should not call writeHead when headersSent is true', async () => {
       const handler = streamAgentConversation(createMockAppConfig())
 
-      sinon.stub(AgentConversation.prototype, 'save').rejects(new Error('DB crash'))
+      sinon.stub(ChatSession.prototype, 'save').rejects(new Error('DB crash'))
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
@@ -8432,7 +8666,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
       // First save succeeds (creating conversation), but findOne fails later
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -8447,7 +8681,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().rejects(new Error('DB save failed')),
       }
-      sinon.stub(Conversation, 'findOne').returns(findChain as any)
+      sinon.stub(ChatSession, 'findOne').returns(findChain as any)
 
       const req = createMockRequest({
         body: { query: 'hello' },
@@ -8482,7 +8716,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.save.rejects(new Error('Save failed in markConversationFailed'))
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -8656,7 +8890,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -8697,7 +8931,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -8743,7 +8977,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -8786,7 +9020,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -8831,7 +9065,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -8874,7 +9108,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -8918,7 +9152,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -8964,7 +9198,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -9011,7 +9245,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -9049,7 +9283,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -9085,7 +9319,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -9111,7 +9345,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -9152,7 +9386,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -9198,7 +9432,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -9241,7 +9475,7 @@ describe('Enterprise Search Controller', () => {
         ],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
         data: {
@@ -9277,7 +9511,7 @@ describe('Enterprise Search Controller', () => {
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'test' }],
       })
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const connError = new Error('fetch failed')
       ;(connError as any).cause = { code: 'ECONNREFUSED' }
@@ -9319,7 +9553,7 @@ describe('Enterprise Search Controller', () => {
           { messageType: 'bot_response', content: 'response', citations: [] },
         ],
       })
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
@@ -9358,7 +9592,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -9394,7 +9628,7 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [],
         isShared: false,
       }
-      sinon.stub(Conversation, 'findOne').resolves(mockConversation as any)
+      sinon.stub(ChatSession, 'findOne').resolves(mockConversation as any)
       sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 404, data: null })
 
       const req = createMockRequest({
@@ -9476,9 +9710,9 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [],
         isShared: false,
       }
-      sinon.stub(Conversation, 'findOne').resolves(mockConversation as any)
+      sinon.stub(ChatSession, 'findOne').resolves(mockConversation as any)
       sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         isShared: true,
         sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
@@ -9551,7 +9785,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -9598,7 +9832,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: '123', citations: [] }],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
         data: { answer: 'answer', citations: [], followUpQuestions: [] },
@@ -9628,7 +9862,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -9664,7 +9898,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.messages = [...mockDoc.messages]
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -9702,7 +9936,7 @@ describe('Enterprise Search Controller', () => {
         _id: mockDoc._id,
         messages: [{ messageType: 'user_query', content: '42', citations: [] }],
       })
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
@@ -9742,8 +9976,8 @@ describe('Enterprise Search Controller', () => {
       const thenableResult: any = {
         then: (resolve: any) => resolve(mockConversation),
       }
-      sinon.stub(Conversation, 'findOne').returns(thenableResult)
-      sinon.stub(Conversation, 'findById').resolves(mockConversation)
+      sinon.stub(ChatSession, 'findOne').returns(thenableResult)
+      sinon.stub(ChatSession, 'findById').resolves(mockConversation)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -9777,7 +10011,7 @@ describe('Enterprise Search Controller', () => {
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'test' }],
       })
-      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 400,
@@ -9883,8 +10117,8 @@ describe('Enterprise Search Controller', () => {
         ],
       }
 
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         updatedAt: new Date(),
       } as any)
@@ -9917,8 +10151,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
-      sinon.stub(Conversation, 'find').returns(findChain as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(0)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
         context: undefined,
@@ -9946,7 +10180,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -9998,7 +10232,7 @@ describe('Enterprise Search Controller', () => {
         ],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const aiResponse = {
         statusCode: 200,
@@ -10062,7 +10296,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockDoc),
       }
-      sinon.stub(Conversation, 'findOne').returns(findChain as any)
+      sinon.stub(ChatSession, 'findOne').returns(findChain as any)
 
       const aiResponse = {
         statusCode: 200,
@@ -10106,7 +10340,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.save.resolves(mockDoc)
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const error: any = new Error('fail')
       error.response = { status: 400, data: { reason: 'Bad input data' } }
@@ -10131,7 +10365,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.save.resolves(mockDoc)
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const error: any = new Error('fail')
       error.response = { status: 500, data: { message: 'Server error' } }
@@ -10156,7 +10390,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.save.resolves(mockDoc)
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const error: any = new Error('fail')
       error.response = { status: 503, data: {} }
@@ -10186,7 +10420,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.save.resolves(mockDoc)
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const error: any = new Error('fail')
       error.detail = 'Detailed error info'
@@ -10216,7 +10450,7 @@ describe('Enterprise Search Controller', () => {
       })
       mockDoc.save.resolves(mockDoc)
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const error: any = new Error('Request sent but no response')
       error.request = {}
@@ -10255,7 +10489,7 @@ describe('Enterprise Search Controller', () => {
         ],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       // AI returns non-200 to trigger error save path
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
@@ -10287,7 +10521,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
 
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -10320,7 +10554,7 @@ describe('Enterprise Search Controller', () => {
     it('should handle error without message in outer catch block', async () => {
       const handler = streamChat(createMockAppConfig())
 
-      sinon.stub(Conversation.prototype, 'save').rejects({ stack: 'error stack' })
+      sinon.stub(ChatSession.prototype, 'save').rejects({ stack: 'error stack' })
 
       const req = createMockRequest({
         body: { query: 'hello' },
@@ -10381,8 +10615,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
-      sinon.stub(Conversation, 'find').returns(findChain as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(0)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
         query: {
@@ -10415,8 +10649,8 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
-      sinon.stub(Conversation, 'find').returns(findChain as any)
-      sinon.stub(Conversation, 'countDocuments').resolves(0)
+      sinon.stub(ChatSession, 'find').returns(findChain as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
       const req = createMockRequest({
         query: { source: 'owned' },
@@ -10483,7 +10717,7 @@ describe('Enterprise Search Controller', () => {
         lastActivityAt: null,
         save: sinon.stub().rejects(new Error('DB write error')),
       }
-      sinon.stub(AgentConversation, 'findOne').resolves(mockConv as any)
+      sinon.stub(ChatSession, 'findOne').resolves(mockConv as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
@@ -10542,7 +10776,7 @@ describe('Enterprise Search Controller', () => {
       const handler = addMessageStreamToAgentConversation(createMockAppConfig())
       const mockDoc = buildMockDocPair('null')
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
       // Make executeStream throw so the outer catch is triggered after existingConversation is set
@@ -10571,7 +10805,7 @@ describe('Enterprise Search Controller', () => {
       const handler = addMessageStreamToAgentConversation(createMockAppConfig())
       const mockDoc = buildMockDocPair('throw')
 
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
       sinon.stub(AIServiceCommand.prototype, 'executeStream').rejects(new Error('AI unavailable'))
@@ -10600,7 +10834,7 @@ describe('Enterprise Search Controller', () => {
 
       // Return null from findOne so existingConversation stays undefined and the
       // outer catch hits the !res.headersSent branch (line 6149-6151)
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(null),
       } as any)
       sinon.stub(AIServiceCommand.prototype, 'executeStream').rejects(new Error('early fail'))
@@ -10635,7 +10869,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'test query' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       let capturedBody: any = null
       let capturedUri: string = ''
@@ -10674,7 +10908,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'test query' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       let capturedBody: any = null
       let capturedUri: string = ''
@@ -10713,7 +10947,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'test query' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       let capturedBody: any = null
       let capturedUri: string = ''
@@ -10752,7 +10986,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'test query' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       let capturedBody: any = null
       let capturedUri: string = ''
@@ -10791,7 +11025,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'test query' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       let capturedBody: any = null
       let capturedUri: string = ''
@@ -10857,7 +11091,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when agent conversation is not found', async () => {
-      stubMongooseFind(AgentConversation, 'findOne', null)
+      stubThenableFindOne(ChatSession, null)
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: VALID_OID3 },
@@ -10879,7 +11113,7 @@ describe('Enterprise Search Controller', () => {
           { _id: new mongoose.Types.ObjectId(), messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
         ],
       }
-      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+      stubFeedbackLookups(mockConversation, null)
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: VALID_OID3 },
@@ -10902,7 +11136,7 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'user_query', content: 'question', createdAt: Date.now() },
         ],
       }
-      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
+      stubFeedbackLookups(mockConversation, { _id: messageId, messageType: 'user_query', content: 'question', createdAt: Date.now() })
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
@@ -10925,8 +11159,9 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
         ],
       }
-      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
-      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves(null)
+      stubFeedbackLookups(mockConversation, { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() })
+      restoreIfStubbed(ChatSessionMessage, 'findOneAndUpdate')
+      sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves(null)
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
@@ -10949,8 +11184,8 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
         ],
       }
-      stubMongooseFind(AgentConversation, 'findOne', mockConversation)
-      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         messages: [{ _id: messageId, feedback: [{ rating: 'positive' }] }],
       } as any)
@@ -10987,8 +11222,8 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
         ],
       }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         messages: [{ _id: messageId, feedback: [{ isHelpful: false, categories: ['incorrect_information'] }] }],
       } as any)
@@ -11019,8 +11254,8 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
         ],
       }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         messages: [{ _id: messageId, feedback: [{ isHelpful: false }] }],
       } as any)
@@ -11055,8 +11290,8 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt },
         ],
       }
-      stubMongooseFind(Conversation, 'findOne', mockConversation)
-      sinon.stub(Conversation, 'findByIdAndUpdate').resolves({
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         messages: [{ _id: messageId, feedback: [{}] }],
       } as any)
@@ -11098,7 +11333,7 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'system', content: 'system msg', createdAt: Date.now() },
         ],
       }
-      stubThenableFindOne(Conversation, mockConversation)
+      stubFeedbackLookups(mockConversation, { _id: messageId, messageType: 'system', content: 'system msg', createdAt: Date.now() })
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: messageId.toString() },
@@ -11124,7 +11359,7 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'error', content: 'error msg', createdAt: Date.now() },
         ],
       }
-      stubThenableFindOne(Conversation, mockConversation)
+      stubFeedbackLookups(mockConversation, { _id: messageId, messageType: 'error', content: 'error msg', createdAt: Date.now() })
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: messageId.toString() },
@@ -11150,7 +11385,7 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'tool_call', content: 'tool output', createdAt: Date.now() },
         ],
       }
-      stubThenableFindOne(Conversation, mockConversation)
+      stubFeedbackLookups(mockConversation, { _id: messageId, messageType: 'tool_call', content: 'tool output', createdAt: Date.now() })
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: messageId.toString() },
@@ -11177,7 +11412,7 @@ describe('Enterprise Search Controller', () => {
     afterEach(() => { sinon.restore() })
 
     it('should call next with NotFoundError when conversation is null', async () => {
-      stubThenableFindOne(Conversation, null)
+      stubThenableFindOne(ChatSession, null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, messageId: VALID_OID3 },
@@ -11211,8 +11446,8 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
         ],
       }
-      stubThenableFindOne(AgentConversation, mockConversation)
-      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({
+      stubThenableFindOne(ChatSession, mockConversation)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         messages: [{ _id: messageId, feedback: [{ isHelpful: false, categories: ['missing_information'], comments: { negative: 'Missing key details' } }] }],
       } as any)
@@ -11249,7 +11484,7 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'system', content: 'system msg', createdAt: Date.now() },
         ],
       }
-      stubThenableFindOne(AgentConversation, mockConversation)
+      stubFeedbackLookups(mockConversation, { _id: messageId, messageType: 'system', content: 'system msg', createdAt: Date.now() })
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
@@ -11275,8 +11510,8 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'bot_response', content: 'answer', createdAt: Date.now() },
         ],
       }
-      stubThenableFindOne(AgentConversation, mockConversation)
-      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({
+      stubThenableFindOne(ChatSession, mockConversation)
+      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         messages: [{ _id: messageId, feedback: [{ isHelpful: true }] }],
       } as any)
@@ -11308,7 +11543,7 @@ describe('Enterprise Search Controller', () => {
           { _id: messageId, messageType: 'error', content: 'error msg', createdAt: Date.now() },
         ],
       }
-      stubThenableFindOne(AgentConversation, mockConversation)
+      stubFeedbackLookups(mockConversation, { _id: messageId, messageType: 'error', content: 'error msg', createdAt: Date.now() })
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: messageId.toString() },
@@ -11327,7 +11562,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when agent conversation not found (thenable)', async () => {
-      stubThenableFindOne(AgentConversation, null)
+      stubThenableFindOne(ChatSession, null)
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1', conversationId: VALID_OID, messageId: VALID_OID3 },
@@ -11363,7 +11598,7 @@ describe('Enterprise Search Controller', () => {
         const mockDoc = createMockConversationDoc({
           messages: [{ messageType: 'user_query', content: 'hello' }],
         })
-        sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+        sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
         sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
           ;(mockStream as any)._capturedBody = JSON.parse(this.body)
           return Promise.resolve(mockStream)
@@ -11466,7 +11701,7 @@ describe('Enterprise Search Controller', () => {
           modelInfo: {},
         })
         mockDoc.messages = [...mockDoc.messages]
-        sinon.stub(Conversation, 'findOne').returns({
+        sinon.stub(ChatSession, 'findOne').returns({
           then: (resolve: any) => resolve(mockDoc),
         } as any)
         sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
@@ -11547,7 +11782,7 @@ describe('Enterprise Search Controller', () => {
     describe('streamAgentConversation', () => {
       function stubStreamAgentConversationDeps(mockStream: any) {
         const mockDoc = createMockConversationDoc({ agentKey: 'agent-1' })
-        sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+        sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
         sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
           ;(mockStream as any)._capturedBody = JSON.parse(this.body)
           return Promise.resolve(mockStream)
@@ -11637,7 +11872,7 @@ describe('Enterprise Search Controller', () => {
           modelInfo: {},
         })
         mockDoc.messages = [...mockDoc.messages]
-        sinon.stub(AgentConversation, 'findOne').returns({
+        sinon.stub(ChatSession, 'findOne').returns({
           then: (resolve: any) => resolve(mockDoc),
         } as any)
         return mockDoc
@@ -11735,7 +11970,7 @@ describe('Enterprise Search Controller', () => {
           modelInfo: {},
         })
         mockDoc.messages = [...mockDoc.messages]
-        sinon.stub(AgentConversation, 'findOne').returns({
+        sinon.stub(ChatSession, 'findOne').returns({
           then: (resolve: any) => resolve(mockDoc),
         } as any)
         sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
@@ -11951,7 +12186,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       const executeStreamStub = sinon
@@ -11985,7 +12220,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       const executeStreamStub = sinon
@@ -12015,8 +12250,8 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
-      stubMongooseFind(Conversation, 'findOne', mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      stubMongooseFind(ChatSession, 'findOne', mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -12051,7 +12286,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -12087,7 +12322,7 @@ describe('Enterprise Search Controller', () => {
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
       mockDoc.save.resolves(mockDoc)
@@ -12126,7 +12361,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
       mockDoc.messages = [...mockDoc.messages]
-      sinon.stub(Conversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -12167,7 +12402,7 @@ describe('Enterprise Search Controller', () => {
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
       mockDoc.save.resolves(mockDoc)
@@ -12207,7 +12442,7 @@ describe('Enterprise Search Controller', () => {
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
       mockDoc.messages = [...mockDoc.messages]
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
 
@@ -12246,10 +12481,11 @@ describe('Enterprise Search Controller', () => {
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
-      sinon.stub(AgentConversation, 'findOne').returns({
+      sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockDoc),
       } as any)
-      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves(mockDoc)
+      stubAppendMessages()
+      stubGetMessages(ChatSessionMessage, [])
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -12273,10 +12509,344 @@ describe('Enterprise Search Controller', () => {
       mockStream.emit('data', Buffer.from(`event: CUSTOM\ndata: ${customPayload}\n\n`))
       await new Promise((resolve) => setTimeout(resolve, 50))
 
-      expect((AgentConversation.findByIdAndUpdate as sinon.SinonStub).called).to.be.true
+      expect((ChatSessionMessage.insertMany as sinon.SinonStub).called).to.be.true
 
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
   })
+  describe('cross-type isolation on id-only mutation routes', () => {
+    it('archiveConversation scopes the update to sessionType chat', async () => {
+      const mockConversation = createMockConversationDoc({ isArchived: false })
+      const findOne = sinon.stub(ChatSession, 'findOne').resolves(mockConversation)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const update = sinon.stub(ChatSession, 'findOneAndUpdate').returns({
+        exec: sinon.stub().resolves({ _id: VALID_OID, updatedAt: new Date() }),
+      } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await archiveConversation(req, res, next)
+
+      expect(findOne.called).to.be.true
+      const filter = findOne.firstCall.args[0] as any
+      expect(filter.sessionType).to.equal('chat')
+      if (update.called) {
+        expect((update.firstCall.args[0] as any).sessionType).to.equal('chat')
+      }
+    })
+
+    it('archiveAgentConversation scopes the update to sessionType agent', async () => {
+      const mockConversation = createMockConversationDoc({ isArchived: false, agentKey: 'a1' })
+      const findOne = sinon.stub(ChatSession, 'findOne').resolves(mockConversation)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').returns({
+        exec: sinon.stub().resolves({ _id: VALID_OID, updatedAt: new Date() }),
+      } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'a1' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await archiveAgentConversation(req, res, next)
+
+      expect(findOne.called).to.be.true
+      expect((findOne.firstCall.args[0] as any).sessionType).to.equal('agent')
+    })
+
+    it('deleteConversationById scopes both the lookup and the soft-delete to sessionType chat', async () => {
+      const mockConversation = { _id: VALID_OID }
+      const findOne = stubThenableFindOne(ChatSession, mockConversation)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const update = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        updatedAt: new Date(),
+      } as any)
+      // deleteConversationById reads citations via a bare `.find(...).lean()`
+      // (no .exec()); the default beforeEach stub's `.lean()` returns the
+      // chain itself, not an array, so give it a real resolving promise.
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find').returns({ lean: () => Promise.resolve([]) } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await deleteConversationById(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(findOne.firstCall.args[0].sessionType).to.equal('chat')
+      expect((update.firstCall.args[0] as any).sessionType).to.equal('chat')
+    })
+
+    it('unshareConversationById scopes both the lookup and the update to sessionType chat', async () => {
+      const handler = unshareConversationById(createMockAppConfig())
+      const mockConversation = { _id: VALID_OID, sharedWith: [] }
+      const findOne = stubThenableFindOne(ChatSession, mockConversation)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const update = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        sharedWith: [],
+      } as any)
+      // unshareConversationById revokes attachment permissions via a bare
+      // `.find(...).lean()` (no .exec()); give it a real resolving promise.
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find').returns({ lean: () => Promise.resolve([]) } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { userIds: [VALID_OID3] },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(findOne.firstCall.args[0].sessionType).to.equal('chat')
+      expect((update.firstCall.args[0] as any).sessionType).to.equal('chat')
+    })
+
+    it('updateTitle scopes the lookup to sessionType chat', async () => {
+      const mockConversation = createMockConversationDoc({ title: 'old title' })
+      const findOne = stubThenableFindOne(ChatSession, mockConversation)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { title: 'new title' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await updateTitle(req, res, next)
+
+      expect(findOne.firstCall.args[0].sessionType).to.equal('chat')
+    })
+
+    it('unarchiveConversation scopes both the lookup and the update to sessionType chat', async () => {
+      const mockConversation = createMockConversationDoc({ isArchived: true })
+      const findOne = sinon.stub(ChatSession, 'findOne').resolves(mockConversation)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const update = sinon.stub(ChatSession, 'findOneAndUpdate').returns({
+        exec: sinon.stub().resolves({ _id: VALID_OID, updatedAt: new Date() }),
+      } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await unarchiveConversation(req, res, next)
+
+      expect((findOne.firstCall.args[0] as any).sessionType).to.equal('chat')
+      expect((update.firstCall.args[0] as any).sessionType).to.equal('chat')
+    })
+
+    it('addMessageToAgentConversation scopes the lookup to sessionType agent', async () => {
+      const handler = addMessageToAgentConversation(createMockAppConfig())
+      const mockConversation = createMockConversationDoc({ agentKey: 'agent-1' })
+      const findOne = sinon.stub(ChatSession, 'findOne').returns({
+        then: (resolve: any) => resolve(mockConversation),
+      } as any)
+      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('boom'))
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'test question' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await handler(req, res, next)
+
+      expect((findOne.firstCall.args[0] as any).sessionType).to.equal('agent')
+    })
+
+    it('unarchiveAgentConversation scopes both the lookup and the update to sessionType agent', async () => {
+      const mockConversation = createMockConversationDoc({ isArchived: true, agentKey: 'agent-1' })
+      const findOne = sinon.stub(ChatSession, 'findOne').resolves(mockConversation)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const update = sinon.stub(ChatSession, 'findOneAndUpdate').returns({
+        exec: sinon.stub().resolves({ _id: VALID_OID, updatedAt: new Date() }),
+      } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await unarchiveAgentConversation(req, res, next)
+
+      expect((findOne.firstCall.args[0] as any).sessionType).to.equal('agent')
+      expect((update.firstCall.args[0] as any).sessionType).to.equal('agent')
+    })
+
+    it('updateAgentConversationTitle scopes the lookup to sessionType agent', async () => {
+      const mockConversation = createMockConversationDoc({ agentKey: 'agent-1', title: 'old title' })
+      const findOne = sinon.stub(ChatSession, 'findOne').resolves(mockConversation)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { title: 'new title' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await updateAgentConversationTitle(req, res, next)
+
+      expect((findOne.firstCall.args[0] as any).sessionType).to.equal('agent')
+    })
+
+    it('updateAgentFeedback scopes the session lookup to sessionType agent', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation = { _id: VALID_OID }
+      const findOne = stubThenableFindOne(ChatSession, mockConversation)
+      restoreIfStubbed(ChatSessionMessage, 'findOne')
+      sinon.stub(ChatSessionMessage, 'findOne').resolves(
+        createMockMessageDoc({ _id: messageId, messageType: 'bot_response' }),
+      )
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1', messageId: messageId.toString() },
+        body: { rating: 'positive' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await updateAgentFeedback(req, res, next)
+
+      expect(findOne.firstCall.args[0].sessionType).to.equal('agent')
+    })
+
+    it('regenerateAnswers scopes the buildQueryFilter lookup to sessionType chat', async () => {
+      const handler = regenerateAnswers(createMockAppConfig())
+      const messageId = new mongoose.Types.ObjectId()
+      const findOne = sinon.stub(ChatSession, 'findOne').returns({
+        then: (resolve: any) => resolve(null),
+      } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: {},
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      await handler(req, res)
+
+      expect((findOne.firstCall.args[0] as any).sessionType).to.equal('chat')
+    })
+
+    it('regenerateAgentAnswers scopes the buildQueryFilter lookup to sessionType agent', async () => {
+      const handler = regenerateAgentAnswers(createMockAppConfig())
+      const messageId = new mongoose.Types.ObjectId()
+      const findOne = sinon.stub(ChatSession, 'findOne').returns({
+        then: (resolve: any) => resolve(null),
+      } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1', messageId: messageId.toString() },
+        body: {},
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      await handler(req, res)
+
+      expect((findOne.firstCall.args[0] as any).sessionType).to.equal('agent')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // searchArchivedConversations (previously untested) — merges assistant and
+  // agent archived matches from a single ChatSession aggregation.
+  // -----------------------------------------------------------------------
+  describe('searchArchivedConversations', () => {
+    it('should call next with BadRequestError when search query parameter is missing', async () => {
+      const handler = searchArchivedConversations(createMockAppConfig())
+      const req = createMockRequest({ query: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.include('search query parameter is required')
+    })
+
+    it('should call next with BadRequestError when user is not authenticated', async () => {
+      const handler = searchArchivedConversations(createMockAppConfig())
+      const req = createMockRequest({ query: { search: 'hello' }, user: undefined })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('merges assistant and agent archived matches by sessionType, wiring content search and per-type counts', async () => {
+      const handler = searchArchivedConversations(createMockAppConfig())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { agents: [], pagination: { hasNext: false } },
+      })
+
+      const contentMatchId = new mongoose.Types.ObjectId()
+      restoreIfStubbed(ChatSessionMessage, 'aggregate')
+      sinon.stub(ChatSessionMessage, 'aggregate').resolves([{ _id: contentMatchId }])
+
+      const assistantDoc = {
+        _id: VALID_OID, title: 'assistant match', updatedAt: new Date(), archivedBy: VALID_OID,
+        initiator: VALID_OID, sharedWith: [], isShared: false, source: 'assistant',
+      }
+      const agentDoc = {
+        _id: VALID_OID3, title: 'agent match', agentKey: 'agent-1', updatedAt: new Date(), archivedBy: VALID_OID,
+        initiator: VALID_OID, sharedWith: [], isShared: false, source: 'agent',
+      }
+      const aggregate = sinon.stub(ChatSession, 'aggregate').resolves([assistantDoc, agentDoc])
+      const countDocuments = sinon.stub(ChatSession, 'countDocuments')
+      countDocuments.onFirstCall().resolves(1)
+      countDocuments.onSecondCall().resolves(1)
+
+      const req = createMockRequest({ query: { search: 'hello', page: '1', limit: '20' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.summary).to.deep.equal({
+        totalMatches: 2,
+        assistantMatches: 1,
+        agentMatches: 1,
+        searchQuery: 'hello',
+      })
+      expect(response.conversations).to.have.length(2)
+      expect(response.conversations[0].source).to.equal('assistant')
+      expect(response.conversations[1].source).to.equal('agent')
+      expect(response.conversations[1].agentKey).to.equal('agent-1')
+
+      // Content search: matched chatSessionMessages ids feed into the $match.
+      const matchStage = (aggregate.firstCall.args[0][0] as any).$match
+      expect(matchStage.$and[0].$or[1]).to.deep.equal({ _id: { $in: [contentMatchId] } })
+      // Cross-type isolation: assistant/agent predicates stay mutually
+      // exclusive by sessionType even though merged into one aggregation.
+      expect(matchStage.$or[0].sessionType).to.equal('chat')
+      expect(matchStage.$or[1].sessionType).to.equal('agent')
+    })
+  })
+
 })
