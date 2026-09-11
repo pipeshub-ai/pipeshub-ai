@@ -7,6 +7,8 @@ import {
 import { SyncEventProducer } from '../../../knowledge_base/services/sync_events.service';
 import { constructSyncConnectorEvent } from '../../utils/utils';
 import { ICrawlingSchedule } from '../../schema/interface';
+import { isLocalFsConnector } from '../../../../utils/local-fs-utils';
+import { isLocalFsDesktopOnline } from '../../../../libs/services/desktop-presence.provider';
 
 @injectable()
 export class ConnectorsCrawlingService implements ICrawlingTaskService {
@@ -37,13 +39,20 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
     });
 
     try {
-      // TODO: Implement Connectors crawling logic
-      this.logger.debug('Connectors crawling completed successfully', {
-        orgId,
-        userId,
-        connector,
-        connectorId,
-      });
+      // A Local FS pull needs the owner's desktop on the socket. Returning
+      // success (not throwing) keeps BullMQ from retrying against a desktop
+      // that is still offline; `null` (gateway not ready) publishes as usual.
+      if (
+        isLocalFsConnector(connector) &&
+        isLocalFsDesktopOnline(orgId, userId, connectorId) === false
+      ) {
+        this.logger.info('Skipping scheduled Local FS sync: desktop offline', {
+          orgId,
+          userId,
+          connectorId,
+        });
+        return { success: true };
+      }
 
       const event = constructSyncConnectorEvent(orgId, connector, connectorId);
 

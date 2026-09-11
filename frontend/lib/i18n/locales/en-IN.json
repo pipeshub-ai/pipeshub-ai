@@ -1896,7 +1896,9 @@
           "needsAuth": "Needs auth",
           "needsAuthTooltip": "Configuration is saved but this instance still needs authentication.",
           "ready": "Complete",
-          "readyTooltip": "Configuration is complete and authenticated. Sync can run when enabled."
+          "readyTooltip": "Configuration is complete and authenticated. Sync can run when enabled.",
+          "desktopOffline": "Desktop offline",
+          "desktopOfflineTooltip": "The desktop app that owns this folder is not connected. Open it on that machine to sync."
         },
         "sync": {
           "kind": "Sync",

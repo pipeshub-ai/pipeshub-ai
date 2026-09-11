@@ -1989,7 +1989,9 @@
           "needsAuth": "需要认证",
           "needsAuthTooltip": "配置已保存，但此实例仍需要认证。",
           "ready": "已完成",
-          "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。"
+          "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。",
+          "desktopOffline": "桌面端离线",
+          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。"
         },
         "sync": {
           "kind": "同步",

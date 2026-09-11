@@ -6,18 +6,13 @@ import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { isElectron } from '@/lib/electron';
-import { isLocalFsConnectorType } from '../utils/local-fs-helpers';
+import { isLocalFsConnectorType, localFsDesktopToast } from '../utils/local-fs-helpers';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import {
-  prepareLocalFsForEnable,
   startConnectorSync,
-  waitForLocalFsPullOutcome,
+  toggleConnectorSyncOn,
 } from '../utils/connector-sync-actions';
-import {
-  LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS,
-  LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE,
-} from '../constants';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
@@ -432,12 +427,15 @@ function PersonalConnectorsPageContent() {
     async (instance: ConnectorInstance) => {
       if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
       try {
-        // Watcher + socket claim first: toggle publishes an immediate pull,
-        // and a claim that lands after that pull is answered DESKTOP_OFFLINE.
         if (!instance.isActive) {
-          await prepareLocalFsForEnable(instance._key, instance.type);
+          const outcome = await toggleConnectorSyncOn(instance._key, instance.type);
+          if (outcome.kind === 'requires-desktop') {
+            addToast(localFsDesktopToast(outcome));
+            return;
+          }
+        } else {
+          await ConnectorsApi.toggleConnector(instance._key, 'sync');
         }
-        await ConnectorsApi.toggleConnector(instance._key, 'sync');
         if (isLocalFsConnectorType(instance.type)) {
           const fresh = await refreshConnectorRowQuiet(instance._key);
           let config = instanceConfigs[instance._key];
@@ -449,29 +447,11 @@ function PersonalConnectorsPageContent() {
         } else {
           await refreshConnectorRowQuiet(instance._key);
         }
-        if (!instance.isActive && isLocalFsConnectorType(instance.type)) {
-          const outcome = await waitForLocalFsPullOutcome(instance._key, {
-            lastErrorBefore: instance.lastError,
-            updatedAtBefore: instance.updatedAtTimestamp,
-          });
-          addToast({
-            variant: outcome.kind === 'requires-desktop' ? 'info' : 'success',
-            title:
-              outcome.kind === 'requires-desktop'
-                ? LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE
-                : 'Connector sync enabled',
-            duration:
-              outcome.kind === 'requires-desktop'
-                ? LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS
-                : 2500,
-          });
-        } else {
-          addToast({
-            variant: 'success',
-            title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
-            duration: 2500,
-          });
-        }
+        addToast({
+          variant: 'success',
+          title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
+          duration: 2500,
+        });
         await refreshConnectorsListsQuiet();
       } catch (error) {
         addToast({
@@ -525,11 +505,7 @@ function PersonalConnectorsPageContent() {
         await refreshConnectorRowQuiet(instanceId);
       }
       if (outcome?.kind === 'requires-desktop') {
-        addToast({
-          variant: 'info',
-          title: LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE,
-          duration: LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS,
-        });
+        addToast(localFsDesktopToast(outcome));
         return;
       }
       addToast({

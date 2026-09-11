@@ -30,8 +30,6 @@ from app.edition_services import get_data_entities_processor_cls
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-_UNSET = object()
-
 
 class EventService:
     """Event service for handling connector-specific events"""
@@ -52,7 +50,6 @@ class EventService:
         *,
         status: str | None = None,
         is_locked: bool | None = None,
-        last_error: Any = _UNSET,
     ) -> None:
         """Update app document status and/or isLocked for a connector.
 
@@ -68,8 +65,6 @@ class EventService:
             payload["status"] = status
         if is_locked is not None:
             payload["isLocked"] = is_locked
-        if last_error is not _UNSET:
-            payload[ConnectorStateKeys.LAST_ERROR] = last_error or None
         await self.graph_provider.batch_upsert_nodes(
             [payload], CollectionNames.APPS.value
         )
@@ -380,7 +375,6 @@ class EventService:
                     connector_id,
                     status=AppStatus.FULL_SYNCING.value,
                     is_locked=True,
-                    last_error=None,
                 )
                 self.logger.info(f"🔒 Set status=FULL_SYNCING, isLocked=True for connector {connector_id}")
             except Exception as lock_err:
@@ -457,7 +451,6 @@ class EventService:
                 await self._update_app_status(
                     connector_id,
                     status=AppStatus.SYNCING.value,
-                    last_error=None,
                 )
                 self.logger.info(f"Set status=SYNCING for connector {connector_id}")
             except Exception as status_err:
@@ -494,7 +487,7 @@ class EventService:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
         start = time.monotonic()
         cancelled = False
-        last_error = None
+        skipped_code: str | None = None
         try:
             await connector.run_sync()
         except asyncio.CancelledError:
@@ -504,7 +497,9 @@ class EventService:
             cancelled = True
             raise
         except ConnectorSyncSkippedError as exc:
-            last_error = exc.code
+            # Not a crash: the connector declined to run (e.g. Local FS with no
+            # desktop connected). Logged only; the UI reads live presence.
+            skipped_code = exc.code
         finally:
             elapsed = time.monotonic() - start
             mins, secs = divmod(elapsed, 60)
@@ -513,10 +508,10 @@ class EventService:
                 self.logger.warning(
                     f"⚠️ Sync cancelled for connector {connector_id} after {elapsed_str}"
                 )
-            if last_error:
+            if skipped_code:
                 self.logger.info(
                     f"Sync skipped for connector {connector_id} "
-                    f"({last_error}, {elapsed_str})"
+                    f"({skipped_code}, {elapsed_str})"
                 )
             else:
                 self.logger.info(
@@ -526,7 +521,6 @@ class EventService:
                 await self._update_app_status(
                     connector_id,
                     status=AppStatus.IDLE.value,
-                    last_error=last_error,
                 )
                 self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")
             except Exception as clear_err:

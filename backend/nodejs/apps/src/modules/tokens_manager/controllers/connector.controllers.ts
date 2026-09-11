@@ -18,10 +18,18 @@ import {
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
+  annotateLocalFsDesktopPresence,
+  DesktopRefusalReason,
   executeConnectorCommand,
   handleBackendError,
   handleConnectorResponse,
+  respondLocalFsDesktopRefusal,
 } from '../utils/connector.utils';
+import { isLocalFsConnector } from '../../../utils/local-fs-utils';
+import {
+  isDesktopConnected,
+  isLocalFsDesktopOnline,
+} from '../../../libs/services/desktop-presence.provider';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import {
   reconcileConnectorSchedule,
@@ -434,6 +442,7 @@ export const getConnectorInstances =
         headers,
       );
 
+      annotateLocalFsDesktopPresence(connectorResponse?.data, req.user?.orgId);
       handleConnectorResponse(
         connectorResponse,
         res,
@@ -698,6 +707,7 @@ export const getConnectorInstance =
         headers,
       );
 
+      annotateLocalFsDesktopPresence(connectorResponse?.data, req.user?.orgId);
       handleConnectorResponse(
         connectorResponse,
         res,
@@ -1398,6 +1408,27 @@ export const toggleConnectorInstance =
       logger.info(`Toggling connector instance ${connectorId} with type ${type}`);
 
       const headers = buildProxyHeaders(req);
+      // Enabling sync publishes an immediate pull, so refuse up front when the
+      // owner's desktop is not connected. Agent toggles and toggle-off skip
+      // the extra round-trip.
+      if (type === 'sync') {
+        const instance = await fetchConnectorInstanceSummary(
+          connectorId,
+          appConfig,
+          headers,
+        );
+        if (
+          instance?.isActive === false &&
+          isLocalFsDesktopOffline(req, connectorId, instance)
+        ) {
+          respondLocalFsDesktopRefusal(
+            res,
+            connectorId,
+            localFsRefusalReason(req, instance),
+          );
+          return;
+        }
+      }
       const body: { type: string; fullSync?: boolean } = { type };
       if (typeof fullSync === 'boolean') {
         body.fullSync = fullSync;
@@ -1801,8 +1832,14 @@ const validateActiveConnector = async (
   });
 };
 
-interface ConnectorInstanceLock {
-  connector?: { isLocked?: boolean; status?: string };
+interface ConnectorInstanceSummary {
+  _key?: string;
+  type?: string;
+  scope?: string;
+  createdBy?: string;
+  isActive?: boolean;
+  isLocked?: boolean;
+  status?: string;
 }
 
 const LOCK_MESSAGES: Record<string, string> = {
@@ -1810,30 +1847,70 @@ const LOCK_MESSAGES: Record<string, string> = {
   SYNCING: 'A sync is already in progress. Please wait and try again.',
 };
 
-const validateConnectorNotLocked = async (
+/** `null` when Python answers non-200 or without a `connector` body. */
+const fetchConnectorInstanceSummary = async (
   connectorId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
-): Promise<void> => {
+): Promise<ConnectorInstanceSummary | null> => {
   const response = await executeConnectorCommand(
     `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
     HttpMethod.GET,
     headers,
   );
 
-  const data = response.data as ConnectorInstanceLock | undefined;
+  const data = response.data as
+    | { connector?: ConnectorInstanceSummary }
+    | undefined;
   if (response.statusCode !== 200 || !data?.connector) {
-    return;
+    return null;
   }
+  return data.connector;
+};
 
-  const connector = data.connector;
-  if (connector.isLocked) {
-    const status = connector.status ?? '';
-    const message =
-      LOCK_MESSAGES[status] ??
-      'Another operation is in progress. Please wait and try again.';
-    throw new ConflictError(message);
+const assertConnectorNotLocked = (
+  instance: ConnectorInstanceSummary | null,
+): void => {
+  if (!instance?.isLocked) return;
+  const status = instance.status ?? '';
+  const message =
+    LOCK_MESSAGES[status] ??
+    'Another operation is in progress. Please wait and try again.';
+  throw new ConflictError(message);
+};
+
+/**
+ * True only when presence answers a definite "no" for a Local FS connector.
+ * Keyed on the owner: the desktop registers under createdBy, which for a
+ * personal connector may differ from an admin caller.
+ */
+const isLocalFsDesktopOffline = (
+  req: AuthenticatedUserRequest,
+  connectorId: string,
+  instance: ConnectorInstanceSummary | null,
+): boolean => {
+  if (!instance || !isLocalFsConnector(String(instance.type ?? ''))) {
+    return false;
   }
+  const orgId = req.user?.orgId;
+  const userId = instance.createdBy ?? req.user?.userId;
+  if (!orgId || !userId) return false;
+  return isLocalFsDesktopOnline(orgId, userId, connectorId) === false;
+};
+
+/**
+ * Toggle-on only. The desktop claims a connector when it first mounts the
+ * watcher, so "a desktop is connected but has no claim" is the first-enable
+ * case and deserves a different message than a closed app.
+ */
+const localFsRefusalReason = (
+  req: AuthenticatedUserRequest,
+  instance: ConnectorInstanceSummary,
+): DesktopRefusalReason => {
+  const orgId = req.user?.orgId;
+  const userId = instance.createdBy ?? req.user?.userId;
+  if (!orgId || !userId) return 'offline';
+  return isDesktopConnected(orgId, userId) === true ? 'unclaimed' : 'offline';
 };
 
 const normalizeAppName = (value: string): string =>
@@ -1938,11 +2015,17 @@ export const resyncConnectorRecords =
         headers,
       );
 
-      await validateConnectorNotLocked(
+      const instance = await fetchConnectorInstanceSummary(
         connectorId,
         appConfig,
         headers,
       );
+      // Lock first: "already running" must win over "desktop offline".
+      assertConnectorNotLocked(instance);
+      if (isLocalFsDesktopOffline(req, connectorId, instance)) {
+        respondLocalFsDesktopRefusal(res, connectorId);
+        return;
+      }
 
       const resyncConnectorPayload = {
         userId,

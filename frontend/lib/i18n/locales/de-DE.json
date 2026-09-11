@@ -1898,7 +1898,9 @@
           "needsAuth": "Auth nötig",
           "needsAuthTooltip": "Die Konfiguration ist gespeichert, aber diese Instanz muss noch authentifiziert werden.",
           "ready": "Abgeschlossen",
-          "readyTooltip": "Konfiguration ist abgeschlossen und authentifiziert. Sync kann bei Aktivierung laufen."
+          "readyTooltip": "Konfiguration ist abgeschlossen und authentifiziert. Sync kann bei Aktivierung laufen.",
+          "desktopOffline": "Desktop offline",
+          "desktopOfflineTooltip": "Die Desktop-App, der dieser Ordner gehört, ist nicht verbunden. Öffnen Sie sie auf diesem Rechner, um zu synchronisieren."
         },
         "sync": {
           "kind": "Sync",

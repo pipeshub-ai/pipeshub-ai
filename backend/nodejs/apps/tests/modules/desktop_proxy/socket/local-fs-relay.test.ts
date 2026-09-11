@@ -348,3 +348,39 @@ describe('LocalFsRelay', () => {
     })
   })
 })
+
+describe('LocalFsRelay.hasDesktop', () => {
+  it('is true once the socket has claimed the connector', () => {
+    const relay = new LocalFsRelay()
+    const socket = makeSocket()
+    relay.register(asRelaySocket(socket), ['conn-1'])
+    expect(relay.hasDesktop('org-1', 'user-1', 'conn-1')).to.equal(true)
+  })
+
+  it('is false for a connector nobody claimed', () => {
+    const relay = new LocalFsRelay()
+    expect(relay.hasDesktop('org-1', 'user-1', 'conn-9')).to.equal(false)
+  })
+
+  it('is false once the claiming socket is no longer connected', () => {
+    const relay = new LocalFsRelay()
+    const socket = makeSocket()
+    relay.register(asRelaySocket(socket), ['conn-1'])
+    socket.connected = false
+    expect(relay.hasDesktop('org-1', 'user-1', 'conn-1')).to.equal(false)
+  })
+
+  it('is false after the socket disconnects', () => {
+    const relay = new LocalFsRelay()
+    const socket = makeSocket()
+    relay.register(asRelaySocket(socket), ['conn-1'])
+    relay.handleDisconnect(asRelaySocket(socket))
+    expect(relay.hasDesktop('org-1', 'user-1', 'conn-1')).to.equal(false)
+  })
+
+  it('does not answer for a different user of the same org', () => {
+    const relay = new LocalFsRelay()
+    relay.register(asRelaySocket(makeSocket('org-1', 'user-1')), ['conn-1'])
+    expect(relay.hasDesktop('org-1', 'user-2', 'conn-1')).to.equal(false)
+  })
+})

@@ -213,6 +213,30 @@ export class DesktopProxySocketGateway {
     return this.namespace !== null;
   }
 
+  /**
+   * Any desktop socket of this user on this replica, whether or not it has
+   * claimed a given connector. Every socket joins the org:user room on
+   * connect. `null` before the namespace is attached.
+   */
+  isDesktopConnected(orgId: string, userId: string): boolean | null {
+    if (!this.namespace) return null;
+    const room = this.namespace.adapter.rooms.get(`${orgId}:${userId}`);
+    return (room?.size ?? 0) > 0;
+  }
+
+  /**
+   * `null` before the namespace is attached: at that point no desktop could
+   * have registered yet, so "offline" would be wrong for every connector.
+   */
+  isLocalFsDesktopOnline(
+    orgId: string,
+    userId: string,
+    connectorId: string,
+  ): boolean | null {
+    if (!this.isReady()) return null;
+    return this.localFsRelay.hasDesktop(orgId, userId, connectorId);
+  }
+
   /** Ask the desktop that registered this connector for one page of file events. */
   async requestLocalFsFileEvents(
     orgId: string,

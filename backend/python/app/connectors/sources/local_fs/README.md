@@ -67,7 +67,7 @@ The desktop re-validates that the server-supplied `relPath` resolves inside the 
 3. **Activate** the connector.
 4. Press Sync, or wait for the scheduled tick — both reach `run_sync` through the normal resync/crawl paths, from the browser as well as the desktop app. Only *setup* (picking a folder) needs Electron.
 
-If the desktop is offline the run is skipped with a warning, not failed: no sync point is written and no records are pruned. Because resync is published to Kafka and `run_sync` pulls asynchronously, that outcome shows up as the connector returning to IDLE rather than as an error on the Sync request itself.
+If the desktop is offline, Node refuses Sync and toggle-on up front with `409 DESKTOP_OFFLINE` (checked against the socket claim map before the job is queued) and skips a scheduled tick quietly. A pull that still finds no desktop mid-run (service boot, Kafka-driven runs, a desktop that dropped after the check) is skipped with a warning, not failed: no sync point is written and no records are pruned, and the connector returns to IDLE. The web UI shows a "Desktop offline" badge from live presence, which Node stamps as `desktopOnline` on Local FS rows of the instance GET responses; nothing about the outcome is persisted.
 
 ## 4. Auth
 

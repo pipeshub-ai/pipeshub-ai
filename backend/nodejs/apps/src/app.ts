@@ -71,6 +71,7 @@ import { NotificationService } from './modules/notification/service/notification
 import { DesktopProxySocketGateway } from './modules/desktop_proxy/socket/desktop-proxy.gateway';
 import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop-proxy.container';
 import { createDesktopProxyRouter } from './modules/desktop_proxy/routes/desktop-proxy.routes';
+import { registerDesktopPresence } from './libs/services/desktop-presence.provider';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
@@ -275,6 +276,7 @@ export class Application {
         .initialize(this.server);
       this.desktopProxySocketGateway =
         this.desktopProxyContainer.get(DesktopProxySocketGateway);
+      registerDesktopPresence(this.desktopProxySocketGateway);
       this.desktopProxySocketGateway.initialize(this.server);
 
       this.bootstrapNotificationBrokerConsumer();
@@ -720,6 +722,7 @@ export class Application {
       try {
         this.desktopProxySocketGateway?.shutdown();
         this.desktopProxySocketGateway = null;
+        registerDesktopPresence(null);
         this.notificationContainer
           .get<NotificationService>(NotificationService)
           .shutdown();

@@ -44,8 +44,8 @@ class ConnectorInitError(Exception):
 
 
 class ConnectorSyncSkippedError(Exception):
-    """Sync could not run now. Event service writes ``code`` to App lastError
-    and does not treat the task as a crash."""
+    """Sync could not run now. Callers log ``code`` and treat the task as
+    skipped, not crashed; nothing is persisted."""
 
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message or code)

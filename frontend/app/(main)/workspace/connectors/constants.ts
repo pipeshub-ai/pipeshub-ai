@@ -19,11 +19,19 @@ export const CONNECTOR_INSTANCE_STATUS = {
   IDLE: 'IDLE',
 } as const;
 
-/** App-node `lastError` when Local FS pulled and no desktop was registered. */
+/** `details.code` of the 409 Node returns when no desktop holds a Local FS claim. */
 export const LOCAL_FS_DESKTOP_OFFLINE = 'DESKTOP_OFFLINE';
+/**
+ * `details.code` when a desktop is connected but has never claimed the
+ * connector: it has not been enabled from the desktop app yet. Toggle-on only.
+ */
+export const LOCAL_FS_DESKTOP_UNCLAIMED = 'DESKTOP_UNCLAIMED';
 
 export const LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE =
-  'Open the Pipeshub desktop app on the machine that owns this folder to resync.';
+  'Open the Pipeshub desktop app on the machine that owns this folder to sync.';
+
+export const LOCAL_FS_DESKTOP_UNCLAIMED_TOAST_TITLE =
+  'This connector has not been set up on a desktop yet. Open the Pipeshub desktop app on the machine that owns this folder and enable sync there once.';
 
 export const LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS = 5000;
 

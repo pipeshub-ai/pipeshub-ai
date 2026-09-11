@@ -1,9 +1,13 @@
 import { isElectron } from '@/lib/electron';
 import { ConnectorsApi } from '../api';
-import { CONNECTOR_INSTANCE_STATUS, LOCAL_FS_DESKTOP_OFFLINE } from '../constants';
+import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { useConnectorsStore } from '../store';
 import type { ConnectorInstance } from '../types';
-import { isLocalFsConnectorType } from './local-fs-helpers';
+import {
+  isLocalFsConnectorType,
+  readDesktopRefusal,
+  type DesktopRefusalReason,
+} from './local-fs-helpers';
 import {
   buildLocalSyncStartOptionsFromConnectorConfig,
   checkLocalRootPathConflict,
@@ -13,32 +17,16 @@ import {
 import { refreshConnectorInstanceDetails } from './refresh-instance-details';
 
 /**
- * Where the resync was performed. Every connector — Local FS included — now
- * goes through the backend: the connector service runs `run_sync` and pulls
- * file events from the desktop over the socket relay, so pressing Sync from a
- * browser works as long as the user's desktop app is running. `requires-desktop`
- * is what the backend reports when it is not.
+ * Where the sync was performed. Every connector — Local FS included — goes
+ * through the backend: the connector service runs `run_sync` and pulls file
+ * events from the desktop over the socket relay, so pressing Sync from a
+ * browser works as long as the user's desktop app is running. Node checks the
+ * socket claim before queueing the job and refuses with `requires-desktop`
+ * when no desktop holds it.
  */
 export type ResyncOutcome =
   | { kind: 'backend' }
-  | { kind: 'requires-desktop' };
-
-/**
- * Matched on the explicit code, not on 409 — the resync route already uses 409
- * for "a sync is already running", and treating that as an offline desktop
- * would tell the user the opposite of what happened.
- *
- * The resync HTTP route returns 200 once the job is queued. A desktop that is
- * offline is written to the App node as `lastError: DESKTOP_OFFLINE` after
- * the pull; {@link waitForLocalFsPullOutcome} reads that.
- */
-function isDesktopOfflineError(error: unknown): boolean {
-  const body = error as { code?: string; details?: { code?: string }; message?: string };
-  if (body?.code === 'DESKTOP_OFFLINE' || body?.details?.code === 'DESKTOP_OFFLINE') {
-    return true;
-  }
-  return /DESKTOP_OFFLINE/.test(String(body?.message || ''));
-}
+  | { kind: 'requires-desktop'; reason: DesktopRefusalReason };
 
 function isIdleSyncStatus(status?: string | null): boolean {
   const normalized = (status ?? CONNECTOR_INSTANCE_STATUS.IDLE).toUpperCase();
@@ -85,128 +73,6 @@ async function applyPostResyncInstanceRefresh(
   }
 }
 
-const LOCAL_FS_OUTCOME_POLL_MS = 400;
-const LOCAL_FS_OUTCOME_TIMEOUT_MS = 12_000;
-/** If lastError was already DESKTOP_OFFLINE, don't wait the full timeout
- * when this run never flips to SYNCING (skip finishes in ~200ms). */
-const STALE_OFFLINE_CONFIRM_MS = 1_200;
-
-function isInProgressStatus(status?: string | null): boolean {
-  const normalized = (status ?? CONNECTOR_INSTANCE_STATUS.IDLE).toUpperCase();
-  return (
-    normalized === CONNECTOR_INSTANCE_STATUS.SYNCING ||
-    normalized === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING
-  );
-}
-
-function isDesktopOfflineLastError(lastError?: string | null): boolean {
-  return lastError === LOCAL_FS_DESKTOP_OFFLINE;
-}
-
-function readPullOutcome(instance: ConnectorInstance): {
-  offline: boolean;
-  inProgress: boolean;
-} {
-  return {
-    offline: isDesktopOfflineLastError(instance.lastError),
-    inProgress: isInProgressStatus(instance.status),
-  };
-}
-
-function findStoredConnector(connectorId: string): ConnectorInstance | undefined {
-  const state = useConnectorsStore.getState();
-  return (
-    state.activeConnectors.find((c) => c._key === connectorId) ??
-    state.instances.find((c) => c._key === connectorId) ??
-    (state.selectedInstance?._key === connectorId ? state.selectedInstance : undefined)
-  );
-}
-
-export type LocalFsPullBaseline = {
-  lastErrorBefore?: string | null;
-  updatedAtBefore?: number | null;
-};
-
-function isThisRunOffline(
-  instance: ConnectorInstance,
-  args: { hadStaleOffline: boolean; sawThisRun: boolean; updatedAtBefore?: number | null }
-): boolean {
-  if (!isDesktopOfflineLastError(instance.lastError)) {
-    return false;
-  }
-  if (!args.hadStaleOffline || args.sawThisRun) {
-    return true;
-  }
-  const updatedAt = instance.updatedAtTimestamp ?? 0;
-  return updatedAt > (args.updatedAtBefore ?? 0);
-}
-
-/**
- * True once the row carries a newer `updatedAtTimestamp` than the pre-action
- * baseline — i.e. this action's run has landed, even if the pull finished
- * between two polls and we never observed SYNCING/FULL_SYNCING for it.
- */
-function hasNewerRunTimestamp(
-  instance: ConnectorInstance,
-  updatedAtBefore?: number | null
-): boolean {
-  const updatedAt = instance.updatedAtTimestamp ?? 0;
-  return updatedAt > (updatedAtBefore ?? 0);
-}
-
-/**
- * Resync/toggle return before the pull. Poll status + lastError only — do
- * not refresh config or upsert the store on every tick (that remounts the
- * instance list). Write the store once when the outcome is known.
- *
- * Pass lastError + updatedAt from *before* the action. A leftover
- * DESKTOP_OFFLINE is ignored until this run writes a newer updatedAt,
- * we see SYNCING, or a short idle confirm elapses.
- */
-export async function waitForLocalFsPullOutcome(
-  connectorId: string,
-  options?: LocalFsPullBaseline
-): Promise<ResyncOutcome> {
-  const hadStaleOffline = isDesktopOfflineLastError(options?.lastErrorBefore);
-  const updatedAtBefore = options?.updatedAtBefore ?? 0;
-  const startedAt = Date.now();
-  const deadline = startedAt + LOCAL_FS_OUTCOME_TIMEOUT_MS;
-  let sawThisRun = false;
-  let latest: ConnectorInstance | null = null;
-
-  while (Date.now() < deadline) {
-    latest = await ConnectorsApi.getConnectorInstance(connectorId);
-    const { offline, inProgress } = readPullOutcome(latest);
-    const staleConfirmed =
-      hadStaleOffline &&
-      offline &&
-      !inProgress &&
-      Date.now() - startedAt >= STALE_OFFLINE_CONFIRM_MS;
-
-    if (inProgress) {
-      sawThisRun = true;
-    } else if (
-      isThisRunOffline(latest, { hadStaleOffline, sawThisRun, updatedAtBefore }) ||
-      staleConfirmed
-    ) {
-      useConnectorsStore.getState().upsertConnectorInstance(latest);
-      return { kind: 'requires-desktop' };
-    } else if (!offline && (sawThisRun || hasNewerRunTimestamp(latest, updatedAtBefore))) {
-      useConnectorsStore.getState().upsertConnectorInstance(latest);
-      return { kind: 'backend' };
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, LOCAL_FS_OUTCOME_POLL_MS));
-  }
-
-  const last = latest ?? (await ConnectorsApi.getConnectorInstance(connectorId));
-  useConnectorsStore.getState().upsertConnectorInstance(last);
-  if (isDesktopOfflineLastError(last.lastError)) {
-    return { kind: 'requires-desktop' };
-  }
-  return { kind: 'backend' };
-}
-
 /**
  * Preflight for activating a Local FS connector (toggle sync on / "Start
  * Syncing" from the create dialog): reject *before* the backend flips the
@@ -238,10 +104,9 @@ export async function assertLocalFsRootPathAvailable(
 
 /**
  * Mounts the Electron watcher and waits until the desktop has claimed this
- * connector on the socket. Toggle-on publishes an immediate pull; if this
- * runs after that publish, Node answers DESKTOP_OFFLINE. No-op outside
- * Electron. Idempotent — `LocalSyncManager.start` returns early for an
- * unchanged config.
+ * connector on the socket. Node refuses toggle-on and resync while no claim
+ * exists, so this must complete first. No-op outside Electron. Idempotent —
+ * `LocalSyncManager.start` returns early for an unchanged config.
  */
 export async function ensureLocalWatcherStarted(
   connectorId: string,
@@ -287,7 +152,8 @@ export async function runConnectorResync(args: {
   fullSync?: boolean;
 }): Promise<ResyncOutcome> {
   const { connectorId, connectorType, fullSync = false } = args;
-  if (isLocalFsConnectorType(connectorType)) {
+  const localFs = isLocalFsConnectorType(connectorType);
+  if (localFs) {
     try {
       await ensureLocalWatcherStarted(connectorId, connectorType);
     } catch (error) {
@@ -299,18 +165,39 @@ export async function runConnectorResync(args: {
   try {
     await ConnectorsApi.resyncConnector(connectorId, connectorType, fullSync);
   } catch (error) {
-    if (isLocalFsConnectorType(connectorType) && isDesktopOfflineError(error)) {
-      return { kind: 'requires-desktop' };
+    const reason = localFs ? readDesktopRefusal(error) : null;
+    if (reason) {
+      return { kind: 'requires-desktop', reason };
     }
     throw error;
   }
-  const baseline = findStoredConnector(connectorId);
   await applyPostResyncInstanceRefresh(connectorId, fullSync);
-  if (isLocalFsConnectorType(connectorType)) {
-    return waitForLocalFsPullOutcome(connectorId, {
-      lastErrorBefore: baseline?.lastError,
-      updatedAtBefore: baseline?.updatedAtTimestamp,
-    });
+  return { kind: 'backend' };
+}
+
+/**
+ * Turn sync on. Runs the Local FS preflight + watcher claim first, then the
+ * toggle; Node refuses a Local FS enable when no desktop holds the claim
+ * (DESKTOP_OFFLINE, or DESKTOP_UNCLAIMED when a desktop is connected but has
+ * never enabled this connector), reported as `requires-desktop` with the
+ * reason instead of thrown. Does not refresh the row — callers do that.
+ */
+export async function toggleConnectorSyncOn(
+  connectorId: string,
+  connectorType?: string
+): Promise<ResyncOutcome> {
+  const localFs = !!connectorType && isLocalFsConnectorType(connectorType);
+  if (connectorType) {
+    await prepareLocalFsForEnable(connectorId, connectorType);
+  }
+  try {
+    await ConnectorsApi.toggleConnector(connectorId, 'sync');
+  } catch (error) {
+    const reason = localFs ? readDesktopRefusal(error) : null;
+    if (reason) {
+      return { kind: 'requires-desktop', reason };
+    }
+    throw error;
   }
   return { kind: 'backend' };
 }
@@ -324,25 +211,18 @@ export async function runConnectorResync(args: {
  */
 export async function startConnectorSync(
   instance: { _key: string } & Partial<Pick<ConnectorInstance, 'type'>>
-): Promise<ResyncOutcome | null> {
+): Promise<ResyncOutcome> {
   if (!instance._key) {
     throw new Error('startConnectorSync: connectorId (_key) is required');
   }
   const fresh = await ConnectorsApi.getConnectorInstance(instance._key);
   const type = fresh.type || instance.type;
   if (!fresh.isActive) {
-    if (type) {
-      await prepareLocalFsForEnable(instance._key, type);
+    const outcome = await toggleConnectorSyncOn(instance._key, type);
+    if (outcome.kind === 'backend') {
+      await refreshConnectorInstanceDetails(instance._key);
     }
-    await ConnectorsApi.toggleConnector(instance._key, 'sync');
-    await refreshConnectorInstanceDetails(instance._key);
-    if (type && isLocalFsConnectorType(type)) {
-      return waitForLocalFsPullOutcome(instance._key, {
-        lastErrorBefore: fresh.lastError,
-        updatedAtBefore: fresh.updatedAtTimestamp,
-      });
-    }
-    return null;
+    return outcome;
   }
   if (!type) {
     throw new Error(
