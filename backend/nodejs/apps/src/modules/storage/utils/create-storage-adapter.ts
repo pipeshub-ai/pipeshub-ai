@@ -62,7 +62,7 @@ async function ensureWatch(kvStore: KeyValueStoreService): Promise<void> {
       cached = null;
     });
   } catch {
-    watchStarted = true;
+    watchStarted = false;
   }
 }
 

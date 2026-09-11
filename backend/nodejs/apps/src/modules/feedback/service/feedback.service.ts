@@ -78,22 +78,25 @@ export class FeedbackService {
     files: FileBufferInfo[];
   }): Promise<{ id: string }> {
     const feedbackId = new mongoose.Types.ObjectId();
-    const { adapter, storageVendor } = await getInitializedStorageAdapter(
-      this.kvStore,
-      this.appConfig.storage,
-    );
     const attachments: IFeedbackAttachment[] = [];
+    let storage: Awaited<ReturnType<typeof getInitializedStorageAdapter>> | null = null;
 
     for (const file of input.files) {
       const mimeType = normalizeMimeType(file.mimetype);
       if (!mimeType) {
         continue;
       }
+      if (!storage) {
+        storage = await getInitializedStorageAdapter(
+          this.kvStore,
+          this.appConfig.storage,
+        );
+      }
       const stored = await uploadFeedbackAttachment({
         kvStore: this.kvStore,
         appConfig: this.appConfig,
-        adapter,
-        storageVendor,
+        adapter: storage.adapter,
+        storageVendor: storage.storageVendor,
         orgId: input.orgId,
         userId: input.userId,
         feedbackId: String(feedbackId),
@@ -164,25 +167,27 @@ export class FeedbackService {
     const kindLabel = input.kind === 'issue' ? 'Feedback' : 'Feature request';
     const snippet = input.description.replace(/\s+/g, ' ').slice(0, 80);
 
-    const { adapter } = await getInitializedStorageAdapter(
-      this.kvStore,
-      this.appConfig.storage,
-    );
     const zipEntries: { name: string; data: Buffer }[] = [];
-    for (const attachment of input.attachments) {
-      const data = await readFeedbackAttachmentBuffer({
-        adapter,
-        orgId: input.orgId,
-        documentId: String(attachment.documentId),
-      });
-      if (!data) {
-        this.logger.warn('Skipping missing feedback attachment in email zip', {
-          feedbackId: input.feedbackId,
+    if (input.attachments.length > 0) {
+      const { adapter } = await getInitializedStorageAdapter(
+        this.kvStore,
+        this.appConfig.storage,
+      );
+      for (const attachment of input.attachments) {
+        const data = await readFeedbackAttachmentBuffer({
+          adapter,
+          orgId: input.orgId,
           documentId: String(attachment.documentId),
         });
-        continue;
+        if (!data) {
+          this.logger.warn('Skipping missing feedback attachment in email zip', {
+            feedbackId: input.feedbackId,
+            documentId: String(attachment.documentId),
+          });
+          continue;
+        }
+        zipEntries.push({ name: attachment.fileName, data });
       }
-      zipEntries.push({ name: attachment.fileName, data });
     }
 
     const mailAttachments =
