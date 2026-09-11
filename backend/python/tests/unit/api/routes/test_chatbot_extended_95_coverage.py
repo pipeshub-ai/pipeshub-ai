@@ -293,11 +293,15 @@ async def test_grant_revoke_attachment_permissions():
 
     req_g = MagicMock()
 
+    req_g.state.user = {"orgId": "org-1"}
+
     req_g.json = AsyncMock(return_value={"userIds": ["u"], "recordIds": ["rec"]})
 
     gp = AsyncMock()
 
-    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "k1"})
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "k1", "orgId": "org-1"})
+
+    gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
 
     gp.batch_create_edges = AsyncMock()
 
@@ -307,8 +311,12 @@ async def test_grant_revoke_attachment_permissions():
 
         r1 = await grant_attachment_permissions(req_g, gp)
         assert r1["granted"] == 1
+        assert r1["skippedRecords"] == 0
+        assert r1["skippedUsers"] == 0
 
     req_none = MagicMock()
+
+    req_none.state.user = {"orgId": "org-1"}
 
     req_none.json = AsyncMock(return_value={"userIds": [], "recordIds": []})
 
@@ -318,6 +326,8 @@ async def test_grant_revoke_attachment_permissions():
     gp.get_user_by_user_id = AsyncMock(return_value=None)
     req_skip = MagicMock()
 
+    req_skip.state.user = {"orgId": "org-1"}
+
     req_skip.json = AsyncMock(return_value={"userIds": ["u"], "recordIds": ["rec"]})
 
     with patch.object(cr.logger, "warning", MagicMock()):
@@ -325,16 +335,62 @@ async def test_grant_revoke_attachment_permissions():
         r3 = await grant_attachment_permissions(req_skip, gp)
 
     assert r3["granted"] == 0
+    assert r3["skippedUsers"] == 1
 
     req_r = MagicMock()
 
+    req_r.state.user = {"orgId": "org-1"}
+
     req_r.json = AsyncMock(return_value={"userIds": ["x"], "recordIds": ["y"]})
 
-    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "kk"})
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "kk", "orgId": "org-1"})
 
     out_r = await revoke_attachment_permissions(req_r, gp)
     gp.batch_delete_edges.assert_awaited()
     assert out_r["revoked"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_grant_attachment_permissions_rejects_cross_org_record():
+    """A record belonging to another org must never be granted/revoked
+    permissions on, even if the caller supplies its id directly."""
+    import app.api.routes.chatbot as cr
+
+    from app.api.routes.chatbot import grant_attachment_permissions, revoke_attachment_permissions
+
+    req = MagicMock()
+    req.state.user = {"orgId": "org-1"}
+    req.json = AsyncMock(return_value={"userIds": ["u"], "recordIds": ["other-org-rec"]})
+
+    gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "k1"})
+    gp.get_document = AsyncMock(return_value={"orgId": "org-2"})
+    gp.batch_create_edges = AsyncMock()
+    gp.batch_delete_edges = AsyncMock()
+
+    with patch.object(cr.logger, "warning", MagicMock()):
+        grant_out = await grant_attachment_permissions(req, gp)
+        revoke_out = await revoke_attachment_permissions(req, gp)
+
+    assert grant_out["granted"] == 0
+    assert grant_out["skippedRecords"] == 1
+    assert revoke_out["revoked"] == 0
+    assert revoke_out["skippedRecords"] == 1
+    gp.batch_create_edges.assert_not_awaited()
+    gp.batch_delete_edges.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_grant_attachment_permissions_requires_org_context():
+    from app.api.routes.chatbot import grant_attachment_permissions
+
+    req = MagicMock()
+    req.state.user = {}
+    req.json = AsyncMock(return_value={"userIds": ["u"], "recordIds": ["rec"]})
+
+    with pytest.raises(HTTPException) as exc:
+        await grant_attachment_permissions(req, AsyncMock())
+    assert exc.value.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -1193,8 +1249,12 @@ async def test_grant_and_revoke_permissions_json_noise():
 
     gp_miss.get_user_by_user_id = AsyncMock(return_value={"n": True})
 
+    gp_miss.get_document = AsyncMock(return_value={"orgId": "org-1"})
+
 
     rk2 = MagicMock()
+
+    rk2.state.user = {"orgId": "org-1"}
 
 
     rk2.json = AsyncMock(return_value={"userIds": ["u"], "recordIds": ["rid"]})
@@ -1221,6 +1281,9 @@ async def test_grant_and_revoke_permissions_json_noise():
 
 
     assert grant_out["granted"] == 0
+
+    assert grant_out["skippedRecords"] == 0
+    assert grant_out["skippedUsers"] == 1
 
 
 
