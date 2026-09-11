@@ -242,6 +242,15 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
         """Check if OAuth flow has been completed"""
         return self._oauth_completed
 
+    def set_access_token(self, access_token: str) -> None:
+        """Use a new access token for the requests that follow.
+
+        The transport reads self.headers, so writing self.access_token on its
+        own leaves the stale bearer token on every request.
+        """
+        self.access_token = access_token
+        self.headers["Authorization"] = f"Bearer {access_token}"
+
     def get_authorization_url(self, state: Optional[str] = None, scope: str = "useraccount") -> str:
         """Generate OAuth authorization URL
         Args:
