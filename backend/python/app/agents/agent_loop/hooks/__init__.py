@@ -26,6 +26,10 @@ from app.agents.agent_loop.hooks.citations import (
     citation_tracking,
     ensure_fetch_full_record_available,
 )
+from app.agents.agent_loop.hooks.code_graph_unlock import (
+    code_graph_unlock_after_tools,
+    code_graph_unlock_on_turn,
+)
 from app.agents.agent_loop.hooks.completion_gate import completion_gate
 from app.agents.agent_loop.hooks.memory import (
     conversation_enrichment,
@@ -46,6 +50,8 @@ __all__ = [
     "attachment_rehydration",
     "citation_tracking",
     "ensure_fetch_full_record_available",
+    "code_graph_unlock_after_tools",
+    "code_graph_unlock_on_turn",
     "completion_gate",
     "conversation_enrichment",
     "seed_visible_tools_from_history",

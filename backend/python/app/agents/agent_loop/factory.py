@@ -114,6 +114,8 @@ from app.agents.agent_loop.hooks import (
     ask_user_question_sse,
     attachment_rehydration,
     citation_tracking,
+    code_graph_unlock_after_tools,
+    code_graph_unlock_on_turn,
     completion_gate,
     conversation_enrichment,
     resolve_attachments_for_goal,
@@ -204,8 +206,9 @@ _DOMAIN_SHARED_NAV_TOOL_NAMES: frozenset[str] = frozenset({
 
 # Code structure is cross-cutting: the exploring agent is where code questions
 # land, and routing them back through the parent costs a turn and loses the
-# child's context. `read_code` ships alongside the query tool so the child can
-# read what it finds instead of returning bare symbol names.
+# child's context. The full codegraph set ships as shared so a search that
+# unlocks the toolset can walk edges and read symbols without another
+# delegation.
 #
 # SHARED, never claimed. `plan_domain_agents` claiming is exclusive, so listing
 # these on a definition would take them OFF the parent -- flipping
@@ -214,7 +217,9 @@ _DOMAIN_SHARED_NAV_TOOL_NAMES: frozenset[str] = frozenset({
 # mechanism `_DOMAIN_SHARED_NAV_TOOL_NAMES` relies on.
 _DOMAIN_SHARED_CODE_TOOL_NAMES: frozenset[str] = frozenset({
     "codegraph__query_code_graph",
+    "codegraph__get_neighbour",
     "codegraph__read_code",
+    "codegraph__find_symbol_path",
 })
 
 # Matches nodes.py's ReAct/planner loop cap (`MAX_ITERATIONS` — see
@@ -988,6 +993,7 @@ class PipesHubAgentFactory:
 
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))
+        hooks.on(HookEvent.POST_TOOL_USE).use(code_graph_unlock_after_tools(context))
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
@@ -998,6 +1004,7 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
         hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
+        hooks.on(HookEvent.PRE_TURN).use(code_graph_unlock_on_turn(context))
 
         # Recovers from empty model responses (no text, no tool calls).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))

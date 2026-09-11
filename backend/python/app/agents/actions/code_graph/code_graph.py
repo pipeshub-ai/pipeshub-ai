@@ -75,6 +75,16 @@ _CONNECTOR_ID_DESC = (
 
 _INCLUDE_TESTS_DESC = "Include test files and test symbols in results. False by default."
 
+# Every failed lookup in the traces was a composed address, not a wrong one: a
+# real symbol under an invented path, or the right path with `function:` where
+# the indexer wrote `method:`. Neither half is knowable from reading a source
+# body, so the rule has to be "copy", not "spell it correctly".
+_ADDRESS_RULE = (
+    "Copy this from a listing, a code block header, a get_neighbour result or a "
+    "search hit — never compose it. Neither the file nor the `function:`/`method:` "
+    "prefix is guessable, and a wrong one fails outright."
+)
+
 _TAGS = [Tag(key="category", value="code_graph"), Tag(key="type", value="action")]
 
 # `search_tools` scores by keyword overlap over name + short_description +
@@ -344,7 +354,7 @@ class CodeGraph:
                 description=(
                     "Repo-relative path of the file to walk from, or of the file "
                     "holding `qualified_name` — the `Path:` line of a search hit. "
-                    "Give this or `record_id`."
+                    "Give this or `record_id`. " + _ADDRESS_RULE
                 ),
             ),
             ToolParameter(
@@ -367,7 +377,7 @@ class CodeGraph:
                     "though a differently-cased spelling still resolves. OMIT IT to "
                     "walk every symbol the file defines at once, which is what you "
                     "want when a search just handed you the path and you do not know "
-                    "yet which symbol matters."
+                    "yet which symbol matters. " + _ADDRESS_RULE
                 ),
             ),
             ToolParameter(
@@ -472,7 +482,7 @@ class CodeGraph:
                 name="file_path", type=ParameterType.STRING, required=False, default=None,
                 description=(
                     "Repo-relative path of the file to read — the `Path:` line of a "
-                    "search hit. Give this or `record_id`."
+                    "search hit. Give this or `record_id`. " + _ADDRESS_RULE
                 ),
             ),
             ToolParameter(
@@ -487,7 +497,8 @@ class CodeGraph:
                 name="qualified_name", type=ParameterType.STRING, required=False, default=None,
                 description=(
                     "Read one symbol — e.g. 'function:parse_config', 'method:Client.fetch', "
-                    "as shown after '#' in a code block header. Omit to read the file."
+                    "as shown after '#' in a code block header. Omit to read the file. "
+                    + _ADDRESS_RULE
                 ),
             ),
             ToolParameter(
