@@ -1306,6 +1306,7 @@ class TestGetRecordById:
         with pytest.raises(HTTPException) as exc_info:
             await get_record_by_id("rec-1", request, gp)
         assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "You do not have access to this record"
 
 
 # ============================================================================
