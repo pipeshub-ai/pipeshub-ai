@@ -163,6 +163,7 @@ jobs:
       # GitHub Teams. Secret names may not start with GITHUB_ (reserved by Actions),
       # hence the GH_ prefix. The token is a classic PAT — not fine-grained, which
       # cannot reach GraphQL, used by the code-file timestamp backfill.
+      # GitHub Teams. Secret names cannot start with GITHUB_ (reserved by Actions).
       GH_TEAMS_TEST_TOKEN: ${{ secrets.GH_TEAMS_TEST_TOKEN }}
       GH_TEAMS_TEST_ORG: ${{ secrets.GH_TEAMS_TEST_ORG }}
       GH_TEAMS_TEST_PRIMARY_REPO: ${{ secrets.GH_TEAMS_TEST_PRIMARY_REPO }}
