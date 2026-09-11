@@ -3198,5 +3198,28 @@
     "skip": "Überspringen",
     "next": "Weiter",
     "submit": "Absenden"
+  },
+  "feedback": {
+    "menuLabel": "Feedback / Feature-Anfrage senden",
+    "title": "Feedback / Feature-Anfrage senden",
+    "subtitle": "Beschreiben Sie ein Problem oder wie wir die Plattform verbessern können.",
+    "kindIssue": "Feedback",
+    "kindFeedback": "Feature-Anfrage",
+    "descriptionPlaceholder": "Was ist passiert, oder was sollen wir verbessern?",
+    "addFiles": "Dateien hinzufügen",
+    "removeFile": "Entfernen",
+    "fileHint": "Optional. Bis zu 5 Dateien, je 5 MB. Bilder, PDF, Text oder CSV.",
+    "cancel": "Abbrechen",
+    "submit": "Senden",
+    "success": "Danke, wir haben Ihr Feedback erhalten.",
+    "submitError": "Senden fehlgeschlagen. Bitte versuchen Sie es erneut.",
+    "descriptionTooShort": "Bitte etwas mehr Details (mindestens 10 Zeichen).",
+    "invalidType": "Dieser Dateityp wird nicht unterstützt.",
+    "fileTooLarge": "Jede Datei darf höchstens 5 MB groß sein.",
+    "tooManyFiles": "Sie können höchstens 5 Dateien anhängen.",
+    "smtpNotConfigured": "SMTP ist nicht konfiguriert",
+    "smtpNotConfiguredAdmin": "Konfigurieren Sie zuerst SMTP und senden Sie dann Feedback.",
+    "smtpConfigureAction": "SMTP konfigurieren",
+    "smtpNotConfiguredMember": "Bitten Sie Ihren Administrator, zuerst SMTP zu konfigurieren, und versuchen Sie es erneut."
   }
 }

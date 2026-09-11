@@ -164,6 +164,8 @@ tags:
     description: User group management operations
   - name: Notifications
     description: In-app notifications for the signed-in user (connector errors, warnings, and related alerts)
+  - name: Feedback
+    description: In-product issue and feedback submissions from signed-in users
 
   # Storage
   - name: Document Management
@@ -14161,6 +14163,77 @@ security:
   - oauth2: []
 
 paths:
+  # ==================== FEEDBACK ====================
+  /feedback:
+    post:
+      tags:
+        - Feedback
+      summary: Submit product issue or feedback
+      description: |
+        Authenticated users submit an issue or feedback with an optional set of
+        up to 5 attachments. Allowed types: JPEG, PNG, WebP, GIF, PDF, text, and
+        CSV. Each file may be at most 5 MiB; all files together may be at most
+        12 MiB. The text submission is stored in Mongo. File bytes go to the
+        workspace storage backend; Mongo keeps only the document IDs. If SMTP
+        is configured, those documents are read back and emailed as a zip to
+        `FEEDBACK_SUPPORT_EMAIL` (defaults to support@pipeshub.com,
+        rishabh@pipeshub.com, abhishek@pipeshub.com, shekhar@pipeshub.com).
+        Missing SMTP does not fail the request.
+      operationId: createFeedback
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - kind
+                - description
+              properties:
+                kind:
+                  type: string
+                  enum: [issue, feedback]
+                description:
+                  type: string
+                  minLength: 10
+                  maxLength: 5000
+                attachments:
+                  type: array
+                  maxItems: 5
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '201':
+          description: Feedback stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - id
+                properties:
+                  id:
+                    type: string
+        '400':
+          description: Validation error
+        '401':
+          description: Unauthorized
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   # ==================== IN-APP NOTIFICATIONS ====================
   /notifications:
     get:

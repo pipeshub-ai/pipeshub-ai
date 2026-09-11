@@ -48,6 +48,7 @@ import * as connectorRoutes from '../src/modules/tokens_manager/routes/connector
 import * as oauthRoutes from '../src/modules/tokens_manager/routes/oauth.routes';
 import * as kbRoutes from '../src/modules/knowledge_base/routes/kb.routes';
 import * as notificationRoutes from '../src/modules/notification/routes/notification.routes';
+import * as feedbackRoutes from '../src/modules/feedback/routes/feedback.routes';
 import * as cmRoutes from '../src/modules/configuration_manager/routes/cm_routes';
 import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
@@ -164,6 +165,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(oauthRoutes, 'createOAuthRouter').returns(dummyRouter);
   sandbox.stub(kbRoutes, 'createKnowledgeBaseRouter').returns(dummyRouter);
   sandbox.stub(notificationRoutes, 'createNotificationRouter').returns(dummyRouter);
+  sandbox.stub(feedbackRoutes, 'createFeedbackRouter').returns(dummyRouter);
   sandbox.stub(cmRoutes, 'createConfigurationManagerRouter').returns(dummyRouter);
   sandbox.stub(mailRoutes, 'createMailServiceRouter').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'default').returns(dummyRouter);
@@ -670,6 +672,7 @@ describe('Application', () => {
       '/api/v1/configurationManager',
       '/api/v1/toolsets',
       '/api/v1/mail',
+      '/api/v1/feedback',
       '/api/v1/crawlingManager',
       '/api/v1/oauth2',
       '/api/v1/oauth-clients',

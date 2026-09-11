@@ -3431,5 +3431,28 @@
     "skip": "跳过",
     "next": "下一步",
     "submit": "提交"
+  },
+  "feedback": {
+    "menuLabel": "发送反馈 / 功能请求",
+    "title": "发送反馈 / 功能请求",
+    "subtitle": "告诉我们遇到的问题，或我们可以如何改进平台。",
+    "kindIssue": "反馈",
+    "kindFeedback": "功能请求",
+    "descriptionPlaceholder": "发生了什么，或我们应该改进什么？",
+    "addFiles": "添加文件",
+    "removeFile": "移除",
+    "fileHint": "可选。最多 5 个文件，每个 5 MB。图片、PDF、文本或 CSV。",
+    "cancel": "取消",
+    "submit": "提交",
+    "success": "谢谢，我们已收到你的反馈。",
+    "submitError": "提交失败，请重试。",
+    "descriptionTooShort": "请再补充一些细节（至少 10 个字符）。",
+    "invalidType": "不支持该文件类型。",
+    "fileTooLarge": "每个文件不能超过 5 MB。",
+    "tooManyFiles": "最多只能附加 5 个文件。",
+    "smtpNotConfigured": "尚未配置 SMTP",
+    "smtpNotConfiguredAdmin": "请先配置 SMTP，然后再发送反馈。",
+    "smtpConfigureAction": "配置 SMTP",
+    "smtpNotConfiguredMember": "请让管理员先配置 SMTP，然后再试。"
   }
 }

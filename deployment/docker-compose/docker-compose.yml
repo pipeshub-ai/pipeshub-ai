@@ -104,6 +104,7 @@ services:
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
+      - FEEDBACK_SUPPORT_EMAIL=${FEEDBACK_SUPPORT_EMAIL:-}
       - SECRET_KEY=${SECRET_KEY:-}
 
       # Public endpoints
