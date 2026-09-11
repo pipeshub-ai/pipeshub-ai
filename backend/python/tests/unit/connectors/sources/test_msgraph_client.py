@@ -1690,37 +1690,39 @@ class TestSearchQuery:
 
     @pytest.mark.asyncio
     async def test_extract_region_exception_in_error_access(self):
-        """A failure inside _extract_region_from_error yields no region, so no retry.
+        """When accessing error.error.message throws during region extraction,
+        the except Exception: pass catches it and returns None -> no retry -> raise.
 
-        The message is truthy and answers ``.lower()``, satisfying the guard in
-        ``search_query``, but it is not a ``str`` -- so ``re.search`` inside
-        ``_extract_region_from_error`` raises, its ``except Exception: pass`` swallows
-        that, and the original ODataError propagates unretried.
-
-        Not driven by an access counter: the client reads ``error.error.message`` four
-        times here, two of them outside that try/except, so a mock raising on the Nth
-        read leaks the wrong exception as soon as a log line, a repr or the garbage
-        collector adds a read.
+        Only the 3rd access to `.message` (the one inside
+        `_extract_region_from_error`) raises. The two guard checks in
+        `search_query` before it, and any later access (e.g. `str(ex)` when
+        the error is logged) must keep succeeding, since library internals
+        (e.g. `kiota_abstractions.api_error.APIError.__str__`) may also read
+        `.message` and shouldn't be coupled to this test's call count.
         """
         client = _make_client()
         from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
-        class UnsearchableMessage:
-            def __bool__(self) -> bool:
-                return True
-
-            def lower(self) -> str:
-                return "requested region not found. only valid regions are eur."
-
-        inner = MagicMock()
-        inner.code = "BadRequest"
-        inner.message = UnsearchableMessage()
-
         err = ODataError()
-        err.error = inner
+
+        class BrokenInner:
+            code = "BadRequest"
+            _count = 0
+
+            @property
+            def message(self):
+                self._count += 1
+                if self._count == 3:
+                    raise RuntimeError("boom")
+                return "Requested region not found. Only valid regions are EUR."
+
+        err.error = BrokenInner()
         send_async = AsyncMock(side_effect=err)
         client.client.request_adapter.send_async = send_async
 
+        # The guard checks ex.error.message (count 1 and 2),
+        # then _extract_region_from_error checks error.error.message (count 3 -> raises)
+        # The except Exception: pass catches it, returns None => no retry => raise
         with pytest.raises(ODataError):
             await client.search_query(["driveItem"], region="NAM")
 
