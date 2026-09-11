@@ -34,6 +34,7 @@ from app.agents.agent_loop.hooks.completion_gate import completion_gate
 from app.agents.agent_loop.hooks.memory import (
     conversation_enrichment,
     seed_visible_tools_from_history,
+    sync_visible_tools_for_prompt,
 )
 from app.agents.agent_loop.hooks.result_accumulation import (
     result_accumulation,
@@ -55,6 +56,7 @@ __all__ = [
     "completion_gate",
     "conversation_enrichment",
     "seed_visible_tools_from_history",
+    "sync_visible_tools_for_prompt",
     "resolve_attachments_for_goal",
     "resolve_history_attachments",
     "shape_image_injection",

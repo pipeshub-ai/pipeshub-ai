@@ -95,7 +95,7 @@ class ImportResolution:
             return None
 
     def walk_barrel_chain(self, target_file: str,
-                          re_exports: dict[str, list[str]]) -> str:
+                          re_exports: dict[str, set[str]]) -> str:
         """Follow `index.ts` re-export hops to the defining module.
 
         `importer -> barrel -> real_module`: importing from a barrel should
@@ -105,10 +105,10 @@ class ImportResolution:
         seen = {target_file}
         current = target_file
         for _ in range(_MAX_BARREL_HOPS):
-            onward = re_exports.get(current) or []
+            onward = re_exports.get(current) or ()
             if len(onward) != 1:
                 return current
-            nxt = onward[0]
+            nxt = next(iter(onward))
             if nxt in seen:
                 return current
             seen.add(nxt)

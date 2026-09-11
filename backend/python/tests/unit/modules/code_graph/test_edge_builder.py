@@ -29,6 +29,16 @@ class Client:
         return loader.load(parse(url))
 '''
 
+REPO_TS = b"export class Repo { find(){ return 1; } }\n"
+BARREL_TS = b'export { Repo } from "./repo";\n'
+SVC_TS = b'''import { Repo } from "./index";
+export class S { go(){ const r: Repo = x; return r.find(); } }
+'''
+SVC_TS_EDITED = b'''import { Repo } from "./index";
+export class S { go(){ const r: Repo = x; return r.find(); }
+  extra(){ return 2; } }
+'''
+
 
 async def _build(graph, touched=None, dry_run=False):
     return await build_code_graph_edges(
@@ -38,6 +48,13 @@ async def _build(graph, touched=None, dry_run=False):
         touched_record_ids=touched,
         dry_run=dry_run,
     )
+
+
+def _import_target_files(graph) -> set[str]:
+    return {
+        graph.code_files.get(graph.blocks[edge["_to"].split("/")[1]]["recordId"])
+        for edge in graph.code_edges(RecordRelations.IMPORTS.value)
+    }
 
 
 @pytest.mark.asyncio
@@ -138,23 +155,35 @@ async def test_js_call_without_import_is_dropped(graph, index_file):
     assert graph.edge_targets(RecordRelations.CALLS.value) == []
 
 
+async def _index_barrel_repo(index_file) -> None:
+    await index_file("recRepo", "src/repo.ts", REPO_TS, "typescript")
+    await index_file("recIndex", "src/index.ts", BARREL_TS, "typescript")
+    await index_file("recSvc", "src/svc.ts", SVC_TS, "typescript")
+
+
 @pytest.mark.asyncio
 async def test_barrel_chain_resolves_to_the_defining_module(graph, index_file):
-    await index_file("recRepo", "src/repo.ts", b"export class Repo { find(){ return 1; } }\n", "typescript")
-    await index_file("recIndex", "src/index.ts", b'export { Repo } from "./repo";\n', "typescript")
-    await index_file(
-        "recSvc", "src/svc.ts",
-        b'import { Repo } from "./index";\nexport class S { go(){ const r: Repo = x; return r.find(); } }\n',
-        "typescript",
-    )
+    await _index_barrel_repo(index_file)
     await _build(graph)
 
-    imports = graph.code_edges(RecordRelations.IMPORTS.value)
-    targets = {
-        graph.code_files.get(graph.blocks[e["_to"].split("/")[1]]["recordId"])
-        for e in imports
-    }
-    assert "src/repo.ts" in targets  # walked through index.ts, not stopped at it
+    # walked through index.ts, not stopped at it
+    assert "src/repo.ts" in _import_target_files(graph)
+
+
+@pytest.mark.asyncio
+async def test_barrel_chain_survives_an_incremental_rebuild(graph, index_file):
+    """Only the importer changed, so the barrel is not in the re-resolve set.
+
+    Its re-export hop still has to be on the table, or the walk stops at
+    index.ts and the import edge to the definition is deleted and never rebuilt.
+    """
+    await _index_barrel_repo(index_file)
+    await _build(graph)
+
+    await index_file("recSvc", "src/svc.ts", SVC_TS_EDITED, "typescript")
+    await _build(graph, touched={"recSvc"})
+
+    assert "src/repo.ts" in _import_target_files(graph)
 
 
 @pytest.mark.asyncio

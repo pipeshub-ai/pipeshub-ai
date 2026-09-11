@@ -751,11 +751,10 @@ class Neo4jProvider(IGraphDBProvider):
         neo4j_node.pop("_id", None)
 
         # Neo4j properties must be primitives or arrays of primitives.
-        # JSON-serialize any dict or list-of-dict values, and drop None.
+        # JSON-serialize any dict or list-of-dict values. None is kept so that
+        # `SET n += props` still removes the property on update paths.
         for key, value in list(neo4j_node.items()):
-            if value is None:
-                del neo4j_node[key]
-            elif isinstance(value, dict):
+            if isinstance(value, dict):
                 neo4j_node[key] = json.dumps(value, default=str)
             elif isinstance(value, list) and value and isinstance(value[0], dict):
                 neo4j_node[key] = json.dumps(value, default=str)
@@ -6070,12 +6069,18 @@ class Neo4jProvider(IGraphDBProvider):
                     "props": props
                 })
 
+            # An endpoint is a Record or a Block, and the id indexes are
+            # per-label, so an unlabelled MATCH cannot seek and degrades to an
+            # AllNodesScan per UNWIND row. Seek each label separately instead.
             query = """
             UNWIND $edges AS edge
-            MATCH (from)
-            WHERE from.id = edge.from_key AND (from:Record OR from:Block)
-            MATCH (to)
-            WHERE to.id = edge.to_key AND (to:Record OR to:Block)
+            OPTIONAL MATCH (fromRecord:Record {id: edge.from_key})
+            OPTIONAL MATCH (fromBlock:Block {id: edge.from_key})
+            WITH edge, coalesce(fromRecord, fromBlock) AS from
+            OPTIONAL MATCH (toRecord:Record {id: edge.to_key})
+            OPTIONAL MATCH (toBlock:Block {id: edge.to_key})
+            WITH edge, from, coalesce(toRecord, toBlock) AS to
+            WHERE from IS NOT NULL AND to IS NOT NULL
             MERGE (from)-[r:RECORD_RELATION {relationshipType: edge.relationshipType, constraintName: edge.constraintName}]->(to)
             SET r += edge.props
             RETURN count(r) AS upserted

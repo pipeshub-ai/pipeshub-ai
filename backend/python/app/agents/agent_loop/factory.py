@@ -126,6 +126,7 @@ from app.agents.agent_loop.hooks import (
     shape_image_injection,
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
+    sync_visible_tools_for_prompt,
 )
 from app.agents.agent_loop.image_guard import with_image_cap
 from app.agents.agent_loop.langchain_transport import (
@@ -1005,6 +1006,8 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
         hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
         hooks.on(HookEvent.PRE_TURN).use(code_graph_unlock_on_turn(context))
+        # After visibility mutations — prompt builder reads bound_tool_names.
+        hooks.on(HookEvent.PRE_TURN).use(sync_visible_tools_for_prompt(context))
 
         # Recovers from empty model responses (no text, no tool calls).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))

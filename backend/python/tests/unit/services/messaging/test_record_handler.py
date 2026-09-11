@@ -16,6 +16,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
+from app.modules.code_graph import edge_build_trigger
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -389,6 +390,63 @@ class TestBuildCodeEdges:
             await handler._build_code_edges(**self._payload())
 
         graph_provider.upsert_sync_point.assert_not_awaited()
+        redis.eval.assert_awaited_once()
+        redis.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_lease_is_renewed_while_building_and_stopped_before_release(
+        self,
+    ) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=False)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        graph_provider.upsert_sync_point = AsyncMock()
+
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+
+        renewal = {"started": False, "cancelled": False, "args": None}
+
+        async def fake_renew(redis_client, lock_key, lock_token, log) -> None:
+            renewal["started"] = True
+            renewal["args"] = (redis_client, lock_key, lock_token)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                renewal["cancelled"] = True
+                raise
+
+        async def fake_build(**_kwargs):
+            # Yield so the renewal task actually reaches its first statement.
+            await asyncio.sleep(0)
+            return MagicMock()
+
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch.object(
+                edge_build_trigger,
+                "renew_build_lock_until_cancelled",
+                fake_renew,
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                fake_build,
+            ),
+        ):
+            await handler._build_code_edges(**self._payload())
+
+        assert renewal["started"] is True
+        assert renewal["cancelled"] is True
+        assert renewal["args"][0] is redis
+        assert renewal["args"][1] == "pipeshub:code-edge-build:org-1:repo-1"
+        # Same token the owner-checked release compares against.
+        assert renewal["args"][2] == redis.set.await_args.args[1]
         redis.eval.assert_awaited_once()
         redis.aclose.assert_awaited_once()
 

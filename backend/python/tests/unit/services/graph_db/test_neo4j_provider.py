@@ -1052,6 +1052,26 @@ class TestNodeOperations:
             await neo4j_provider.update_node("k1", "apps", {"name": "Updated"})
 
 
+class TestArangoToNeo4jNode:
+    def test_keeps_none_so_updates_can_clear_properties(self, neo4j_provider: Neo4jProvider) -> None:
+        converted = neo4j_provider._arango_to_neo4j_node(
+            {
+                "_key": "rec-1",
+                "_id": "records/rec-1",
+                "virtualRecordId": None,
+                "metadata": {"k": "v"},
+                "tags": [{"name": "a"}],
+            },
+            "records",
+        )
+
+        assert converted["id"] == "rec-1"
+        assert "_id" not in converted
+        assert converted["virtualRecordId"] is None
+        assert converted["metadata"] == '{"k": "v"}'
+        assert converted["tags"] == '[{"name": "a"}]'
+
+
 class TestEdgeOperations:
     @pytest.mark.asyncio
     async def test_batch_create_edges_returns_true_for_empty_input(self, neo4j_provider: Neo4jProvider):
@@ -2849,6 +2869,27 @@ class TestRecordRelationOperations:
         assert payload[1]["to_key"] == "r4"
         assert payload[1]["constraintName"] == ""
         assert payload[1]["props"]["targetColumn"] == "id"
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_record_relations_seeks_endpoints_by_label(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"upserted": 1}])
+
+        await neo4j_provider.batch_upsert_record_relations([{"from_id": "r1", "to_id": "b2"}])
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        # Unlabelled endpoint matches cannot use the per-label id indexes.
+        assert "MATCH (from)" not in query
+        assert "MATCH (to)" not in query
+        for pattern in (
+            "OPTIONAL MATCH (fromRecord:Record {id: edge.from_key})",
+            "OPTIONAL MATCH (fromBlock:Block {id: edge.from_key})",
+            "OPTIONAL MATCH (toRecord:Record {id: edge.to_key})",
+            "OPTIONAL MATCH (toBlock:Block {id: edge.to_key})",
+        ):
+            assert pattern in query
+        assert "WHERE from IS NOT NULL AND to IS NOT NULL" in query
 
     @pytest.mark.asyncio
     async def test_batch_upsert_record_relations_raises_on_exception(self, neo4j_provider: Neo4jProvider):

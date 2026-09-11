@@ -94,8 +94,8 @@ class PendingEdgeFact:
     # -- so a call at module level belongs to its statements block rather than
     # falling back to the file record.
     byte_offset: int = 0
-    # Filled in by the block mapper from byte_offset. Left None for facts that
-    # belong to the file itself rather than to any span (EXPORTS).
+    # Set by the walker to the span that lexically encloses the reference, then
+    # narrowed to the innermost span containing byte_offset.
     from_symbol: int | None = None
     from_kind: str = "block"
     to_kind: str = "block"

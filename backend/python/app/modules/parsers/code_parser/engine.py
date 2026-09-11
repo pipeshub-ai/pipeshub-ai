@@ -220,12 +220,12 @@ def _imports_python(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
                 if target is not None:
                     out.append(PendingEdgeFact(
                         relation=Relation.IMPORTS_FROM, to_name=_text(target, src),
-                        line=line, from_kind="record", to_kind="record",
+                        line=line, to_kind="record",
                     ))
             elif child.type == "dotted_name":
                 out.append(PendingEdgeFact(
                     relation=Relation.IMPORTS_FROM, to_name=_text(child, src),
-                    line=line, from_kind="record", to_kind="record",
+                    line=line, to_kind="record",
                 ))
         return
 
@@ -235,7 +235,7 @@ def _imports_python(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
         if module_name:
             out.append(PendingEdgeFact(
                 relation=Relation.IMPORTS_FROM, to_name=module_name,
-                line=line, from_kind="record", to_kind="record",
+                line=line, to_kind="record",
             ))
         for child in node.named_children:
             if child is module:
@@ -245,12 +245,12 @@ def _imports_python(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
                 if target is not None:
                     out.append(PendingEdgeFact(
                         relation=Relation.IMPORTS, to_name=_text(target, src), line=line,
-                        from_kind="record", to_kind="block", qualified_prefix=module_name,
+                        to_kind="block", qualified_prefix=module_name,
                     ))
             elif child.type in ("dotted_name", "identifier"):
                 out.append(PendingEdgeFact(
                     relation=Relation.IMPORTS, to_name=_text(child, src), line=line,
-                    from_kind="record", to_kind="block", qualified_prefix=module_name,
+                    to_kind="block", qualified_prefix=module_name,
                 ))
 
 
@@ -262,7 +262,7 @@ def _imports_js(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
         return
     out.append(PendingEdgeFact(
         relation=Relation.IMPORTS_FROM, to_name=specifier,
-        line=line, from_kind="record", to_kind="record",
+        line=line, to_kind="record",
     ))
     for clause in node.named_children:
         if clause.type not in ("import_clause", "named_imports"):
@@ -271,7 +271,7 @@ def _imports_js(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
             if spec.type == "identifier":
                 out.append(PendingEdgeFact(
                     relation=Relation.IMPORTS, to_name=_text(spec, src), line=line,
-                    from_kind="record", to_kind="block", qualified_prefix=specifier,
+                    to_kind="block", qualified_prefix=specifier,
                 ))
             elif spec.type == "named_imports":
                 for item in spec.named_children:
@@ -279,7 +279,7 @@ def _imports_js(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
                     if target is not None:
                         out.append(PendingEdgeFact(
                             relation=Relation.IMPORTS, to_name=_text(target, src), line=line,
-                            from_kind="record", to_kind="block", qualified_prefix=specifier,
+                            to_kind="block", qualified_prefix=specifier,
                         ))
 
 
@@ -292,7 +292,7 @@ def _exports_js(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
         if specifier:
             out.append(PendingEdgeFact(
                 relation=Relation.RE_EXPORTS, to_name=specifier,
-                line=line, from_kind="record", to_kind="record",
+                line=line, to_kind="record",
             ))
         return
     for child in node.named_children:
@@ -302,7 +302,7 @@ def _exports_js(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
                 if target is not None:
                     out.append(PendingEdgeFact(
                         relation=Relation.EXPORTS, to_name=_text(target, src), line=line,
-                        from_kind="record", to_kind="block", restrict_to_file=True,
+                        to_kind="block", restrict_to_file=True,
                     ))
 
 

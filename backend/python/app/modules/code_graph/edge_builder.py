@@ -152,7 +152,7 @@ class _Builder:
         # file -> imported symbol names / imported module files
         self.symbol_imports: dict[str, set[str]] = {}
         self.module_imports: dict[str, set[str]] = {}
-        self.re_exports: dict[str, list[str]] = {}
+        self.re_exports: dict[str, set[str]] = {}
         self.imports = ImportResolution(set(index.record_by_file.keys()))
         self._interface_memo: dict[str, bool] = {}
 
@@ -202,6 +202,7 @@ class _Builder:
         Sourced from the imports block that holds the statement, not from the
         file record -- the innermost block containing a reference owns it.
         """
+        self._collect_re_exports()
         for block_id, fact in work:
             relation = fact.get("relation")
             if relation not in _MODULE_RELATIONS:
@@ -215,8 +216,6 @@ class _Builder:
                 # A bare specifier (`react`, `os`) resolves to no repo file.
                 self.result.external_refs += 1
                 continue
-            if relation == RecordRelations.RE_EXPORTS.value:
-                self.re_exports.setdefault(from_file or "", []).append(target_file)
             self.module_imports.setdefault(from_file or "", set()).add(target_file)
             target_record = self.index.record_by_file.get(target_file)
             if not target_record:
@@ -265,6 +264,28 @@ class _Builder:
                 RecordRelations.IMPORTS.value,
                 confidence=CONFIDENCE_EXTRACTED, line=fact.get("line"),
             )
+
+    def _collect_re_exports(self) -> None:
+        """Barrel hops, read from every row rather than the re-resolve slice.
+
+        `walk_barrel_chain` looks up barrels an incremental run is not
+        re-resolving, so building this from `work` alone would stop the walk at
+        the barrel and drop the import edge to the defining module.
+        """
+        for block_id, row in self.index.rows.items():
+            from_file = row.file_path or ""
+            if not from_file:
+                continue
+            for fact in row.pending_edges:
+                if fact.get("relation") != RecordRelations.RE_EXPORTS.value:
+                    continue
+                family = (self.index.family_by_block.get(block_id)
+                          or lang_family(None, from_file))
+                target_file = self.imports.resolve(
+                    fact.get("toName") or "", from_file, family
+                )
+                if target_file:
+                    self.re_exports.setdefault(from_file, set()).add(target_file)
 
     # -- evidence -------------------------------------------------------
 

@@ -14,6 +14,7 @@ busy repo never looks drained at all.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
@@ -24,6 +25,7 @@ from app.modules.code_graph.connectors import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from logging import Logger
 
     from redis.asyncio import Redis
 
@@ -32,7 +34,9 @@ if TYPE_CHECKING:
 __all__ = [
     "BLOCKING_STATUSES",
     "BUILD_LOCK_PREFIX",
+    "BUILD_LOCK_RENEW_INTERVAL_SECONDS",
     "BUILD_LOCK_TTL_SECONDS",
+    "REFRESH_LOCK_IF_OWNER_LUA",
     "RELEASE_LOCK_IF_OWNER_LUA",
     "SYNC_POINT_SUFFIX",
     "claim_publish",
@@ -40,11 +44,16 @@ __all__ = [
     "is_code_record",
     "publishable_scope",
     "read_build_state",
+    "renew_build_lock_until_cancelled",
     "sync_point_key_for",
 ]
 
 BUILD_LOCK_PREFIX = "pipeshub:code-edge-build:"
-BUILD_LOCK_TTL_SECONDS = 600
+# Short lease plus renewal, as the vector-store rebuild lock does: a build that
+# outlives an un-renewed lease lets a second one delete the edges the first just
+# wrote, while a long lease would block every later build after a crash.
+BUILD_LOCK_TTL_SECONDS = 300
+BUILD_LOCK_RENEW_INTERVAL_SECONDS = 60
 SYNC_POINT_SUFFIX = "code-edge-build"
 
 # A file still being indexed means an incomplete symbol table, and an
@@ -58,6 +67,15 @@ BLOCKING_STATUSES = (
 RELEASE_LOCK_IF_OWNER_LUA = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])
+end
+return 0
+"""
+
+# Compare-and-expire in one step: a bare EXPIRE would extend the lease of a lock
+# a new owner has since taken.
+REFRESH_LOCK_IF_OWNER_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('expire', KEYS[1], ARGV[2])
 end
 return 0
 """
@@ -166,3 +184,34 @@ async def claim_publish(
             ex=_PUBLISH_DEDUPE_TTL_SECONDS,
         )
     )
+
+
+async def renew_build_lock_until_cancelled(
+    redis: "Redis",
+    lock_key: str,
+    lock_token: str,
+    log: "Logger",
+) -> None:
+    """Hold the build's lease open until the caller cancels this task.
+
+    Losing ownership means another replica is already rebuilding the same edges,
+    so stop renewing rather than take it back and have both believe they hold it.
+    """
+    while True:
+        await asyncio.sleep(BUILD_LOCK_RENEW_INTERVAL_SECONDS)
+        try:
+            if not await redis.eval(
+                REFRESH_LOCK_IF_OWNER_LUA,
+                1,
+                lock_key,
+                lock_token,
+                BUILD_LOCK_TTL_SECONDS,
+            ):
+                log.error(
+                    "Code edge build lost its lock %s; another replica may be "
+                    "rebuilding the same edges. Stopping renewal.",
+                    lock_key,
+                )
+                return
+        except Exception:
+            log.exception("Failed to renew code edge build lock %s", lock_key)

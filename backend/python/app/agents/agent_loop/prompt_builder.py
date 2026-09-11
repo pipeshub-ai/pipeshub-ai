@@ -143,13 +143,18 @@ _TOOL_REFERENCE_HEADER = (
 )
 
 
+#: `tool_state` key written by `sync_visible_tools_for_prompt` — tool names
+#: already in `RunScope.visible_tools` (pinned, fetch_tools, CODE_FILE unlock).
+BOUND_TOOL_NAMES_KEY = "bound_tool_names"
+
+
 def _collect_leaf_toolsets(registry, *, exclude: frozenset[str] = frozenset()) -> list[str]:
     """Renders leaf toolsets (the ones with actual tools, not category
     parents) as compact one-liners for the system prompt. These are the
     names a model should pass to `fetch_tools`.
 
-    `exclude` omits toolsets already pinned back to essential (see
-    `spec.pinned_toolsets`) — those are bound at turn 0 and rendered under
+    `exclude` omits toolsets already bound — pinned essentials and any
+    group with tools already in `visible_tools` — those render under
     "Available Tools" instead, never under the load-first block."""
     lines: list[str] = []
     for group in registry.toolsets():
@@ -160,6 +165,17 @@ def _collect_leaf_toolsets(registry, *, exclude: frozenset[str] = frozenset()) -
             continue
         lines.append(f"- `{group.name}` ({tool_count} tools): {group.description}")
     return lines
+
+
+def _toolsets_covering(registry, tool_names: frozenset[str]) -> frozenset[str]:
+    """Toolset group names that already have at least one tool in ``tool_names``."""
+    if not tool_names:
+        return frozenset()
+    return frozenset(
+        group.name
+        for group in registry.toolsets()
+        if group.tool_names and any(n in tool_names for n in group.tool_names)
+    )
 
 
 
@@ -574,10 +590,10 @@ class PipesHubPromptBuilder:
                 composed=composed_code, networked=sandbox_networked,
             ))
 
-        # ── Available tools (Band B: grows with fetch_tools) ─────────────────
+        # ── Available tools (Band B: grows with fetch_tools / unlocks) ───────
         if spec.tool_disclosure == "lazy" and runtime.tool_registry is not None:
             tpl.set("available_tools", self._build_lazy_tool_reference_section(
-                tool_names, runtime, spec.pinned_toolsets,
+                tool_names, runtime, spec.pinned_toolsets, tool_state=state,
             ))
         else:
             tpl.set("available_tools", self._build_tool_reference_section(tool_names, runtime) or None)
@@ -699,6 +715,7 @@ class PipesHubPromptBuilder:
         tool_names: list[str],
         runtime: AgentRuntime,
         pinned_toolsets: list[str] | None = None,
+        tool_state: dict[str, Any] | None = None,
     ) -> str:
         """Under lazy disclosure: lists the tools whose schemas are
         currently bound (essentials, pinned toolsets, and anything else
@@ -709,26 +726,31 @@ class PipesHubPromptBuilder:
         toolset GROUPS `PipesHubToolLoader` marked essential this request
         (retrieval, knowledgehub, knowledgegraph, artifacts, skills when
         wired) — bound at turn 0 by `initial_visible_tools()` regardless of
-        lazy disclosure. Before this fix, EVERY grouped toolset (pinned or
-        not) was stripped from "Available Tools" and listed under a header
-        claiming its schemas were "NOT loaded" and "CANNOT" be called —
-        false for a pinned group, since it was callable the whole time.
-        Only the toolset NAMES + one-line descriptions of the remaining,
-        genuinely-not-yet-loaded groups appear under the load-first block —
-        never individual tool names from them (that would bloat the prompt
-        and mislead the model into thinking they're already callable).
+        lazy disclosure. Mid-run grants (`fetch_tools`, CODE_FILE unlock)
+        land in `tool_state[BOUND_TOOL_NAMES_KEY]` via
+        `sync_visible_tools_for_prompt` and are treated the same: listed
+        under Available Tools, omitted from the must-load block. Without
+        that, schemas can be bound while the prompt still says
+        `fetch_tools` first.
         """
         registry = runtime.tool_registry
+        state = tool_state or {}
+        bound = frozenset(state.get(BOUND_TOOL_NAMES_KEY) or ())
+        # Unlock hook also stores names here before the sync runs.
+        bound |= frozenset(state.get("unlocked_codegraph_tools") or ())
+
         pinned = frozenset(pinned_toolsets or [])
-        pinned_tool_names: set[str] = set()
+        loaded_groups = pinned | _toolsets_covering(registry, bound)
+
+        loaded_tool_names: set[str] = set(bound)
         for group in registry.toolsets():
-            if group.name in pinned:
-                pinned_tool_names.update(group.tool_names)
+            if group.name in loaded_groups:
+                loaded_tool_names.update(group.tool_names)
 
         grouped = registry.grouped_tool_names()
         visible_names = [
             n for n in tool_names
-            if n not in grouped or n in pinned_tool_names
+            if n not in grouped or n in loaded_tool_names
         ]
 
         lines: list[str] = []
@@ -742,7 +764,7 @@ class PipesHubPromptBuilder:
 
         section = _TOOL_REFERENCE_HEADER + "\n".join(lines) if lines else ""
 
-        toolset_lines = _collect_leaf_toolsets(registry, exclude=pinned)
+        toolset_lines = _collect_leaf_toolsets(registry, exclude=loaded_groups)
         if toolset_lines:
             section += (
                 "\n\n## Tools you must load before calling\n\n"
@@ -770,4 +792,4 @@ class PipesHubPromptBuilder:
         return section
 
 
-__all__ = ["PipesHubPromptBuilder"]
+__all__ = ["BOUND_TOOL_NAMES_KEY", "PipesHubPromptBuilder"]

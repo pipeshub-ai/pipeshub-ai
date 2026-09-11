@@ -133,7 +133,6 @@ def image_dict_to_part(image: dict[str, Any]) -> Any | None:
     return ImagePart(source=ImageSource(type="url", data=url))
 
 
-
 def group_child_results(doc: dict[str, Any]) -> list[dict[str, Any]] | None:
     """Children of a *group* flattened-result, or None when it is not a group.
 
@@ -152,24 +151,6 @@ def group_child_results(doc: dict[str, Any]) -> list[dict[str, Any]] | None:
         return children if isinstance(children, list) else []
     return None
 
-
-def group_child_results(doc: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """Children of a *group* flattened-result, or None when it is not a group.
-
-    `block_type` alone cannot tell the two apart: GroupType.CODE and
-    BlockType.CODE are both the string "code", so a code block and a code group
-    carry the same label. Only a group's content is a ``(summary, children)``
-    pair, so the shape is the reliable test -- keying off the label alone
-    unpacks a leaf's source string character by character.
-
-    None and [] are distinct on purpose: None means "treat this as a leaf",
-    while [] means "a group that contributed nothing", which must stay skipped.
-    """
-    content = doc.get("content")
-    if isinstance(content, tuple) and len(content) == 2:
-        children = content[1]
-        return children if isinstance(children, list) else []
-    return None
 
 def _safe_stringify_content(value: Any) -> str:
     """Convert citation content to string without raising.

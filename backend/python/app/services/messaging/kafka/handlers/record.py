@@ -90,6 +90,7 @@ class RecordEventHandler(BaseEventService):
         lock_key = f"{edge_build_trigger.BUILD_LOCK_PREFIX}{org_id}:{record_group_id}"
         lock_token = str(uuid4())
         lock_acquired = False
+        renewal: asyncio.Task | None = None
         try:
             lock_acquired = bool(
                 await redis.set(
@@ -101,6 +102,15 @@ class RecordEventHandler(BaseEventService):
             )
             if not lock_acquired:
                 return
+
+            # The build outruns the lease on a large repo, and an expired lease
+            # lets a second build's _delete_previous_edges remove the edges this
+            # one has already written.
+            renewal = asyncio.create_task(
+                edge_build_trigger.renew_build_lock_until_cancelled(
+                    redis, lock_key, lock_token, self.logger
+                )
+            )
 
             graph_provider = self.event_processor.graph_provider
             # Re-checked rather than trusted from the request: records can
@@ -180,6 +190,11 @@ class RecordEventHandler(BaseEventService):
             )
             raise
         finally:
+            if renewal is not None:
+                # Awaited, not just cancelled: it holds the Redis client closed
+                # below, and must not renew a lease the release is about to drop.
+                renewal.cancel()
+                await asyncio.wait({renewal})
             if lock_acquired:
                 try:
                     await redis.eval(

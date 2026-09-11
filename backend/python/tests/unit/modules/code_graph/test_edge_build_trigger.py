@@ -1,6 +1,6 @@
 """Unit tests for app.modules.code_graph.edge_build_trigger."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -154,3 +154,40 @@ class TestClaimPublish:
         redis.set = AsyncMock(return_value=None)
 
         assert not await edge_build_trigger.claim_publish(redis, "org-1", "repo-1")
+
+
+class TestRenewBuildLock:
+    @pytest.mark.asyncio
+    async def test_extends_the_lease_then_stops_when_ownership_is_lost(self) -> None:
+        redis = MagicMock()
+        redis.eval = AsyncMock(side_effect=[1, 0])
+        log = MagicMock()
+
+        with patch(
+            "app.modules.code_graph.edge_build_trigger.asyncio.sleep", AsyncMock()
+        ):
+            await edge_build_trigger.renew_build_lock_until_cancelled(
+                redis, "lock-key", "token-1", log
+            )
+
+        assert redis.eval.await_count == 2
+        args = redis.eval.await_args_list[0].args
+        assert args[0] == edge_build_trigger.REFRESH_LOCK_IF_OWNER_LUA
+        assert args[2:] == ("lock-key", "token-1", edge_build_trigger.BUILD_LOCK_TTL_SECONDS)
+        log.error.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_keeps_renewing_after_a_transient_redis_failure(self) -> None:
+        redis = MagicMock()
+        redis.eval = AsyncMock(side_effect=[RuntimeError("redis down"), 0])
+        log = MagicMock()
+
+        with patch(
+            "app.modules.code_graph.edge_build_trigger.asyncio.sleep", AsyncMock()
+        ):
+            await edge_build_trigger.renew_build_lock_until_cancelled(
+                redis, "lock-key", "token-1", log
+            )
+
+        assert redis.eval.await_count == 2
+        log.exception.assert_called_once()
