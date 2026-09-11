@@ -169,3 +169,70 @@ async def _wait_for_embeddings(vector_store, virtual_id: str, record_id: str) ->
         "configured for the org — with none, indexing fails and the record is "
         "dead-lettered rather than falling back to the local embedder."
     )
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def record_in_a_nested_folder(
+    kb_client: KBClient, vector_store, mongo_store, test_org_id: str
+) -> AsyncGenerator[dict[str, Any], None]:
+    """A record two folders deep, for the recursive delete scenario.
+
+    The nesting is the point. Deleting a folder has to reach records inside its
+    sub-folders, and a record sitting directly in the deleted folder would pass
+    a test that only ever removes one level.
+    """
+    kb = kb_client.create_kb(f"cleanup-folders-{uuid.uuid4().hex[:8]}")
+    kb_id = kb["id"]
+
+    try:
+        outer = kb_client.create_folder(kb_id, f"outer-{uuid.uuid4().hex[:6]}")
+        outer_id = _folder_id(outer)
+        inner = kb_client.create_folder(
+            kb_id, f"inner-{uuid.uuid4().hex[:6]}", parent_id=outer_id
+        )
+        inner_id = _folder_id(inner)
+
+        name = f"nested-{uuid.uuid4().hex[:6]}.md"
+        upload = kb_client.upload_file(
+            kb_id, name, POLICY, folder_id=inner_id, mimetype="text/markdown"
+        )
+        assert upload["summary"]["failed"] == 0, f"Upload failed: {upload}"
+        record_id = upload["records"][0]["recordId"]
+
+        virtual_record_id = await _wait_for_virtual_id(kb_client, record_id)
+        await _wait_for_embeddings(vector_store, virtual_record_id, record_id)
+
+        prefix = f"{test_org_id}/PipesHub/records/{virtual_record_id}"
+        vendor = await mongo_store.storage_vendor_under_path(prefix) or "local"
+        yield {
+            "kb_id": kb_id,
+            "outer_folder_id": outer_id,
+            "inner_folder_id": inner_id,
+            "record_id": record_id,
+            "record_name": name,
+            "virtual_record_id": virtual_record_id,
+            "storage_prefix": prefix,
+            "storage_vendor": vendor,
+        }
+    finally:
+        try:
+            kb_client.delete_kb(kb_id)
+        except Exception as exc:  # noqa: BLE001 - teardown must not mask a failure
+            already_gone = "404" in str(exc)
+            logger.log(
+                logging.DEBUG if already_gone else logging.WARNING,
+                "Could not delete knowledge base %s: %s",
+                kb_id,
+                exc,
+            )
+
+
+def _folder_id(payload: dict[str, Any]) -> str:
+    """The id out of a folder-create reply, whichever key it used."""
+    for container in (payload, payload.get("folder") or {}, payload.get("data") or {}):
+        if isinstance(container, dict):
+            for key in ("id", "folderId", "_key"):
+                value = container.get(key)
+                if value:
+                    return str(value)
+    raise AssertionError(f"No folder id in the create response: {payload}")

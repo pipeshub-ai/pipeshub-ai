@@ -161,7 +161,21 @@ class KBClient(APIClient):
         payload: dict[str, Any] = {"folderName": folder_name}
         if parent_id:
             payload["parentId"] = parent_id
-        resp = self.post(f"/{kb_id}/folders", json=payload)
+        resp = self.post(f"/{kb_id}/folder", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_folder(self, kb_id: str, folder_id: str) -> dict[str, Any]:
+        """Delete a folder and everything beneath it.
+
+        Args:
+            kb_id: KB ID
+            folder_id: Folder ID
+
+        Returns:
+            Response body from the API
+        """
+        resp = self.delete(f"/{kb_id}/folder/{folder_id}")
         resp.raise_for_status()
         return resp.json()
 
