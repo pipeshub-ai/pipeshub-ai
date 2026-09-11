@@ -32,6 +32,8 @@ export interface WatcherStateSnapshot {
 
 export interface ScanSyncRootOptions {
   includeSubfolders?: boolean;
+  // Bookkeeping shortcut only (periodic rescan). Omit on startup/explicit
+  // reconcile so size+mtime cannot hide a same-length content rewrite.
   previousByRelPath?: Map<string, FileSnapshotEntry>;
   ignoredPatterns?: ReadonlyArray<RegExp | string>;
 }
@@ -160,11 +162,7 @@ export async function scanSyncRoot(
       const mtimeMs = st.mtimeMs;
       let sha256: string | undefined;
       if (st.isFile()) {
-        // Background bookkeeping only: reuse the last known full hash when
-        // size+mtime haven't moved, so a periodic rescan doesn't re-read
-        // every untouched file in the tree. Live rename/move events still
-        // get a fresh hash of their own (see event-correlator.ts) rather
-        // than reusing this cache.
+        // Size+mtime reuse is for bookkeeping scans only; reconcile callers omit previousByRelPath.
         const old = previousByRelPath && previousByRelPath.get(relKey);
         if (old && !old.isDirectory && old.size === size && old.mtimeMs === mtimeMs && old.sha256) {
           sha256 = old.sha256;

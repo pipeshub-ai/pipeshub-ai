@@ -112,6 +112,41 @@ test('WatcherStateStore.reconcile() attaches sha256 to CREATED/MODIFIED/RENAMED 
   });
 });
 
+test('reconcile without previousByRelPath emits MODIFIED for a same-size rewrite that kept mtime', async () => {
+  await withTempDir(async (dir) => {
+    const baseDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'local-sync-state-'));
+    try {
+      const store = new WatcherStateStore({ baseDir, syncRoot: dir, connectorInstanceId: 'c-1' });
+      const abs = path.join(dir, 'a.txt');
+      await fsp.writeFile(abs, 'aaaa');
+      store.applyScan(await scanSyncRoot(dir, {}));
+      const oldHash = store.getSnapshot().files['a.txt'].sha256;
+      assert.equal(oldHash, sha256Of('aaaa'));
+
+      await fsp.writeFile(abs, 'bbbb');
+      const after = await fsp.stat(abs);
+      // Same-length rewrite whose metadata still matches the snapshot, so a
+      // bookkeeping scan would reuse the stale hash instead of re-reading.
+      const cached = store.getSnapshot().files['a.txt'];
+      cached.size = after.size;
+      cached.mtimeMs = after.mtimeMs;
+
+      const previous = new Map(Object.entries(store.getSnapshot().files));
+      const reused = await scanSyncRoot(dir, { previousByRelPath: previous });
+      assert.equal(reused.get('a.txt')!.sha256, oldHash);
+
+      const fresh = await scanSyncRoot(dir, {});
+      assert.equal(fresh.get('a.txt')!.sha256, sha256Of('bbbb'));
+      const events = store.reconcile(fresh);
+      const modified = events.find((e) => e.path === 'a.txt' && e.type === 'MODIFIED');
+      assert.ok(modified);
+      assert.equal(modified!.sha256, sha256Of('bbbb'));
+    } finally {
+      await fsp.rm(baseDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});
+
 test('expandWatchEventsForReplay hashes fresh when the file is reachable, falls back to the cached hash otherwise', async () => {
   await withTempDir(async (dir) => {
     await fsp.mkdir(path.join(dir, 'newdir'), { recursive: true });

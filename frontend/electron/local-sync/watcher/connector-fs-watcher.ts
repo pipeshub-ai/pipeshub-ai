@@ -226,10 +226,12 @@ export class ConnectorFsWatcher {
     });
   }
 
-  private scanOptions() {
+  private scanOptions(reuseCachedHashes: boolean) {
     return {
       includeSubfolders: this.includeSubfolders,
-      previousByRelPath: new Map(Object.entries(this.stateStore.getSnapshot().files)),
+      ...(reuseCachedHashes
+        ? { previousByRelPath: new Map(Object.entries(this.stateStore.getSnapshot().files)) }
+        : {}),
       ignoredPatterns: IGNORED_PATTERNS,
     };
   }
@@ -244,7 +246,7 @@ export class ConnectorFsWatcher {
 
   private async syncStateFromDisk(): Promise<void> {
     try {
-      const scan = await scanSyncRoot(this.rootPath, this.scanOptions());
+      const scan = await scanSyncRoot(this.rootPath, this.scanOptions(true));
       this.stateStore.applyScan(scan);
       this.stateStore.flushSave();
     } catch (err) {
@@ -470,7 +472,7 @@ export class ConnectorFsWatcher {
     if (hasPreviousState) {
       this.log('Performing startup reconciliation...');
       const replayFiles = { ...prevState.files };
-      const currentScan = await scanSyncRoot(this.rootPath, this.scanOptions());
+      const currentScan = await scanSyncRoot(this.rootPath, this.scanOptions(false));
       const offlineEvents = this.stateStore.commitReconcile(currentScan);
       const dispatchable = this.filterAndNote(
         await this.expandForDispatch(offlineEvents, replayFiles),
@@ -491,7 +493,7 @@ export class ConnectorFsWatcher {
       // upserts idempotently by deterministic external_record_id, so this is
       // safe even if some of these paths already exist there.
       this.log('No previous state found. Seeding from current disk contents...');
-      const currentScan = await scanSyncRoot(this.rootPath, this.scanOptions());
+      const currentScan = await scanSyncRoot(this.rootPath, this.scanOptions(false));
       const seedEvents: WatchEvent[] = [];
       for (const [relPath, entry] of currentScan) {
         if (entry.isDirectory) continue;
@@ -591,7 +593,7 @@ export class ConnectorFsWatcher {
 
   async rescan(): Promise<WatchEvent[]> {
     const replayFiles = { ...this.stateStore.getSnapshot().files };
-    const scan = await scanSyncRoot(this.rootPath, this.scanOptions());
+    const scan = await scanSyncRoot(this.rootPath, this.scanOptions(false));
     const events = this.stateStore.commitReconcile(scan);
     this.stateStore.flushSave();
     const dispatchable = this.filterAndNote(
