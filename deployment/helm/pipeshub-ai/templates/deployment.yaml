@@ -149,7 +149,7 @@ spec:
             - name: SAML_SP_ENTITY_ID
               value: {{ .Values.config.samlSpEntityId | default .Values.config.frontendPublicUrl | default "pipeshub" | quote }}
             - name: FEEDBACK_SUPPORT_EMAIL
-              value: {{ .Values.config.feedbackSupportEmail | default "" | quote }}
+              value: {{ .Values.config.feedbackSupportEmail | default "support@pipeshub.com,rishabh@pipeshub.com,abhishek@pipeshub.com,shekhar@pipeshub.com" | quote }}
             
             # Security settings
             - name: SECRET_KEY

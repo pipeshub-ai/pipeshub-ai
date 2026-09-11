@@ -1,28 +1,17 @@
 import path from 'path';
-import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { InternalServerError } from '../../../libs/errors/http.errors';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { getFilenameWithoutExtension } from '../../../libs/utils/file-extension.util';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
-import { loadConfigurationManagerConfig } from '../../configuration_manager/config/config';
-import { storageTypes } from '../../configuration_manager/constants/constants';
-import { configPaths } from '../../configuration_manager/paths/paths';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
-import { StorageService } from '../../storage/storage.service';
 import { StorageServiceAdapter } from '../../storage/adapter/base-storage.adapter';
-import {
-  AzureBlobStorageConfig,
-  LocalStorageConfig,
-  S3StorageConfig,
-} from '../../storage/config/storage.config';
 import { DocumentModel } from '../../storage/schema/document.schema';
 import { Document, StorageInfo, StorageVendor } from '../../storage/types/storage.service.types';
 import {
   getCurrentFilePath,
   getDocumentRootPath,
   getFullDocumentPath,
-  getStorageVendor,
   isValidStorageVendor,
   normalizeExtension,
 } from '../../storage/utils/utils';
@@ -37,45 +26,6 @@ export interface FeedbackStoredFile {
   mimeType: string;
   sizeInBytes: number;
   documentId: mongoose.Types.ObjectId;
-}
-
-async function createStorageAdapter(
-  kvStore: KeyValueStoreService,
-  appConfig: AppConfig,
-): Promise<{ adapter: StorageServiceAdapter; storageVendor: StorageVendor }> {
-  const raw = (await kvStore.get<string>(configPaths.storageService)) || '{}';
-  const parsed = JSON.parse(raw) as {
-    storageType?: string;
-    s3?: string;
-    azureBlob?: string;
-    local?: string;
-  };
-  const storageVendor = getStorageVendor(parsed.storageType || storageTypes.LOCAL);
-  const cmConfig = loadConfigurationManagerConfig();
-  const encryption = EncryptionService.getInstance(cmConfig.algorithm, cmConfig.secretKey);
-
-  let vendorConfig: S3StorageConfig | AzureBlobStorageConfig | LocalStorageConfig;
-  if (storageVendor === StorageVendor.S3) {
-    if (!parsed.s3) {
-      throw new InternalServerError('S3 storage is not configured');
-    }
-    vendorConfig = JSON.parse(encryption.decrypt(parsed.s3)) as S3StorageConfig;
-  } else if (storageVendor === StorageVendor.AzureBlob) {
-    if (!parsed.azureBlob) {
-      throw new InternalServerError('Azure Blob storage is not configured');
-    }
-    vendorConfig = JSON.parse(encryption.decrypt(parsed.azureBlob)) as AzureBlobStorageConfig;
-  } else {
-    vendorConfig = JSON.parse(parsed.local || '{}') as LocalStorageConfig;
-  }
-
-  const storageService = new StorageService(kvStore, vendorConfig, appConfig.storage);
-  await storageService.initialize();
-  const adapter = storageService.getAdapter();
-  if (!adapter) {
-    throw new InternalServerError('Storage service adapter not found');
-  }
-  return { adapter, storageVendor };
 }
 
 async function applyStorageInfo(
@@ -106,13 +56,14 @@ async function applyStorageInfo(
 export async function uploadFeedbackAttachment(input: {
   kvStore: KeyValueStoreService;
   appConfig: AppConfig;
+  adapter: StorageServiceAdapter;
+  storageVendor: StorageVendor;
   orgId: string;
   userId: string;
   feedbackId: string;
   file: FileBufferInfo;
   mimeType: string;
 }): Promise<FeedbackStoredFile> {
-  const { adapter, storageVendor } = await createStorageAdapter(input.kvStore, input.appConfig);
   const originalName = input.file.originalname;
   const fileExtension = path.extname(originalName);
   const documentName = getFilenameWithoutExtension(originalName) || 'attachment';
@@ -127,7 +78,7 @@ export async function uploadFeedbackAttachment(input: {
     extension: fileExtension,
     createdAt: Date.now(),
     isDeleted: false,
-    storageVendor,
+    storageVendor: input.storageVendor,
     customMetadata: [
       { key: 'source', value: 'feedback' },
       { key: 'feedbackId', value: input.feedbackId },
@@ -144,7 +95,7 @@ export async function uploadFeedbackAttachment(input: {
     false,
   );
 
-  const uploadResult = await adapter.uploadDocumentToStorageService({
+  const uploadResult = await input.adapter.uploadDocumentToStorageService({
     buffer: input.file.buffer,
     mimeType: input.mimeType,
     documentPath: concatenatedPath,
@@ -156,9 +107,9 @@ export async function uploadFeedbackAttachment(input: {
     throw new InternalServerError(uploadResult.msg || 'Failed to upload feedback attachment');
   }
 
-  if (!isValidStorageVendor(storageVendor)) {
+  if (!isValidStorageVendor(input.storageVendor)) {
     await DocumentModel.deleteOne({ _id: savedDocument._id });
-    throw new InternalServerError(`Invalid storage type: ${storageVendor}`);
+    throw new InternalServerError(`Invalid storage type: ${input.storageVendor}`);
   }
 
   savedDocument.documentPath = fullDocumentPath;
@@ -166,7 +117,7 @@ export async function uploadFeedbackAttachment(input: {
     input.kvStore,
     input.appConfig,
     savedDocument,
-    storageVendor,
+    input.storageVendor,
     uploadResult.data,
   );
   await savedDocument.save();
@@ -180,8 +131,7 @@ export async function uploadFeedbackAttachment(input: {
 }
 
 export async function readFeedbackAttachmentBuffer(input: {
-  kvStore: KeyValueStoreService;
-  appConfig: AppConfig;
+  adapter: StorageServiceAdapter;
   orgId: string;
   documentId: string;
 }): Promise<Buffer | null> {
@@ -195,8 +145,7 @@ export async function readFeedbackAttachmentBuffer(input: {
       return null;
     }
 
-    const { adapter } = await createStorageAdapter(input.kvStore, input.appConfig);
-    const result = await adapter.getBufferFromStorageService(document);
+    const result = await input.adapter.getBufferFromStorageService(document);
     if (result.statusCode !== HTTP_STATUS.OK || !result.data) {
       return null;
     }

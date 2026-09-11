@@ -10,6 +10,9 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import {
   MAX_FEEDBACK_ATTACHMENTS,
   MAX_FEEDBACK_ATTACHMENT_BYTES,
+  feedbackAllowedExtensions,
+  feedbackMimeTypeByExtension,
+  feedbackUploadMimeTypes,
 } from '../schema/feedback.schema';
 import { createFeedbackSchema } from '../validators/feedback.validators';
 import { FeedbackService } from '../service/feedback.service';
@@ -36,31 +39,10 @@ export function createFeedbackRouter(container: Container): Router {
     auth,
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'attachments',
-      allowedMimeTypes: [
-        'image/jpeg',
-        'image/jpg',
-        'image/png',
-        'image/webp',
-        'image/gif',
-        'application/pdf',
-        'text/plain',
-        'text/csv',
-      ],
-      allowedExtensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'pdf', 'txt', 'log', 'csv'],
-      resolveMimeType: (extension: string) => {
-        const byExtension: Record<string, string> = {
-          jpg: 'image/jpeg',
-          jpeg: 'image/jpeg',
-          png: 'image/png',
-          webp: 'image/webp',
-          gif: 'image/gif',
-          pdf: 'application/pdf',
-          txt: 'text/plain',
-          log: 'text/plain',
-          csv: 'text/csv',
-        };
-        return byExtension[extension] ?? null;
-      },
+      allowedMimeTypes: feedbackUploadMimeTypes,
+      allowedExtensions: [...feedbackAllowedExtensions],
+      resolveMimeType: (extension: string) =>
+        feedbackMimeTypeByExtension[extension] ?? null,
       maxFilesAllowed: MAX_FEEDBACK_ATTACHMENTS,
       isMultipleFilesAllowed: true,
       processingType: FileProcessingType.BUFFER,
