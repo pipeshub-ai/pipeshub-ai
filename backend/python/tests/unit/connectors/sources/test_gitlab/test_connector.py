@@ -20,6 +20,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from .conftest import make_mock_connector
+from app.connectors.sources.gitlab import connector as gitlab_connector_mod
+
+
+@pytest.fixture(autouse=True)
+def _single_repo_guard_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These run_sync tests mock load_connector_filters with empty collections;
+    the one-repo rule itself is covered in tests/unit/connectors/core/test_filters.py."""
+    monkeypatch.setattr(gitlab_connector_mod, "require_single_value", lambda *_a, **_k: "org/repo")
 
 pytestmark = pytest.mark.anyio
 

@@ -23,7 +23,10 @@ from app.connectors.core.registry.filters import (
     NumberOperator,
     OptionSourceType,
     StringOperator,
+    SelectOperator,
     SyncFilterKey,
+    require_single_value,
+    sync_filter_selection_problems,
     TYPE_OPERATORS,
     get_operator_enum_class,
     get_operators_for_type,
@@ -351,7 +354,6 @@ class TestFilterField:
         assert schema["displayName"] == "Modified Date"
         assert schema["filterType"] == "datetime"
         assert schema["category"] == "sync"
-        assert schema["required"] is True
         assert "operators" in schema
         assert "is_after" in schema["operators"]
         assert "noImplicitOperatorDefault" not in schema
@@ -1095,3 +1097,89 @@ class TestIndexingFilterKeySlackValues:
     def test_pre_existing_values_intact(self):
         assert IndexingFilterKey.COMMENTS == "comments"
         assert IndexingFilterKey.ATTACHMENTS == "attachments"
+
+
+class TestSelectFilterType:
+    def test_select_has_the_single_in_operator(self) -> None:
+        assert FilterType.SELECT == "select"
+        assert [op.value for op in SelectOperator] == [FilterOperator.IN]
+
+    def test_select_field_accepts_dynamic_options_and_defaults(self) -> None:
+        field = FilterField(
+            name="repo_ids", display_name="Repository", filter_type=FilterType.SELECT,
+            option_source_type=OptionSourceType.DYNAMIC, required=True,
+        )
+        schema = field.to_schema_dict()
+        assert schema["required"] is True
+        assert schema["operators"] == [FilterOperator.IN]
+        assert field._get_default_for_type() == []
+        assert field._get_default_operator() == FilterOperator.IN
+
+    def test_select_value_parses_like_a_list(self) -> None:
+        col = FilterCollection.from_dict({
+            "repo_ids": {"type": "select", "operator": "in", "value": [{"id": "o/r", "label": "o/r"}]},
+        })
+        assert col.get_value("repo_ids") == ["o/r"]
+
+
+REPO_FIELD = {"name": "repo_ids", "displayName": "Repository", "filterType": "select", "required": True}
+ORG_FIELD = {"name": "org_ids", "displayName": "Organizations", "filterType": "multiselect"}
+
+
+class TestSyncFilterSelectionProblems:
+    def test_one_value_is_fine(self) -> None:
+        values = {"repo_ids": {"operator": "in", "value": ["o/r"]}}
+        assert sync_filter_selection_problems([REPO_FIELD, ORG_FIELD], values) == []
+
+    @pytest.mark.parametrize(
+        "entry", [None, {"operator": "in", "value": []}, {"operator": "in", "value": ""}, "junk"]
+    )
+    def test_required_field_without_a_value_blocks_enable(self, entry: object) -> None:
+        values = {} if entry is None else {"repo_ids": entry}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == ["Select a repository before enabling this connector."]
+        assert sync_filter_selection_problems([REPO_FIELD], values, "saving") == [
+            "Select a repository before saving."
+        ]
+
+    def test_legacy_multi_value_select_blocks_enable(self) -> None:
+        values = {"repo_ids": {"operator": "in", "value": ["a/b", "c/d"]}}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == ["Repository allows only one selection, but 2 are configured."]
+
+    def test_optional_multiselect_is_not_constrained(self) -> None:
+        values = {"org_ids": {"operator": "in", "value": ["a", "b"]}}
+        assert sync_filter_selection_problems([ORG_FIELD], values) == []
+
+
+class TestRequireSingleValue:
+    def _collection(self, value: list[str], operator: str = "in") -> FilterCollection:
+        return FilterCollection.from_dict({
+            "repo_ids": {"type": "select", "operator": operator, "value": value},
+        })
+
+    def test_returns_the_single_value(self) -> None:
+        assert require_single_value(self._collection(["o/r"]), SyncFilterKey.REPO_IDS, "Repository") == "o/r"
+
+    @pytest.mark.parametrize("filters", [None, FilterCollection(), "empty"])
+    def test_missing_selection_raises(self, filters: FilterCollection | str | None) -> None:
+        if filters == "empty":
+            filters = FilterCollection.from_dict({
+                "repo_ids": {"type": "select", "operator": "in", "value": []},
+            })
+        with pytest.raises(ValueError, match="found 0"):
+            require_single_value(filters, SyncFilterKey.REPO_IDS, "Repository")
+
+    def test_legacy_multi_repo_config_raises(self) -> None:
+        legacy = FilterCollection.from_dict({
+            "repo_ids": {"type": "multiselect", "operator": "in", "value": ["a/b", "c/d"]},
+        })
+        with pytest.raises(ValueError, match="found 2"):
+            require_single_value(legacy, SyncFilterKey.REPO_IDS, "Repository")
+
+    def test_legacy_not_in_config_raises(self) -> None:
+        legacy = FilterCollection.from_dict({
+            "repo_ids": {"type": "multiselect", "operator": "not_in", "value": ["a/b"]},
+        })
+        with pytest.raises(ValueError, match="not_in"):
+            require_single_value(legacy, SyncFilterKey.REPO_IDS, "Repository")

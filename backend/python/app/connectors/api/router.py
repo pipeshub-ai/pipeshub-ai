@@ -99,6 +99,7 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
+from app.connectors.core.registry.filters import sync_filter_selection_problems
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.sources.local_fs.connector import LocalFsConnector
@@ -865,6 +866,54 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
             trimmed_config[section] = _trim_config_values(obj=trimmed_config[section], path=section)
 
     return trimmed_config
+
+async def _validate_sync_filter_selections(
+    connector_registry: ConnectorRegistry,
+    connector_type: str,
+    config: dict[str, Any],
+    action: str,
+) -> None:
+    """400 when a required sync filter (e.g. the one repository) is not set in ``config``.
+
+    Save routes pass the *merged* config so a partial PUT cannot clear the field.
+
+    ``connector_type`` must be the instance's ``type`` verbatim: registry lookup is
+    exact-match on the registered name ("GitHub Teams"), so an upper- or lower-cased
+    variant resolves to no metadata and skips validation entirely.
+    """
+    metadata = await connector_registry.get_connector_metadata(connector_type)
+    schema_fields = (
+        (metadata or {})
+        .get("config", {})
+        .get("filters", {})
+        .get("sync", {})
+        .get("schema", {})
+        .get("fields", [])
+    )
+    if not any(f.get("required") or f.get("filterType") == "select" for f in schema_fields):
+        return
+    sync_values = ((config.get("filters") or {}).get("sync") or {}).get("values") or {}
+    problems = sync_filter_selection_problems(
+        schema_fields, sync_values if isinstance(sync_values, dict) else {}, action
+    )
+    if problems:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
+
+
+async def _require_sync_filter_selections(
+    container: ConnectorAppContainer,
+    connector_registry: ConnectorRegistry,
+    connector_id: str,
+    connector_type: str,
+    org_id: str,
+) -> None:
+    """Enable-toggle variant: validates the stored config."""
+    config_service = resolve_config_service(container, org_id)
+    config = await config_service.get_config(_get_config_path_for_instance(connector_id)) or {}
+    await _validate_sync_filter_selections(
+        connector_registry, connector_type, config, "enabling this connector"
+    )
+
 
 def _is_scoped_service_token(user: Any) -> bool:
     """Internal workers mint scoped JWTs (orgId + scopes, often no userId)."""
@@ -4819,6 +4868,10 @@ async def update_connector_instance_filters_sync_config(
                 if key in body["filters"]:
                     new_config["filters"][key] = body["filters"][key]
 
+        await _validate_sync_filter_selections(
+            connector_registry, instance.get("type", ""), new_config, "saving"
+        )
+
         # Only delete sync points and edges when sync filters change
         new_sync_filters = new_config.get("filters", {}).get("sync", {})
         first_time_sync_filters = not old_sync_filters and bool(new_sync_filters)
@@ -4978,6 +5031,10 @@ async def update_connector_instance_config(
                     # Section doesn't exist, add it
                     new_config[section] = body[section]
 
+        if isinstance(body.get("filters"), dict):
+            await _validate_sync_filter_selections(
+                connector_registry, instance.get("type", ""), new_config, "saving"
+            )
 
         # Clear credentials and OAuth state only if auth config is being updated
         # Filters and sync updates don't require re-authentication
@@ -7267,6 +7324,14 @@ async def toggle_connector_instance(
                         status_code=HttpStatusCode.BAD_REQUEST.value,
                         detail="Connector must be configured before enabling"
                     )
+
+            await _require_sync_filter_selections(
+                container,
+                connector_registry,
+                connector_id,
+                instance.get("type", ""),
+                org_id,
+            )
 
             # Initialize connector when enabling (if not already initialized)
             await _ensure_connector_initialized(
