@@ -969,17 +969,15 @@ class TestStreamRecordOrgMismatch:
 
 class TestGetRecordByIdGaps:
     @pytest.mark.asyncio
-    async def test_no_access_raises_500_wrapping_404(self):
-        """When has_access is falsy, the inner 404 gets caught by outer except -> 500."""
+    async def test_no_access_raises_404(self):
+        """When has_access is falsy, it raises 404."""
         gp = AsyncMock()
         gp.check_record_access_with_details = AsyncMock(return_value=None)
         req = _mock_request()
 
         with pytest.raises(HTTPException) as exc_info:
             await get_record_by_id("rec-1", req, graph_provider=gp)
-        # The function raises 404 inside try, but the outer except Exception catches it
-        # and re-wraps as 500. This is a known pattern in the codebase.
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_exception_raises_500(self):
@@ -4319,17 +4317,15 @@ class TestStreamRecordOrgMismatchCoverage:
 
 class TestGetRecordByIdGapsCoverage:
     @pytest.mark.asyncio
-    async def test_no_access_raises_500_wrapping_404(self):
-        """When has_access is falsy, the inner 404 gets caught by outer except -> 500."""
+    async def test_no_access_raises_404(self):
+        """When has_access is falsy, it raises 404."""
         gp = AsyncMock()
         gp.check_record_access_with_details = AsyncMock(return_value=None)
         req = _mock_request()
 
         with pytest.raises(HTTPException) as exc_info:
             await get_record_by_id("rec-1", req, graph_provider=gp)
-        # The function raises 404 inside try, but the outer except Exception catches it
-        # and re-wraps as 500. This is a known pattern in the codebase.
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_exception_raises_500(self):
