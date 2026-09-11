@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.linear.connector import (
     LINEAR_CONFIG_PATH,
     LinearConnector,
@@ -215,8 +216,8 @@ class TestLinearConnectorInit:
             MockClient.build_from_services = AsyncMock(
                 side_effect=Exception("Auth failed")
             )
-            result = await connector.init()
-            assert result is False
+            with pytest.raises(ConnectorInitError, match="Auth failed"):
+                await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_org_fetch_fails(self):
@@ -236,8 +237,8 @@ class TestLinearConnectorInit:
                 "app.connectors.sources.linear.connector.LinearDataSource"
             ) as MockDS:
                 MockDS.return_value = mock_ds
-                result = await connector.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="Unauthorized"):
+                    await connector.init()
 
 
 # ===================================================================
@@ -1395,7 +1396,8 @@ class TestLinearRunSync:
                     return_value=[MagicMock(email="alice@test.com")]
                 )
                 with patch.object(
-                    c, "_sync_issues_for_teams", new_callable=AsyncMock, return_value=set()
+                    c, "_sync_issues_for_teams", new_callable=AsyncMock,
+                    return_value=(set(), [])
                 ):
                     with patch.object(c, "_sync_attachments", new_callable=AsyncMock):
                         with patch.object(c, "_sync_documents", new_callable=AsyncMock):
@@ -1807,8 +1809,8 @@ class TestLinearInitOrgData:
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             with patch("app.connectors.sources.linear.connector.LinearDataSource") as MockDS:
                 MockDS.return_value = mock_ds
-                result = await c.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await c.init()
 
     @pytest.mark.asyncio
     async def test_init_none_org_data(self):
@@ -1824,8 +1826,8 @@ class TestLinearInitOrgData:
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             with patch("app.connectors.sources.linear.connector.LinearDataSource") as MockDS:
                 MockDS.return_value = mock_ds
-                result = await c.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await c.init()
 
 
 # ===================================================================
@@ -5575,7 +5577,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
-                            return_value=set(),
+                            return_value=(set(), []),
                         ):
                             with patch.object(
                                 connector,
@@ -5646,7 +5648,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
-                            return_value=set(),
+                            return_value=(set(), []),
                         ):
                             with patch.object(
                                 connector,

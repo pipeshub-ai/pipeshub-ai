@@ -1423,7 +1423,7 @@ class TestRunSyncFilterLogging:
         )
         conn._fetch_users = AsyncMock(return_value=[])
         conn._fetch_teams = AsyncMock(return_value=([], []))
-        conn._sync_issues_for_teams = AsyncMock(return_value=set())
+        conn._sync_issues_for_teams = AsyncMock(return_value=(set(), []))
         conn._sync_attachments = AsyncMock()
         conn._sync_documents = AsyncMock()
         conn._sync_projects_for_teams = AsyncMock()

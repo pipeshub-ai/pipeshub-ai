@@ -14,6 +14,7 @@ from fastapi.exceptions import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import IndexingFilterKey, ListOperator, SyncFilterKey
 from app.models.blocks import ChildRecord, ChildType, GroupSubType
 from app.connectors.sources.atlassian.jira_data_center.connector import (
@@ -152,8 +153,8 @@ async def test_init_rejects_empty_auth_type_whitespace_only():
     conn.config_service.get_config = AsyncMock(
         return_value={"auth": {"authType": "   ", "baseUrl": "https://jira.example", "apiToken": "x"}}
     )
-    ok = await conn.init()
-    assert ok is False
+    with pytest.raises(ConnectorInitError, match="unsupported authType"):
+        await conn.init()
 
 
 @pytest.mark.parametrize(
@@ -530,25 +531,27 @@ async def test_init_success_sets_clients():
 
 
 @pytest.mark.asyncio
-async def test_init_unsupported_auth_returns_false():
+async def test_init_unsupported_auth_raises():
     conn = _make_connector()
     conn.config_service.get_config = AsyncMock(
         return_value={"auth": {"authType": "OAUTH", "baseUrl": "https://x"}}
     )
-    assert await conn.init() is False
+    with pytest.raises(ConnectorInitError, match="unsupported authType"):
+        await conn.init()
 
 
 @pytest.mark.asyncio
-async def test_init_missing_base_url_returns_false():
+async def test_init_missing_base_url_raises():
     conn = _make_connector()
     conn.config_service.get_config = AsyncMock(
         return_value={"auth": {"authType": "API_TOKEN", "baseUrl": "  ", "apiToken": "t"}}
     )
-    assert await conn.init() is False
+    with pytest.raises(ConnectorInitError, match="baseUrl is required"):
+        await conn.init()
 
 
 @pytest.mark.asyncio
-async def test_init_build_raises_returns_false():
+async def test_init_build_raises():
     conn = _make_connector()
     conn.config_service.get_config = AsyncMock(
         return_value={"auth": {"authType": "API_TOKEN", "baseUrl": "https://x", "apiToken": "t"}}
@@ -558,7 +561,8 @@ async def test_init_build_raises_returns_false():
         new_callable=AsyncMock,
         side_effect=RuntimeError("boom"),
     ):
-        assert await conn.init() is False
+        with pytest.raises(ConnectorInitError, match="boom"):
+            await conn.init()
 
 
 @pytest.mark.asyncio
@@ -4390,25 +4394,28 @@ class TestFetchGroupsPicker:
 
 class TestFallbackPermissionsForForbiddenSchemeDC:
 
-    def test_returns_user_permission_when_email_set(self):
+    @pytest.mark.asyncio
+    async def test_returns_user_permission_when_email_set(self):
         conn = _make_connector()
         conn.creator_email = "owner@example.com"
-        result = conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
+        result = await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
         assert len(result) == 1
         assert result[0].entity_type == EntityType.USER
         assert result[0].email == "owner@example.com"
         assert result[0].type == PermissionType.READ
 
-    def test_returns_empty_when_no_email(self):
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_email(self):
         conn = _make_connector()
         conn.creator_email = None
-        assert conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
+        assert await conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
 
-    def test_works_for_both_401_and_403(self):
+    @pytest.mark.asyncio
+    async def test_works_for_both_401_and_403(self):
         conn = _make_connector()
         conn.creator_email = "e@x.com"
         for status in (401, 403):
-            result = conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
+            result = await conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
             assert len(result) == 1
             assert result[0].entity_type == EntityType.USER
 

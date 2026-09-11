@@ -27,7 +27,7 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -85,6 +85,10 @@ from app.models.entities import (
     get_epoch_timestamp_in_ms,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import (
+    NotificationSeverity,
+    NotificationType,
+)
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
@@ -366,6 +370,9 @@ class JiraDataCenterConnector(BaseConnector):
         # Issue key -> numeric id; cleared at start of each project sync
         self._issue_key_to_id_cache: dict[str, str] = {}
 
+    def _notification_title(self, event: str) -> str:
+        return f"{self.connector_instance_name or 'Jira Data Center'} connector {event}"
+
     async def init(self) -> bool:
         try:
             config_path = OAUTH_JIRA_CONFIG_PATH.format(connector_id=self.connector_id)
@@ -377,28 +384,23 @@ class JiraDataCenterConnector(BaseConnector):
             # silently succeeded.
             raw_auth_type = auth_config.get("authType")
             if not raw_auth_type:
-                self.logger.error(
-                    "Jira Data Center connector %s: authType is required in connector auth config "
-                    "(expected API_TOKEN or BASIC_AUTH)",
-                    self.connector_id,
+                raise ConnectorInitError(
+                    f"{self.connector_instance_name or 'Jira Data Center'} connector: authType is required "
+                    "in connector auth config (expected API_TOKEN or BASIC_AUTH)"
                 )
-                return False
             auth_type = str(raw_auth_type).strip().upper()
             if auth_type not in {"API_TOKEN", "BASIC_AUTH"}:
-                self.logger.error(
-                    "Jira Data Center connector %s: unsupported authType %s (expected API_TOKEN or BASIC_AUTH)",
-                    self.connector_id,
-                    auth_type,
+                raise ConnectorInitError(
+                    f"{self.connector_instance_name or 'Jira Data Center'} connector: unsupported authType "
+                    f"{auth_type} (expected API_TOKEN or BASIC_AUTH)"
                 )
-                return False
 
             base_url = (auth_config.get("baseUrl") or "").strip().rstrip("/")
             if not base_url:
-                self.logger.error(
-                    "Jira Data Center connector %s: baseUrl is required in connector auth config",
-                    self.connector_id,
+                raise ConnectorInitError(
+                    f"{self.connector_instance_name or 'Jira Data Center'} connector: baseUrl is required "
+                    "in connector auth config"
                 )
-                return False
             self.site_url = base_url
 
             client = await JiraClient.build_from_services(
@@ -425,9 +427,11 @@ class JiraDataCenterConnector(BaseConnector):
             await self._discover_hierarchy_link_field_ids()
 
             return True
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error("Failed to initialize Jira Data Center connector: %s", e, exc_info=True)
-            return False
+            raise ConnectorInitError(str(e)) from e
     # -------------------------------------------------------------------------
     # HTTP client & datasource (no OAuth refresh — credentials from connector config)
     # -------------------------------------------------------------------------
@@ -644,6 +648,25 @@ class JiraDataCenterConnector(BaseConnector):
                 full_sync_project_ids=sync_stats.get("full_sync_project_ids") or set(),
             )
 
+            failed_keys = sync_stats.get("failed_project_keys") or []
+            if failed_keys:
+                preview = ", ".join(failed_keys[:10])
+                if len(failed_keys) > 10:
+                    preview = f"{preview}, and {len(failed_keys) - 10} more"
+                self.logger.warning(
+                    "⚠️ Jira DC sync: %s/%s project(s) failed to sync issues: %s",
+                    len(failed_keys), len(projects), preview,
+                )
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("couldn't sync some projects"),
+                    message=(
+                        f"Couldn't sync issues for {len(failed_keys)} project(s): {preview}. "
+                        "Retry sync; check Jira access if it keeps failing."
+                    ),
+                )
+
             self.logger.info(
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
                 f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']}); "
@@ -652,6 +675,17 @@ class JiraDataCenterConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during Jira sync: {e}", exc_info=True)
+            if not isinstance(e, ConnectorInitError):
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("sync failed"),
+                    message=(
+                        f"The sync stopped due to an error: {str(e)[:200]}. Recent Jira changes "
+                        "may not be reflected yet. Run the sync again; if it keeps failing, "
+                        "check the connector's configuration."
+                    ),
+                )
             raise
 
     # ============================================================================
@@ -817,6 +851,18 @@ class JiraDataCenterConnector(BaseConnector):
                         "reconciliation.",
                         response.status,
                     )
+                    if response.status == HttpStatusCode.FORBIDDEN.value:
+                        await self.notify(
+                            type=NotificationType.CONNECTOR_WARNING,
+                            severity=NotificationSeverity.WARNING,
+                            title=self._notification_title("is missing the audit log permission"),
+                            message=(
+                                "The connector's Jira account lacks the System Administrator "
+                                "permission needed to read the audit log, so issues deleted in "
+                                "Jira may still appear in search. Ask a Jira admin to grant it "
+                                "to enable deletion detection."
+                            ),
+                        )
                     return []
 
                 if response.status == HttpStatusCode.NOT_FOUND.value:
@@ -1112,6 +1158,16 @@ class JiraDataCenterConnector(BaseConnector):
                         "reverse lookup only.",
                         response.status, len(users),
                     )
+                    if response.status == HttpStatusCode.FORBIDDEN.value:
+                        await self.notify(
+                            type=NotificationType.CONNECTOR_WARNING,
+                            severity=NotificationSeverity.WARNING,
+                            title=self._notification_title("couldn't list users"),
+                            message=(
+                                "Couldn't list users from Jira. The connector's Jira account "
+                                "needs the Browse users and groups global permission."
+                            ),
+                        )
                     return users
                 raise Exception(f"Failed to fetch users via /user/list: {response.text()}")
 
@@ -1165,6 +1221,16 @@ class JiraDataCenterConnector(BaseConnector):
                         "reverse lookup only.",
                         response.status, len(users),
                     )
+                    if response.status == HttpStatusCode.FORBIDDEN.value:
+                        await self.notify(
+                            type=NotificationType.CONNECTOR_WARNING,
+                            severity=NotificationSeverity.WARNING,
+                            title=self._notification_title("couldn't list users"),
+                            message=(
+                                "Couldn't list users from Jira. The connector's Jira account "
+                                "needs the Browse users and groups global permission."
+                            ),
+                        )
                     return users
                 raise Exception(f"Failed to fetch users: {response.text()}")
 
@@ -1369,6 +1435,16 @@ class JiraDataCenterConnector(BaseConnector):
                         "Projects whose permission scheme uses applicationRole holders will "
                         "grant the configuring user direct access instead."
                     )
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_WARNING,
+                        severity=NotificationSeverity.WARNING,
+                        title=self._notification_title("is missing the admin permission for application roles"),
+                        message=(
+                            "The connector's Jira account doesn't have Jira admin access, "
+                            "so some users may not see all the Jira issues they can access "
+                            "in Jira. Ask a Jira admin to grant it."
+                        ),
+                    )
                 else:
                     self.logger.warning(
                         "⚠️ Failed to fetch application roles (HTTP %s)", response.status
@@ -1400,7 +1476,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         return mapping
 
-    def _fallback_permissions_for_forbidden_scheme(
+    async def _fallback_permissions_for_forbidden_scheme(
         self,
         project_key: str,
         status: int,
@@ -1421,6 +1497,16 @@ class JiraDataCenterConnector(BaseConnector):
                 "Projects. Granting configuring user '%s' direct BROWSE access "
                 "instead of dropping all ACLs for this project.",
                 stage, project_key, status, self.creator_email,
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title(f"couldn't read permissions for project {project_key}"),
+                message=(
+                    f"The connector's Jira account can't read the permission scheme for "
+                    f"{project_key}. Grant it project admin access; until then, only the "
+                    "connector owner can access this project's issues in PipesHub."
+                ),
             )
             return [Permission(
                 entity_type=EntityType.USER,
@@ -1492,7 +1578,7 @@ class JiraDataCenterConnector(BaseConnector):
                     HttpStatusCode.UNAUTHORIZED.value,
                     HttpStatusCode.FORBIDDEN.value,
                 ):
-                    return self._fallback_permissions_for_forbidden_scheme(
+                    return await self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
                         status=scheme_response.status,
                         stage="permission scheme",
@@ -1521,7 +1607,7 @@ class JiraDataCenterConnector(BaseConnector):
                     HttpStatusCode.UNAUTHORIZED.value,
                     HttpStatusCode.FORBIDDEN.value,
                 ):
-                    return self._fallback_permissions_for_forbidden_scheme(
+                    return await self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
                         status=grants_response.status,
                         stage=f"permission grants (scheme {scheme_id})",
@@ -1686,6 +1772,17 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.error(f"❌ Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
             return []
 
+    async def _notify_group_sync_failed(self) -> None:
+        await self.notify(
+            type=NotificationType.CONNECTOR_GROUP_SYNC_ERROR,
+            severity=NotificationSeverity.WARNING,
+            title=self._notification_title("couldn't sync user groups"),
+            message=(
+                "Couldn't load groups from Jira. The connector's Jira account needs "
+                "the Browse users and groups global permission."
+            ),
+        )
+
     async def _sync_user_groups(self, jira_users: list[AppUser]) -> dict[str, list[AppUser]]:
         """
         Sync user groups and return a mapping of group_id/name -> list of AppUser members.
@@ -1776,6 +1873,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing user groups: {e}")
+            await self._notify_group_sync_failed()
             return {}
 
     async def _fetch_groups(self) -> list[dict[str, Any]]:
@@ -1796,6 +1894,8 @@ class JiraDataCenterConnector(BaseConnector):
                     response.status,
                     response.text()[:300],
                 )
+                if response.status == HttpStatusCode.FORBIDDEN.value:
+                    await self._notify_group_sync_failed()
                 return []
 
             payload = response.json() or {}
@@ -1980,6 +2080,7 @@ class JiraDataCenterConnector(BaseConnector):
         roles_to_sync: list[tuple[AppRole, list[AppUser]]] = []
         total_roles = 0
         total_members = 0
+        failed_project_keys: list[str] = []
 
         for project_key in project_keys:
             try:
@@ -1989,6 +2090,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(f"⚠️ Failed to fetch roles for project {project_key}: {response.status}")
+                    failed_project_keys.append(project_key)
                     continue
 
                 roles_dict = response.json()
@@ -1998,6 +2100,7 @@ class JiraDataCenterConnector(BaseConnector):
                     continue
 
                 # Step 2: For each role, fetch role details including actors
+                role_detail_failed = False
                 for role_name, role_url in roles_dict.items():
                     try:
                         # Skip app-only roles
@@ -2017,6 +2120,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                         if role_response.status != HttpStatusCode.OK.value:
                             self.logger.warning(f"  {project_key}: Failed to fetch role {role_name}: {role_response.status}")
+                            role_detail_failed = True
                             continue
 
                         role_data = role_response.json()
@@ -2098,11 +2202,36 @@ class JiraDataCenterConnector(BaseConnector):
                         self.logger.error(
                             f"  {project_key}: Error processing role {role_name}: {role_error}"
                         )
+                        role_detail_failed = True
                         continue
 
+                if role_detail_failed:
+                    failed_project_keys.append(project_key)
+
             except Exception as project_error:
+                failed_project_keys.append(project_key)
                 self.logger.error(f"❌ Error syncing roles for project {project_key}: {project_error}")
                 continue
+
+        if failed_project_keys:
+            preview = ", ".join(failed_project_keys[:10])
+            if len(failed_project_keys) > 10:
+                preview = f"{preview}, and {len(failed_project_keys) - 10} more"
+            self.logger.warning(
+                "⚠️ Project role sync failed for %s/%s projects: %s",
+                len(failed_project_keys), len(project_keys), preview,
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_ROLE_SYNC_ERROR,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("couldn't sync project roles"),
+                message=(
+                    f"Couldn't sync roles for: {preview}. "
+                    "This is usually because the connector's Jira account lacks Administer Projects "
+                    "on those projects, but can also be temporary — existing roles are "
+                    "preserved and will retry next sync."
+                ),
+            )
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
@@ -2326,6 +2455,7 @@ class JiraDataCenterConnector(BaseConnector):
         total_synced = 0
         new_count = 0
         updated_count = 0
+        failed_project_keys: list[str] = []
         full_sync_project_ids: set[str] = set()
 
         for project, _ in projects:
@@ -2339,6 +2469,7 @@ class JiraDataCenterConnector(BaseConnector):
                 if project_stats.get("is_new_project"):
                     full_sync_project_ids.add(project.external_group_id)
             except Exception as e:
+                failed_project_keys.append(project.short_name)
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
 
@@ -2346,6 +2477,7 @@ class JiraDataCenterConnector(BaseConnector):
             "total_synced": total_synced,
             "new_count": new_count,
             "updated_count": updated_count,
+            "failed_project_keys": failed_project_keys,
             "full_sync_project_ids": full_sync_project_ids,
         }
 

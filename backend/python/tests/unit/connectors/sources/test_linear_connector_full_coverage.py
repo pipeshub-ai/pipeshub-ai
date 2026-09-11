@@ -3095,7 +3095,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
-                            return_value=set(),
+                            return_value=(set(), []),
                         ):
                             with patch.object(
                                 connector,
@@ -3166,7 +3166,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
-                            return_value=set(),
+                            return_value=(set(), []),
                         ):
                             with patch.object(
                                 connector,
