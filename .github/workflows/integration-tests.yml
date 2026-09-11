@@ -352,6 +352,8 @@ jobs:
             -n "$WORKERS" --dist loadgroup \
             --junitxml=reports/neo4j-results.xml 2>&1
 
+
+
       - name: 'Neo4j: Run Playwright e2e tests'
         if: ${{ !cancelled() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
         working-directory: frontend
