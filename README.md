@@ -54,6 +54,18 @@ Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems
 > curl -fsSL https://get.pipeshub.com/install | bash
 > ```
 
+## What can you build with PipesHub?
+
+Don't just use PipesHub — build on it. Each of these is a short tutorial that ends with something working, using a Personal Access Token so no admin setup is needed:
+
+| | Build | |
+|---|---|---|
+| **01** | **[Company Knowledge MCP](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp)** — give Claude Code, Cursor, Claude Desktop, or Codex secure access to your company's knowledge. One token, one config file. | ~10 min |
+| **02** | **[Private Enterprise Search](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search)** — a permission-aware, citation-backed search page across everything, on your own infrastructure. | ~15 min |
+| **03** | **[SDK Starter](https://github.com/pipeshub-ai/examples/tree/main/sdk-starter)** — add "what does my company know about X?" to your own Python or TypeScript app. Two calls. | ~10 min |
+
+Building for a specific team? [Build Packs](https://github.com/pipeshub-ai/examples#build-for-your-team) for Engineering, Sales, Support, Marketing, Finance, and HR are on the way. Built something? [Show us](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
+
 ## PipesHub in Action
 
 ### Connectors
@@ -222,6 +234,11 @@ An agent connects as a specific person rather than as the application, so it
 retrieves exactly what that person is allowed to see. Access is resolved when
 the query runs, against the source system's own permissions, instead of being
 approximated at build time.
+
+Step-by-step tutorials for the most common builds — an MCP for your coding
+assistant, private enterprise search, and SDK starters — live in
+[**pipeshub-ai/examples**](https://github.com/pipeshub-ai/examples). The
+reference material for each building block is below.
 
 ### MCP Server
 
