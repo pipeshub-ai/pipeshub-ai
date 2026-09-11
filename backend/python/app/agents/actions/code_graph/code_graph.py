@@ -16,7 +16,7 @@ Every tool is scoped to the caller's organisation *and* checked against the
 caller's access to the owning record. A denial is returned as an empty result,
 never as an error: an error would tell the agent that a record it may not read
 exists.
-fetch record 
+
 Registered as an internal class-based toolset so it participates in lazy tool
 disclosure alongside connector toolsets. The toolset is only loaded when both
 ``has_code_connector`` and ``has_code_knowledge`` are true — see the gate in
@@ -341,7 +341,8 @@ class CodeGraph:
             "the code you are reading, and a knowledge search cannot find them because "
             "nothing names them.\n\n"
             "Prefer another get_neighbour on a returned neighbour over raising `depth`; "
-            "depth multiplies noise."
+            "depth multiplies noise. If `truncated`, follow the `next` line's "
+            "`offset` for more — page rather than raise `limit`."
         ),
         parameters=[
             ToolParameter(
@@ -409,7 +410,15 @@ class CodeGraph:
             ToolParameter(
                 name="limit", type=ParameterType.INTEGER, required=False,
                 default=DEFAULT_NEIGHBOR_LIMIT,
-                description="Maximum neighbours to return",
+                description="Maximum neighbours to return per call",
+            ),
+            ToolParameter(
+                name="offset", type=ParameterType.INTEGER, required=False, default=0,
+                description=(
+                    "Skip this many neighbours first. When a result says "
+                    "`truncated: true`, its `next` line gives the offset to pass "
+                    "with the same arguments to get the following page."
+                ),
             ),
             ToolParameter(
                 name="include_tests", type=ParameterType.BOOLEAN, required=False,
@@ -428,6 +437,7 @@ class CodeGraph:
         edge_types: list[str] | None = None,
         depth: int = 1,
         limit: int = DEFAULT_NEIGHBOR_LIMIT,
+        offset: int = 0,
         include_tests: bool = False,
     ) -> tuple[bool, str]:
         path, error = await self._anchor_path(connector_id, file_path, record_id)
@@ -441,7 +451,7 @@ class CodeGraph:
                 user_id=self._user_id, connector_id=connector_id,
                 file_path=path, qualified_name=qualified_name,
                 direction=direction, edge_types=edge_types, depth=depth,
-                limit=limit, include_tests=include_tests,
+                limit=limit, offset=offset, include_tests=include_tests,
             ),
             "Failed to walk the code graph",
         )

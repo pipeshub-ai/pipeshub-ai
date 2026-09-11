@@ -155,6 +155,7 @@ class _Builder:
         self.re_exports: dict[str, set[str]] = {}
         self.imports = ImportResolution(set(index.record_by_file.keys()))
         self._interface_memo: dict[str, bool] = {}
+        self._bases_memo: dict[str, list[str]] = {}
 
     # -- emit -----------------------------------------------------------
 
@@ -514,9 +515,9 @@ class _Builder:
         if not receiver_type and receiver:
             receiver_type = self.index.type_table_by_record.get(record_id, {}).get(receiver)
         if not receiver_type and receiver in ("self", "this"):
-            row = self.index.rows.get(block_id)
-            if row and row.parent_block_id:
-                return self.index.method_index.get((row.parent_block_id, fact.get("toName") or ""))
+            owner = self._enclosing_type(block_id)
+            if owner:
+                return self._resolve_self_method(owner, fact.get("toName") or "")
         if not receiver_type:
             return self._resolve_module_qualified_call(fact, record_id)
 
@@ -529,6 +530,100 @@ class _Builder:
                 self.result.ambiguous_skipped += 1
             return None
         return self.index.method_index.get((type_candidates[0], fact.get("toName") or ""))
+
+    def _enclosing_type(self, block_id: str) -> str | None:
+        """The class a block sits in, through any intermediate scopes.
+
+        A `self.x()` inside a closure nested in a method has the method as its
+        parent, so a single parent hop would miss the class.
+        """
+        seen: set[str] = set()
+        row = self.index.rows.get(block_id)
+        while row is not None and row.parent_block_id and row.parent_block_id not in seen:
+            parent_id = row.parent_block_id
+            seen.add(parent_id)
+            if parent_id in self.index.type_blocks:
+                return parent_id
+            row = self.index.rows.get(parent_id)
+        return None
+
+    def _resolve_self_method(self, owner: str, method_name: str) -> str | None:
+        """`self.m()` -- the owner's own `m`, else the nearest base that defines it.
+
+        Calling a method the subclass never overrode is the common case, not an
+        edge case: `BaseConnector.notify` has ~38 `await self.notify(...)` call
+        sites across the connectors and every one of them resolved to nothing
+        before this walk, leaving the method with no inbound CALLS at all.
+        """
+        if not method_name:
+            return None
+        direct = self.index.method_index.get((owner, method_name))
+        if direct:
+            return direct
+
+        seen = {owner}
+        queue = list(self._base_types_of(owner))
+        while queue:
+            base = queue.pop(0)
+            if base in seen:
+                continue
+            seen.add(base)
+            inherited = self.index.method_index.get((base, method_name))
+            if inherited:
+                return inherited
+            queue.extend(self._base_types_of(base))
+        return None
+
+    def _base_types_of(self, type_block: str) -> list[str]:
+        """Resolved base classes of a type, from its own heritage facts.
+
+        Read from `pending_edges` rather than `self.edges`: `resolve_rest`
+        interleaves heritage and call facts, so a subclass's heritage edge may
+        not be written yet when one of its calls needs it.
+        """
+        cached = self._bases_memo.get(type_block)
+        if cached is not None:
+            return cached
+
+        bases: list[str] = []
+        row = self.index.rows.get(type_block)
+        if row is not None:
+            family = self._family_of(type_block)
+            for fact in row.pending_edges:
+                if fact.get("relation") not in _TYPE_RELATIONS:
+                    continue
+                target = self._resolve_type_name(
+                    fact.get("toName") or "", row.file_path or "", family
+                )
+                if target:
+                    bases.append(target)
+        self._bases_memo[type_block] = bases
+        return bases
+
+    def _resolve_type_name(self, name: str, from_file: str, family: str | None) -> str | None:
+        """Name -> type block. Deliberately without `_resolve_direct`'s counters:
+        a heritage hop taken while resolving a call is not itself a resolution
+        the run should report on."""
+        if not name:
+            return None
+        candidates = [
+            cid for cid in self.index.candidates(name) if cid in self.index.type_blocks
+        ]
+        if family:
+            candidates = [
+                cid for cid in candidates
+                if self.index.family_by_block.get(cid) in (None, family)
+            ]
+        if len(candidates) > 1:
+            with_evidence = [
+                cid for cid in candidates if self._has_import_evidence(cid, from_file)
+            ]
+            candidates = with_evidence or candidates
+            candidates = prefer_non_test(candidates, self.index.file_by_block, from_file)
+            candidates = path_proximity_winner(
+                candidates, self.index.file_by_block, from_file
+            )
+        return candidates[0] if len(candidates) == 1 else None
 
     # -- step 8: prune ---------------------------------------------------
 

@@ -269,3 +269,51 @@ class TestWholeFile:
         assert result == {
             "file_path": "src/b.py", "direction": "outbound", "neighbors": [],
         }
+
+
+class TestPagination:
+    """`limit` used to be a hard cap with `truncated: true` and no way to see
+    the rest: a 167-neighbour depth-2 walk in a live trace came back as one
+    12k-token blob. `offset` pages it, and `next` tells the model where the
+    following page starts, the same way `read_code` reports a stopped file."""
+
+    async def _page(self, graph, **kw):
+        return await get_neighbour_impl(
+            graph_provider=graph, connector_id=CONN, org_id=ORG, user_id=USER,
+            file_path="src/b.py", direction="any", **kw,
+        )
+
+    @pytest.mark.asyncio
+    async def test_pages_concatenate_to_the_unpaginated_walk(self, graph) -> None:
+        full = await self._page(graph)
+        total = full["total"]
+        assert total == len(full["neighbors"]) and total >= 2, "fixture must hold >=2 neighbours"
+
+        pages, offset = [], 0
+        while True:
+            page = await self._page(graph, limit=1, offset=offset)
+            assert page["total"] == total
+            assert page["offset"] == offset
+            assert len(page["neighbors"]) == 1
+            pages.extend(page["neighbors"])
+            if not page["truncated"]:
+                assert "next" not in page
+                break
+            assert f"offset={offset + 1}" in page["next"]
+            offset += 1
+        # Pages partition rank order; the full result is displayed anchor-
+        # grouped. Same edges, so compare as a multiset, not a sequence.
+        key = lambda n: (n["file_path"], n["qualified_name"], n["relation"])
+        assert sorted(map(key, pages)) == sorted(map(key, full["neighbors"]))
+
+    @pytest.mark.asyncio
+    async def test_offset_past_the_end_is_empty_not_truncated(self, graph) -> None:
+        full = await self._page(graph)
+        page = await self._page(graph, offset=full["total"] + 5)
+        assert page["neighbors"] == []
+        assert page["truncated"] is False
+        assert "next" not in page
+
+    @pytest.mark.asyncio
+    async def test_negative_offset_is_rejected(self, graph) -> None:
+        assert "error" in await self._page(graph, offset=-1)

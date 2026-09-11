@@ -85,7 +85,7 @@ HERITAGE_RELATIONS = frozenset({
 # class returns heritage and usages — no special-case path for overrides.
 CODE_RELATIONS = [*STRUCTURAL_RELATIONS, *CROSS_FILE_RELATIONS]
 
-DEFAULT_NEIGHBOR_LIMIT = 25
+DEFAULT_NEIGHBOR_LIMIT = 100
 DEFAULT_MAX_DEPTH = 6
 # A neighbour walk is for tracing a specific chain, not surveying the repo:
 # fan-out compounds per hop, so a deep walk returns more than it explains.
@@ -522,8 +522,11 @@ async def get_neighbour_impl(
     edge_types: list[str] | None = None,
     depth: int = 1,
     limit: int = DEFAULT_NEIGHBOR_LIMIT,
+    offset: int = 0,
     include_tests: bool = False,
 ) -> dict[str, Any]:
+    if offset < 0:
+        return {"error": "offset must be 0 or greater"}
     if direction not in ("inbound", "outbound", "any"):
         return {"error": "direction must be 'inbound', 'outbound' or 'any'"}
 
@@ -629,7 +632,11 @@ async def get_neighbour_impl(
         per_origin[origin] = rank + 1
         ranked.append((rank, row.get("hop", 1), order, row, block))
     ranked.sort(key=lambda item: item[:3])
-    kept = ranked[:limit]
+    total = len(ranked)
+    # Pages partition RANK order (so `offset` keeps the round-robin above),
+    # while each page is displayed anchor-grouped below. Consecutive pages
+    # therefore cover the full set, but not in the full result's display order.
+    kept = ranked[offset:offset + limit]
     kept.sort(key=lambda item: (anchor_order.get(item[3].get("_origin"), 0), *item[:3]))
 
     neighbors: list[dict[str, Any]] = []
@@ -655,10 +662,18 @@ async def get_neighbour_impl(
         "edge_types": relations,
         "depth": depth,
         "neighbors": neighbors,
+        "offset": offset,
+        "total": total,
         # Silence reads as absence: a model that thinks it saw every neighbour
         # will state a wrong conclusion confidently.
-        "truncated": len(ranked) > limit,
+        "truncated": total > offset + limit,
     }
+    if result["truncated"]:
+        shown_to = offset + len(neighbors)
+        result["next"] = (
+            f"Showing neighbours {offset + 1}-{shown_to} of {total}. Continue "
+            f"with offset={shown_to} (same arguments) for the rest."
+        )
     chain = _chain_targets(neighbors)
     if chain:
         result["chain"] = chain
