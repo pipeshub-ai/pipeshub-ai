@@ -14,6 +14,17 @@ import {
 } from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { Response } from 'express';
+import { isLocalFsConnector } from '../../../utils/local-fs-utils';
+import {
+  DesktopPresence,
+  resolveDesktopPresence,
+} from '../../../libs/services/desktop-presence.provider';
+
+export const DESKTOP_OFFLINE_CODE = 'DESKTOP_OFFLINE';
+/** A desktop is connected but has never claimed this connector (first enable). */
+export const DESKTOP_UNCLAIMED_CODE = 'DESKTOP_UNCLAIMED';
+
+export type DesktopRefusalReason = 'offline' | 'unclaimed';
 
 const logger = Logger.getInstance({
   service: 'Connector Utils',
@@ -144,4 +155,90 @@ export const handleConnectorResponse = (
     throw new NotFoundError(`${operation} failed: ${failureMessage}`);
   }
   res.status(statusCode ?? 200).json(connectorsData);
+};
+
+type PresenceRow = {
+  _key?: string;
+  type?: string;
+  createdBy?: string;
+  isActive?: boolean;
+  desktopOnline?: boolean;
+};
+
+const annotateRow = (
+  row: unknown,
+  orgId: string,
+  presence: DesktopPresence,
+): void => {
+  if (!row || typeof row !== 'object') return;
+  const instance = row as PresenceRow;
+  // The desktop registers under its owner's userId, which for a personal
+  // connector is createdBy — not necessarily the caller (an admin may list it).
+  if (!instance._key || !instance.createdBy) return;
+  if (!isLocalFsConnector(String(instance.type ?? ''))) return;
+  // The desktop only claims connectors it has mounted a watcher for, which
+  // happens on enable. Before that, "no claim" is expected, not "offline".
+  if (instance.isActive !== true) return;
+  const online = presence.isLocalFsDesktopOnline(
+    orgId,
+    instance.createdBy,
+    instance._key,
+  );
+  if (online !== null) instance.desktopOnline = online;
+};
+
+/**
+ * Stamp `desktopOnline` on sync-enabled Local FS rows of a Python instance
+ * response (`connector` or `connectors`). Computed from the socket claim map
+ * at response time, never persisted; left absent when presence is unknown or
+ * the connector is not enabled.
+ */
+export const annotateLocalFsDesktopPresence = (
+  body: unknown,
+  orgId: string | undefined,
+  presence: DesktopPresence | null = resolveDesktopPresence(),
+): void => {
+  if (!body || typeof body !== 'object' || !orgId || !presence) return;
+  const data = body as { connector?: unknown; connectors?: unknown };
+  annotateRow(data.connector, orgId, presence);
+  if (Array.isArray(data.connectors)) {
+    for (const row of data.connectors) annotateRow(row, orgId, presence);
+  }
+};
+
+const DESKTOP_REFUSAL: Record<
+  DesktopRefusalReason,
+  { code: string; message: (connectorId: string) => string }
+> = {
+  offline: {
+    code: DESKTOP_OFFLINE_CODE,
+    message: (connectorId) =>
+      `No desktop is connected for connector ${connectorId}. ` +
+      'Open the Pipeshub desktop app on the machine that owns this folder.',
+  },
+  unclaimed: {
+    code: DESKTOP_UNCLAIMED_CODE,
+    message: (connectorId) =>
+      `Connector ${connectorId} has not been set up on a desktop yet. ` +
+      'Open the Pipeshub desktop app on the machine that owns this folder ' +
+      'and enable sync there once.',
+  },
+};
+
+/**
+ * Written directly rather than via `next(error)`: the error middleware fixes
+ * `code` per error class, and the frontend only sees `message` + `details`.
+ */
+export const respondLocalFsDesktopRefusal = (
+  res: Response,
+  connectorId: string,
+  reason: DesktopRefusalReason = 'offline',
+): void => {
+  const { code, message } = DESKTOP_REFUSAL[reason];
+  res.status(409).json({
+    success: false,
+    code,
+    message: message(connectorId),
+    details: { code, connectorId, retryable: true },
+  });
 };

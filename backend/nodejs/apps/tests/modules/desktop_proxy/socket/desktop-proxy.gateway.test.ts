@@ -313,3 +313,13 @@ describe('DesktopProxySocketGateway', () => {
     expect(res.error.message).to.equal('network down')
   })
 })
+
+describe('DesktopProxySocketGateway.isLocalFsDesktopOnline', () => {
+  it('returns null before the namespace is attached', () => {
+    const authTokenService = { verifyToken: sinon.stub() }
+    const gateway = new DesktopProxySocketGateway(authTokenService as never, () => 3001)
+    expect(gateway.isReady()).to.equal(false)
+    expect(gateway.isLocalFsDesktopOnline('org-1', 'user-1', 'conn-1')).to.equal(null)
+    expect(gateway.isDesktopConnected('org-1', 'user-1')).to.equal(null)
+  })
+})

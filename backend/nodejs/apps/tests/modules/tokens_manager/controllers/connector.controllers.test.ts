@@ -2,6 +2,11 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
+import { registerDesktopPresence } from '../../../../src/libs/services/desktop-presence.provider'
+const makePresence = (online: boolean | null, connected: boolean | null = null) => ({
+  isLocalFsDesktopOnline: sinon.stub().returns(online),
+  isDesktopConnected: sinon.stub().returns(connected),
+})
 import {
   isUserAdmin,
   getConnectorRegistry,
@@ -1940,4 +1945,124 @@ describe('tokens_manager/controllers/connector.controllers', () => {
     })
   })
 
+})
+
+describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
+  let req: any
+  let res: any
+  let next: sinon.SinonStub
+  const mockAppConfig = { connectorBackend: 'http://connector-backend:8088' }
+
+  beforeEach(() => {
+    req = {
+      user: { userId: 'caller-1', orgId: 'org-1', role: 'admin' },
+      params: { connectorId: 'conn-1' },
+      query: {},
+      body: { type: 'sync' },
+      headers: {},
+    }
+    res = {
+      status: sinon.stub().returnsThis(),
+      json: sinon.stub().returnsThis(),
+      send: sinon.stub().returnsThis(),
+    }
+    next = sinon.stub()
+  })
+
+  afterEach(() => {
+    sinon.restore()
+    registerDesktopPresence(null)
+  })
+
+  function stubInstanceThenToggle(instance: Record<string, unknown>) {
+    const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+    execStub.onFirstCall().resolves({
+      statusCode: 200,
+      data: { connector: { _key: 'conn-1', ...instance } },
+    })
+    execStub.onSecondCall().resolves({ statusCode: 200, data: { active: true } })
+    return execStub
+  }
+
+  it('answers 409 DESKTOP_OFFLINE when enabling a Local FS connector whose desktop is offline', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
+
+    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+
+    expect(next.called).to.be.false
+    expect(res.status.calledWith(409)).to.be.true
+    expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_OFFLINE')
+    expect(execStub.calledOnce).to.be.true
+    expect(presence.isLocalFsDesktopOnline.calledOnceWithExactly('org-1', 'owner-1', 'conn-1')).to.be.true
+  })
+
+  it('answers DESKTOP_UNCLAIMED when a desktop is connected but never claimed the connector', async () => {
+    const presence = makePresence(false, true)
+    registerDesktopPresence(presence)
+    const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
+
+    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+
+    expect(res.status.calledWith(409)).to.be.true
+    expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_UNCLAIMED')
+    expect(execStub.calledOnce).to.be.true
+    expect(presence.isDesktopConnected.calledOnceWithExactly('org-1', 'owner-1')).to.be.true
+  })
+
+  it('answers DESKTOP_OFFLINE when no desktop of the owner is connected at all', async () => {
+    registerDesktopPresence(makePresence(false, false))
+    stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
+
+    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+
+    expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_OFFLINE')
+  })
+
+  it('proxies the toggle when the connector is already active (turning off)', async () => {
+    registerDesktopPresence(makePresence(false))
+    const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: true })
+
+    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+
+    expect(execStub.calledTwice).to.be.true
+    expect(execStub.secondCall.args[1]).to.equal('POST')
+    expect(res.status.calledWith(200)).to.be.true
+  })
+
+  it('does not fetch the instance for agent toggles', async () => {
+    registerDesktopPresence(makePresence(false))
+    req.body = { type: 'agent' }
+    const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+      statusCode: 200,
+      data: { active: true },
+    })
+
+    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+
+    expect(execStub.calledOnce).to.be.true
+    expect(execStub.firstCall.args[1]).to.equal('POST')
+  })
+
+  it('lets the toggle through when presence cannot tell', async () => {
+    registerDesktopPresence(makePresence(null))
+    const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
+
+    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+
+    expect(execStub.calledTwice).to.be.true
+    expect(res.status.calledWith(200)).to.be.true
+  })
+
+  it('ignores presence for non-Local-FS connectors', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const execStub = stubInstanceThenToggle({ type: 'Slack', createdBy: 'owner-1', isActive: false })
+
+    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+
+    expect(execStub.calledTwice).to.be.true
+    expect(presence.isLocalFsDesktopOnline.called).to.be.false
+  })
 })

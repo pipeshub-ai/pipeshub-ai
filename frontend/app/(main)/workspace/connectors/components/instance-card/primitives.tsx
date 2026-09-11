@@ -7,10 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import { useToastStore } from '@/lib/store/toast-store';
 import { runConnectorResync } from '../../utils/connector-sync-actions';
-import {
-  LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS,
-  LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE,
-} from '../../constants';
+import { localFsDesktopToast } from '../../utils/local-fs-helpers';
 
 // ========================================
 // InfoRow
@@ -110,11 +107,7 @@ export function SyncButton({
       const outcome = await runConnectorResync({ connectorId, connectorType });
       if (outcome.kind === 'requires-desktop') {
         setState('idle');
-        addToast({
-          variant: 'info',
-          title: LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE,
-          duration: LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS,
-        });
+        addToast(localFsDesktopToast(outcome));
         return;
       }
       addToast({ variant: 'success', title: 'Sync started' });
@@ -189,11 +182,7 @@ export function FullSyncButton({
       });
       if (outcome.kind === 'requires-desktop') {
         setState('idle');
-        addToast({
-          variant: 'info',
-          title: LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE,
-          duration: LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS,
-        });
+        addToast(localFsDesktopToast(outcome));
         return;
       }
       addToast({ variant: 'success', title: 'Full sync started' });

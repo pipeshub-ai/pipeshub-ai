@@ -10,12 +10,8 @@ import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
 import { runConnectorResync } from '../../utils/connector-sync-actions';
-import {
-  LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS,
-  LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE,
-} from '../../constants';
 import { isElectron } from '@/lib/electron';
-import { isLocalFsConnectorType } from '../../utils/local-fs-helpers';
+import { isLocalFsConnectorType, localFsDesktopToast } from '../../utils/local-fs-helpers';
 import { getElectronLocalSyncStatus } from '../../utils/electron-local-sync';
 import type { IndexingStatus } from '@/app/(main)/knowledge-base/types';
 import type {
@@ -134,11 +130,7 @@ export function OverviewTab({
         connectorType: instance.type,
       });
       if (outcome.kind === 'requires-desktop') {
-        addToast({
-          variant: 'info',
-          title: LOCAL_FS_DESKTOP_OFFLINE_TOAST_TITLE,
-          duration: LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS,
-        });
+        addToast(localFsDesktopToast(outcome));
         return;
       }
       addToast({ variant: 'success', title: 'Sync started' });

@@ -1895,7 +1895,9 @@
           "needsAuth": "Requiere auth",
           "needsAuthTooltip": "La configuración está guardada pero esta instancia aún necesita autenticación.",
           "ready": "Completo",
-          "readyTooltip": "La configuración está completa y autenticada. La sincronización puede ejecutarse cuando esté habilitada."
+          "readyTooltip": "La configuración está completa y autenticada. La sincronización puede ejecutarse cuando esté habilitada.",
+          "desktopOffline": "Escritorio desconectado",
+          "desktopOfflineTooltip": "La aplicación de escritorio que gestiona esta carpeta no está conectada. Ábrela en ese equipo para sincronizar."
         },
         "sync": {
           "kind": "Sync",

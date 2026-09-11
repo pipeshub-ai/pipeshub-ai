@@ -58,8 +58,12 @@ export interface Connector {
    * Prefer comparing to `CONNECTOR_INSTANCE_STATUS` from `./constants`; other strings may appear before the UI is updated.
    */
   status?: string | null;
-  /** Last sync failure code, e.g. `DESKTOP_OFFLINE`. Cleared on the next successful start. */
-  lastError?: string | null;
+  /**
+   * Local FS only, and only while sync is enabled. Live: a desktop currently
+   * holds this connector's socket claim, stamped by Node at response time.
+   * Absent when unknown or when the connector is disabled.
+   */
+  desktopOnline?: boolean;
 }
 
 /** API list response shape. */

@@ -1728,8 +1728,8 @@ class TestRunSync:
     async def test_offline_desktop_defers_without_writing_sync_point(
         self, folder_connector: LocalFsConnector, tmp_path: Path
     ):
-        # Offline is raised so the event service can persist lastError for the
-        # UI; the sync point must stay untouched so nothing is pruned.
+        # Offline is raised so the event service logs the skip instead of a
+        # crash; the sync point must stay untouched so nothing is pruned.
         self._prepare(folder_connector, tmp_path, {})
         folder_connector._pull_with_retry = AsyncMock(
             side_effect=LocalFsDesktopOfflineError("asleep")

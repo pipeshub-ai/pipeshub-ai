@@ -14,6 +14,7 @@ import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
 import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-datetime-filters-for-save';
 import { pruneInactiveFilterValues } from './utils/prune-inactive-filter-values';
+import { isDesktopOfflineError } from './utils/local-fs-helpers';
 const BASE_URL = '/api/v1/connectors';
 
 /** Normalized DELETE /connectors/:id body for optimistic UI merge. */
@@ -318,11 +319,17 @@ export const ConnectorsApi = {
 
   // ── Toggle ──
 
-  /** Toggle sync or agent for a connector instance */
+  /**
+   * Toggle sync or agent for a connector instance. Only the Local FS
+   * desktop-offline refusal is suppressed, because callers render that as an
+   * info toast; every other failure keeps the generic error toast and its
+   * backend message.
+   */
   async toggleConnector(connectorId: string, type: 'sync' | 'agent') {
     const { data } = await apiClient.post(
       `${BASE_URL}/${connectorId}/toggle`,
-      { type }
+      { type },
+      { suppressErrorToast: isDesktopOfflineError }
     );
     return data;
   },
@@ -355,7 +362,9 @@ export const ConnectorsApi = {
       {
         connectorName: connectorType,
         ...(fullSync !== undefined ? { fullSync } : {}),
-      }
+      },
+      // See toggleConnector: suppresses only the desktop-offline refusal.
+      { suppressErrorToast: isDesktopOfflineError }
     );
     return data;
   },

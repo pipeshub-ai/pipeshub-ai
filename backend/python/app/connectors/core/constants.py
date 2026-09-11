@@ -96,7 +96,7 @@ class ConnectorRegistryAuthMetadataKeys:
 
 
 class ConnectorErrorCodes:
-    """Stable lastError values written to the App node."""
+    """Stable codes carried by ``ConnectorSyncSkippedError``."""
 
     DESKTOP_OFFLINE = "DESKTOP_OFFLINE"
 
@@ -113,7 +113,6 @@ class ConnectorStateKeys:
     VECTOR_MEMBERSHIP_BACKFILL_ATTEMPTS = "vectorMembershipBackfillAttempts"
     VECTOR_MEMBERSHIP_BACKFILL_VRIDS = "vectorMembershipBackfillVrids"
     VECTOR_MEMBERSHIP_BACKFILL_EXHAUSTED = "vectorMembershipBackfillExhausted"
-    LAST_ERROR = "lastError"
     UPDATED_AT_TIMESTAMP = "updatedAtTimestamp"
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"

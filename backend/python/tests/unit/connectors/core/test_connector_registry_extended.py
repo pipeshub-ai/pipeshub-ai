@@ -464,7 +464,6 @@ class TestBuildConnectorInfo:
             "isConfigured": True,
             "isAuthenticated": True,
             "status": "active",
-            "lastError": "DESKTOP_OFFLINE",
             "createdAtTimestamp": 1000,
             "updatedAtTimestamp": 2000,
             "_key": "conn1",
@@ -479,7 +478,7 @@ class TestBuildConnectorInfo:
         assert info["isActive"] is True
         assert info["_key"] == "conn1"
         assert info["name"] == "My Gmail"
-        assert info["lastError"] == "DESKTOP_OFFLINE"
+        assert "lastError" not in info
 
 
 # ===========================================================================

@@ -392,16 +392,33 @@ export class LocalFsRelay {
     );
   }
 
-  private resolveSocket(
+  /** Same liveness test the pull uses, without the throw. */
+  hasDesktop(orgId: string, userId: string, connectorId: string): boolean {
+    return this.findSocket(orgId, userId, connectorId) !== null;
+  }
+
+  private findSocket(
     orgId: string,
     userId: string,
     connectorId: string,
-  ): RelaySocket {
+  ): RelaySocket | null {
     const socket = this.claims.get(claimKey(orgId, userId, connectorId));
     // No fallback to "some socket this user has open": the connector is bound
     // to one folder on one machine, and picking another would sync the wrong
     // disk into it.
     if (!socket || !socket.connected || socket.data.userId !== userId) {
+      return null;
+    }
+    return socket;
+  }
+
+  private resolveSocket(
+    orgId: string,
+    userId: string,
+    connectorId: string,
+  ): RelaySocket {
+    const socket = this.findSocket(orgId, userId, connectorId);
+    if (!socket) {
       throw new DesktopOfflineError(
         `No desktop registered for connector ${connectorId}`,
       );
