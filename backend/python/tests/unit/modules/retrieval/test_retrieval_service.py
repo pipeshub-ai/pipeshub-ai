@@ -549,6 +549,48 @@ class TestExecuteParallelSearches:
         assert results[0]["content"] == "the same paragraph"
 
     @pytest.mark.asyncio
+    async def test_two_sentences_of_one_block_both_survive_expansion(
+        self, retrieval_service, mock_vector_db_service
+    ) -> None:
+        """One block yields many vectors, all sharing its blockId.
+
+        `vectorstore._build_text_documents` embeds a whole-block document plus
+        one per sentence. When query expansion sends two queries and each
+        matches a different sentence of the same paragraph, both are real hits;
+        keying the cross-query dedup on the block alone would silently drop the
+        second and cost recall on the default single-collection strategy.
+        """
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+
+        def _sentence(point_id: str, text: str) -> MagicMock:
+            point = MagicMock()
+            point.id = point_id
+            point.payload = {
+                "page_content": text,
+                # Same block: one paragraph, embedded sentence by sentence.
+                "metadata": {"virtualRecordId": "vr-1", "blockId": "blk-1"},
+            }
+            point.score = 0.9
+            return point
+
+        mock_vector_db_service.query_nearest_points.return_value = [
+            [_sentence("p1", "Revenue grew 12% in Q3.")],
+            [_sentence("p2", "Headcount fell over the same period.")],
+        ]
+
+        results = await retrieval_service._execute_parallel_searches(
+            ["revenue", "headcount"], models.Filter(must=[]), 10, "org-1"
+        )
+
+        assert len(results) == 2
+        assert {r["content"] for r in results} == {
+            "Revenue grew 12% in Q3.",
+            "Headcount fell over the same period.",
+        }
+
+    @pytest.mark.asyncio
     async def test_distinct_blocks_of_one_record_are_both_kept(
         self, retrieval_service, mock_vector_db_service
     ) -> None:
@@ -678,7 +720,10 @@ class TestExecuteParallelSearches:
             p = MagicMock()
             p.id = pid
             p.payload = {
-                "page_content": pid,
+                # The same block in two collections carries the same text --
+                # that is what makes it the same block. The copies are told
+                # apart by point_id below, not by their content.
+                "page_content": f"text of {block_id}",
                 "metadata": {"virtualRecordId": "vr-shared", "blockId": block_id},
             }
             p.score = score
@@ -699,10 +744,10 @@ class TestExecuteParallelSearches:
             ["query"], models.Filter(must=[]), 10, "org-1"
         )
 
-        contents = [r["content"] for r in results]
+        surviving_point_ids = [r["metadata"]["point_id"] for r in results]
         # One copy of the shared block, and it is the better-ranked one.
-        assert "worse-rank" not in contents
-        assert "better-rank" in contents
+        assert "worse-rank" not in surviving_point_ids
+        assert "better-rank" in surviving_point_ids
         assert len(results) == 2  # the shared block plus the filler
 
     @pytest.mark.asyncio

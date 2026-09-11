@@ -932,13 +932,13 @@ class RetrievalService:
         collections = await self._resolve_search_collections(org_id, user_id)
         search_results = await self._fan_out_searches(collections, requests, limit)
 
-        # Identity is (virtualRecordId, blockId), not the point id -- see
+        # Identity is (virtualRecordId, blockId, text), not the point id -- see
         # `result_identity`. Point ids are freshly minted uuid4s per write, so
-        # the same block indexed under two connectors carries two different
-        # ids and deduplicating on them lets one block through once per
-        # collection it lives in. `merge_collection_results` already collapses
-        # those within a query; this is the same identity applied across the
-        # expanded queries, so the two layers agree.
+        # the same chunk indexed under two connectors carries two different
+        # ids and deduplicating on them lets it through once per collection it
+        # lives in. `merge_collection_results` already collapses those within a
+        # query; this is the same identity applied across the expanded queries,
+        # so the two layers agree.
         seen_points: set = set()
         for batch in search_results:
             for point in batch:
