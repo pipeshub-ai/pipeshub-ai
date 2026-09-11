@@ -196,7 +196,24 @@ describe('Knowledge Base Routes', () => {
       const handlers = findRouteStack('/:kbId/folder', 'post');
 
       expect(handlers).to.have.lengthOf(4);
-      expect(handlers[2]).to.be.a('function');
+      expect(handlers[0]).to.be.a('function'); // authenticate
+      expect(handlers[1]).to.be.a('function'); // scope middleware
+      expect(handlers[2]).to.be.a('function'); // validation
+      expect(handlers[3]).to.be.a('function');
+    });
+
+    it('should register subfolder create route', () => {
+      const routes = getRegisteredRoutes();
+      const subfolderRoute = routes.find(
+        (route) => route.path === '/:kbId/folder/:folderId/subfolder' && route.methods.post,
+      );
+      expect(subfolderRoute).to.exist;
+
+      const handlers = findRouteStack('/:kbId/folder/:folderId/subfolder', 'post');
+      expect(handlers).to.have.lengthOf(4);
+      expect(handlers[0]).to.be.a('function'); // authenticate
+      expect(handlers[1]).to.be.a('function'); // scope middleware
+      expect(handlers[2]).to.be.a('function'); // validation
       expect(handlers[3]).to.be.a('function');
     });
 
@@ -216,7 +233,6 @@ describe('Knowledge Base Routes', () => {
       expect(paths).to.not.include('/records');
       expect(paths).to.not.include('/:kbId/records');
       expect(paths).to.not.include('/:kbId/children');
-      expect(paths).to.not.include('/:kbId/folder/:folderId/subfolder');
       expect(paths).to.not.include('/:kbId/folder/:folderId/children');
     });
   });

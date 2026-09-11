@@ -681,5 +681,9 @@ class MSGraphClient:
                                 f"Error: {ex.error.message}"
                             )
 
-            self.logger.error(f"Error searching entities {entity_types}: {ex}")
+            try:
+                error_msg = str(ex)
+            except Exception:
+                error_msg = "<unprintable ODataError>"
+            self.logger.error(f"Error searching entities {entity_types}: {error_msg}")
             raise

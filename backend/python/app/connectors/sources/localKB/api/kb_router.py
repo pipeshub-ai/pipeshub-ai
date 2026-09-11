@@ -668,6 +668,12 @@ async def create_folder_in_kb_root(
             )
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
+        if "parentId" in body or "parent_id" in body:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot nest folders via the root endpoint. Use the /{kb_id}/folder/{parent_id}/subfolder route instead."
+            )
+
         # Accept both "name" and "folderName" for compatibility
         folder_name = body.get("name") or body.get("folderName")
         if not folder_name:
