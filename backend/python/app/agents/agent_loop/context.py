@@ -98,6 +98,8 @@ class AgentContext(BaseModel):
     # (mirrored here for typed access) before minting a shortener — never
     # created when this is False, so full record ids pass through unchanged.
     enable_record_id_shortening: bool = False
+    disable_semantic: bool = False
+    disable_pattern_match: bool = False
 
     # Image attachment blocks (LangChain ``image_url`` dicts) resolved by
     # ``resolve_attachments_for_goal`` for the current turn. Consumed by
@@ -373,6 +375,8 @@ class AgentContext(BaseModel):
             is_multimodal_llm=bool(state.get("is_multimodal_llm", False)),
             query=str(state.get("query") or ""),
             enable_record_id_shortening=bool(state.get("enable_record_id_shortening", False)),
+            disable_semantic=bool(state.get("disable_semantic", False)),
+            disable_pattern_match=bool(state.get("disable_pattern_match", False)),
             system_prompt=state.get("system_prompt"),
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
@@ -466,6 +470,8 @@ class AgentContext(BaseModel):
             "is_multimodal_llm": self.is_multimodal_llm,
             "query": self.query,
             "enable_record_id_shortening": self.enable_record_id_shortening,
+            "disable_semantic": self.disable_semantic,
+            "disable_pattern_match": self.disable_pattern_match,
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,
