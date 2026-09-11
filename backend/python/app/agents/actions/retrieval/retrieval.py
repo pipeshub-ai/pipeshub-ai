@@ -39,12 +39,11 @@ from app.utils.chat_helpers import (
 )
 from app.utils.image_admission import admission_from_state
 from app.utils.pattern_match import (
-    DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
     cancel_task_if_running,
-    cap_pattern_match_blocks,
     execute_pattern_match_pipeline,
     generate_grep_command_via_llm,
     merge_pattern_match_results,
+    render_pattern_match_hint,
 )
 
 if TYPE_CHECKING:
@@ -662,9 +661,10 @@ class Retrieval:
             # present in virtual_record_id_to_result happens inside
             # merge_pattern_match_results; permission filtering (check_vrids_accessible)
             # happens there too, so no separate access check is needed here.
+            pm_record_entries: list[dict[str, Any]] = []
             if raw_pattern_records:
                 try:
-                    pm_blocks = await merge_pattern_match_results(
+                    pm_record_entries = await merge_pattern_match_results(
                         raw_records=raw_pattern_records,
                         virtual_record_id_to_result=virtual_record_id_to_result,
                         user_id=user_id,
@@ -674,16 +674,9 @@ class Retrieval:
                         is_multimodal_llm=is_multimodal_llm,
                         logger_instance=logger_instance,
                     )
-                    if pm_blocks:
-                        pm_blocks = cap_pattern_match_blocks(
-                            pm_blocks,
-                            budget=DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
-                            virtual_record_id_to_result=virtual_record_id_to_result,
-                            logger_instance=logger_instance,
-                        )
-                        final_results = final_results + pm_blocks
+                    if pm_record_entries:
                         logger_instance.info(
-                            "Pattern match: merged %d block(s) into results", len(pm_blocks),
+                            "Pattern match: %d record(s) found via grep", len(pm_record_entries),
                         )
                 except Exception as exc:
                     logger_instance.warning(
@@ -837,9 +830,10 @@ class Retrieval:
                 f"(ranked sample — other records may match).\n\n"
                 f"{coverage_note}"
             )
+            pm_hint = render_pattern_match_hint(pm_record_entries, virtual_record_id_to_result)
             text_output = summary + "\n".join(formatted_records) + compose_result_tail(
                 virtual_record_id_to_result, candidate_suffix,
-            )
+            ) + pm_hint
 
             if collected_images and is_multimodal_llm:
                 # Multipart return: `_normalize_legacy_output` (decorators.py)

@@ -1,6 +1,7 @@
 """Tests for app.utils.pattern_match — shared pattern match helpers."""
 
 import asyncio
+import contextlib
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,6 +26,7 @@ from app.utils.pattern_match import (
     execute_pattern_match_pipeline,
     generate_grep_command_via_llm,
     merge_pattern_match_results,
+    render_pattern_match_hint,
     resolve_connector_ids_for_search,
     run_pattern_match,
     validate_grep_command,
@@ -630,104 +632,59 @@ class TestMergePatternMatchResults:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_returns_flattened_results_when_synthetic_nonempty(self):
+    async def test_returns_metadata_entries_for_accessible_records(self):
         raw = [{"virtual_record_id": "vr-1"}]
+        graph_rec = {
+            "_key": "rec-1",
+            "title": "Revenue Report",
+            "recordType": "FILE",
+            "appName": "Google Drive",
+        }
         graph_provider = AsyncMock()
         graph_provider.check_vrids_accessible = AsyncMock(
             return_value={"vr-1": "rec-1"}
         )
-        graph_provider.get_document = AsyncMock(return_value={"_key": "rec-1"})
+        graph_provider.get_records_by_record_ids = AsyncMock(
+            return_value=[graph_rec]
+        )
 
-        blob_store = AsyncMock()
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={})
+        vr_map: dict[str, dict] = {}
+        result = await merge_pattern_match_results(
+            raw_records=raw,
+            virtual_record_id_to_result=vr_map,
+            user_id="user-1",
+            org_id="org-1",
+            blob_store=AsyncMock(),
+            graph_provider=graph_provider,
+            is_multimodal_llm=False,
+            logger_instance=MagicMock(),
+        )
 
-        async def fake_get_record(
-            vrid,
-            vrid_map,
-            blob_store_arg,
-            org_id,
-            graph_records,
-            graph_provider_arg,
-            frontend_url,
-        ) -> None:
-            # Simulate get_record populating the shared result map with a
-            # record that has blocks, so _build_synthetic_search_results
-            # produces non-empty output and the flatten branch is exercised.
-            vrid_map[vrid] = {
-                "block_containers": {"blocks": [{"text": "hello"}]}
-            }
-
-        flattened_expected = [{"virtual_record_id": "vr-1", "block_index": 0}]
-
-        with patch(
-            "app.utils.pattern_match.get_record",
-            new_callable=AsyncMock,
-            side_effect=fake_get_record,
-        ), patch(
-            "app.utils.pattern_match.get_flattened_results",
-            new_callable=AsyncMock,
-            return_value=flattened_expected,
-        ) as mock_flatten:
-            result = await merge_pattern_match_results(
-                raw_records=raw,
-                virtual_record_id_to_result={},
-                user_id="user-1",
-                org_id="org-1",
-                blob_store=blob_store,
-                graph_provider=graph_provider,
-                is_multimodal_llm=False,
-                logger_instance=MagicMock(),
-            )
-
-        assert result == flattened_expected
-        mock_flatten.assert_called_once()
+        assert len(result) == 1
+        assert result[0]["virtual_record_id"] == "vr-1"
+        assert result[0]["source"] == "pattern_match"
+        assert result[0]["score"] == 0.0
+        assert vr_map["vr-1"] is graph_rec
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_flattened_empty(self):
+    async def test_returns_empty_when_no_graph_records_found(self):
         raw = [{"virtual_record_id": "vr-1"}]
         graph_provider = AsyncMock()
         graph_provider.check_vrids_accessible = AsyncMock(
             return_value={"vr-1": "rec-1"}
         )
-        graph_provider.get_document = AsyncMock(return_value={"_key": "rec-1"})
+        graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
 
-        blob_store = AsyncMock()
-        blob_store.config_service = AsyncMock()
-        blob_store.config_service.get_config = AsyncMock(return_value={})
-
-        async def fake_get_record(
-            vrid,
-            vrid_map,
-            blob_store_arg,
-            org_id,
-            graph_records,
-            graph_provider_arg,
-            frontend_url,
-        ) -> None:
-            vrid_map[vrid] = {
-                "block_containers": {"blocks": [{"text": "hello"}]}
-            }
-
-        with patch(
-            "app.utils.pattern_match.get_record",
-            new_callable=AsyncMock,
-            side_effect=fake_get_record,
-        ), patch(
-            "app.utils.pattern_match.get_flattened_results",
-            new_callable=AsyncMock,
-            return_value=[],
-        ):
-            result = await merge_pattern_match_results(
-                raw_records=raw,
-                virtual_record_id_to_result={},
-                user_id="user-1",
-                org_id="org-1",
-                blob_store=blob_store,
-                graph_provider=graph_provider,
-                is_multimodal_llm=False,
-                logger_instance=MagicMock(),
-            )
+        result = await merge_pattern_match_results(
+            raw_records=raw,
+            virtual_record_id_to_result={},
+            user_id="user-1",
+            org_id="org-1",
+            blob_store=AsyncMock(),
+            graph_provider=graph_provider,
+            is_multimodal_llm=False,
+            logger_instance=MagicMock(),
+        )
 
         assert result == []
 
@@ -1674,7 +1631,7 @@ class TestScaleConstants:
         assert _MAX_GREP_OUTPUT_LINES >= 100
 
     def test_llm_grep_timeout_set(self):
-        assert _LLM_GREP_TIMEOUT == 5.0
+        assert _LLM_GREP_TIMEOUT == 15.0
 
     def test_max_llm_grep_commands_set(self):
         assert _MAX_LLM_GREP_COMMANDS == 3
@@ -1737,20 +1694,51 @@ class TestPreValidateLlmGrep:
 # ===========================================================================
 
 
+def _mock_structured_llm(return_value=None, side_effect=None):
+    """Create a mock LLM that ``_apply_structured_output`` returns unchanged,
+    with ``ainvoke`` returning *return_value* or raising *side_effect*."""
+    structured_llm = AsyncMock()
+    if side_effect is not None:
+        structured_llm.ainvoke = AsyncMock(side_effect=side_effect)
+    else:
+        structured_llm.ainvoke = AsyncMock(return_value=return_value)
+    return structured_llm
+
+
+def _grep_llm_patches(structured_llm):
+    """Context manager that patches ``_apply_structured_output`` and
+    ``build_langchain_opik_callbacks`` for grep LLM tests."""
+    return contextlib.ExitStack()
+
+
 class TestGenerateGrepCommandViaLlm:
+    def _patches(self, structured_llm):
+        """Return stacked patches for the new generate_grep_command_via_llm internals."""
+        stack = contextlib.ExitStack()
+        stack.enter_context(
+            patch(
+                "app.utils.streaming._apply_structured_output",
+                return_value=structured_llm,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "app.agent_loop_lib.transport.opik_tracing.build_langchain_opik_callbacks",
+                return_value=[],
+            )
+        )
+        return stack
+
     @pytest.mark.asyncio
     async def test_success_returns_single_command_list(self):
         mock_result = GrepCommandResult(
             reasoning="MCP server is a product name, search for it",
             grep_commands=['grep -rci "MCP\\|server\\|PipesHub" .'],
         )
+        structured_llm = _mock_structured_llm(return_value=mock_result)
         logger = MagicMock()
 
-        with patch(
-            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
+        with self._patches(structured_llm):
             result = await generate_grep_command_via_llm(
                 query="How to setup MCP server connection with PipesHub?",
                 llm=MagicMock(),
@@ -1768,13 +1756,10 @@ class TestGenerateGrepCommandViaLlm:
                 'grep -rci "saml\\|authentication" .',
             ],
         )
+        structured_llm = _mock_structured_llm(return_value=mock_result)
         logger = MagicMock()
 
-        with patch(
-            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
+        with self._patches(structured_llm):
             result = await generate_grep_command_via_llm(
                 query="OAuth SSO login setup",
                 llm=MagicMock(),
@@ -1797,13 +1782,10 @@ class TestGenerateGrepCommandViaLlm:
                 'grep -rci "d" .',
             ],
         )
+        structured_llm = _mock_structured_llm(return_value=mock_result)
         logger = MagicMock()
 
-        with patch(
-            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
+        with self._patches(structured_llm):
             result = await generate_grep_command_via_llm(
                 query="test",
                 llm=MagicMock(),
@@ -1823,13 +1805,10 @@ class TestGenerateGrepCommandViaLlm:
                 'grep -rci "also_valid" .',
             ],
         )
+        structured_llm = _mock_structured_llm(return_value=mock_result)
         logger = MagicMock()
 
-        with patch(
-            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
+        with self._patches(structured_llm):
             result = await generate_grep_command_via_llm(
                 query="test",
                 llm=MagicMock(),
@@ -1845,10 +1824,8 @@ class TestGenerateGrepCommandViaLlm:
         async def _slow_invoke(*args, **kwargs):
             await asyncio.sleep(100)
 
-        with patch(
-            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
-            side_effect=_slow_invoke,
-        ):
+        structured_llm = _mock_structured_llm(side_effect=_slow_invoke)
+        with self._patches(structured_llm):
             result = await generate_grep_command_via_llm(
                 query="test query",
                 llm=MagicMock(),
@@ -1863,12 +1840,9 @@ class TestGenerateGrepCommandViaLlm:
     @pytest.mark.asyncio
     async def test_llm_exception_returns_none(self):
         logger = MagicMock()
+        structured_llm = _mock_structured_llm(side_effect=RuntimeError("LLM is down"))
 
-        with patch(
-            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("LLM is down"),
-        ):
+        with self._patches(structured_llm):
             result = await generate_grep_command_via_llm(
                 query="test query",
                 llm=MagicMock(),
@@ -1880,12 +1854,9 @@ class TestGenerateGrepCommandViaLlm:
     @pytest.mark.asyncio
     async def test_none_structured_output_returns_none(self):
         logger = MagicMock()
+        structured_llm = _mock_structured_llm(return_value=None)
 
-        with patch(
-            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=None,
-        ):
+        with self._patches(structured_llm):
             result = await generate_grep_command_via_llm(
                 query="test query",
                 llm=MagicMock(),
@@ -1903,13 +1874,10 @@ class TestGenerateGrepCommandViaLlm:
                 "cat /etc/passwd",
             ],
         )
+        structured_llm = _mock_structured_llm(return_value=mock_result)
         logger = MagicMock()
 
-        with patch(
-            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
+        with self._patches(structured_llm):
             result = await generate_grep_command_via_llm(
                 query="test query",
                 llm=MagicMock(),
@@ -1924,13 +1892,10 @@ class TestGenerateGrepCommandViaLlm:
             reasoning="AND search needs xargs",
             grep_commands=['grep -rli "MCP" . | xargs grep -ci "server"'],
         )
+        structured_llm = _mock_structured_llm(return_value=mock_result)
         logger = MagicMock()
 
-        with patch(
-            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
+        with self._patches(structured_llm):
             result = await generate_grep_command_via_llm(
                 query="MCP server setup",
                 llm=MagicMock(),
@@ -1945,13 +1910,10 @@ class TestGenerateGrepCommandViaLlm:
             reasoning="no commands",
             grep_commands=[],
         )
+        structured_llm = _mock_structured_llm(return_value=mock_result)
         logger = MagicMock()
 
-        with patch(
-            "app.utils.pattern_match.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
+        with self._patches(structured_llm):
             result = await generate_grep_command_via_llm(
                 query="test query",
                 llm=MagicMock(),
@@ -2072,3 +2034,110 @@ class TestExecutePatternMatchPipelineSkipValidation:
         mock_run.assert_called_once()
         command_used = mock_run.call_args.kwargs["command"]
         assert "revenue" in command_used
+
+
+# ===========================================================================
+# render_pattern_match_hint
+# ===========================================================================
+
+
+class TestRenderPatternMatchHint:
+    def test_empty_records_returns_empty(self):
+        assert render_pattern_match_hint([], {}) == ""
+
+    def test_single_record_renders_full_metadata(self):
+        entries = [{"virtual_record_id": "vrid-1", "score": 0.0, "source": "pattern_match"}]
+        vr_map = {
+            "vrid-1": {
+                "id": "rec-123",
+                "recordName": "Revenue Report Q3",
+                "recordType": "FILE",
+                "connectorName": "DRIVE",
+                "externalRecordId": "ext-99",
+                "connectorId": "conn-1",
+                "mimeType": "application/pdf",
+                "webUrl": "https://drive.google.com/doc/123",
+                "sourceCreatedAtTimestamp": 1631348507000,
+                "sourceLastModifiedTimestamp": 1631348507000,
+                "externalParentId": "parent-1",
+                "summary": "Quarterly revenue report for Q3",
+                "topics": ["revenue", "finance"],
+                "categories": ["Business"],
+                "subCategoryLevel1": "Finance",
+            },
+        }
+
+        result = render_pattern_match_hint(entries, vr_map)
+
+        assert "<record>" in result
+        assert "</record>" in result
+        assert "Record ID: rec-123" in result
+        assert "Name: Revenue Report Q3" in result
+        assert "Type: FILE" in result
+        assert "Connector: DRIVE" in result
+        assert "External ID: ext-99" in result
+        assert "Created At: 2021-09-11" in result
+        assert "Last Updated At: 2021-09-11" in result
+        assert "Connector ID: conn-1" in result
+        assert "External Parent ID: parent-1" in result
+        assert "MIME Type: application/pdf" in result
+        assert "Web URL: https://drive.google.com/doc/123" in result
+        assert "Summary: Quarterly revenue report" in result
+        assert "Topics:" in result
+        assert "Category: Business > Finance" in result
+        assert "File Information:" in result
+        assert "Extension: pdf" in result
+        assert "knowledgegraph__fetch_record" in result
+        assert "metadata only" in result
+
+    def test_multiple_records(self):
+        entries = [
+            {"virtual_record_id": "vrid-1"},
+            {"virtual_record_id": "vrid-2"},
+        ]
+        vr_map = {
+            "vrid-1": {"id": "rec-1", "recordName": "Doc A", "recordType": "file"},
+            "vrid-2": {"_key": "rec-2", "recordName": "Doc B", "recordType": "file"},
+        }
+
+        result = render_pattern_match_hint(entries, vr_map)
+
+        assert result.count("<record>") == 2
+        assert "rec-1" in result
+        assert "rec-2" in result
+
+    def test_skips_entries_missing_from_vr_map(self):
+        entries = [
+            {"virtual_record_id": "vrid-1"},
+            {"virtual_record_id": "vrid-missing"},
+        ]
+        vr_map = {
+            "vrid-1": {"id": "rec-1", "recordName": "Doc A"},
+        }
+
+        result = render_pattern_match_hint(entries, vr_map)
+
+        assert result.count("<record>") == 1
+        assert "rec-1" in result
+
+    def test_caps_at_max_records(self):
+        entries = [{"virtual_record_id": f"vrid-{i}"} for i in range(10)]
+        vr_map = {
+            f"vrid-{i}": {"id": f"rec-{i}", "recordName": f"Doc {i}"}
+            for i in range(10)
+        }
+
+        result = render_pattern_match_hint(entries, vr_map, max_records=3)
+
+        assert result.count("<record>") == 3
+        assert "rec-0" in result
+        assert "rec-2" in result
+        assert "rec-3" not in result
+
+    def test_returns_empty_when_no_vr_map_matches(self):
+        entries = [{"virtual_record_id": "vrid-gone"}]
+        vr_map = {}
+
+        result = render_pattern_match_hint(entries, vr_map)
+
+        assert result == ""

@@ -6,6 +6,8 @@ import logging
 import re
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
@@ -22,8 +24,8 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.chat_helpers import get_flattened_results, get_record
 
 _PATTERN_MATCH_TIMEOUT = 30
-_LLM_GREP_TIMEOUT = 5.0
-_MAX_PATTERN_MATCH_RECORDS = 5
+_LLM_GREP_TIMEOUT = 15.0
+_MAX_PATTERN_MATCH_RECORDS = 50
 # Fallback budget when a caller has no per-request limit to pass (e.g. limit=None).
 # Pattern match fans out per-connector (max_results=10 each) and then expands each
 # accessible record into one synthetic result per block, so an unbounded record
@@ -210,8 +212,12 @@ async def generate_grep_command_via_llm(
     Returns a list of 1-3 validated grep command strings on success,
     None on timeout, LLM failure, or when all commands fail pre-validation.
     The caller is responsible for full security validation via ``_validate_command``.
+
+    Uses LangChain's ``ainvoke`` with Opik callbacks so the call appears
+    in the Opik trace alongside the rest of the agent loop.
     """
-    from app.utils.streaming import invoke_with_structured_output_and_reflection
+    from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
+    from app.utils.streaming import _apply_structured_output
 
     messages = [
         SystemMessage(content=_GREP_GENERATION_SYSTEM_PROMPT),
@@ -219,10 +225,11 @@ async def generate_grep_command_via_llm(
     ]
 
     try:
-        result = await asyncio.wait_for(
-            invoke_with_structured_output_and_reflection(
-                llm, messages, GrepCommandResult,
-            ),
+        structured_llm = _apply_structured_output(llm, schema=GrepCommandResult)
+        opik_callbacks = build_langchain_opik_callbacks()
+        config = {"callbacks": opik_callbacks} if opik_callbacks else {}
+        response = await asyncio.wait_for(
+            structured_llm.ainvoke(messages, config=config),
             timeout=_LLM_GREP_TIMEOUT,
         )
     except asyncio.TimeoutError:
@@ -232,8 +239,8 @@ async def generate_grep_command_via_llm(
         logger_instance.warning("generate_grep_command_via_llm: LLM call failed: %s", exc)
         return None
 
+    result = _parse_grep_response(response, logger_instance)
     if result is None:
-        logger_instance.info("generate_grep_command_via_llm: LLM returned no structured output")
         return None
 
     valid_commands: list[str] = []
@@ -254,6 +261,46 @@ async def generate_grep_command_via_llm(
         len(valid_commands), valid_commands,
     )
     return valid_commands
+
+
+def _parse_grep_response(
+    response: Any,
+    logger_instance: logging.Logger,
+) -> GrepCommandResult | None:
+    """Parse the LLM response into a ``GrepCommandResult``."""
+    if response is None:
+        logger_instance.info("generate_grep_command_via_llm: LLM returned no output")
+        return None
+
+    if isinstance(response, GrepCommandResult):
+        return response
+
+    if isinstance(response, dict):
+        try:
+            return GrepCommandResult.model_validate(response)
+        except Exception:
+            logger_instance.warning(
+                "generate_grep_command_via_llm: dict response failed validation",
+            )
+            return None
+
+    if hasattr(response, "content"):
+        content = response.content
+        if isinstance(content, str):
+            try:
+                return GrepCommandResult.model_validate_json(content)
+            except Exception:
+                pass
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    try:
+                        return GrepCommandResult.model_validate_json(block["text"])
+                    except Exception:
+                        pass
+
+    logger_instance.info("generate_grep_command_via_llm: could not parse LLM response")
+    return None
 
 
 async def check_pattern_match_eligible(
@@ -547,8 +594,6 @@ async def merge_pattern_match_results(
         len(unique),
     )
 
-    frontend_url = await _get_frontend_url(blob_store)
-
     record_ids = [accessible_vrids[r["virtual_record_id"]] for r in accessible_records]
     batch_records = await graph_provider.get_records_by_record_ids(
         record_ids=record_ids, org_id=org_id,
@@ -581,36 +626,160 @@ async def merge_pattern_match_results(
         if not accessible_records:
             return []
 
-    fetch_tasks = [
-        _fetch_pattern_record(
-            vrid=r["virtual_record_id"],
-            graph_record=graph_by_vrid.get(r["virtual_record_id"]),
-            virtual_record_id_to_result=virtual_record_id_to_result,
-            blob_store=blob_store,
-            org_id=org_id,
-            graph_provider=graph_provider,
-            frontend_url=frontend_url,
-            logger_instance=logger_instance,
-        )
-        for r in accessible_records
+    results: list[dict] = []
+    for rec in accessible_records:
+        vrid = rec["virtual_record_id"]
+        graph_rec = graph_by_vrid.get(vrid)
+        if not graph_rec:
+            continue
+        virtual_record_id_to_result[vrid] = graph_rec
+        results.append({
+            "virtual_record_id": vrid,
+            "metadata": {
+                "virtualRecordId": vrid,
+                "title": graph_rec.get("title", ""),
+                "recordType": graph_rec.get("recordType", ""),
+                "appName": graph_rec.get("appName", ""),
+                "orgId": org_id,
+            },
+            "score": 0.0,
+            "source": "pattern_match",
+        })
+
+    logger_instance.info("Pattern match: %d record metadata results", len(results))
+    return results
+
+
+def _format_graph_timestamp(epoch_ms: int | float | None) -> str:
+    """Format a millisecond epoch timestamp to ``YYYY-MM-DD HH:MM:SS UTC``."""
+    if not epoch_ms:
+        return "N/A"
+    try:
+        return datetime.fromtimestamp(
+            int(epoch_ms) / 1000, tz=timezone.utc,
+        ).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, OSError, OverflowError):
+        return "N/A"
+
+
+def _render_graph_record_metadata(graph_rec: dict[str, Any]) -> str:
+    """Build a metadata block from a graph record, matching the format
+    that ``BaseRecord.to_llm_context`` in entities.py produces so the
+    LLM receives the same fields it gets for semantic search records."""
+    record_id = graph_rec.get("id") or graph_rec.get("_key") or "N/A"
+    record_name = graph_rec.get("recordName") or graph_rec.get("title") or "N/A"
+    connector_name = graph_rec.get("connectorName") or "N/A"
+    record_type = graph_rec.get("recordType") or "N/A"
+    external_id = graph_rec.get("externalRecordId") or "N/A"
+    created_at = _format_graph_timestamp(
+        graph_rec.get("sourceCreatedAtTimestamp"),
+    )
+    updated_at = _format_graph_timestamp(
+        graph_rec.get("sourceLastModifiedTimestamp"),
+    )
+    connector_id = graph_rec.get("connectorId") or "N/A"
+    external_parent = graph_rec.get("externalParentId") or "N/A"
+
+    lines = [
+        f"Record ID: {record_id}",
+        f"Name: {record_name}",
+        f"Connector: {connector_name}",
+        f"Type: {record_type}",
+        f"External ID: {external_id}",
+        f"Created At: {created_at}",
+        f"Last Updated At: {updated_at}",
+        f"Connector ID: {connector_id}",
+        f"External Parent ID: {external_parent}",
     ]
-    await asyncio.gather(*fetch_tasks, return_exceptions=True)
+    app_name = graph_rec.get("appName")
+    location = graph_rec.get("location")
+    mime_type = graph_rec.get("mimeType")
+    web_url = graph_rec.get("webUrl")
+    if app_name:
+        lines.append(f"App: {app_name}")
+    if location:
+        lines.append(f"Location: {location}")
+    if mime_type:
+        lines.append(f"MIME Type: {mime_type}")
+    if web_url:
+        lines.append(f"Web URL: {web_url}")
 
-    synthetic = _build_synthetic_search_results(
-        accessible_records, virtual_record_id_to_result, org_id, logger_instance
-    )
-    if not synthetic:
-        return []
+    summary = graph_rec.get("summary")
+    topics = graph_rec.get("topics")
+    categories = graph_rec.get("categories")
+    sub_cat_1 = graph_rec.get("subCategoryLevel1") or graph_rec.get("sub_category_level_1")
+    sub_cat_2 = graph_rec.get("subCategoryLevel2") or graph_rec.get("sub_category_level_2")
+    sub_cat_3 = graph_rec.get("subCategoryLevel3") or graph_rec.get("sub_category_level_3")
+    if summary:
+        lines.append(f"Summary: {summary}")
+    if topics:
+        lines.append(f"Topics: {topics}")
+    cat_parts: list[str] = []
+    if categories and isinstance(categories, list) and categories:
+        cat_parts.append(categories[0])
+    if sub_cat_1:
+        cat_parts.append(sub_cat_1)
+    if sub_cat_2:
+        cat_parts.append(sub_cat_2)
+    if sub_cat_3:
+        cat_parts.append(sub_cat_3)
+    if cat_parts:
+        lines.append(f"Category: {' > '.join(cat_parts)}")
 
-    flattened = await get_flattened_results(
-        synthetic,
-        blob_store,
-        org_id,
-        is_multimodal_llm,
-        virtual_record_id_to_result,
-        graph_provider=graph_provider,
+    extension = graph_rec.get("extension")
+    if not extension and mime_type:
+        ext_map = {"text/html": "html", "application/pdf": "pdf"}
+        extension = ext_map.get(mime_type)
+    if extension:
+        lines.append("File Information:")
+        lines.append(f"* Extension: {extension}")
+
+    return "\n".join(lines)
+
+
+def render_pattern_match_hint(
+    pm_records: list[dict],
+    virtual_record_id_to_result: dict[str, dict],
+    fetch_tool_ref: str = "knowledgegraph__fetch_record",
+    max_records: int = _MAX_PATTERN_MATCH_RECORDS,
+) -> str:
+    """Render pattern-matched records with full metadata and a fetch hint.
+
+    Each record is wrapped in ``<record>`` tags with the same metadata
+    fields the LLM receives for semantic search records, so pattern
+    match records are equally actionable.  The section ends with a
+    call-to-action telling the LLM to call ``fetch_tool_ref`` for any
+    record whose full content it needs.
+
+    *max_records* caps how many records are rendered (default
+    ``_MAX_PATTERN_MATCH_RECORDS``).
+    """
+    if not pm_records:
+        return ""
+
+    capped = pm_records[:max_records]
+
+    sections: list[str] = []
+    for entry in capped:
+        vrid = entry.get("virtual_record_id", "")
+        graph_rec = virtual_record_id_to_result.get(vrid)
+        if not graph_rec:
+            continue
+        metadata_block = _render_graph_record_metadata(graph_rec)
+        sections.append(f"<record>\n{metadata_block}\n</record>")
+
+    if not sections:
+        return ""
+
+    header = (
+        "\n\nAdditional records found via pattern matching (metadata only — "
+        "no content blocks loaded yet):"
     )
-    return flattened if flattened else []
+    footer = (
+        f"\nTo read the full content of any relevant record above, call "
+        f"`{fetch_tool_ref}` with its record_id."
+    )
+    return header + "\n" + "\n".join(sections) + footer
 
 
 def cap_pattern_match_blocks(

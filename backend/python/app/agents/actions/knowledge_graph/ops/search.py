@@ -18,12 +18,11 @@ from typing import TYPE_CHECKING, Any
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.pattern_match import (
-    DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
     cancel_task_if_running,
-    cap_pattern_match_blocks,
     execute_pattern_match_pipeline,
     generate_grep_command_via_llm,
     merge_pattern_match_results,
+    render_pattern_match_hint,
 )
 from app.utils.chat_helpers import (
     CitationRefMapper,
@@ -364,9 +363,10 @@ async def execute_search(
         if not per_source_fan_out:
             final_results = final_results[:adjusted_limit]
 
+        pm_record_entries: list[dict[str, Any]] = []
         if raw_pattern_records:
             try:
-                pm_blocks = await merge_pattern_match_results(
+                pm_record_entries = await merge_pattern_match_results(
                     raw_records=raw_pattern_records,
                     virtual_record_id_to_result=virtual_record_id_to_result,
                     user_id=user_id,
@@ -377,16 +377,9 @@ async def execute_search(
                     logger_instance=logger_instance,
                     time_range=time_range,
                 )
-                if pm_blocks:
-                    pm_blocks = cap_pattern_match_blocks(
-                        pm_blocks,
-                        budget=DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
-                        virtual_record_id_to_result=virtual_record_id_to_result,
-                        logger_instance=logger_instance,
-                    )
-                    final_results = final_results + pm_blocks
+                if pm_record_entries:
                     logger_instance.info(
-                        "Pattern match: merged %d block(s) into results", len(pm_blocks),
+                        "Pattern match: %d record(s) found via grep", len(pm_record_entries),
                     )
             except Exception as exc:
                 logger_instance.warning(
@@ -492,9 +485,10 @@ async def execute_search(
             f"{coverage_note}"
         )
         from app.agents.actions.retrieval.retrieval import compose_result_tail
+        pm_hint = render_pattern_match_hint(pm_record_entries, virtual_record_id_to_result)
         return summary + "\n".join(formatted_records) + compose_result_tail(
             virtual_record_id_to_result, candidate_suffix,
-        )
+        ) + pm_hint
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger
