@@ -474,19 +474,6 @@ class ProjectsSync:
                     "Member %s has unrecognized access level %s, skipping", member.name, level
                 )
 
-        # Visibility-derived readers, who appear in no member listing. Deliberately
-        # NOT added to the confidential group: confidentiality is a membership rule
-        # (>= Planner), so it survives the project being public.
-        permission_work_items_level.extend(
-            self._visibility_permission(project, "issues_access_level")
-        )
-        permission_merge_requests_level.extend(
-            self._visibility_permission(project, "merge_requests_access_level")
-        )
-        permission_code_repo_level.extend(
-            self._visibility_permission(project, "repository_access_level")
-        )
-
         (
             project_record_group,
             work_items_record_group,
@@ -503,35 +490,6 @@ class ProjectsSync:
                 (merge_requests_record_group, permission_merge_requests_level),
             ]
         )
-
-    def _visibility_permission(self, project: Project, feature_attr: str) -> list[Permission]:
-        """An ORG grant when GitLab lets non-members read this feature.
-
-        GitLab's own wording for the ``enabled`` setting is "non-project members have
-        only read access", and that audience appears in no member listing — a public
-        project does not enumerate the instance as members — so it can only be derived
-        from the visibility value itself.
-
-        Both halves are required. A public project may still hold a single feature at
-        ``private`` (members only), and granting on visibility alone would leak it.
-        The two settings are independent, and a feature left at ``private`` while the
-        project was private stays that way when the project is later opened up.
-
-        ``disabled`` needs no branch: GitLab returns an empty listing to every caller,
-        the connector's Owner token included, so nothing is synced to grant.
-
-        ORG is the closest available principal for both ``internal`` (any signed-in
-        user on this instance) and ``public``. The platform narrows it further on its
-        own — every connector record is gated on the reader being linked to this
-        connector's app — so the effective audience is org members who hold GitLab
-        access, which is the intended set.
-        """
-        visibility = (getattr(project, "visibility", None) or "").lower()
-        if visibility not in ("internal", "public"):
-            return []
-        if (getattr(project, feature_attr, None) or "").lower() != "enabled":
-            return []
-        return [Permission(type=PermissionType.READ, entity_type=EntityType.ORG)]
 
     def _build_project_record_groups(
         self, project: Project
