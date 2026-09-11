@@ -3640,8 +3640,22 @@ class TestGetRecordsByParent:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_records_by_parent("c1", "ext_parent")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records_by_parent("c1", "ext_parent")
+
+
+class TestGetRecordsByRecordType:
+    @pytest.mark.asyncio
+    async def test_empty(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = []
+        result = await connected_provider.get_records_by_record_type("c1", "DATABASE")
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records_by_record_type("c1", "DATABASE")
 
 
 # ---------------------------------------------------------------------------
@@ -9489,8 +9503,8 @@ class TestGetRecordsByParentProvider:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_records_by_parent("c1", "parent_ext_id")
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records_by_parent("c1", "parent_ext_id")
 
 
 class TestGetRecordGroupByExternalIdProvider:

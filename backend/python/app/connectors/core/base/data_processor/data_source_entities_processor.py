@@ -2239,6 +2239,19 @@ class DataSourceEntitiesProcessor:
                 record_type=record_type,
             )
 
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: RecordType | str,
+    ) -> list[Record]:
+        """Return this connector's records of ``record_type``."""
+        type_value = (record_type.value if isinstance(record_type, RecordType) else record_type)
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_records_by_record_type(
+                connector_id=connector_id,
+                record_type=type_value,
+            )
+
     async def get_placeholder_records(
         self,
         connector_id: str,
@@ -3000,7 +3013,7 @@ class DataSourceEntitiesProcessor:
     async def get_records_by_status(
         self,
         connector_id: str,
-        status_filters: list[str],
+        status_filters: list[str] | None,
         limit: int | None = None,
         offset: int = 0,
         record_group_id: str | None = None,

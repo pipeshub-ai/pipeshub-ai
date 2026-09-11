@@ -2506,7 +2506,53 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get records by parent failed: {str(e)}")
-            return []
+            raise
+
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: str,
+        transaction: str | None = None,
+    ) -> list[Record]:
+        """Return this connector's records of ``record_type``."""
+        try:
+            self.logger.debug(
+                "Retrieving records of type %s for connector %s",
+                record_type, connector_id,
+            )
+            query = """
+            MATCH (record:Record)
+            WHERE record.connectorId = $connector_id
+              AND record.recordType = $record_type
+            RETURN record
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "connector_id": connector_id,
+                    "record_type": record_type,
+                },
+                txn_id=transaction,
+            )
+            records = [
+                Record.from_arango_base_record(
+                    self._neo4j_to_arango_node(
+                        dict(r["record"]), CollectionNames.RECORDS.value
+                    )
+                )
+                for r in results
+            ]
+            self.logger.debug(
+                "Retrieved %d record(s) of type %s for connector %s",
+                len(records), record_type, connector_id,
+            )
+            return records
+        except Exception as e:
+            self.logger.error(
+                "Get records by record type failed for connector %s type %s: %s",
+                connector_id, record_type, e,
+            )
+            raise
 
     async def get_records_by_record_group(
         self,

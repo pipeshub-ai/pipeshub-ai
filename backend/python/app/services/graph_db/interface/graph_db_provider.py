@@ -1464,6 +1464,22 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: str,
+        transaction: str | None = None,
+    ) -> list['Record']:
+        """Return this connector's records of ``record_type``.
+
+        Args:
+            connector_id: Connector ID
+            record_type: Record type value (e.g. ``DATABASE``, ``WEBPAGE``)
+            transaction: Optional transaction context
+        """
+        pass
+
+    @abstractmethod
     async def get_records_by_record_group(
         self,
         record_group_id: str,

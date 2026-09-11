@@ -4586,7 +4586,48 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "❌ Failed to retrieve child records for parent %s %s: %s",
                 connector_id, parent_external_record_id, str(e)
             )
-            return []
+            raise
+
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: str,
+        transaction: str | None = None,
+    ) -> list[Record]:
+        """Return this connector's records of ``record_type``."""
+        try:
+            self.logger.debug(
+                "Retrieving records of type %s for connector %s",
+                record_type, connector_id,
+            )
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.connectorId == @connector_id
+                    AND record.recordType == @record_type
+                RETURN record
+            """
+            bind_vars = {
+                "connector_id": connector_id,
+                "record_type": record_type,
+            }
+            results = await self.http_client.execute_aql(
+                query, bind_vars, txn_id=transaction
+            )
+            records = [
+                Record.from_arango_base_record(self._translate_node_from_arango(result))
+                for result in results
+            ]
+            self.logger.debug(
+                "Retrieved %d record(s) of type %s for connector %s",
+                len(records), record_type, connector_id,
+            )
+            return records
+        except Exception as e:
+            self.logger.error(
+                "Failed to retrieve records of type %s for connector %s: %s",
+                record_type, connector_id, e,
+            )
+            raise
 
     async def get_record_group_by_external_id(
         self,

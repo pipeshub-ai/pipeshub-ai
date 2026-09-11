@@ -50,8 +50,31 @@ from connectors.notion.notion_source_helper import (  # type: ignore[import-not-
     NotionSourceHelper,
     normalize_notion_id,
 )
+from connectors.notion.notion_test_utils import (  # type: ignore[import-not-found]
+    scoped_external_ids,
+)
+from app.models.entities import RecordType
 
 logger = logging.getLogger("notion-conftest")
+
+#: Baseline sync attempts before the fixture gives up. Each retry is a full resync, which also
+#: buys the search index another minute to settle.
+_BASELINE_SYNC_ATTEMPTS = 3
+
+
+async def _missing_seeded_ids(
+    graph_provider: GraphProviderProtocol, connector_id: str, seed: NotionSeed
+) -> set[str]:
+    """Seeded page / data-source ids the connector did not put in the graph."""
+    pages = await scoped_external_ids(
+        graph_provider, connector_id, RecordType.WEBPAGE.value
+    )
+    sources = await scoped_external_ids(
+        graph_provider, connector_id, RecordType.DATASOURCE.value
+    )
+    return (seed.expected_page_ids - pages) | (
+        seed.expected_data_source_ids - sources
+    )
 
 
 def _env(name: str) -> str | None:
@@ -172,10 +195,37 @@ async def notion_connector(
         state["connector_id"] = instance.connector_id
 
         pipeshub_client.toggle_sync(instance.connector_id, enable=True)
-        state["full_sync_count"] = await wait_for_sync_completion(
-            pipeshub_client, graph_provider, instance.connector_id,
-            min_records=1, timeout=SYNC_TIMEOUT,
-        )
+
+        # Notion Search is eventually consistent and the connector enumerates only through it,
+        # so a sync that starts while the index is still settling quietly indexes fewer objects
+        # than were seeded and still reports success. Check the seeded ids actually landed
+        # rather than trusting the wait above, and resync if they did not: a full resync drops
+        # the connector's sync points, so it re-enumerates instead of resuming past the
+        # checkpoint and skipping the very objects it missed.
+        #
+        # Ids, not counts: the connector syncs the whole workspace, so a concurrent run's pages
+        # land here too and a count can clear the bar while our own objects are still absent.
+        for attempt in range(_BASELINE_SYNC_ATTEMPTS):
+            state["full_sync_count"] = await wait_for_sync_completion(
+                pipeshub_client, graph_provider, instance.connector_id,
+                min_records=1, timeout=SYNC_TIMEOUT,
+            )
+            missing = await _missing_seeded_ids(
+                graph_provider, instance.connector_id, seed
+            )
+            if not missing:
+                break
+            assert attempt < _BASELINE_SYNC_ATTEMPTS - 1, (
+                f"baseline sync missed {len(missing)} seeded object(s) after "
+                f"{_BASELINE_SYNC_ATTEMPTS} attempts (e.g. {sorted(missing)[:5]}): Notion "
+                "Search never returned the full seed to the connector"
+            )
+            logger.warning(
+                "SETUP: baseline sync missed %d seeded object(s) — full resync (attempt %d/%d)",
+                len(missing), attempt + 2, _BASELINE_SYNC_ATTEMPTS,
+            )
+            pipeshub_client.resync_connector(instance.connector_id, full_sync=True)
+
         logger.info(
             "SETUP done: baseline sync produced %d records (expected %d) for connector %s",
             state["full_sync_count"], seed.expected_record_count, instance.connector_id,

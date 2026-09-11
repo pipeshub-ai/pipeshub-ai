@@ -770,34 +770,68 @@ async def wait_for_seed_indexed(
     *,
     timeout: int = 600,
     interval: int = 15,
+    stable_checks: int = 2,
 ) -> None:
-    """Block until Search returns every seeded page and data source.
+    """Block until Search returns every seeded page and data source, and keeps returning them.
 
     The connector enumerates solely through Search, whose index lags writes. Syncing straight
     after seeding leaves the last-created objects invisible, which shows up as a handful of
     pages simply missing from the graph.
+
+    One complete poll is not enough. While the index is catching up an object can be returned
+    by one query and absent from the next, so returning on the first complete result starts
+    the connector at the least stable moment there is — which is how a run can pass the wait
+    and still sync two thirds of the seed. Require ``stable_checks`` complete polls in a row.
     """
     import asyncio
 
-    deadline = asyncio.get_event_loop().time() + timeout
+    loop = asyncio.get_event_loop()
+    started = loop.time()
+    deadline = started + timeout
+    clean = 0
     while True:
         indexed_pages = {str(p["id"]) for p in await helper.search_objects("page")}
         indexed_sources = {str(d["id"]) for d in await helper.search_objects("data_source")}
         missing_pages = seed.expected_page_ids - indexed_pages
         missing_sources = seed.expected_data_source_ids - indexed_sources
+
         if not missing_pages and not missing_sources:
-            return
-        if asyncio.get_event_loop().time() >= deadline:
+            clean += 1
+            if clean >= stable_checks:
+                logger.info(
+                    "SEED: search index complete on %d consecutive poll(s) after %.0fs",
+                    clean, loop.time() - started,
+                )
+                return
+        else:
+            if clean:
+                # Worth logging loudly: it is the direct evidence that one clean poll means
+                # nothing, and the only measurement we have of how long the index stays unsteady.
+                logger.warning(
+                    "SEED: search index regressed after %d clean poll(s) at %.0fs — "
+                    "%d page(s), %d data source(s) dropped back out",
+                    clean, loop.time() - started, len(missing_pages), len(missing_sources),
+                )
+            clean = 0
+
+        if loop.time() >= deadline:
+            if missing_pages or missing_sources:
+                raise AssertionError(
+                    f"Notion search index did not catch up within {timeout}s: "
+                    f"{len(missing_pages)} page(s) and {len(missing_sources)} data source(s) "
+                    f"still missing (e.g. {sorted(missing_pages)[:3]} / "
+                    f"{sorted(missing_sources)[:3]})"
+                )
             raise AssertionError(
-                f"Notion search index did not catch up within {timeout}s: "
-                f"{len(missing_pages)} page(s) and {len(missing_sources)} data source(s) "
-                f"still missing (e.g. {sorted(missing_pages)[:3]} / "
-                f"{sorted(missing_sources)[:3]})"
+                f"Notion search index never held steady within {timeout}s: complete on "
+                f"{clean} consecutive poll(s), needed {stable_checks}"
             )
-        logger.info(
-            "SEED: waiting for search index — %d page(s), %d data source(s) outstanding",
-            len(missing_pages), len(missing_sources),
-        )
+
+        if missing_pages or missing_sources:
+            logger.info(
+                "SEED: waiting for search index — %d page(s), %d data source(s) outstanding",
+                len(missing_pages), len(missing_sources),
+            )
         await asyncio.sleep(interval)
 
 

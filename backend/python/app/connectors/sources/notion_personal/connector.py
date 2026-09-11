@@ -284,6 +284,13 @@ class NotionPersonalConnector(NotionConnector):
             except Exception as e:
                 self.logger.error(f"Placeholder sweep failed: {e}", exc_info=True)
 
+            try:
+                await self._retire_leftover_database_records()
+            except Exception as e:
+                self.logger.error(
+                    f"Leftover database pass failed: {e}", exc_info=True
+                )
+
             self.logger.info("✅ Notion Personal sync completed successfully")
 
         except Exception as e:
