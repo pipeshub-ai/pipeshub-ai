@@ -2,7 +2,7 @@
 import { expect } from 'chai';
 import { promisify } from 'util';
 import { inflateRaw } from 'zlib';
-import { createZipBuffer } from '../../../src/modules/feedback/utils/create-zip';
+import { createZipBuffer, type ZipEntry } from '../../../src/modules/feedback/utils/create-zip';
 
 const inflateRawAsync = promisify(inflateRaw);
 
@@ -49,6 +49,16 @@ describe('feedback/utils/create-zip', () => {
     ]);
     expect(zip.includes(Buffer.from('../secret'))).to.equal(false);
     expect(zip.includes(Buffer.from('shot.png'))).to.equal(true);
+  });
+
+  it('counts only written entries in the EOCD when the input array is sparse', async () => {
+    const entries: ZipEntry[] = [];
+    entries[1] = { name: 'notes.txt', data: Buffer.from('hello') };
+    const zip = await createZipBuffer(entries);
+    const eocdOffset = zip.length - 22;
+    expect(zip.readUInt16LE(eocdOffset + 8)).to.equal(1);
+    expect(zip.readUInt16LE(eocdOffset + 10)).to.equal(1);
+    expect((await inflateFirstFile(zip)).toString()).to.equal('hello');
   });
 
   it('shrinks highly compressible text', async () => {

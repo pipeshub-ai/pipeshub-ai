@@ -105,8 +105,8 @@ export async function createZipBuffer(entries: ZipEntry[]): Promise<Buffer> {
   writeUInt32LE(eocd, 0, 0x06054b50);
   writeUInt16LE(eocd, 4, 0);
   writeUInt16LE(eocd, 6, 0);
-  writeUInt16LE(eocd, 8, entries.length);
-  writeUInt16LE(eocd, 10, entries.length);
+  writeUInt16LE(eocd, 8, centrals.length);
+  writeUInt16LE(eocd, 10, centrals.length);
   writeUInt32LE(eocd, 12, centralDir.length);
   writeUInt32LE(eocd, 16, offset);
   writeUInt16LE(eocd, 20, 0);
