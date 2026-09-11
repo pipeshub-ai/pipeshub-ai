@@ -347,6 +347,15 @@ export function createKnowledgeBaseRouter(
     createFolder(appConfig),
   );
 
+  // Create subfolder (nested via path parameter)
+  router.post(
+    '/:kbId/folder/:folderId/subfolder',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
+    ValidationMiddleware.validate(createFolderSchema),
+    createFolder(appConfig),
+  );
+
   // update folder
   router.put(
     '/:kbId/folder/:folderId',

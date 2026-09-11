@@ -160,8 +160,9 @@ class KBClient(APIClient):
         """
         payload: dict[str, Any] = {"folderName": folder_name}
         if parent_id:
-            payload["parentId"] = parent_id
-        resp = self.post(f"/{kb_id}/folders", json=payload)
+            resp = self.post(f"/{kb_id}/folder/{parent_id}/subfolder", json=payload)
+        else:
+            resp = self.post(f"/{kb_id}/folder", json=payload)
         resp.raise_for_status()
         return resp.json()
 
