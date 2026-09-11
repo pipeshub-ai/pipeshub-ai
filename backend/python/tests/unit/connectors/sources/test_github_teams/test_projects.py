@@ -498,13 +498,37 @@ class TestSyncAllReposAndResolution:
         repo = make_repo(repo_id=9, owner_login="acme", name="widgets")
         c.sync_filters = {
             SyncFilterKey.REPO_IDS: SimpleNamespace(
-                is_empty=lambda: False, value=["acme/widgets", "badname"], operator_value=FilterOperator.IN,
+                is_empty=lambda: False, value=["acme/widgets"], operator_value=FilterOperator.IN,
             )
         }
         c.runtime.ds_call.side_effect = _dispatch(c, {"get_repo": ok_response(repo)})
 
         result = await ProjectsSync(c)._resolve_repos_with_filters()
         assert [r.id for r in result] == [9]
+
+    async def test_selected_repo_that_cannot_be_fetched_fails_the_run(self) -> None:
+        """One repo per instance: an unreachable selection must not sync nothing quietly."""
+        c = make_mock_connector()
+        c.sync_filters = {
+            SyncFilterKey.REPO_IDS: SimpleNamespace(
+                is_empty=lambda: False, value=["acme/gone"], operator_value=FilterOperator.IN,
+            )
+        }
+        c.runtime.ds_call.side_effect = _dispatch(c, {"get_repo": failed_response("404")})
+
+        with pytest.raises(RuntimeError, match="acme/gone"):
+            await ProjectsSync(c)._resolve_repos_with_filters()
+
+    async def test_malformed_repo_value_fails_the_run(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = {
+            SyncFilterKey.REPO_IDS: SimpleNamespace(
+                is_empty=lambda: False, value=["badname"], operator_value=FilterOperator.IN,
+            )
+        }
+
+        with pytest.raises(ValueError, match="malformed"):
+            await ProjectsSync(c)._resolve_repos_with_filters()
 
     async def test_org_in_lists_org_repos_and_applies_exclusions(self) -> None:
         c = make_mock_connector()

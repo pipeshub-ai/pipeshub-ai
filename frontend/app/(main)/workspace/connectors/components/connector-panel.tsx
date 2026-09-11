@@ -36,7 +36,9 @@ import {
 } from './authenticate-tab/auth-step-validation';
 import { useConnectorOAuthPopup } from './authenticate-tab/use-connector-oauth-popup';
 import {
+  collectSyncFilterErrors,
   hasAnySyncFiltersSelected,
+  syncFilterErrorKey,
   isManualIndexingEnabled,
 } from '../utils/sync-filter-save-guards';
 import type { PanelTab } from '../types';
@@ -731,7 +733,12 @@ export function ConnectorPanel() {
         );
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.configSaveError');
+      const message =
+        typeof err === 'object' && err !== null && 'message' in err
+          ? String((err as { message: unknown }).message)
+          : t('workspace.connectors.toasts.configSaveError');
+      // No toast here: the axios interceptor already raises one carrying this same
+      // message (lib/api/error-toast.ts). This only drives the inline panel alert.
       setSaveError(message);
     } finally {
       setIsSavingConfig(false);
@@ -781,6 +788,19 @@ export function ConnectorPanel() {
     }
 
     const syncFields = connectorSchema?.filters?.sync?.schema?.fields;
+    const syncFilterErrors = collectSyncFilterErrors(syncFields, formData.filters.sync);
+    const syncFilterErrorPatch: Record<string, string | null | undefined> = {};
+    for (const f of syncFields ?? []) {
+      syncFilterErrorPatch[syncFilterErrorKey(f.name)] = syncFilterErrors[f.name] ?? '';
+    }
+    mergeFormErrors(syncFilterErrorPatch);
+    const firstSyncFilterError = Object.values(syncFilterErrors)[0];
+    if (firstSyncFilterError) {
+      setSaveError(firstSyncFilterError);
+      addToast({ variant: 'error', title: firstSyncFilterError, duration: 4500 });
+      return;
+    }
+
     const manualOn = isManualIndexingEnabled(formData.filters.indexing);
     const hasSync = hasAnySyncFiltersSelected(syncFields, formData.filters.sync);
 
@@ -809,6 +829,7 @@ export function ConnectorPanel() {
     mergeFormErrors,
     performSaveConfig,
     setSaveError,
+    addToast,
   ]);
 
   const handleConfirmSyncSave = useCallback(() => {

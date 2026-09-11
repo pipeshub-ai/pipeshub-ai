@@ -130,8 +130,9 @@ class ProjectsSync:
             for pth in proj_in:
                 res = await c.runtime.ds_call(c.data_source.get_project, pth)
                 if not res.success or not res.data:
-                    self.logger.error("Repository not found or inaccessible: %s (%s)", pth, res.error)
-                    continue
+                    raise RuntimeError(
+                        f"Selected repository {pth} not found or inaccessible: {res.error}"
+                    )
                 by_id[int(res.data.id)] = res.data
         elif grp_in:
             for gp in grp_in:
