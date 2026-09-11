@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Flex, Heading, Text, Button, TextField } from '@radix-ui/themes';
+import { Flex, Heading, Text, Button, TextField, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
 export interface EntityPageHeaderProps {
@@ -23,6 +23,10 @@ export interface EntityPageHeaderProps {
   onCtaClick: () => void;
   /** Optional extra actions rendered to the left of the primary CTA button */
   additionalActions?: React.ReactNode;
+  /** When true, the CTA button is disabled (e.g. a prerequisite isn't met) */
+  ctaDisabled?: boolean;
+  /** Tooltip shown on hover — most useful to explain why the CTA is disabled */
+  ctaTooltip?: string;
 }
 
 /**
@@ -41,7 +45,21 @@ export function EntityPageHeader({
   ctaIcon,
   onCtaClick,
   additionalActions,
+  ctaDisabled = false,
+  ctaTooltip,
 }: EntityPageHeaderProps) {
+  const ctaButton = (
+    <Button
+      size="2"
+      onClick={onCtaClick}
+      disabled={ctaDisabled}
+      style={{ cursor: ctaDisabled ? 'not-allowed' : 'pointer' }}
+    >
+      <MaterialIcon name={ctaIcon} size={16} color="currentColor" />
+      {ctaLabel}
+    </Button>
+  );
+
   return (
     <Flex
       justify="between"
@@ -77,10 +95,13 @@ export function EntityPageHeader({
 
         {additionalActions}
 
-        <Button size="2" onClick={onCtaClick}>
-          <MaterialIcon name={ctaIcon} size={16} color="currentColor" />
-          {ctaLabel}
-        </Button>
+        {ctaTooltip ? (
+          <Tooltip content={ctaTooltip}>
+            <span className="inline-flex">{ctaButton}</span>
+          </Tooltip>
+        ) : (
+          ctaButton
+        )}
       </Flex>
     </Flex>
   );

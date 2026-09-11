@@ -61,8 +61,11 @@ function validateEmail(value: string): string | null {
 
 export function InviteUsersSidebar({
   onInviteSuccess,
+  isSmtpConfigured = true,
 }: {
   onInviteSuccess?: () => void;
+  /** False when SMTP creds aren't set up — sending a new invite email would 500 server-side. */
+  isSmtpConfigured?: boolean;
 }) {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
@@ -157,6 +160,10 @@ export function InviteUsersSidebar({
   const hasValidEmails = inviteEmails.some((tag) => tag.isValid !== false);
   const isFormValid = hasValidEmails && Boolean(inviteRole);
 
+  // Edit mode only updates role/groups for an existing pending user — it never
+  // sends a new invite email, so it doesn't depend on SMTP being configured.
+  const smtpBlocksSend = !isEditMode && !isSmtpConfigured;
+
   const adminGroupId = groups.find((g) => g.type === GroupType.ADMIN)?._id;
   const isGrantingAdmin =
     inviteRole === USER_ROLES.ADMIN ||
@@ -170,7 +177,7 @@ export function InviteUsersSidebar({
 
   // Handle submit — create invite or update existing invite
   const handleSubmit = useCallback(async () => {
-    if (!isFormValid) return;
+    if (!isFormValid || smtpBlocksSend) return;
 
     const validEmails = inviteEmails
       .filter((tag) => tag.isValid !== false)
@@ -266,6 +273,7 @@ export function InviteUsersSidebar({
     }
   }, [
     isFormValid,
+    smtpBlocksSend,
     inviteEmails,
     inviteRole,
     inviteGroupIds,
@@ -436,6 +444,13 @@ export function InviteUsersSidebar({
     ? t('workspace.users.invite.update', 'Update Invite')
     : t('workspace.users.invite.send', 'Send Invite');
 
+  const primaryTooltip = smtpBlocksSend
+    ? t(
+        'workspace.users.invite.smtpNotConfiguredTooltip',
+        'SMTP is not configured. Set up email settings before sending invites.'
+      )
+    : undefined;
+
   return (
     <WorkspaceRightPanel
       open={isInvitePanelOpen}
@@ -534,8 +549,9 @@ export function InviteUsersSidebar({
       }
       primaryLabel={primaryLabel}
       secondaryLabel={t('workspace.users.invite.cancel', 'Cancel')}
-      primaryDisabled={!isFormValid}
+      primaryDisabled={!isFormValid || smtpBlocksSend}
       primaryLoading={isInviting}
+      primaryTooltip={primaryTooltip}
       onPrimaryClick={handleSubmit}
     >
       {/* Form card */}

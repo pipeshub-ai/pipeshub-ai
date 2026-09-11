@@ -564,6 +564,41 @@ export const getSmtpConfig =
       next(error);
     }
   };
+
+/**
+ * GET /smtpConfig/status — boolean-only, no secrets. Unlike `getSmtpConfig`
+ * this is intentionally open to any authenticated org member (not just
+ * admins): non-admins can invite users (`USER_INVITE` scope) and need to know
+ * whether that will succeed without being able to read/manage the SMTP
+ * credentials themselves. Mirrors the gate `smtpConfigCheck`
+ * (user_management) actually enforces before sending invite emails.
+ */
+export const getSmtpConfigStatus =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedSmtpConfig = await keyValueStoreService.get<string>(
+        configPaths.smtp,
+      );
+      let configured = false;
+      if (encryptedSmtpConfig) {
+        const smtpConfig = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedSmtpConfig),
+        ) as Record<string, unknown>;
+        configured = Boolean(
+          smtpConfig?.host && smtpConfig?.port && smtpConfig?.fromEmail,
+        );
+      }
+      res.status(200).json({ configured }).end();
+    } catch (error: any) {
+      logger.error('Error getting smtp config status', { error });
+      next(error);
+    }
+  };
 const SLACK_BOT_CAS_MAX_RETRIES = 5;
 
 const parseSlackBotStore = (
