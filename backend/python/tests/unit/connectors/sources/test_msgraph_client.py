@@ -1727,6 +1727,7 @@ class TestSearchQuery:
             await client.search_query(["driveItem"], region="NAM")
 
         send_async.assert_awaited_once()
+        assert err.error._count >= 3
 
     @pytest.mark.asyncio
     async def test_search_with_empty_string_region(self):
