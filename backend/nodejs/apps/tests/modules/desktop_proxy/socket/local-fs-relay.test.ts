@@ -6,7 +6,7 @@ import {
   DesktopOfflineError,
   DesktopRemoteError,
   DesktopTimeoutError,
-} from '../../../../src/modules/desktop_proxy/types/local-fs-pull.types'
+} from '../../../../src/modules/desktop_proxy/types/local-fs.types'
 
 interface FakeSocket {
   data: { orgId: string; userId: string; deviceId?: string }
@@ -143,6 +143,31 @@ describe('LocalFsRelay', () => {
       expect(result.cursor).to.equal('c1')
       expect(result.deviceId).to.equal('dev-a')
       expect((result as { ok?: boolean }).ok).to.equal(undefined)
+    })
+
+    it('clamps an out-of-range budget instead of trusting the caller', async () => {
+      const socket = makeSocket()
+      relay.register(asRelaySocket(socket), ['conn-1'], 'dev-a')
+      socket.emitWithAck.resolves({
+        ok: true,
+        connectorId: 'conn-1',
+        runId: 'run-1',
+        batchIndex: 0,
+        deviceId: 'dev-a',
+        hasMore: false,
+        events: [],
+      })
+
+      await relay.requestFileEvents('org-1', 'user-1', 'conn-1', {
+        ...PULL_PAYLOAD,
+        timeoutMs: 3_600_000,
+      })
+
+      expect(socket.timeout.firstCall.args[0]).to.equal(305_000)
+      expect(
+        (socket.emitWithAck.firstCall.args[1] as { timeoutMs: number })
+          .timeoutMs,
+      ).to.equal(300_000)
     })
 
     it('stamps the registered deviceId when the ack omits it', async () => {
@@ -305,6 +330,25 @@ describe('LocalFsRelay', () => {
 
       const received = await promise
       expect(received.equals(body)).to.equal(true)
+    })
+
+    it('clamps an out-of-range budget before arming the transfer timer', async () => {
+      const socket = registerAndAck(1024)
+      const promise = relay.requestContent('org-1', 'user-1', 'conn-1', {
+        ...CONTENT_PAYLOAD,
+        timeoutMs: 3_600_000,
+      })
+      await new Promise((r) => setImmediate(r))
+
+      expect(socket.timeout.firstCall.args[0]).to.equal(305_000)
+      expect(
+        (socket.emitWithAck.firstCall.args[1] as { timeoutMs: number })
+          .timeoutMs,
+      ).to.equal(300_000)
+
+      socket.connected = false
+      relay.handleDisconnect(asRelaySocket(socket))
+      await rejection(promise)
     })
 
     it('rejects when the desktop aborts mid-transfer', async () => {
