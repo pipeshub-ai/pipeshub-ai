@@ -357,6 +357,7 @@ class RetrievalService:
         virtual_record_ids_from_tool: list[str] | None = None,
         knowledge_search: bool = False,
         time_range: dict[str, int] | None = None,
+        include_image_content: bool = False,
     ) -> dict[str, Any]:
         """Perform semantic search on records the given user may access (graph permission checks)."""
 
@@ -706,8 +707,14 @@ class RetrievalService:
             ]
 
             if new_type_results:
-                is_multimodal_llm = False   #doesn't matter for retrieval service
-                flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
+                flattened_results = await get_flattened_results(
+                    new_type_results,
+                    self.blob_store,
+                    org_id,
+                    include_image_content,
+                    virtual_record_id_to_record,
+                    from_retrieval_service=True,
+                )
                 for result in flattened_results:
                     block_type = result.get("block_type")
                     if block_type == GroupType.TABLE.value or block_type in valid_group_labels:

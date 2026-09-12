@@ -94,6 +94,37 @@ class TestGenerateChatStreamViaAgentLoop:
 
         assert mock_run_chat_stream.call_args.kwargs["protocol"] == "agui"
 
+    async def test_nested_multimodal_configuration_is_forwarded(self):
+        from app.api.routes.chatbot import ChatQuery, _generate_chat_stream_via_agent_loop
+
+        request = self._mock_request({})
+        query_info = ChatQuery(query="describe the image")
+
+        async def _fake_run_chat_stream(*args, **kwargs):
+            yield "event: complete\ndata: {}\n\n"
+
+        with (
+            patch(
+                "app.api.routes.chatbot.get_llm_for_chat",
+                new=AsyncMock(return_value=(
+                    MagicMock(),
+                    {"provider": "openAICompatible", "configuration": {"isMultimodal": True}},
+                    {},
+                )),
+            ),
+            patch(
+                "app.api.routes.chatbot.run_chat_stream", side_effect=_fake_run_chat_stream,
+            ) as mock_run_chat_stream,
+        ):
+            [
+                chunk
+                async for chunk in _generate_chat_stream_via_agent_loop(
+                    request, query_info, AsyncMock(), MagicMock(), AsyncMock(),
+                )
+            ]
+
+        assert mock_run_chat_stream.call_args.kwargs["is_multimodal_llm"] is True
+
     async def test_builds_query_dict_and_user_info_and_forwards_policy(self):
         """The plain-dict contract `run_chat_stream()` expects -- see
         `chat_modes/bridge.py`'s module docstring for why it never sees

@@ -192,6 +192,12 @@ class TestPrefetchImageCollection:
             "image_url": {"url": "data:image/png;base64,xx"},
             "virtual_record_id": "vr1",
         }]
+        assert (
+            retrieval_service.search_with_filters.await_args.kwargs[
+                "include_image_content"
+            ]
+            is True
+        )
 
     async def test_shared_image_budget_is_forwarded_to_formatter(self) -> None:
         """A shared `ImageBudget` passed in by the caller (`bridge.py`'s
