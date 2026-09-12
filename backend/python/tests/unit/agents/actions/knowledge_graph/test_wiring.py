@@ -51,6 +51,7 @@ class TestKnowledgeToolsetsAreEssential:
     surfaces the Record IDs that make `dynamic_fetch_full_record` available."""
 
     def _toolset_class(self, toolset_name: str) -> type:
+        from app.agents.actions.code_graph.code_graph import CodeGraph
         from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
         from app.agents.actions.knowledge_hub.knowledge_hub import KnowledgeHub
         from app.agents.actions.retrieval.retrieval import Retrieval
@@ -59,6 +60,7 @@ class TestKnowledgeToolsetsAreEssential:
             "knowledgegraph": KnowledgeGraph,
             "knowledgehub": KnowledgeHub,
             "retrieval": Retrieval,
+            "codegraph": CodeGraph,
         }
         assert toolset_name in classes, (
             f"{toolset_name} is gated by _KNOWLEDGE_TOOLSETS but this test does "

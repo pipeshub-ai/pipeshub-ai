@@ -792,6 +792,7 @@ class TestDocumentExtractionApply:
 
         ctx = MagicMock()
         ctx.record = record
+        ctx.is_code = False
 
         await ext.apply(ctx)
 
@@ -812,6 +813,7 @@ class TestDocumentExtractionApply:
 
         ctx = MagicMock()
         ctx.record = record
+        ctx.is_code = False
 
         await ext.apply(ctx)
 

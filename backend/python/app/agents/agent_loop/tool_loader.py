@@ -55,6 +55,11 @@ logger = logging.getLogger(__name__)
 # below, so they need their own gate on `context.has_knowledge` instead.
 _KNOWLEDGE_TOOLSETS = frozenset({"knowledgegraph", "retrieval", "knowledgehub"})
 
+# Code graph is a view over files a repo connector ingested. Without both
+# a configured code connector (org-wide) and attached code knowledge
+# (agent-scoped), the tools serve no purpose.
+_CODE_GRAPH_TOOLSETS = frozenset({"codegraph"})
+
 # Same substring heuristic `ToolInstanceCreator._create_with_factory` uses to
 # decide whether to re-raise a `ValueError` as an auth-flavored message
 # (`instance_creator.py`) — duplicated here (not imported) because that
@@ -266,6 +271,13 @@ class PipesHubToolLoader:
             if ts_name in _KNOWLEDGE_TOOLSETS and not context.has_knowledge:
                 if state_logger:
                     state_logger.debug("Skipping knowledge toolset with no knowledge configured: %s", ts_name)
+                continue
+
+            if ts_name in _CODE_GRAPH_TOOLSETS and not (
+                context.has_code_connector and context.has_code_knowledge
+            ):
+                if state_logger:
+                    state_logger.debug("Skipping code graph toolset: no code connector/knowledge: %s", ts_name)
                 continue
 
             try:

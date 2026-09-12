@@ -67,5 +67,4 @@ class TestBuildDynamicToolsWebAdapterWiring:
         assert context.tool_state.get("citation_ref_mapper") is None
 
         _build_dynamic_tools(context)
-
         assert context.tool_state["citation_ref_mapper"] is not None

@@ -70,6 +70,23 @@ class LanguageConfig:
     binding_types: frozenset[str] = frozenset()
     function_value_types: frozenset[str] = frozenset()
 
+    # References. Only populated for languages with an edge handler below; the
+    # rest parse into blocks without contributing cross-file facts.
+    call_types: frozenset[str] = frozenset()
+    call_function_field: str = "function"
+    # Member access -- Python's `attribute`, JS's `member_expression`. The field
+    # names stay empty by default: a language that sets no accessor_types never
+    # reads them, and Python's names as the default would silently misapply.
+    accessor_types: frozenset[str] = frozenset()
+    accessor_property_field: str = ""
+    accessor_object_field: str = ""
+
+    # Per-language edge handlers, looked up by name in engine.py so that this
+    # module stays free of imports from it.
+    import_handler_name: str = ""
+    heritage_handler_name: str = ""
+    type_table_handler_name: str = ""
+
     name_field: str = "name"
     body_field: str = "body"
     # For the one definition in a language that names itself through a different
@@ -117,9 +134,18 @@ _PYTHON = LanguageConfig(
     field_types=frozenset({"assignment"}),
     decorator_wrapper_types=frozenset({"decorated_definition"}),
     import_types=frozenset({"import_statement", "import_from_statement", "future_import_statement"}),
+    call_types=frozenset({"call"}),
+    accessor_types=frozenset({"attribute"}),
+    accessor_property_field="attribute",
+    accessor_object_field="object",
+    import_handler_name="python",
+    heritage_handler_name="python",
+    type_table_handler_name="python",
     docstring_style="python",
 )
 
+_JS_CALL_TYPES = frozenset({"call_expression", "new_expression"})
+_JS_ACCESSOR_TYPES = frozenset({"member_expression"})
 _JS_FUNCTION_TYPES = frozenset({
     "function_declaration", "generator_function_declaration",
     "function_expression", "arrow_function",
@@ -140,6 +166,13 @@ _JAVASCRIPT = LanguageConfig(
     export_types=frozenset({"export_statement"}),
     binding_types=_JS_BINDING_TYPES,
     function_value_types=_JS_FUNCTION_VALUE_TYPES,
+    call_types=_JS_CALL_TYPES,
+    accessor_types=_JS_ACCESSOR_TYPES,
+    accessor_property_field="property",
+    accessor_object_field="object",
+    import_handler_name="js",
+    heritage_handler_name="js",
+    type_table_handler_name="js",
     docstring_style=_BLOCK_DOC,
 )
 
@@ -165,6 +198,13 @@ _TYPESCRIPT = LanguageConfig(
     export_types=frozenset({"export_statement"}),
     binding_types=_JS_BINDING_TYPES,
     function_value_types=_JS_FUNCTION_VALUE_TYPES,
+    call_types=_JS_CALL_TYPES,
+    accessor_types=_JS_ACCESSOR_TYPES,
+    accessor_property_field="property",
+    accessor_object_field="object",
+    import_handler_name="js",
+    heritage_handler_name="ts",
+    type_table_handler_name="ts",
     docstring_style=_BLOCK_DOC,
 )
 
@@ -185,6 +225,13 @@ _TSX = LanguageConfig(
     export_types=frozenset({"export_statement"}),
     binding_types=_JS_BINDING_TYPES,
     function_value_types=_JS_FUNCTION_VALUE_TYPES,
+    call_types=_JS_CALL_TYPES,
+    accessor_types=_JS_ACCESSOR_TYPES,
+    accessor_property_field="property",
+    accessor_object_field="object",
+    import_handler_name="js",
+    heritage_handler_name="ts",
+    type_table_handler_name="ts",
     docstring_style=_BLOCK_DOC,
 )
 

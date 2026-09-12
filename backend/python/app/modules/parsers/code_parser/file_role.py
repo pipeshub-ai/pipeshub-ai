@@ -177,6 +177,7 @@ def classify_file_role(file_path: str, file_name: str | None = None) -> FileRole
     # build before config: build.gradle and Dockerfile match both, and the build
     # reading is the more specific one.
     if name in _BUILD_FILENAMES or name.endswith(_BUILD_SUFFIXES) or _is_ci_workflow(segs):
+
         return FileRole.BUILD
 
     if (

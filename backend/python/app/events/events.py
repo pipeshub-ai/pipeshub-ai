@@ -87,6 +87,19 @@ def _record_key(doc: dict[str, Any] | None) -> str | None:
     return (doc.get("_key") or doc.get("id")) if doc is not None else None
 
 
+def _is_code_file(mime_type: str | None, code_ext: str | None) -> bool:
+    """Whether this record should be parsed as source and projected into the code graph.
+
+    Keyed on mime/extension rather than recordType because a connector can hand
+    us a code blob without one; every site that decides "is this code" reads this
+    so the dispatch and the projection cannot drift apart.
+    """
+    return (
+        mime_type in CODE_FILE_MIME_TYPE_VALUES
+        or normalize_file_extension(code_ext) in CODE_FILE_EXTENSION_VALUES
+    )
+
+
 def shutdown_pdf_ocr_pool() -> bool:
     """Shut down the PDF OCR detection process pool if it was initialised.
 
@@ -339,6 +352,9 @@ class EventProcessor:
         event_type: str,
         prev_virtual_record_id: str | None,
         file_content: bytes,
+        *,
+        is_code: bool = False,
+        file_path: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """New orchestration path: parse → index → enrich via standalone services.
 
@@ -424,11 +440,29 @@ class EventProcessor:
             record=record,
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
+            is_code=is_code,
         )
 
         ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
             ctx, self.logger, self.sink_orchestrator
         )
+
+        # Before indexing, which marks the record COMPLETED, and so also before
+        # enrichment. COMPLETED is what tells the edge builder the repo has
+        # drained; a file carrying it while its blocks are still missing gets
+        # the whole repo resolved against a symbol table it does not appear in.
+        # Being ahead of enrichment additionally means a deferred or failing
+        # extraction still leaves the code graph populated.
+        if is_code:
+            await self.processor.project_code_blocks_to_graph(
+                record_id=record_id,
+                org_id=org_id,
+                record_group_id=record_doc.get("recordGroupId"),
+                connector_id=record_doc.get("connectorId"),
+                record_name=record_name,
+                file_path=file_path,
+                block_containers=block_container,
+            )
 
         # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────
         self.logger.debug("📥 Indexing record %s (making searchable)", record_id)
@@ -459,9 +493,11 @@ class EventProcessor:
                     block_container=block_container,
                     org_id=org_id,
                     departments=departments or [],
+                    is_code=is_code,
                 )
 
                 record.semantic_metadata = semantic_metadata
+
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
                     await self.sink_orchestrator.vector_store.index_record_summary(
                         record_id,
@@ -933,7 +969,6 @@ class EventProcessor:
                     code_ext = fp_base.rsplit(".", 1)[-1].lower()
                 elif "." in rn_base and rn_base.rsplit(".", 1)[-1]:
                     code_ext = rn_base.rsplit(".", 1)[-1].lower()
-
             file_content = event_data.get("buffer")
 
             # Connector streaming or JSON API responses may deliver already-parsed
@@ -951,12 +986,35 @@ class EventProcessor:
             )
             self.logger.debug(f"file_content type: {type(file_content)} length: {content_len}")
             record_type = doc.get("recordType")
+            is_code = _is_code_file(mime_type, code_ext)
 
             # Calculate MD5 hash and check for duplicates for ALL record types
             try:
                 dedup_decision = await self._check_duplicate_by_md5(file_content, doc)
                 if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")
+                    # The blob and the vectors are shared through the duplicate's
+                    # virtualRecordId, but block nodes are keyed by record, so
+                    # this file would otherwise be searchable and yet missing
+                    # from the code graph entirely.
+                    if is_code:
+                        # `_check_duplicate_by_md5` encodes only its own local
+                        # binding, so a str buffer reaches here unconverted and
+                        # `decode_source` (tree-sitter indexes by byte offset)
+                        # would fail on it.
+                        await self.processor.project_code_blocks_to_graph(
+                            record_id=record_id,
+                            org_id=org_id,
+                            record_group_id=doc.get("recordGroupId"),
+                            connector_id=doc.get("connectorId"),
+                            record_name=record_name,
+                            file_path=event_data.get("filePath"),
+                            content=(
+                                file_content.encode("utf-8")
+                                if isinstance(file_content, str)
+                                else file_content
+                            ),
+                        )
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
@@ -1122,6 +1180,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                     file_content=content_bytes,
+                    is_code=is_code,
+                    file_path=event_data.get("filePath"),
                 ):
                     yield event
                 return
@@ -1192,10 +1252,7 @@ class EventProcessor:
 
             # Must precede the PLAIN_TEXT branch: code files routinely arrive as
             # text/plain, and that branch returns early.
-            if (
-                mime_type in CODE_FILE_MIME_TYPE_VALUES
-                or normalize_file_extension(code_ext) in CODE_FILE_EXTENSION_VALUES
-            ):
+            if is_code:
                 async for event in self.processor.process_code_document(
                     recordName=record_name,
                     recordId=record_id,

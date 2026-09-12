@@ -1266,3 +1266,60 @@ class TestHeartbeat:
         # running by the time the comprehension above finishes.
         leaked_tasks = tasks_after - tasks_before
         assert all(task.done() for task in leaked_tasks)
+
+
+class TestConnectorFlagsReachChatState:
+    """The agent-loop half of the same wiring `chat_modes/bridge.py` carries.
+
+    `has_code_connector` is keyword-only on `build_initial_state` with a
+    `False` default; neither stream entry point passed it, so
+    `tool_loader`'s `has_code_connector and has_code_knowledge` gate could
+    never open and the code-graph toolset was absent from every request. Both
+    bridges need this pinned, or fixing one leaves the other silently broken.
+    """
+
+    @staticmethod
+    def _kwargs() -> dict[str, Any]:
+        return {
+            "query_info": {"query": "hello", "chatMode": "react"},
+            "user_info": {"userId": "user-1", "orgId": "org-1"},
+            "llm": MagicMock(),
+            "log": MagicMock(),
+            "retrieval_service": MagicMock(),
+            "graph_provider": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": MagicMock(),
+        }
+
+    async def _captured_kwargs(self, instances: list[dict[str, Any]]) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        def _capture(*args, **kwargs):
+            seen.update(kwargs)
+            raise RuntimeError("stop here — the call is what is under test")
+
+        # `stream_bridge` imports the fetch inside the function, so the patch
+        # has to land on the defining module rather than on the bridge.
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state", new=_capture),
+            patch(
+                "app.utils.connector_instances.fetch_user_connector_instances",
+                new=AsyncMock(return_value=instances),
+            ),
+        ):
+            [_ async for _ in run_agent_loop_stream(**self._kwargs())]
+        return seen
+
+    async def test_a_configured_repo_connector_reaches_build_initial_state(self) -> None:
+        seen = await self._captured_kwargs([{"type": "GitLab", "isConfigured": True}])
+        assert seen["has_code_connector"] is True
+
+    async def test_an_unconfigured_repo_connector_leaves_the_flag_off(self) -> None:
+        """Present but never set up — the tools would load and find nothing."""
+        seen = await self._captured_kwargs([{"type": "GitLab", "isConfigured": False}])
+        assert seen["has_code_connector"] is False
+
+    async def test_a_non_repo_connector_does_not_open_the_gate(self) -> None:
+        seen = await self._captured_kwargs([{"type": "SLACK", "isConfigured": True}])
+        assert seen["has_code_connector"] is False
+        assert seen["has_slack_connector"] is True, "the other flags still work"

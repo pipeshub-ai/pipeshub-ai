@@ -133,7 +133,6 @@ def image_dict_to_part(image: dict[str, Any]) -> Any | None:
     return ImagePart(source=ImageSource(type="url", data=url))
 
 
-
 def group_child_results(doc: dict[str, Any]) -> list[dict[str, Any]] | None:
     """Children of a *group* flattened-result, or None when it is not a group.
 
@@ -151,6 +150,7 @@ def group_child_results(doc: dict[str, Any]) -> list[dict[str, Any]] | None:
         children = content[1]
         return children if isinstance(children, list) else []
     return None
+
 
 def _safe_stringify_content(value: Any) -> str:
     """Convert citation content to string without raising.
@@ -2214,8 +2214,10 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         # Fragment block: split from a container due to inline images inside a group.
         # Route through the container's parent group rather than treating as standalone.
+        # Code blocks reuse the field for definition nesting -- a function inside a
+        # function -- and are standalone results, not fragments of their parent.
         parent_block_idx = block.get("parent_block_index")
-        if parent_block_idx is not None:
+        if parent_block_idx is not None and block_type != BlockType.CODE.value:
             if parent_block_idx >= len(blocks):
                 continue
             container = blocks[parent_block_idx]

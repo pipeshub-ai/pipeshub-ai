@@ -303,7 +303,7 @@ class ExtensionTypes(Enum):
     HEIC = "heic"
     HEIF = "heif"
     EPUB = "epub"
-    SQL_TABLE = "sql_table"  
+    SQL_TABLE = "sql_table"
     SQL_VIEW = "sql_view"
     # Registry key for the tree-sitter code parser; not a file extension.
     CODE = "code"
@@ -612,6 +612,10 @@ class RecordRelations(Enum):
     DEPENDS_ON = "DEPENDS_ON"
     CLONES = "CLONES"
     IMPLEMENTS = "IMPLEMENTS"
+    # A concrete method and the interface/abstract method it satisfies. Written
+    # by the code-graph edge pass, never by the parser: at parse time a base is
+    # only a name, and whether it is an interface is known once it resolves.
+    OVERRIDES = "OVERRIDES"
     REVIEWS = "REVIEWS"
     CAUSES = "CAUSES"
     RELATED = "RELATED"
@@ -626,6 +630,20 @@ class RecordRelations(Enum):
     # (see `config/constants/neo4j.py`), no new edge collection or Neo4j
     # relationship type required.
     DERIVED_FROM = "DERIVED_FROM"
+
+    # --- code knowledge graph ---
+    # Structural, written at parse time because both endpoints are in one file.
+    CONTAINS = "CONTAINS"      # record -> block, or block group -> block
+    DEFINES = "DEFINES"        # class -> field
+    METHOD = "METHOD"          # class -> method
+    # Cross-file, written by the edge-resolution pass once a repo is indexed.
+    CALLS = "CALLS"
+    IMPORTS = "IMPORTS"            # file -> imported symbol
+    IMPORTS_FROM = "IMPORTS_FROM"  # file -> imported module file
+    RE_EXPORTS = "RE_EXPORTS"
+    EXPORTS = "EXPORTS"
+    INHERITS = "INHERITS"
+    EXTENDS = "EXTENDS"
 
 
 class EntityRelations(Enum):
@@ -649,6 +667,7 @@ class EventTypes(Enum):
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
+    BUILD_CODE_EDGES = "buildCodeEdges"
 
 
 class AccountType(Enum):

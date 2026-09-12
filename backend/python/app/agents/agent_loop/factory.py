@@ -114,6 +114,8 @@ from app.agents.agent_loop.hooks import (
     ask_user_question_sse,
     attachment_rehydration,
     citation_tracking,
+    code_graph_unlock_after_tools,
+    code_graph_unlock_on_turn,
     completion_gate,
     conversation_enrichment,
     resolve_attachments_for_goal,
@@ -124,6 +126,7 @@ from app.agents.agent_loop.hooks import (
     shape_image_injection,
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
+    sync_visible_tools_for_prompt,
 )
 from app.agents.agent_loop.image_guard import with_image_cap
 from app.agents.agent_loop.langchain_transport import (
@@ -202,10 +205,40 @@ _DOMAIN_SHARED_NAV_TOOL_NAMES: frozenset[str] = frozenset({
     "knowledgegraph__lookup_record",
 })
 
+# Code structure is cross-cutting: the exploring agent is where code questions
+# land, and routing them back through the parent costs a turn and loses the
+# child's context. The full codegraph set ships as shared so a search that
+# unlocks the toolset can walk edges and read symbols without another
+# delegation.
+#
+# SHARED, never claimed. `plan_domain_agents` claiming is exclusive, so listing
+# these on a definition would take them OFF the parent -- flipping
+# `surfaces.code_graph` to False and deleting the tool's own entry from the
+# parent's source list. Shared names never enter `claimed`, which is the same
+# mechanism `_DOMAIN_SHARED_NAV_TOOL_NAMES` relies on.
+_DOMAIN_SHARED_CODE_TOOL_NAMES: frozenset[str] = frozenset({
+    "codegraph__query_code_graph",
+    "codegraph__get_neighbour",
+    "codegraph__read_code",
+    "codegraph__find_symbol_path",
+})
+
 # Matches nodes.py's ReAct/planner loop cap (`MAX_ITERATIONS` — see
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
 # constant here rather than a magic number in `create()`.
 _MAX_TURNS = 15
+
+#: Traversal results both PRE_MODEL shapers keep past their turn window. A walk
+#: spans more turns than either window holds, and each hop is the address the
+#: next one needs — clearing an earlier hop strands the walk, and a summary of
+#: one answers nothing. Small enough to hold: a walk is ~7KB, a symbol read
+#: under 1KB. `query_code_graph` is deliberately absent — its 25-50KB directory
+#: dumps are re-callable, not something to carry.
+_CODE_TRAVERSAL_TOOLS = frozenset({
+    "codegraph__get_neighbour",
+    "codegraph__read_code",
+    "codegraph__find_symbol_path",
+})
 
 
 DIRECT_TRANSPORT = "direct"
@@ -685,6 +718,7 @@ class PipesHubAgentFactory:
                 shared_tool_names=(
                     (DOMAIN_SHARED_SKILL_TOOL_NAMES if skill_manager is not None else frozenset())
                     | _DOMAIN_SHARED_NAV_TOOL_NAMES
+                    | _DOMAIN_SHARED_CODE_TOOL_NAMES
                 ),
             )
             run_code_delegated_to_coding_agent = "coding_agent" in composed_names
@@ -923,6 +957,9 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())           # L1
         hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(          # L2
             keep_last_n_turns=2,
+            # Without this, a walk large enough to be registered as an artifact
+            # is stubbed here before L3's identical protection ever sees it.
+            protected_tool_names=_CODE_TRAVERSAL_TOOLS,
         ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_tool_result_clearing(         # L3
             protected_tool_names=frozenset({
@@ -938,7 +975,7 @@ class PipesHubAgentFactory:
                 # Same reasoning: fetch_full_record results carry [refN]
                 # markers that AnswerFinalizer needs to build citations.
                 "knowledgegraph__fetch_record",
-            }),
+            }) | _CODE_TRAVERSAL_TOOLS,
         ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_loop_compaction())            # L4
         hooks.on(HookEvent.PRE_MODEL).use(shape_sliding_window())             # L5
@@ -972,6 +1009,7 @@ class PipesHubAgentFactory:
 
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))
+        hooks.on(HookEvent.POST_TOOL_USE).use(code_graph_unlock_after_tools(context))
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
@@ -982,6 +1020,9 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
         hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
+        hooks.on(HookEvent.PRE_TURN).use(code_graph_unlock_on_turn(context))
+        # After visibility mutations — prompt builder reads bound_tool_names.
+        hooks.on(HookEvent.PRE_TURN).use(sync_visible_tools_for_prompt(context))
 
         # Recovers from empty model responses (no text, no tool calls).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))

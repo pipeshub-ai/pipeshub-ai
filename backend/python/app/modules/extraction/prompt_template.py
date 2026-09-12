@@ -162,3 +162,89 @@ Instructions must be strictly followed, failure to do so will result in terminat
 
 Return the JSON object only, no additional text or explanation.
 """
+
+
+prompt_for_code_extraction = """
+# Task:
+You are analysing one source file from an enterprise codebase and producing structured metadata for a code search index.
+
+The individual symbols in this file (functions, classes, methods) are already indexed separately. Do NOT re-list them. Describe what the file does as a unit, what it talks to, and the words a developer would type when looking for it.
+
+# File under analysis:
+- Path: {file_path}
+- Language: {language}
+
+# Analysis Guidelines:
+
+1. **Architecture Role**:
+   - Pick exactly ONE value from the list below, copied verbatim.
+   - Any unlisted or paraphrased value is INVALID.
+{architecture_role_list}
+
+2. **Category & Subcategories** (the feature/domain path this file belongs to):
+   - `category`: the broad system area, e.g. "Indexing", "Connectors", "Authentication", "Search".
+   - `subcategories.level1` / `level2`: narrower areas beneath it.
+   - `subcategories.level3`: most specific, or "" when there is nothing more to say.
+   - Anchor level1 and level2 on the directory structure in the file path above - two files in the
+     same directory must land on the same level1. Use judgement only for level3.
+   - Do not put comma-separated values in a single level.
+
+   Example for "app/connectors/sources/microsoft/sharepoint/connector.py":
+      Category: "Connectors"
+      Sub-category Level 1: "Microsoft"
+      Sub-category Level 2: "SharePoint"
+      Sub-category Level 3: "Site Sync"
+
+3. **Topics**:
+   - 3 to 6 cross-cutting technical concepts, as lowercase noun phrases.
+   - Good: "oauth2 token refresh", "exponential backoff", "idempotent consumer", "vector upsert".
+   - Bad: symbol names from this file, the file name, the programming language.
+   - These link this file to files elsewhere in the repository, so prefer concepts another file could share.
+
+4. **Summary**:
+   - Open with the file's path and what KIND of artifact it is, as one clause. Copy the path
+     verbatim from "File under analysis" above. Choose the kind from: implementation, test suite,
+     test fixtures, configuration, type definitions, script, documentation.
+
+       "app/services/vector_db/vector_db_provider_factory.py — factory that ..."
+       "tests/unit/parsers/test_html_parser_shim.py — test suite for ..."
+
+     Without this, a test file is summarised in the vocabulary of the thing it tests and reads
+     as that thing's implementation, so a search for the implementation returns the test.
+   - Then 2 to 4 sentences: what the file is responsible for, which feature or workflow it serves,
+     which external systems it touches, and the one or two entry points a caller would use.
+   - Name the concrete identifiers this file owns — environment variables, configuration keys,
+     class names, route paths, topic names. Those are the strings a developer actually types when
+     searching, and they appear in few other files.
+   - Do not enumerate every symbol, and do not describe the file's size or structure.
+
+5. **Design Patterns**:
+   - 0 to 3 patterns, only where the structure is genuinely present: factory, repository, strategy,
+     decorator, dependency injection, observer, adapter, singleton.
+   - Return an empty array when none is clear. Do not infer a pattern from a name alone.
+
+6. **External Dependencies**:
+   - The systems this file actually talks to, as concrete as the code allows.
+   - Include third-party services and APIs, datastores, message topics, queues, cloud services.
+   - Name specifics when visible: "Kafka topic RECORD_EVENTS", "Qdrant", "Microsoft Graph API", "Redis".
+   - Exclude standard-library modules and imports of other modules from this same codebase.
+   - Return an empty array when the file only touches internal code.
+
+# Output Format:
+You must return a single valid JSON object with the following structure:
+{
+    "architecture_role": string,  // exactly one value from the list above
+    "category": string,  // broad system area
+    "subcategories": {
+        "level1": string,
+        "level2": string,
+        "level3": string
+    },
+    "topics": string[],  // 3 to 6 lowercase technical noun phrases
+    "summary": string,  // 2 to 4 sentences for a developer searching the codebase
+    "design_patterns": string[],  // 0 to 3, empty when none is clear
+    "external_dependencies": string[]  // empty when the file only touches internal code
+}
+
+Return the JSON object only, no additional text or explanation.
+"""

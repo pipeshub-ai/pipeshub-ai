@@ -127,4 +127,27 @@ def seed_visible_tools_from_history(context: AgentContext) -> "Middleware[TurnCo
     return _middleware
 
 
-__all__ = ["conversation_enrichment", "seed_visible_tools_from_history"]
+def sync_visible_tools_for_prompt(context: AgentContext) -> "Middleware[TurnContext]":
+    """PRE_TURN: copy ``RunScope.visible_tools`` into ``tool_state`` for the
+    prompt builder.
+
+    Must register *after* hooks that grow visibility (history seed, CODE_FILE
+    unlock) so the lazy "must load" block matches schemas already bound.
+    """
+    from app.agents.agent_loop.prompt_builder import BOUND_TOOL_NAMES_KEY
+
+    async def _middleware(ctx: TurnContext, next_fn: "Next") -> None:
+        if ctx.scope is not None:
+            visible = ctx.scope.run.visible_tools
+            if visible is not None:
+                context.tool_state[BOUND_TOOL_NAMES_KEY] = sorted(visible)
+        await next_fn()
+
+    return _middleware
+
+
+__all__ = [
+    "conversation_enrichment",
+    "seed_visible_tools_from_history",
+    "sync_visible_tools_for_prompt",
+]
