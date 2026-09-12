@@ -32,7 +32,8 @@
     "electron:build:win": "node scripts/electron/build.mjs win",
     "electron:build:linux": "node scripts/electron/build.mjs linux",
     "electron:build:all": "node scripts/electron/build.mjs all",
-    "test:electron:local-sync": "npm run build:electron:typescript && node --test electron/compile/local-sync/__tests__/*.test.js"
+    "_comment:test:electron:local-sync": "--test-concurrency=1 is required, not a preference: these tests drive real fs watchers against real temp directories, and node --test runs files in parallel by default, which makes them interfere and hang.",
+    "test:electron:local-sync": "npm run build:electron:typescript && node --test --test-concurrency=1 electron/compile/local-sync/__tests__/*.test.js"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.3",
