@@ -65,10 +65,21 @@ def render(rec: dict, fx: dict) -> str:
         f"# {rec['title']}",
         "",
         f"**System:** {SYSTEM_LABEL[c['system']]} · **Type:** {TYPE_LABEL[rec['type']]} · **In:** {c['name']}",
-        f"**Author:** {author} · **Date:** {rec['created'][:10]}" + (f" · **Link:** {rec['web_url']}" if rec.get("web_url") else ""),
+        f"**Author:** {author} · **Date:** {str(rec['created'])[:10]}" + (f" · **Link:** {rec['web_url']}" if rec.get("web_url") else ""),
         "",
     ]
     return "\n".join(head) + rec["body"].rstrip() + "\n"
+
+
+def render_thread(t: dict, msgs: list[dict], fx: dict) -> str:
+    people = {p["id"]: p for p in fx["people"]}
+    containers = {c["id"]: c for c in fx["containers"]}
+    c = containers[t["container"]]
+    out = [f"# {t['title']}", "", f"**System:** Slack · **Type:** Thread · **In:** {c['name']}", ""]
+    for m in msgs:
+        out.append(f"**{people[m['author']]['name']}** · {str(m['created'])[:16].replace('T', ' ')}")
+        out.append(m["body"].rstrip()); out.append("")
+    return "\n".join(out)
 
 
 def group_of(rec: dict, fx: dict) -> str:
@@ -108,19 +119,40 @@ def wait_indexed(ph: Pipeshub, probe_query: str, expect_substr: str, timeout: in
     sys.exit("indexing did not complete in time")
 
 
-def ask(ph: Pipeshub, question: str) -> tuple[str, list[str]]:
+def iter_sse(resp: httpx.Response):
+    """Yield (event, data) pairs from a text/event-stream response."""
+    event, data = None, []
+    for line in resp.iter_lines():
+        if line == "":
+            if event or data:
+                yield event, "\n".join(data)
+            event, data = None, []
+        elif line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:"):
+            data.append(line[5:].lstrip())
+
+
+def ask(origin: str, jwt: str, question: str) -> tuple[str, list[str]]:
+    """Ask via the raw SSE endpoint; the generated SDK's stream parser mis-types `data` (spec bug)."""
     answer, cited = [], []
-    with ph.conversations.stream_chat(query=question, chat_mode="internal_search") as stream:
-        for ev in stream:
-            payload = json.loads(ev.data) if ev.data else {}
-            if ev.event == "TEXT_MESSAGE_CONTENT":
+    with httpx.Client(base_url=origin, timeout=180) as c, c.stream(
+        "POST", "/api/v1/conversations/stream",
+        json={"query": question, "chatMode": "internal_search"},
+        headers={"Authorization": f"Bearer {jwt}", "Accept": "text/event-stream"},
+    ) as resp:
+        resp.raise_for_status()
+        for event, raw in iter_sse(resp):
+            try: payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError: payload = {}
+            if event == "TEXT_MESSAGE_CONTENT":
                 answer.append(payload.get("delta", ""))
-            elif ev.event == "RUN_FINISHED":
+            elif event == "RUN_FINISHED":
                 msgs = ((payload.get("result") or {}).get("conversation") or {}).get("messages") or []
-                for c in (msgs[-1].get("citations") if msgs else None) or []:
-                    meta = c.get("metadata") or {}
-                    cited.append(meta.get("recordName") or meta.get("record_name") or "")
-            elif ev.event == "RUN_ERROR":
+                for c_ in (msgs[-1].get("citations") if msgs else None) or []:
+                    meta = (c_.get("citationData") or {}).get("metadata") or c_.get("metadata") or {}
+                    cited.append(meta.get("recordName") or "")
+            elif event == "RUN_ERROR":
                 return f"ERROR: {payload.get('message')}", []
     return "".join(answer), cited
 
@@ -148,13 +180,23 @@ def main() -> None:
         n = safe_name(r["title"])
         name_to_id[n] = r["id"]
         if r.get("thread"): thread_of[r["id"]] = r["thread"]
+    for t in fx.get("threads", []):
+        name_to_id[safe_name(t["title"])] = t["id"]
 
     with Pipeshub(server_url=f"{origin}/api/v1", security=models.Security(bearer_auth=jwt)) as ph:
         if not args.skip_upload:
             shared, restricted = [], []
+            threads = {t["id"]: t for t in fx.get("threads", [])}
+            by_thread: dict[str, list[dict]] = defaultdict(list)
             for r in fx["records"]:
+                if r.get("thread") and r["thread"] in threads:
+                    by_thread[r["thread"]].append(r); continue
                 item = (safe_name(r["title"]) + ".md", render(r, fx))
                 (restricted if group_of(r, fx) == "pricing-committee" else shared).append(item)
+            for tid, msgs in by_thread.items():
+                t = threads[tid]; msgs.sort(key=lambda m: str(m["created"]))
+                item = (safe_name(t["title"]) + ".md", render_thread(t, msgs, fx))
+                (restricted if group_of(msgs[0], fx) == "pricing-committee" else shared).append(item)
             if not args.skip_shared:
                 print(f"== uploading {len(shared)} shared records")
                 kb_shared = ensure_kb(ph, "Acme Corp (shared)")
@@ -178,27 +220,34 @@ def main() -> None:
             print(f"\n== {q['id']} [{persona}] {q['ask']}")
             for i in range(args.runs):
                 t0 = time.time()
-                answer, cited_names = ask(ph, q["ask"])
+                answer, cited_names = ask(origin, jwt, q["ask"])
                 cited_ids = set()
                 for n in cited_names:
                     key = re.sub(r"\.md$", "", n)
                     rid = name_to_id.get(key)
                     if rid:
                         cited_ids.add(rid); cited_ids.add(thread_of.get(rid, rid))
-                missing = [x for x in q.get("must_cite", []) if x not in cited_ids]
+                must = q.get("must_cite", [])
+                missing = [x for x in must if x not in cited_ids]
+                enough = (len(must) - len(missing)) >= q.get("min_cite", len(must))
                 any_of = q.get("must_cite_any_of")
-                any_ok = (not any_of) or any(x in cited_ids for x in any_of)
+                any_of2 = q.get("must_cite_any_of_2")
+                any_ok = ((not any_of) or any(x in cited_ids for x in any_of)) and ((not any_of2) or any(x in cited_ids for x in any_of2))
                 forbidden = [x for x in q.get("must_not_cite", []) if x in cited_ids]
+                mention = q.get("answer_must_mention", [])
+                unmentioned = [m for m in mention if m.lower() not in answer.lower()]
                 if expect == "none":
-                    ok = not cited_ids
-                    verdict = "PASS" if ok else f"FAIL (leaked: {sorted(cited_ids)})"
+                    leaked = [x for x in q.get("restricted", must) if x in cited_ids]
+                    ok = not leaked
+                    verdict = "PASS" if ok else f"FAIL (leaked restricted: {leaked})"
                 else:
-                    ok = not missing and any_ok and not forbidden
-                    verdict = "PASS" if ok else f"FAIL (missing={missing} any_of_ok={any_ok} forbidden={forbidden})"
+                    ok = enough and any_ok and not forbidden and not unmentioned
+                    full = "full" if not missing else f"{len(must)-len(missing)}/{len(must)}"
+                    verdict = f"PASS ({full})" if ok else f"FAIL (missing={missing} any_of_ok={any_ok} forbidden={forbidden} unmentioned={unmentioned})"
                 passes += ok
                 print(f"   run {i+1}: {verdict}  [{time.time()-t0:.0f}s]  cited={sorted(cited_ids - set(thread_of.values()))}")
                 if not ok:
-                    print("      answer:", answer[:300].replace("\n", " "))
+                    print("      answer:", answer[:900].replace("\n", " "))
             summary.append((q["id"], persona, passes, args.runs))
 
         print("\n== summary")
