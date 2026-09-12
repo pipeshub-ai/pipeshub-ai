@@ -8,6 +8,7 @@ that has not changed.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import logging
@@ -15,8 +16,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat, ImageMetadata
+from app.models.blocks import (
+    Block,
+    BlocksContainer,
+    BlockType,
+    DataFormat,
+    ImageMetadata,
+)
 from app.modules.transformers.image_description import (
+    DESCRIPTION_TIMEOUT_ENV_VAR,
     MAX_IMAGES_ENV_VAR,
     ImageDescriber,
     harvest_descriptions,
@@ -152,6 +160,63 @@ class TestAnnotate:
         with patcher:
             assert await describer.annotate(container) == 0
         assert container.blocks[0].image_metadata is None
+
+
+class TestVisionCallTimeout:
+    """A vision call holds the record's index permit for as long as it runs."""
+
+    async def test_a_hung_vision_call_does_not_hold_the_record(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(DESCRIPTION_TIMEOUT_ENV_VAR, "1")
+
+        async def never_returns(*_args, **_kwargs) -> None:
+            await asyncio.sleep(3600)
+
+        describer, vlm, patcher = _describer()
+        vlm.ainvoke = AsyncMock(side_effect=never_returns)
+        container = _container(_image_block(0), _image_block(1))
+
+        with patcher:
+            written = await asyncio.wait_for(describer.annotate(container), timeout=10)
+
+        assert written == 0
+        assert all(b.image_metadata is None for b in container.blocks)
+
+    async def test_a_timed_out_image_does_not_cost_the_others_their_prose(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(DESCRIPTION_TIMEOUT_ENV_VAR, "1")
+        calls = {"n": 0}
+
+        async def one_hangs(*_args, **_kwargs) -> MagicMock:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                await asyncio.sleep(3600)
+            return MagicMock(content="A bar chart of Q3 revenue")
+
+        describer, vlm, patcher = _describer()
+        vlm.ainvoke = AsyncMock(side_effect=one_hangs)
+        container = _container(_image_block(0), _image_block(1))
+
+        with patcher:
+            written = await asyncio.wait_for(describer.annotate(container), timeout=10)
+
+        assert written == 1
+
+    def test_the_timeout_is_operator_tunable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(DESCRIPTION_TIMEOUT_ENV_VAR, "45")
+        assert ImageDescriber._description_timeout() == 45
+
+    def test_a_malformed_timeout_falls_back_to_the_default(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.modules.transformers.image_description import (
+            DEFAULT_DESCRIPTION_TIMEOUT_S,
+        )
+
+        monkeypatch.setenv(DESCRIPTION_TIMEOUT_ENV_VAR, "not-a-number")
+        assert ImageDescriber._description_timeout() == DEFAULT_DESCRIPTION_TIMEOUT_S
 
 
 class TestPerRecordCap:

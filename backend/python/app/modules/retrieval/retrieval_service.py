@@ -2,6 +2,7 @@ import asyncio
 import os
 import time
 import traceback
+from collections import OrderedDict
 from typing import Any
 
 from langchain_core.documents import Document
@@ -52,14 +53,26 @@ from app.utils.chat_helpers import (
 )
 from app.utils.image_utils import get_extension_from_mimetype
 
-# OPTIMIZATION: User data cache with TTL
-_user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
+# OPTIMIZATION: User data cache with TTL.
+# Insertion-ordered so eviction is O(1) from the front: a plain dict forced a
+# full scan for the oldest timestamp on every insert past the cap, which is the
+# hot path once a busy org exceeds MAX_USER_CACHE_SIZE.
+_user_cache: "OrderedDict[str, tuple]" = OrderedDict()  # {user_id: (user_data, timestamp)}
 USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 
 # Applied when a caller passes no limit at all. Matches `search_with_filters`'s
 # own default so the None path and the omitted path retrieve the same amount.
 DEFAULT_SEARCH_LIMIT = 20
+
+# Upper bound on how many chunks one search may pull back. The published
+# contract already promises it -- `SemanticSearchRequest.limit` in
+# `pipeshub-openapi.yaml` declares `maximum: 100` -- but nothing enforced it:
+# the limit reaches the provider multiplied (`req.limit * 2` in
+# qdrant/utils.py) and every hit costs a graph lookup, a blob read and LLM
+# context. Enforced here as well as at the HTTP edge because agents and
+# in-product tools call `search_with_filters` directly.
+MAX_SEARCH_LIMIT = 100
 
 _RETRIEVAL_EMBED_MAX_RETRIES = 3
 
@@ -376,6 +389,14 @@ class RetrievalService:
             # retrieved context and no visible error.
             if limit is None:
                 limit = DEFAULT_SEARCH_LIMIT
+            elif limit < 1:
+                limit = DEFAULT_SEARCH_LIMIT
+            elif limit > MAX_SEARCH_LIMIT:
+                self.logger.warning(
+                    "Requested search limit %d exceeds the maximum of %d; clamping",
+                    limit, MAX_SEARCH_LIMIT,
+                )
+                limit = MAX_SEARCH_LIMIT
 
             filter_groups = filter_groups or {}
 
@@ -408,14 +429,35 @@ class RetrievalService:
             # Graph key for KH permission_role checks (Location trails).
             user_key = (user.get("_key") or user.get("id")) if user else None
 
-            if virtual_record_ids_from_tool:
-                filter  = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id,"virtualRecordId": virtual_record_ids_from_tool},
+            # A tool-supplied id list narrows the search; it must never widen
+            # it. Intersecting here keeps the vector query itself inside the
+            # permission set, so an id the caller resolved from somewhere the
+            # graph does not grant cannot reach the embedding store at all.
+            # The enrichment loop below already drops such hits, but only
+            # after their chunk text has been read out of the index.
+            # `is not None`, not truthiness: a tool that resolved zero records
+            # asked to search nothing, and falling through to the else branch
+            # would answer it with the user's entire corpus.
+            if virtual_record_ids_from_tool is not None:
+                scoped_virtual_record_ids = [
+                    vid for vid in virtual_record_ids_from_tool
+                    if vid in accessible_virtual_id_to_record_id
+                ]
+                if not scoped_virtual_record_ids:
+                    self.logger.warning(
+                        "Tool supplied %d virtualRecordId(s), none accessible to user %s",
+                        len(virtual_record_ids_from_tool), user_id,
+                    )
+                    return self._create_empty_response(
+                        ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE,
+                        Status.ACCESSIBLE_RECORDS_NOT_FOUND,
                     )
             else:
-                filter = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id, "virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
-                    )
+                scoped_virtual_record_ids = list(accessible_virtual_id_to_record_id.keys())
+
+            filter = await self.vector_db_service.filter_collection(
+                must={"orgId": org_id, "virtualRecordId": scoped_virtual_record_ids}
+            )
             search_results = await self._execute_parallel_searches(
                 queries, filter, limit, org_id, user_id
             )
@@ -802,6 +844,7 @@ class RetrievalService:
             user_data, timestamp = _user_cache[user_id]
             if time.time() - timestamp < USER_CACHE_TTL:
                 self.logger.debug(f"User cache hit for user_id: {user_id}")
+                _user_cache.move_to_end(user_id)
                 return user_data
             else:
                 # Cache expired, remove it
@@ -811,14 +854,20 @@ class RetrievalService:
         self.logger.debug(f"User cache miss for user_id: {user_id}")
         user_data = await self.graph_provider.get_user_by_user_id(user_id)
 
-        # Store in cache
+        # A miss is not a fact worth remembering: the lookup misses while a
+        # user is still being provisioned, and caching that would keep them
+        # unresolvable -- no email substitution in Gmail webUrls, no user_key
+        # for the Location permission trails -- for the whole TTL after they
+        # exist. Failures re-query; hits are what the cache is for.
+        if user_data is None:
+            return None
+
         _user_cache[user_id] = (user_data, time.time())
 
         # Simple cache size management - keep only last MAX_USER_CACHE_SIZE users
         if len(_user_cache) > MAX_USER_CACHE_SIZE:
-            # Remove oldest entry
-            oldest_key = min(_user_cache.keys(), key=lambda k: _user_cache[k][1])
-            del _user_cache[oldest_key]
+            # Evict least-recently-used, which is the front of the ordering.
+            _user_cache.popitem(last=False)
 
         return user_data
 

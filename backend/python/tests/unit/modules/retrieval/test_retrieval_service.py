@@ -11,6 +11,7 @@ from app.exceptions.fastapi_responses import Status
 from app.modules.retrieval.retrieval_service import (
     ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE,
     DEFAULT_SEARCH_LIMIT,
+    MAX_SEARCH_LIMIT,
 )
 
 # ---------------------------------------------------------------------------
@@ -892,6 +893,41 @@ class TestGetUserCached:
         assert mock_graph_provider.get_user_by_user_id.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_miss_is_not_cached(self, retrieval_service, mock_graph_provider) -> None:
+        """A user that does not resolve yet must not be remembered as absent:
+        caching the miss keeps them unresolvable for the whole TTL after they
+        are provisioned."""
+        import app.modules.retrieval.retrieval_service as mod
+
+        mock_graph_provider.get_user_by_user_id.return_value = None
+        assert await retrieval_service._get_user_cached("pending") is None
+        assert "pending" not in mod._user_cache
+
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "now@test.com"}
+        result = await retrieval_service._get_user_cached("pending")
+        assert result["email"] == "now@test.com"
+        assert mock_graph_provider.get_user_by_user_id.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_eviction_drops_the_least_recently_used_entry(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        import app.modules.retrieval.retrieval_service as mod
+
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "t@test.com"}
+        for i in range(mod.MAX_USER_CACHE_SIZE):
+            mod._user_cache[f"user_{i}"] = ({"email": f"u{i}@test.com"}, time.time())
+
+        # Touch the oldest insertion so it is no longer the eviction candidate.
+        await retrieval_service._get_user_cached("user_0")
+
+        await retrieval_service._get_user_cached("new_user")
+
+        assert len(mod._user_cache) == mod.MAX_USER_CACHE_SIZE
+        assert "user_0" in mod._user_cache
+        assert "user_1" not in mod._user_cache
+
+    @pytest.mark.asyncio
     async def test_cache_size_limit(self, retrieval_service, mock_graph_provider):
         import app.modules.retrieval.retrieval_service as mod
         mock_graph_provider.get_user_by_user_id.return_value = {"email": "test@test.com"}
@@ -965,6 +1001,94 @@ class TestSearchWithFilters:
         )
 
         assert retrieval_service._execute_parallel_searches.await_args.args[2] == 7
+
+    @pytest.mark.asyncio
+    async def test_limit_above_the_maximum_is_clamped(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """Agents and in-product tools call this directly, so the bound cannot
+        live only in the route's Pydantic model."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1", limit=1_000_000
+        )
+
+        assert retrieval_service._execute_parallel_searches.await_args.args[2] == MAX_SEARCH_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_non_positive_limit_falls_back_to_the_default(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1", limit=0
+        )
+
+        assert retrieval_service._execute_parallel_searches.await_args.args[2] == DEFAULT_SEARCH_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_tool_supplied_ids_are_intersected_with_the_permission_set(
+        self, retrieval_service, mock_graph_provider, mock_vector_db_service
+    ) -> None:
+        """A tool-supplied id list narrows the search; it must never widen it.
+
+        Only `vr1` is accessible, so the inaccessible `vr2` must not reach the
+        vector filter -- otherwise its chunk text is read out of the index and
+        only discarded later, by the required-fields filter.
+        """
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        await retrieval_service.search_with_filters(
+            queries=["test"],
+            user_id="u1",
+            org_id="o1",
+            virtual_record_ids_from_tool=["vr1", "vr2"],
+        )
+
+        must = mock_vector_db_service.filter_collection.await_args.kwargs["must"]
+        assert must["virtualRecordId"] == ["vr1"]
+
+    @pytest.mark.asyncio
+    async def test_tool_supplied_ids_none_accessible_returns_not_found(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"],
+            user_id="u1",
+            org_id="o1",
+            virtual_record_ids_from_tool=["someone-elses-record"],
+        )
+
+        assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
+        retrieval_service._execute_parallel_searches.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_tool_list_searches_nothing_not_everything(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """A tool that resolved zero records asked to search nothing. Falling
+        through to the unscoped branch would answer it with the user's whole
+        corpus."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"],
+            user_id="u1",
+            org_id="o1",
+            virtual_record_ids_from_tool=[],
+        )
+
+        assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
+        retrieval_service._execute_parallel_searches.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_search_results(

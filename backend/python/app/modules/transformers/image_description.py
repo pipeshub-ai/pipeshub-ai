@@ -53,6 +53,15 @@ MAX_IMAGES_ENV_VAR = "PIPESHUB_MAX_DESCRIBED_IMAGES_PER_RECORD"
 # Matches the concurrency the embedding path already uses for vision calls.
 _CONCURRENCY = 10
 
+# A vision call that never returns would otherwise hold the record's index
+# permit until RECORD_PROCESSING_TIMEOUT (1800s). With INDEX_HEAVY warm-starting
+# at 3-4 on a small host, a handful of such records stalls heavy indexing
+# outright, so each call is bounded the way the embedding batches already are
+# (`vectorstore._embed_documents_with_retry`). A timed-out image is skipped,
+# not fatal -- same disposition as any other failed description.
+DEFAULT_DESCRIPTION_TIMEOUT_S = 120
+DESCRIPTION_TIMEOUT_ENV_VAR = "PIPESHUB_IMAGE_DESCRIPTION_TIMEOUT_S"
+
 # The prompt asks for a full transcription of any text in the image, so a
 # dense figure legitimately produces a lot; this only guards against a model
 # that runs away, and is well above what a real figure yields.
@@ -207,10 +216,20 @@ class ImageDescriber:
     ) -> int:
         semaphore = asyncio.Semaphore(_CONCURRENCY)
 
+        timeout_s = self._description_timeout()
+
         async def describe(block: "Block", uri: str) -> bool:
             async with semaphore:
                 try:
-                    description = await self._describe_one(uri, vlm)
+                    description = await asyncio.wait_for(
+                        self._describe_one(uri, vlm), timeout=timeout_s,
+                    )
+                except TimeoutError:
+                    self.logger.warning(
+                        "Vision call for image block %s exceeded %ss; skipping its description",
+                        block.index, timeout_s,
+                    )
+                    return False
                 except Exception as exc:
                     # One unreadable image must not cost the record its other
                     # descriptions, so this is logged and skipped, not raised.
@@ -225,6 +244,12 @@ class ImageDescriber:
             *(describe(block, uri) for block, uri in pending), return_exceptions=False,
         )
         return sum(1 for ok in results if ok)
+
+    @staticmethod
+    def _description_timeout() -> int:
+        return env_int(
+            DESCRIPTION_TIMEOUT_ENV_VAR, DEFAULT_DESCRIPTION_TIMEOUT_S, lo=1, hi=1_800,
+        ) or DEFAULT_DESCRIPTION_TIMEOUT_S
 
     async def _describe_one(self, uri: str, vlm: "BaseChatModel") -> str:
         from langchain_core.messages import HumanMessage
@@ -266,7 +291,9 @@ class ImageDescriber:
 
 
 __all__ = [
+    "DEFAULT_DESCRIPTION_TIMEOUT_S",
     "DEFAULT_MAX_IMAGES_PER_RECORD",
+    "DESCRIPTION_TIMEOUT_ENV_VAR",
     "MAX_IMAGES_ENV_VAR",
     "ImageDescriber",
     "harvest_descriptions",
