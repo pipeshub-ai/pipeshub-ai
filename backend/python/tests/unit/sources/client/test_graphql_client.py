@@ -175,9 +175,10 @@ class TestGraphQLClientInit:
         assert client.timeout == 60
 
 
-def _make_aiohttp_mocks(response_data):
+def _make_aiohttp_mocks(response_data, status=200):
     """Create properly nested aiohttp mock objects for ClientSession + post context managers."""
     mock_response = MagicMock()
+    mock_response.status = status
     mock_response.json = AsyncMock(return_value=response_data)
 
     # session.post(...) returns an async context manager

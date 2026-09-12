@@ -2,7 +2,7 @@
 
 Covers:
 - stream_record dispatch by record type (TICKET/PULL_REQUEST/FILE/CODE_FILE).
-- Unsupported record type raises ValueError.
+- Unsupported record type raises a 400.
 - reindex_records: routes TICKET/PULL_REQUEST through the reindex-check hooks
   and republishes the rest via reindex_existing_records.
 """
@@ -11,7 +11,9 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.github_teams.streaming import StreamingHelper
 from app.models.entities import CodeFileRecord, FileRecord, PullRequestRecord, Record, TicketRecord
 
@@ -102,8 +104,8 @@ class TestStreamRecordDispatch:
 
         response = await helper.stream_record(record)
 
-        assert seen == [record]
         body = b"".join([chunk async for chunk in response.body_iterator])
+        assert seen == [record]
         assert body == b"hello"
 
     async def test_code_file_record_streams_via_repos(self) -> None:
@@ -122,16 +124,28 @@ class TestStreamRecordDispatch:
     async def test_unsupported_record_type_raises(self) -> None:
         c = make_mock_connector()
         helper = StreamingHelper(c)
-        with pytest.raises(ValueError):
+        with pytest.raises(HTTPException) as exc_info:
             await helper.stream_record(_record("COMMENT"))
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
     async def test_wrong_class_for_code_file_type_raises(self) -> None:
         """A base Record with record_type=CODE_FILE (not a real CodeFileRecord)
         must fail loudly rather than silently streaming nothing."""
         c = make_mock_connector()
         helper = StreamingHelper(c)
-        with pytest.raises(ValueError):
+        with pytest.raises(HTTPException) as exc_info:
             await helper.stream_record(_record("CODE_FILE"))
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+
+    async def test_uninitialised_data_source_reports_connector_not_ready(self) -> None:
+        """init() returns False rather than raising, so a dead connector must
+        surface as 409 — not the 500 an AttributeError would produce."""
+        c = make_mock_connector()
+        c.data_source = None
+        helper = StreamingHelper(c)
+        with pytest.raises(HTTPException) as exc_info:
+            await helper.stream_record(_record("TICKET"))
+        assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
 
 
 def _ticket_record(**kwargs: object) -> TicketRecord:
@@ -256,5 +270,7 @@ class TestStreamRecordTypeGuards:
     async def test_file_type_with_base_record_raises(self) -> None:
         c = make_mock_connector()
         helper = StreamingHelper(c)
-        with pytest.raises(ValueError, match="Expected FileRecord"):
+        with pytest.raises(HTTPException) as exc_info:
             await helper.stream_record(_record("FILE"))
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert "Expected FileRecord" in exc_info.value.detail

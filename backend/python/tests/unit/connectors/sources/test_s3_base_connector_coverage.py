@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.connector_builder import ConnectorScope
@@ -30,11 +31,12 @@ from app.models.entities import RecordType, User
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -593,8 +595,9 @@ class TestGetSignedUrl:
     async def test_not_initialized(self, s3_connector):
         s3_connector.data_source = None
         record = MagicMock()
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_bucket_name(self, s3_connector):
@@ -602,8 +605,9 @@ class TestGetSignedUrl:
         record = MagicMock()
         record.external_record_group_id = None
         record.id = "rec-1"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_no_external_record_id(self, s3_connector):
@@ -612,8 +616,9 @@ class TestGetSignedUrl:
         record.external_record_group_id = "mybucket"
         record.external_record_id = None
         record.id = "rec-1"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_success(self, s3_connector):
@@ -634,7 +639,7 @@ class TestGetSignedUrl:
     async def test_access_denied(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_make_response(False, error="AccessDenied")
+            return_value=_make_response(False, error="AccessDenied", status_code=403)
         )
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         record = MagicMock()
@@ -642,14 +647,15 @@ class TestGetSignedUrl:
         record.external_record_id = "mybucket/path/file.txt"
         record.id = "rec-1"
         record.record_name = "file.txt"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_no_such_key(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_make_response(False, error="NoSuchKey")
+            return_value=_make_response(False, error="NoSuchKey", status_code=404)
         )
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         record = MagicMock()
@@ -657,8 +663,9 @@ class TestGetSignedUrl:
         record.external_record_id = "mybucket/path/file.txt"
         record.id = "rec-1"
         record.record_name = "file.txt"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_key_without_bucket_prefix(self, s3_connector):

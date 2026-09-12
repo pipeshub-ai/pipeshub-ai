@@ -85,6 +85,70 @@ class TestBaseConnectorAccessors:
         assert c.get_connector_id() == "conn-1"
 
 
+class TestBaseConnectorDisplayName:
+    """display_name feeds user-facing error messages that tell the user to go
+    to Connector Settings, so it must match the name shown there."""
+
+    def _make(self, metadata=None, connector_name=None):
+        c = TestBaseConnectorAccessors()._make_connector()
+        if metadata is not None:
+            type(c)._connector_metadata = metadata
+        elif hasattr(type(c), "_connector_metadata"):
+            del type(c)._connector_metadata
+        if connector_name is not None:
+            c.connector_name = connector_name
+        return c
+
+    def teardown_method(self):
+        if hasattr(ConcreteConnector, "_connector_metadata"):
+            del ConcreteConnector._connector_metadata
+
+    def test_prefers_the_connector_builder_name(self):
+        c = self._make(metadata={"name": "Dropbox Personal"})
+        assert c.display_name == "Dropbox Personal"
+
+    def test_instance_name_wins_over_the_type_name(self):
+        """Collections has one connector instance per knowledge base, so the
+        type name alone cannot say which one failed."""
+        c = self._make(metadata={"name": "Collections"})
+        c.instance_name = "Engineering Docs"
+        assert c.display_name == "Engineering Docs"
+
+    def test_falls_back_to_type_name_when_instance_name_is_unset(self):
+        c = self._make(metadata={"name": "Collections"})
+        assert c.instance_name is None
+        assert c.display_name == "Collections"
+
+    def test_blank_instance_name_does_not_shadow_the_type_name(self):
+        c = self._make(metadata={"name": "Box"})
+        c.instance_name = ""
+        assert c.display_name == "Box"
+
+    def test_resolves_per_subclass(self):
+        """S3 and MinIO share a base class; each must report its own name."""
+        c = self._make(metadata={"name": "MinIO"})
+        assert c.display_name == "MinIO"
+
+    def test_falls_back_to_enum_value_not_repr(self):
+        """`Connectors` is not a str-Enum, so str() would yield 'Connectors.S3'."""
+        from app.config.constants.arangodb import Connectors
+
+        c = self._make(metadata=None, connector_name=Connectors.S3)
+        assert c.display_name == "S3"
+        assert "Connectors." not in c.display_name
+
+    def test_falls_back_to_plain_string_connector_name(self):
+        c = self._make(metadata=None, connector_name="Github")
+        assert c.display_name == "Github"
+
+    def test_never_raises_on_a_half_built_connector(self):
+        """display_name is called from error handlers; if it raised it would
+        mask the failure being reported (as it did for connectors constructed
+        without BaseConnector.__init__)."""
+        bare = ConcreteConnector.__new__(ConcreteConnector)
+        assert bare.display_name == "the source"
+
+
 class TestBaseConnectorNotifyError:
     @pytest.mark.asyncio
     async def test_notify_error_schedules_publish_error(self):

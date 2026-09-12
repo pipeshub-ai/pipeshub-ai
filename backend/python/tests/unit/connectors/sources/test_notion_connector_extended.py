@@ -101,10 +101,11 @@ def _make_connector():
     return c
 
 
-def _make_api_response(success=True, data=None, error=None):
+def _make_api_response(success=True, data=None, error=None, status=None):
     resp = MagicMock()
     resp.success = success
     resp.error = error
+    resp.status_code = status
     if data is not None:
         resp.data = MagicMock()
         resp.data.json.return_value = data
@@ -243,8 +244,10 @@ class TestGetSignedUrl:
         c.data_source = None
         record = MagicMock()
         record.external_record_id = "block-1"
-        result = await c.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await c.get_signed_url(record)
+        assert exc_info.value.status_code == 409
+        assert "not connected" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_comment_attachment_prefix(self):
@@ -273,8 +276,10 @@ class TestGetSignedUrl:
         c._get_block_file_url = AsyncMock(side_effect=Exception("API error"))
         record = MagicMock()
         record.external_record_id = "block-123"
-        with pytest.raises(Exception, match="API error"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Could not retrieve this item. Please try again."
 
 
 # ===========================================================================
@@ -325,13 +330,16 @@ class TestGetCommentAttachmentUrl:
         c = _make_connector()
         ds = _make_datasource_mock()
         c._get_fresh_datasource = AsyncMock(return_value=ds)
-        ds.retrieve_comment = AsyncMock(return_value=_make_api_response(False, error="not found"))
+        ds.retrieve_comment = AsyncMock(
+            return_value=_make_api_response(False, error="not found", status=404)
+        )
 
         record = MagicMock()
         record.external_record_id = "ca_comment1_file.pdf"
         record.signed_url = "fallback"
-        result = await c._get_comment_attachment_url(record)
-        assert result == "fallback"
+        with pytest.raises(HTTPException) as exc_info:
+            await c._get_comment_attachment_url(record)
+        assert exc_info.value.status_code == 404
 
 
 # ===========================================================================
@@ -392,13 +400,14 @@ class TestGetBlockFileUrl:
         c = _make_connector()
         ds = _make_datasource_mock()
         c._get_fresh_datasource = AsyncMock(return_value=ds)
-        ds.retrieve_block = AsyncMock(return_value=_make_api_response(False))
+        ds.retrieve_block = AsyncMock(return_value=_make_api_response(False, status=401))
 
         record = MagicMock()
         record.external_record_id = "block-fail"
         record.signed_url = "fallback"
-        result = await c._get_block_file_url(record)
-        assert result == "fallback"
+        with pytest.raises(HTTPException) as exc_info:
+            await c._get_block_file_url(record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_url_in_block(self):

@@ -196,8 +196,10 @@ class MariaDBClient:
                         except Exception:
                             pass
         except Exception as e:
+            # Re-raised as-is: the driver's errno/sqlstate is what the streaming
+            # path maps to a status, and a RuntimeError wrapper destroys it.
             logger.error(f"🔧 [MariaDBClient] Query execution failed: {e}")
-            raise RuntimeError(f"Query execution failed: {e}") from e
+            raise
 
     async def execute_query_raw(
         self,
@@ -251,7 +253,7 @@ class MariaDBClient:
                             pass
         except Exception as e:
             logger.error(f"🔧 [MariaDBClient] Query execution failed: {e}")
-            raise RuntimeError(f"Query execution failed: {e}") from e
+            raise
 
     def get_connection_info(self) -> dict[str, Any]:
         """Get connection information."""

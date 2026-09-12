@@ -20,9 +20,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from fastapi import HTTPException
+
 from app.sources.external.github.github_async import GhObject
 
 from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.models.blocks import (
     BlockGroup,
@@ -284,18 +288,33 @@ class PullRequestsSync:
         c = self.c
         external_group_id: str = getattr(record, "external_record_group_id", None) or ""
         if not external_group_id:
-            raise Exception("Repository id not found on pull request record.")
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value,
+                "Repository id not found on pull request record.",
+            )
         repo_id = int(external_group_id.split("-")[0])
         pr_number = int(str(record.external_record_id).rsplit("/", 1)[-1])
 
         repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
         if not repo_res.success or not repo_res.data:
-            raise Exception(f"Failed to resolve repo id={repo_id} for record {record.external_record_id}: {repo_res.error}")
+            raise_for_stream_fetch(
+                success=repo_res.success,
+                has_payload=bool(repo_res.data),
+                connector=c.display_name,
+                status=repo_res.status_code,
+                message=repo_res.error,
+            )
         owner, repo_name = repo_res.data.owner.login, repo_res.data.name
 
         pr_res = await c.runtime.ds_call(c.data_source.get_pull, owner, repo_name, pr_number)
         if not pr_res.success or not pr_res.data:
-            raise Exception(f"Failed to fetch PR for record {record.external_record_id}: {pr_res.error}")
+            raise_for_stream_fetch(
+                success=pr_res.success,
+                has_payload=bool(pr_res.data),
+                connector=c.display_name,
+                status=pr_res.status_code,
+                message=pr_res.error,
+            )
         pull_request = pr_res.data
 
         markdown_raw: str = getattr(pull_request, "body", "") or ""

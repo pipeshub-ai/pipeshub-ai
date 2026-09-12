@@ -90,6 +90,12 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    to_stream_error,
+)
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
@@ -1507,16 +1513,16 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     )
                 except HttpError as http_error:
                     self.logger.error(f"HTTP error during {error_context}: {str(http_error)}")
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Error during {error_context}: {str(http_error)}",
-                    )
+                    # HttpError carries Drive's own status on .resp.status —
+                    # mapping it is what tells a revoked token from a deleted file.
+                    raise map_source_status(
+                        http_error.resp.status, connector=self.display_name
+                    ) from http_error
                 except Exception as chunk_error:
                     self.logger.error(f"Error during {error_context}: {str(chunk_error)}")
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Error during {error_context}",
-                    )
+                    raise to_stream_error(
+                        chunk_error, connector=self.display_name
+                    ) from chunk_error
 
                 buffer.seek(0)
                 content = buffer.read()
@@ -1530,10 +1536,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
             raise
         except Exception as stream_error:
             self.logger.error(f"Error in {error_context} stream: {str(stream_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error setting up {error_context} stream",
-            )
+            raise to_stream_error(
+                stream_error, connector=self.display_name
+            ) from stream_error
         finally:
             buffer.close()
 
@@ -1611,21 +1616,12 @@ class GoogleDriveIndividualConnector(BaseConnector):
             return await self.drive_data_source.execute(metadata_request.execute)
         except HttpError as http_error:
             self.logger.error(f"Error fetching file metadata from Drive: {str(http_error)}")
-            if http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail="File not found in Google Drive"
-                )
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error fetching file metadata: {str(http_error)}"
-            )
+            raise map_source_status(
+                http_error.resp.status, connector=self.display_name
+            ) from http_error
         except Exception as e:
             self.logger.error(f"Error getting file metadata: {str(e)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error getting file metadata: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     def get_signed_url(self, record: Record) -> Optional[str]:
         """Get a signed URL for a specific record."""
@@ -1654,6 +1650,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 )
 
             self.logger.info(f"Streaming Drive file: {file_id}, convertTo: {convertTo}")
+
+            if not self.google_client or not self.drive_data_source:
+                raise connector_not_ready(self.display_name)
 
             # Get drive service
             drive_service = self.google_client.get_client()
@@ -1740,9 +1739,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                                     self.logger.error(
                                         f"Google Workspace file cannot be downloaded for PDF conversion: {str(http_error)}"
                                     )
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.BAD_REQUEST.value,
-                                        detail="Google Workspace files (Sheets, Docs, Slides) cannot be converted to PDF using direct download. Please use the file's native export functionality.",
+                                    raise not_downloadable(
+                                        "Google Workspace files (Sheets, Docs, Slides) cannot be "
+                                        "converted to PDF using direct download. Please use the "
+                                        "file's native export functionality.",
+                                        connector=self.display_name,
                                     )
                         raise
 
@@ -1785,10 +1786,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Error streaming record: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error streaming file: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _create_personal_record_group(self, user_id: str, user_email: str, display_name: str, drive_id: str) -> RecordGroup:
         """Create a personal record group for the user."""

@@ -1137,7 +1137,8 @@ class ZammadDataSource:
             return ZammadResponse(
                 success=status_ok,
                 data=response.json() if response_text else None,
-                message="get_kb_answer succeeded" if status_ok else "get_kb_answer failed"
+                message="get_kb_answer succeeded" if status_ok else "get_kb_answer failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(
@@ -1181,13 +1182,15 @@ class ZammadDataSource:
                 return ZammadResponse(
                     success=True,
                     data=content_bytes,
-                    message="get_kb_answer_attachment succeeded"
+                    message="get_kb_answer_attachment succeeded",
+                    status_code=response.status,
                 )
             else:
                 return ZammadResponse(
                     success=False,
                     data=response.json() if response_text else None,
-                    message="get_kb_answer_attachment failed"
+                    message="get_kb_answer_attachment failed",
+                    status_code=response.status,
                 )
         except Exception as e:
             return ZammadResponse(
@@ -2053,7 +2056,8 @@ class ZammadDataSource:
             return ZammadResponse(
                 success=status_ok,
                 data=response.json() if response_text else None,
-                message="get_ticket succeeded" if status_ok else "get_ticket failed"
+                message="get_ticket succeeded" if status_ok else "get_ticket failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(
@@ -2699,13 +2703,15 @@ class ZammadDataSource:
                 return ZammadResponse(
                     success=True,
                     data=content_bytes,
-                    message="get_ticket_attachment succeeded"
+                    message="get_ticket_attachment succeeded",
+                    status_code=response.status,
                 )
             else:
                 return ZammadResponse(
                     success=False,
                     data=response.json() if response_text else None,
-                    message="get_ticket_attachment failed"
+                    message="get_ticket_attachment failed",
+                    status_code=response.status,
                 )
         except Exception as e:
             return ZammadResponse(

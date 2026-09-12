@@ -19,6 +19,10 @@ class S3Response:
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    # The error text is built from the source's own strings (which can carry the
+    # bucket and object key), so it cannot be substring-matched to classify a
+    # failure. The status is read off the botocore error instead.
+    status_code: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""

@@ -24,12 +24,23 @@ from app.config.constants.arangodb import (
     PermissionModel,
     RecordRelations,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.sql_stream_errors import (
+    to_sql_response_error,
+    to_sql_stream_error,
+)
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -59,6 +70,7 @@ from app.connectors.sources.snowflake.apps import SnowflakeApp
 from app.connectors.sources.snowflake.data_fetcher import (
     SnowflakeDataFetcher,
     SnowflakeDatabase,
+    SnowflakeFetchError,
     SnowflakeFile,
     SnowflakeSchema,
     SnowflakeStage,
@@ -81,9 +93,10 @@ from app.sources.client.snowflake.snowflake import (
     SnowflakeClient,
     SnowflakeOAuthConfig,
     SnowflakePATConfig,
+    SnowflakeResponse,
 )
 from app.sources.external.snowflake.snowflake_ import SnowflakeDataSource
-from app.utils.streaming import create_stream_record_response
+from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -116,6 +129,32 @@ SNOWFLAKE_OAUTH_BASE_URL = f"https://{SNOWFLAKE_ACCOUNT_IDENTIFIER}.snowflakecom
 
 # Row limit for streaming table data (prevents memory issues with large tables)
 SNOWFLAKE_TABLE_ROW_LIMIT = int(os.getenv("SNOWFLAKE_TABLE_ROW_LIMIT", "50"))
+
+# SQLSTATE classes that mean the statement never got a fair chance: connection
+# exception, insufficient resources, operator intervention (a suspended
+# warehouse, a tripped resource monitor, a statement killed mid-flight).
+_UNAVAILABLE_SQLSTATE_CLASSES = frozenset({"08", "53", "57"})
+
+
+def to_snowflake_stream_error(exc: BaseException, *, connector: str) -> HTTPException:
+    """Map a Snowflake streaming failure, preferring SQLSTATE over HTTP status.
+
+    The SQL API returns HTTP 422 for every statement-level failure alike, so
+    ``map_source_status`` can only be trusted where no SQLSTATE came back —
+    that is, where the request failed before Snowflake ran anything.
+    """
+    sqlstate = getattr(exc, "sqlstate", None)
+    if not isinstance(sqlstate, str) or not sqlstate:
+        return to_stream_error(exc, connector=connector)
+    if sqlstate[:2] in _UNAVAILABLE_SQLSTATE_CLASSES:
+        return map_source_status(
+            HttpStatusCode.SERVICE_UNAVAILABLE.value, connector=connector
+        )
+    mapped = to_sql_stream_error(exc, connector=connector)
+    if mapped.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value:
+        # No SQLSTATE table hit; Snowflake's own message is the last signal left.
+        return to_sql_response_error(str(exc), connector=connector)
+    return mapped
 
 
 # ============================================================================
@@ -1826,25 +1865,31 @@ class SnowflakeConnector(BaseConnector):
         
         Returns:
             List of rows as lists
+
+        Raises:
+            SnowflakeFetchError / HTTPException: its only caller streams these
+            rows to the user, so a refused SELECT must not come back as an
+            empty table.
         """
         if not self.data_source or not self.warehouse:
-            return []
-        
+            raise connector_not_ready(self.display_name)
+
         row_limit = limit if limit is not None else SNOWFLAKE_TABLE_ROW_LIMIT
         sql = f"SELECT * FROM {database_name}.{schema_name}.{table_name} LIMIT {row_limit}"
-        
-        try:
-            async with self.rate_limiter:
-                response = await self.data_source.execute_sql(
-                    statement=sql,
-                    database=database_name,
-                    warehouse=self.warehouse,
-                )
-            if response.success and response.data:
-                return response.data.get("data", [])
-        except Exception as e:
-            self.logger.warning(f"Failed to fetch rows for {table_name}: {e}")
-        return []
+
+        async with self.rate_limiter:
+            response = await self.data_source.execute_sql(
+                statement=sql,
+                database=database_name,
+                warehouse=self.warehouse,
+            )
+        if not response.success:
+            raise SnowflakeFetchError.from_response(
+                response, f"Failed to fetch rows for {table_name}"
+            )
+        if not response.data:
+            raise not_found_at_source(self.display_name)
+        return response.data.get("data", [])
 
     async def _fetch_table_metadata(
         self, database_name: str, schema_name: str, table_name: str
@@ -1908,17 +1953,26 @@ class SnowflakeConnector(BaseConnector):
         self.logger.info(f"Synced {total_synced} views in {parent_fqn} ({views_with_sources} have source tables)")
 
     async def _fetch_view_definition(
-        self, database_name: str, schema_name: str, view_name: str
+        self, database_name: str, schema_name: str, view_name: str,
+        strict: bool = False,
     ) -> Optional[str]:
         """
         Fetch view definition using GET_DDL() SQL function.
-        
+
         The REST API get_view() endpoint doesn't reliably return the view definition,
         especially for secure views. Using GET_DDL() ensures we get the full definition.
+
+        ``strict`` propagates a failed GET_DDL instead of returning None: sync can
+        carry on without one view's definition, but streaming one to the user
+        cannot pass off a refusal as a view with no body. A *successful* GET_DDL
+        that returned nothing still yields None either way — only the caller
+        knows whether the view is secure, which is what makes that case a 403.
         """
         if not self.data_source or not self.warehouse:
+            if strict:
+                raise connector_not_ready(self.display_name)
             return None
-        
+
         try:
             # Use GET_DDL to get the full view definition
             sql = f"SELECT GET_DDL('VIEW', '{database_name}.{schema_name}.{view_name}') as DDL"
@@ -1929,6 +1983,11 @@ class SnowflakeConnector(BaseConnector):
                 warehouse=self.warehouse,
             )
             
+            if strict and not response.success:
+                raise SnowflakeFetchError.from_response(
+                    response, f"Failed to fetch definition for view {view_name}"
+                )
+
             if response.success and response.data:
                 # Parse SQL result to extract DDL
                 meta = response.data.get("resultSetMetaData", {})
@@ -1953,6 +2012,8 @@ class SnowflakeConnector(BaseConnector):
             
         except Exception as e:
             self.logger.warning(f"Failed to get view definition for {view_name} using GET_DDL: {e}")
+            if strict:
+                raise
             return None
 
     def _parse_source_tables(self, definition: Optional[str]) -> List[str]:
@@ -2063,51 +2124,82 @@ class SnowflakeConnector(BaseConnector):
         """
         try:
             if not self.data_source:
-                raise HTTPException(status_code=500, detail="Snowflake data source not initialized")
+                raise connector_not_ready(self.display_name)
 
             # Handle Snowflake Files (Unstructured)
             if record.record_type == RecordType.FILE:
+                if not self.warehouse:
+                    raise connector_not_ready(self.display_name)
+
                 stage_fqn = record.external_record_group_id  # database.schema.stage
-                file_path = record.external_record_id.replace(f"{stage_fqn}/", "")
-                parts = stage_fqn.split(".")
+                parts = stage_fqn.split(".", 2)
                 if len(parts) != 3:
                     raise HTTPException(status_code=500, detail="Invalid stage FQN")
                 database, schema, stage = parts[0], parts[1], parts[2]
 
-                response = await self.data_source.get_stage_file_stream(
-                    database=database, schema=schema, stage=stage, relative_path=file_path
+                # `record.path` is the stage-relative path as synced; deriving it
+                # with str.replace would strip the stage prefix wherever it recurs
+                # deeper in the path, not just at the front.
+                file_path = (
+                    getattr(record, "path", None)
+                    or record.external_record_id[len(stage_fqn) + 1:]
                 )
 
-                async def file_iterator():
-                    async with response as resp:
-                        if resp.status >= 400:
-                            raise HTTPException(status_code=resp.status, detail="Failed to fetch file")
-                        async for chunk in resp.content.iter_any():
-                            yield chunk
+                url_response = await self.data_source.generate_presigned_url(
+                    database=database,
+                    schema=schema,
+                    stage=stage,
+                    file_path=file_path,
+                    warehouse=self.warehouse,
+                )
+                if not url_response.success:
+                    raise SnowflakeFetchError.from_response(
+                        url_response,
+                        f"Could not get a download URL for {record.record_name}",
+                    )
+                signed_url = self._extract_presigned_url(url_response)
+                if not signed_url:
+                    raise not_found_at_source(self.display_name)
 
                 return create_stream_record_response(
-                    file_iterator(), filename=record.record_name, mime_type=record.mime_type
+                    stream_content(
+                        signed_url,
+                        record.id,
+                        record.record_name,
+                        connector=self.display_name,
+                    ),
+                    filename=record.record_name,
+                    mime_type=record.mime_type,
                 )
 
             # Handle Snowflake Tables (Structured)
             elif record.record_type == RecordType.SQL_TABLE:
-                parts = record.external_record_id.split(".")
+                parts = record.external_record_id.split(".", 2)
                 if len(parts) != 3:
                     raise HTTPException(status_code=500, detail="Invalid table FQN")
                 database, schema, table = parts[0], parts[1], parts[2]
 
-                if not self.data_fetcher:
-                    raise HTTPException(status_code=500, detail="Data fetcher not ready")
+                if not self.data_fetcher or not self.warehouse:
+                    raise connector_not_ready(self.display_name)
 
-                # Fetch Columns
-                all_cols = await self.data_fetcher._fetch_all_columns_in_schema(database, schema)
+                # The COLUMNS projection is fetched for the whole schema and is
+                # read from partition 0 only, so a table missing from it may
+                # simply have sorted past the cut. Absence at the source is the
+                # row fetch's answer to give, not this map's.
+                all_cols = await self.data_fetcher._fetch_all_columns_in_schema(
+                    database, schema, strict=True
+                )
                 columns = all_cols.get(table, [])
 
                 # Fetch Keys
-                pks = await self.data_fetcher._fetch_primary_keys_in_schema(database, schema)
+                pks = await self.data_fetcher._fetch_primary_keys_in_schema(
+                    database, schema, strict=True
+                )
                 primary_keys = [pk["column"] for pk in pks if pk["table"] == table]
 
-                fks_list = await self.data_fetcher._fetch_foreign_keys_in_schema(database, schema)
+                fks_list = await self.data_fetcher._fetch_foreign_keys_in_schema(
+                    database, schema, strict=True
+                )
                 foreign_keys = []
                 for fk in fks_list:
                     if fk.source_table == table:
@@ -2121,9 +2213,13 @@ class SnowflakeConnector(BaseConnector):
 
                 # Fetch Rows
                 rows = await self._fetch_table_rows(database, schema, table)
-                
-                # Fetch Real DDL
-                ddl = await self.data_fetcher.get_table_ddl(database, schema, table)
+
+                # GET_DDL is decorative once the columns and rows are in hand;
+                # only when there is nothing else to stream does a refusal here
+                # decide the response.
+                ddl = await self.data_fetcher.get_table_ddl(
+                    database, schema, table, strict=not (columns or rows)
+                )
 
                 # Construct JSON Data
                 data = {
@@ -2149,31 +2245,56 @@ class SnowflakeConnector(BaseConnector):
 
             # Handle Snowflake Views (Structured Logic)
             elif record.record_type == RecordType.SQL_VIEW:
-                parts = record.external_record_id.split(".")
+                parts = record.external_record_id.split(".", 2)
                 if len(parts) != 3:
                     raise HTTPException(status_code=500, detail="Invalid view FQN")
                 database, schema, view_name = parts[0], parts[1], parts[2]
 
                 # Fetch view definition using GET_DDL (reliable method)
-                definition = await self._fetch_view_definition(database, schema, view_name)
-                
+                definition = await self._fetch_view_definition(
+                    database, schema, view_name, strict=True
+                )
+
                 # Fetch metadata (is_secure, comment) from API
                 view_response = await self.data_source.get_view(
                     database=database, schema=schema, name=view_name
                 )
-                view_data = view_response.data if view_response.success else {}
-                
+                if not view_response.success:
+                    # This endpoint refuses names that need quoting and roles
+                    # without REST privileges, and supplies only is_secure and
+                    # comment — nothing worth discarding a view body already in
+                    # hand for. Without a body, is_secure is what tells a 403
+                    # from a genuinely empty view, so then it does decide.
+                    if not definition:
+                        raise map_source_status(
+                            view_response.status_code, connector=self.display_name
+                        )
+                    self.logger.warning(
+                        f"get_view failed for {view_name}; streaming its DDL without metadata"
+                    )
+                view_data = (
+                    view_response.data
+                    if view_response.success and isinstance(view_response.data, dict)
+                    else {}
+                )
+
                 # Parse source tables from definition
                 source_tables = self._parse_source_tables(definition)
                 is_secure = view_data.get("is_secure", False) or view_data.get("isSecure", False)
                 comment = view_data.get("comment") or ""
-                
-                # Log if definition is empty (could be a secure view or API issue)
+
+                # GET_DDL succeeds but returns nothing for a secure view the role
+                # does not own. Streaming `"definition": null` would index the
+                # view as if it genuinely had no body.
                 if not definition:
                     self.logger.warning(
-                        f"View {view_name} has no definition. is_secure={is_secure}. "
-                        f"This may be a secure view or GET_DDL may have failed."
+                        f"View {view_name} has no definition. is_secure={is_secure}."
                     )
+                    if is_secure:
+                        raise map_source_status(
+                            HttpStatusCode.FORBIDDEN.value, connector=self.display_name
+                        )
+                    raise RuntimeError(f"GET_DDL returned no definition for view {view_name}")
 
                 # Fetch DDLs for source tables (for blob storage context)
                 source_table_ddls: Dict[str, str] = {}
@@ -2227,8 +2348,22 @@ class SnowflakeConnector(BaseConnector):
         except HTTPException:
             raise
         except Exception as e:
+            # Never `detail=str(e)`: a Snowflake driver message carries the
+            # account identifier, warehouse and role names, the full statement
+            # and *.snowflakecomputing.com hostnames.
             self.logger.error(f"Error streaming record: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise to_snowflake_stream_error(e, connector=self.display_name) from e
+
+    @staticmethod
+    def _extract_presigned_url(response: SnowflakeResponse) -> Optional[str]:
+        """Read the single scalar GET_PRESIGNED_URL returns out of a statement result."""
+        data = response.data if isinstance(response.data, dict) else {}
+        rows = data.get("data") or []
+        if not rows:
+            return None
+        first = rows[0]
+        url = first[0] if isinstance(first, list) and first else first
+        return url if isinstance(url, str) and url else None
 
     def get_signed_url(self, record: Record) -> Optional[str]:
         return None
@@ -2387,7 +2522,7 @@ class SnowflakeConnector(BaseConnector):
         try:
             # For tables and views, check if they still exist
             if record.record_type in [RecordType.SQL_TABLE, RecordType.SQL_VIEW]:
-                parts = record.external_record_id.split(".")
+                parts = record.external_record_id.split(".", 2)
                 if len(parts) != 3:
                     return False
                 database, schema, name = parts[0], parts[1], parts[2]
@@ -2414,11 +2549,14 @@ class SnowflakeConnector(BaseConnector):
             # For files, check if file still exists in stage
             elif record.record_type == RecordType.FILE:
                 stage_fqn = record.external_record_group_id
-                file_path = record.external_record_id.replace(f"{stage_fqn}/", "")
-                parts = stage_fqn.split(".")
+                parts = stage_fqn.split(".", 2)
                 if len(parts) != 3:
                     return False
                 database, schema, stage = parts[0], parts[1], parts[2]
+                file_path = (
+                    getattr(record, "path", None)
+                    or record.external_record_id[len(stage_fqn) + 1:]
+                )
 
                 response = await self.data_source.list_stage_files(
                     database=database, schema=schema, stage=stage

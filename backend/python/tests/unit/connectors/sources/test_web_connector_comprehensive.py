@@ -1990,19 +1990,75 @@ class TestStreamRecordComprehensive:
     @pytest.mark.asyncio
     async def test_missing_weburl_raises_404(self):
         c = _make_connector()
-        record = MagicMock(weburl=None, record_name="Page", id="r1")
+        # No stored copy AND no live URL: nothing to fetch, so this really is a 404.
+        record = MagicMock(
+            weburl=None, storage_document_id=None, record_name="Page", id="r1"
+        )
         with pytest.raises(HTTPException) as exc:
             await c.stream_record(record)
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
-    async def test_no_session_raises_500(self):
+    async def test_failed_storage_read_with_no_live_url_is_502_not_404(self):
+        """A storage outage must not be reported to the user as a deleted page."""
+        c = _make_connector()
+        c._read_from_storage = AsyncMock(return_value=None)
+        record = MagicMock(
+            weburl=None, storage_document_id="doc-1", record_name="Page", id="r1"
+        )
+        with pytest.raises(HTTPException) as exc:
+            await c.stream_record(record)
+        assert exc.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+
+    @pytest.mark.asyncio
+    async def test_no_session_raises_409(self):
         c = _make_connector()
         c.session = None
         record = MagicMock(weburl="https://example.com", record_name="Page", id="r1")
         with pytest.raises(HTTPException) as exc:
             await c.stream_record(record)
-        assert exc.value.status_code == 500
+        assert exc.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_crawled_site_401_is_not_forwarded_to_the_browser(self):
+        """A 401 echoed back verbatim logs the user out of PipesHub."""
+        c = _make_connector()
+        c.session = MagicMock()
+        record = MagicMock(
+            weburl="https://example.com/page", record_name="Page", id="r1",
+            mime_type="text/html",
+        )
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock,
+            return_value=FetchResponse(
+                status_code=401, content_bytes=b"", headers={},
+                final_url="https://example.com/page", strategy="aiohttp",
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await c.stream_record(record)
+        assert exc.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_failed_fetch_with_2xx_status_is_not_streamed_as_empty(self):
+        c = _make_connector()
+        c.session = MagicMock()
+        record = MagicMock(
+            weburl="https://example.com/page", record_name="Page", id="r1",
+            mime_type="text/html",
+        )
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock,
+            return_value=FetchResponse(
+                status_code=200, content_bytes=b"", headers={},
+                final_url="https://example.com/page", strategy="crawl4ai",
+                success=False,
+            ),
+        ):
+            with pytest.raises(HTTPException):
+                await c.stream_record(record)
 
     @pytest.mark.asyncio
     async def test_streams_html_after_processing(self):

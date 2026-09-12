@@ -32,6 +32,13 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_downloadable,
+    not_found_at_source,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -1449,35 +1456,40 @@ class OutlookConnector(BaseConnector):
     async def _download_group_post_attachment(
         self, group_id: str, thread_id: str, post_id: str, attachment_id: str
     ) -> bytes:
-        """Download attachment content from a group post."""
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        """Download attachment content from a group post.
 
-            response = await self.external_outlook_client.groups_threads_posts_get_attachments(
-                group_id=group_id,
-                conversationThread_id=thread_id,
-                post_id=post_id,
-                attachment_id=attachment_id
+        Raises rather than returning empty bytes: a failed download that returns
+        ``b''`` streams a zero-byte file with a 200 the client cannot detect.
+        """
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
+
+        response = await self.external_outlook_client.groups_threads_posts_get_attachments(
+            group_id=group_id,
+            conversationThread_id=thread_id,
+            post_id=post_id,
+            attachment_id=attachment_id
+        )
+
+        if not response.success:
+            self.logger.error(
+                f"Failed to download group post attachment {attachment_id}: {response.error}"
+            )
+        raise_for_stream_fetch(
+            success=response.success,
+            has_payload=response.data is not None,
+            connector=self.display_name,
+            message=response.error,
+        )
+
+        content_bytes = getattr(response.data, "content_bytes", None)
+        if not content_bytes:
+            raise not_downloadable(
+                OutlookHTTPDetails.ATTACHMENT_NOT_DOWNLOADABLE,
+                connector=self.display_name,
             )
 
-            if not response.success or not response.data:
-                return b''
-
-            # response.data is a Pydantic FileAttachment object
-            attachment_data = response.data
-
-            # Extract content_bytes from Pydantic object
-            content_bytes = attachment_data.content_bytes if attachment_data else None
-
-            if not content_bytes:
-                return b''
-
-            return self._decode_content_bytes(content_bytes)
-
-        except Exception as e:
-            self.logger.error(f"Error downloading group post attachment: {e}")
-            return b''
+        return self._decode_content_bytes(content_bytes)
 
     async def _process_users(self, org_id: str, users: list[AppUser]) -> AsyncGenerator[str, None]:
         """Process users sequentially."""
@@ -2569,10 +2581,7 @@ class OutlookConnector(BaseConnector):
         """Stream record content (email or attachment)."""
         try:
             if not self.external_outlook_client:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=OutlookHTTPDetails.CLIENT_NOT_INITIALIZED,
-                )
+                raise connector_not_ready(self.display_name)
 
             # Recover from an idle-closed HTTP transport before the first Graph call.
             await self._reinitialize_client_if_needed()
@@ -2602,16 +2611,23 @@ class OutlookConnector(BaseConnector):
                 )
 
                 if not response.success:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"Post not found: {response.error}",
+                    self.logger.warning(
+                        "Failed to fetch group post %s: %s",
+                        post_id,
+                        response.error,
+                    )
+                    # MSGraphResponse has no HTTP status — do not invent a 404.
+                    raise RuntimeError(
+                        response.error or f"Failed to fetch group post {post_id}"
                     )
 
                 # response.data is a Pydantic Post object
                 post = response.data
+                if not post:
+                    raise not_found_at_source(self.display_name)
 
                 # Extract body content from Pydantic Post object
-                post_body = post.body.content or '' if post and post.body else ''
+                post_body = post.body.content or '' if post.body else ''
 
                 # Augment with metadata for indexing
                 if isinstance(record, MailRecord):
@@ -2670,9 +2686,11 @@ class OutlookConnector(BaseConnector):
             if record.record_type == RecordType.MAIL:
                 # User email - message is a Pydantic Message object
                 message = await self._get_message_by_id_external(user_id, record.external_record_id)
+                if not message:
+                    raise not_found_at_source(self.display_name)
 
                 # Extract body content from Pydantic Message object
-                if message and message.body:
+                if message.body:
                     email_body = message.body.content or ''
                 else:
                     email_body = ''
@@ -2714,64 +2732,70 @@ class OutlookConnector(BaseConnector):
                     detail=OutlookHTTPDetails.UNSUPPORTED_RECORD_TYPE,
                 )
 
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream record: {str(e)}",
-            ) from e
+            self.logger.error(
+                f"❌ Error streaming record {record.id}: {e}", exc_info=True
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_message_by_id_external(self, user_id: str, message_id: str) -> Message | None:
         """Get a specific message by ID using external Outlook API.
 
-        Returns:
-            Pydantic Message object or None
+        Returns None only when Graph succeeded but returned no message. Every
+        failure raises: the caller turns None into a 404, and an expired token
+        or a 429 must not be reported to the user as a deleted email.
         """
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_get_messages(
-                user_id=user_id,
-                message_id=message_id
-            )
+        response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_get_messages(
+            user_id=user_id,
+            message_id=message_id
+        )
 
-            if not response.success:
-                self.logger.error(f"Failed to get message {message_id}: {response.error}")
-                return None
+        if not response.success:
+            self.logger.error(f"Failed to get message {message_id}: {response.error}")
+            # MSGraphResponse has no HTTP status — do not invent a 404.
+            raise RuntimeError(response.error or f"Failed to get message {message_id}")
 
-            return response.data
-
-        except Exception as e:
-            self.logger.error(f"Error getting message {message_id}: {e}")
-            return None
+        return response.data
 
     async def _download_attachment_external(self, user_id: str, message_id: str, attachment_id: str) -> bytes:
-        """Download attachment content using external Outlook API."""
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        """Download attachment content using external Outlook API.
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_get_attachments(
-                user_id=user_id,
-                message_id=message_id,
-                attachment_id=attachment_id
+        Raises rather than returning empty bytes: a failed download that returns
+        ``b''`` streams a zero-byte file with a 200 the client cannot detect.
+        """
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
+
+        response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_get_attachments(
+            user_id=user_id,
+            message_id=message_id,
+            attachment_id=attachment_id
+        )
+
+        if not response.success:
+            self.logger.error(
+                f"Failed to download attachment {attachment_id} for message {message_id}: {response.error}"
+            )
+        raise_for_stream_fetch(
+            success=response.success,
+            has_payload=response.data is not None,
+            connector=self.display_name,
+            message=response.error,
+        )
+
+        content_bytes = getattr(response.data, "content_bytes", None)
+        if not content_bytes:
+            raise not_downloadable(
+                OutlookHTTPDetails.ATTACHMENT_NOT_DOWNLOADABLE,
+                connector=self.display_name,
             )
 
-            if not response.success or not response.data:
-                return b''
-
-            # response.data is a Pydantic FileAttachment object
-            attachment_data = response.data
-            content_bytes = attachment_data.content_bytes if attachment_data else None
-
-            if not content_bytes:
-                return b''
-
-            return self._decode_content_bytes(content_bytes)
-
-        except Exception as e:
-            self.logger.error(f"Error downloading attachment {attachment_id} for message {message_id}: {e}")
-            return b''
+        return self._decode_content_bytes(content_bytes)
 
 
     def get_signed_url(self, record: Record) -> str | None:

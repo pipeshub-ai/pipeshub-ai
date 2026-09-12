@@ -1553,7 +1553,19 @@ class TestStreamMailRecord:
         record = _make_mock_record()
         with pytest.raises(HTTPException) as exc_info:
             await connector._stream_mail_record(gmail_service, "msg-1", record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 502
+
+    @pytest.mark.asyncio
+    async def test_http_error_401_maps_to_reconnect(self, connector):
+        mock_resp = MagicMock()
+        mock_resp.status = 401
+        gmail_service = MagicMock()
+        gmail_service.users().messages().get().execute.side_effect = HttpError(mock_resp, b"unauthorized")
+
+        record = _make_mock_record()
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._stream_mail_record(gmail_service, "msg-1", record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_general_exception(self, connector):
@@ -1687,10 +1699,15 @@ class TestStreamAttachmentRecord:
             await connector._stream_attachment_record(
                 gmail_service, "msg123~99", record, "file.txt", "text/plain"
             )
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_gmail_attachment_error_falls_back_to_drive(self, connector):
+    async def test_composite_id_attachment_401_is_reconnect_not_drive_404(self, connector):
+        """A revoked Gmail token must not read as a deleted attachment.
+
+        Drive cannot resolve a `messageId~partId` id, and its lazy response
+        defers the failure past this handler, so it is never tried.
+        """
         record = _make_mock_record(
             external_record_id="msg123~1",
             parent_external_record_id="msg123",
@@ -1710,20 +1727,22 @@ class TestStreamAttachmentRecord:
         }
 
         mock_resp = MagicMock()
-        mock_resp.status = 403
+        mock_resp.status = 401
         gmail_service.users().messages().attachments().get().execute.side_effect = HttpError(
-            mock_resp, b"forbidden"
+            mock_resp, b"unauthorized"
         )
 
         with patch.object(connector, "_stream_from_drive", new_callable=AsyncMock,
                           return_value=MagicMock()):
-            result = await connector._stream_attachment_record(
-                gmail_service, "msg123~1", record, "file.txt", "text/plain"
-            )
-            connector._stream_from_drive.assert_called_once()
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._stream_attachment_record(
+                    gmail_service, "msg123~1", record, "file.txt", "text/plain"
+                )
+            assert exc_info.value.status_code == 409
+            connector._stream_from_drive.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_gmail_and_drive_both_fail(self, connector):
+    async def test_gmail_attachment_403_surfaces_as_forbidden(self, connector):
         record = _make_mock_record(
             external_record_id="msg123~1",
             parent_external_record_id="msg123",
@@ -1748,13 +1767,12 @@ class TestStreamAttachmentRecord:
             mock_resp, b"forbidden"
         )
 
-        with patch.object(connector, "_stream_from_drive", new_callable=AsyncMock,
-                          side_effect=Exception("drive also failed")):
-            with pytest.raises(HTTPException) as exc_info:
-                await connector._stream_attachment_record(
-                    gmail_service, "msg123~1", record, "file.txt", "text/plain"
-                )
-            assert exc_info.value.status_code == 500
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._stream_attachment_record(
+                gmail_service, "msg123~1", record, "file.txt", "text/plain"
+            )
+        # Gmail's 403 is the status that explains the failure, not an opaque 500.
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_convert_to_pdf_for_attachment(self, connector):
@@ -1816,7 +1834,7 @@ class TestStreamAttachmentRecord:
             await connector._stream_attachment_record(
                 gmail_service, "msg123~1", record, "file.txt", "text/plain"
             )
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_general_error_during_attachment_stream(self, connector):
@@ -1868,7 +1886,7 @@ class TestStreamAttachmentRecord:
             await connector._stream_attachment_record(
                 gmail_service, "msg123~1", record, "file.txt", "text/plain"
             )
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
 
 
 # ===========================================================================
@@ -2035,7 +2053,7 @@ class TestStreamRecord:
         try:
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, user_id=None)
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 409
         finally:
             connector.gmail_data_source = original
 

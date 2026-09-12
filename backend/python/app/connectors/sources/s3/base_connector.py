@@ -59,6 +59,13 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
@@ -1127,17 +1134,23 @@ class S3CompatibleBaseConnector(BaseConnector):
     async def get_signed_url(self, record: Record) -> str | None:
         """Generate a presigned URL for an S3 object."""
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
         try:
             bucket_name = record.external_record_group_id
             if not bucket_name:
                 self.logger.warning(f"No bucket name found for record: {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing the bucket it belongs to and cannot be downloaded.",
+                    connector=self.display_name,
+                )
 
             external_record_id = record.external_record_id
             if not external_record_id:
                 self.logger.warning(f"No external_record_id found for record: {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing its object key and cannot be downloaded.",
+                    connector=self.display_name,
+                )
 
             if external_record_id.startswith(f"{bucket_name}/"):
                 key = external_record_id[len(f"{bucket_name}/"):]
@@ -1163,29 +1176,24 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             if response.success:
                 return response.data
-            else:
-                error_msg = response.error or "Unknown error"
-                if "AccessDenied" in error_msg or "not authorized" in error_msg or "Forbidden" in error_msg:
-                    self.logger.error(
-                        f"❌ ACCESS DENIED: Failed to generate presigned URL. "
-                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                    )
-                elif "NoSuchKey" in error_msg or "NotFound" in error_msg:
-                    self.logger.error(
-                        f"❌ KEY NOT FOUND: The key may be incorrect. "
-                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                    )
-                else:
-                    self.logger.error(
-                        f"❌ FAILED: Failed to generate presigned URL. "
-                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                    )
-                return None
+
+            error_msg = response.error or "Unknown error"
+            # The status comes off the botocore error. The error text is built
+            # from the source's own strings, so matching phrases in it would let
+            # a bucket or key name pick the status the user sees.
+            source_status = getattr(response, "status_code", None)
+            self.logger.error(
+                f"❌ FAILED: Failed to generate presigned URL (status {source_status}). "
+                f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
+            )
+            raise map_source_status(source_status, connector=self.display_name)
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(
-                f"Error generating signed URL for record {record.id}: {e}"
+                f"Error generating signed URL for record {record.id}: {e}", exc_info=True
             )
-            return None
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream S3 object content."""
@@ -1197,13 +1205,15 @@ class S3CompatibleBaseConnector(BaseConnector):
 
         signed_url = await self.get_signed_url(record)
         if not signed_url:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="File not found or access denied",
-            )
+            raise not_found_at_source(self.display_name)
 
         return create_stream_record_response(
-            stream_content(signed_url, record_id=record.id, file_name=record.record_name),
+            stream_content(
+                signed_url,
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=self.display_name,
+            ),
             filename=record.record_name,
             mime_type=record.mime_type if record.mime_type else "application/octet-stream",
             fallback_filename=f"record_{record.id}",

@@ -74,6 +74,12 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.azure.azure_blob import AzureBlobClient
 from app.sources.external.azure.azure_blob import AzureBlobDataSource
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 from fastapi import HTTPException
@@ -1353,17 +1359,24 @@ class AzureBlobConnector(BaseConnector):
     async def get_signed_url(self, record: Record) -> str | None:
         """Generate a SAS URL for an Azure blob."""
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
         try:
             container_name = record.external_record_group_id
             if not container_name:
                 self.logger.warning(f"No container name found for record: {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing the container it belongs to and cannot be "
+                    "downloaded.",
+                    connector=self.display_name,
+                )
 
             external_record_id = record.external_record_id
             if not external_record_id:
                 self.logger.warning(f"No external_record_id found for record: {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing its blob name and cannot be downloaded.",
+                    connector=self.display_name,
+                )
 
             if external_record_id.startswith(f"{container_name}/"):
                 blob_name = external_record_id[len(f"{container_name}/"):]
@@ -1389,17 +1402,22 @@ class AzureBlobConnector(BaseConnector):
 
             if response.success and response.data:
                 return response.data.get("sas_url")
-            else:
-                self.logger.error(
-                    f"Failed to generate SAS URL: {response.error} | "
-                    f"Container: {container_name} | Blob: {blob_name}"
-                )
-                return None
+
+            # generate_blob_sas_url signs locally and never contacts Azure, so a
+            # failure here means the credential can't sign (SAS-token or AAD auth,
+            # no account key) — the connector is misconfigured, the blob is fine.
+            self.logger.error(
+                f"Failed to generate SAS URL: {response.error} | "
+                f"Container: {container_name} | Blob: {blob_name}"
+            )
+            raise connector_not_ready(self.display_name)
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(
-                f"Error generating SAS URL for record {record.id}: {e}"
+                f"Error generating SAS URL for record {record.id}: {e}", exc_info=True
             )
-            return None
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream Azure blob content."""
@@ -1411,13 +1429,15 @@ class AzureBlobConnector(BaseConnector):
 
         signed_url = await self.get_signed_url(record)
         if not signed_url:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="File not found or access denied",
-            )
+            raise not_found_at_source(self.display_name)
 
         return create_stream_record_response(
-            stream_content(signed_url, record_id=record.id, file_name=record.record_name),
+            stream_content(
+                signed_url,
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=self.display_name,
+            ),
             filename=record.record_name,
             mime_type=record.mime_type if record.mime_type else "application/octet-stream",
             fallback_filename=f"record_{record.id}"

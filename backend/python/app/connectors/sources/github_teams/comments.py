@@ -27,6 +27,10 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import (
+    not_downloadable,
+    raise_for_stream_fetch,
+)
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -320,8 +324,12 @@ class CommentsHelper:
         c = self.c
         source_url = record.external_record_id
         if not source_url:
-            raise Exception(f"No source URL on attachment record {record.id}")
+            raise not_downloadable(
+                "This attachment has no stored source URL.", connector=c.display_name
+            )
         try:
+            # Anything else (notably httpx.HTTPStatusError) propagates as-is:
+            # its status is what the router maps to a real response code.
             async for chunk in c.data_source.get_attachment_files_content(
                 source_url, max_bytes=ATTACHMENT_MAX_SIZE_BYTES,
             ):
@@ -333,10 +341,6 @@ class CommentsHelper:
             raise HTTPException(
                 status_code=HttpStatusCode.PAYLOAD_TOO_LARGE.value,
                 detail=f"Attachment for record {record.id} is over the size limit: {e}",
-            ) from e
-        except Exception as e:
-            raise Exception(
-                f"Failed to fetch attachment content for record {record.id}: {e}"
             ) from e
 
     # ------------------------------------------------------------------
@@ -523,7 +527,13 @@ class CommentsHelper:
         c = self.c
         comments_res = await c.runtime.ds_call(c.data_source.list_issue_comments, owner, repo, issue_number)
         if not comments_res.success:
-            raise Exception(f"Failed to fetch comments for issue #{issue_number}: {comments_res.error}")
+            raise_for_stream_fetch(
+                success=comments_res.success,
+                has_payload=bool(comments_res.data),
+                connector=c.display_name,
+                status=comments_res.status_code,
+                message=comments_res.error,
+            )
 
         block_groups: list[BlockGroup] = []
         remaining: list[RecordUpdate] = []
@@ -591,7 +601,13 @@ class CommentsHelper:
 
         conversation_res = await c.runtime.ds_call(c.data_source.list_issue_comments, owner, repo, pr_number)
         if not conversation_res.success:
-            raise Exception(f"Failed to fetch conversation comments for PR #{pr_number}: {conversation_res.error}")
+            raise_for_stream_fetch(
+                success=conversation_res.success,
+                has_payload=bool(conversation_res.data),
+                connector=c.display_name,
+                status=conversation_res.status_code,
+                message=conversation_res.error,
+            )
         reviews_res = await c.runtime.ds_call(c.data_source.get_pull_reviews, owner, repo, pr_number)
 
         # Conversation comments and review bodies come from two endpoints but are
@@ -701,7 +717,13 @@ class CommentsHelper:
             c.data_source.get_pull_file_changes, owner, repo, pr_number, False,
         )
         if not files_res.success:
-            raise Exception(f"Failed to fetch file changes for PR #{pr_number}: {files_res.error}")
+            raise_for_stream_fetch(
+                success=files_res.success,
+                has_payload=bool(files_res.data),
+                connector=c.display_name,
+                status=files_res.status_code,
+                message=files_res.error,
+            )
 
         head_sha = getattr(pull_request, "head", None)
         head_sha = getattr(head_sha, "sha", None) if head_sha else None

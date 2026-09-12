@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
 from app.connectors.sources.zammad.connector import (
@@ -1410,12 +1411,13 @@ def connector(mock_logger_fullcov, mock_data_entities_processor_fullcov,
     return c
 
 
-def _resp(success=True, data=None, error=None, message=None):
+def _resp(success=True, data=None, error=None, message=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
     r.message = message
+    r.status_code = status_code
     return r
 
 
@@ -2093,8 +2095,9 @@ class TestStreamRecord:
         record.record_type = "UNKNOWN"
         record.id = "test"
 
-        with pytest.raises(ValueError, match="Unsupported"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 400
 
     async def test_stream_error_reraises(self, connector):
         connector._process_ticket_blockgroups_for_streaming = AsyncMock(
@@ -2104,8 +2107,9 @@ class TestStreamRecord:
         record.record_type = RecordType.TICKET
         record.id = "test"
 
-        with pytest.raises(Exception, match="stream fail"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
 
 class TestProcessFileForStreaming:
@@ -2194,7 +2198,7 @@ class TestProcessFileForStreaming:
 
         record = MagicMock()
         record.external_record_id = "42_1_99"
-        with pytest.raises(Exception, match="Failed to download attachment"):
+        with pytest.raises(RuntimeError):
             await connector._process_file_for_streaming(record)
 
     async def test_kb_attachment_api_failure(self, connector):
@@ -2204,7 +2208,7 @@ class TestProcessFileForStreaming:
 
         record = MagicMock()
         record.external_record_id = "kb_answer_5_attachment_10"
-        with pytest.raises(Exception, match="Failed to download KB"):
+        with pytest.raises(RuntimeError):
             await connector._process_file_for_streaming(record)
 
 
@@ -2993,7 +2997,7 @@ class TestProcessTicketBlockgroupsForStreaming:
         record = MagicMock()
         record.external_record_id = "44"
 
-        with pytest.raises(Exception, match="Failed to fetch ticket"):
+        with pytest.raises(RuntimeError):
             await connector._process_ticket_blockgroups_for_streaming(record)
 
     async def test_ticket_skips_system_articles(self, connector):
@@ -3146,7 +3150,9 @@ class TestProcessKBAnswerBlockgroupsForStreaming:
     async def test_kb_answer_no_content(self, connector):
         ds = _mock_ds()
         ds.init_knowledge_base = AsyncMock(return_value=_resp(success=False))
-        ds.get_kb_answer = AsyncMock(return_value=_resp(success=False))
+        ds.get_kb_answer = AsyncMock(
+            return_value=_resp(success=False, status_code=404)
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         record = MagicMock()
@@ -3155,8 +3161,9 @@ class TestProcessKBAnswerBlockgroupsForStreaming:
         record.weburl = None
         record.inherit_permissions = False
 
-        result = await connector._process_kb_answer_blockgroups_for_streaming(record)
-        assert b"Empty Answer" in result
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._process_kb_answer_blockgroups_for_streaming(record)
+        assert exc_info.value.status_code == 404
 
     async def test_kb_answer_direct_data(self, connector):
         ds = _mock_ds()
