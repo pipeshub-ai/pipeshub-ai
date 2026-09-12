@@ -147,6 +147,30 @@ test('reconcile without previousByRelPath emits MODIFIED for a same-size rewrite
   });
 });
 
+test('reconcile() does not emit MODIFIED for an unchanged file whose loaded snapshot predates birthtimeMs', async () => {
+  await withTempDir(async (dir) => {
+    const baseDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'local-sync-state-'));
+    try {
+      const store = new WatcherStateStore({ baseDir, syncRoot: dir, connectorInstanceId: 'c-1' });
+      const abs = path.join(dir, 'a.txt');
+      await fsp.writeFile(abs, 'hello');
+      store.applyScan(await scanSyncRoot(dir, {}));
+
+      // Simulate a snapshot persisted before birthtimeMs was captured: the
+      // upgrade path must not treat its absence as a metadata change.
+      delete store.getSnapshot().files['a.txt'].birthtimeMs;
+
+      const fresh = await scanSyncRoot(dir, {});
+      assert.ok(fresh.get('a.txt')!.birthtimeMs !== undefined);
+      const events = store.reconcile(fresh);
+      const modified = events.find((e) => e.path === 'a.txt' && e.type === 'MODIFIED');
+      assert.equal(modified, undefined);
+    } finally {
+      await fsp.rm(baseDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});
+
 test('expandWatchEventsForReplay hashes fresh when the file is reachable, falls back to the cached hash otherwise', async () => {
   await withTempDir(async (dir) => {
     await fsp.mkdir(path.join(dir, 'newdir'), { recursive: true });

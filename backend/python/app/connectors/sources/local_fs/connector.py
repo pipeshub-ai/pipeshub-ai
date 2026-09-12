@@ -187,6 +187,17 @@ def _event_file_time_ms(event: LocalFsFileEvent) -> int:
     return int(event.timestamp)
 
 
+def _event_created_time_ms(event: LocalFsFileEvent) -> int:
+    """Inode birth time when the platform reported a usable one, else mtime.
+
+    Linux reports either ctime or epoch 0 where the filesystem has no btime,
+    so a non-positive value means "unavailable", not 1970.
+    """
+    if event.birthtimeMs is not None and event.birthtimeMs > 0:
+        return int(event.birthtimeMs)
+    return _event_file_time_ms(event)
+
+
 def _get_sync_config_value(
     sync_cfg: JsonValue,
     key: str,
@@ -531,9 +542,20 @@ class LocalFsConnector(BaseConnector):
         rel_path: str,
         root: Path,
         external_record_group_id: str,
-        timestamp_ms: int,
+        event: LocalFsFileEvent,
         owner: Optional[User] = None,
+        *,
+        is_ancestor_placeholder: bool = False,
     ) -> Tuple[FileRecord, List[Permission]]:
+        timestamp_ms = int(event.timestamp)
+        if is_ancestor_placeholder:
+            # if the folder is a placeholder, we don't have it's event 
+            # hence no idea about its timestamps
+            file_time_ms = None
+            created_time_ms = None
+        else:
+            file_time_ms = _event_file_time_ms(event)
+            created_time_ms = _event_created_time_ms(event)
         normalized_rel_path = rel_path.strip().replace("\\", "/").strip("/")
         parent_rel_path = (
             "/".join(normalized_rel_path.split("/")[:-1])
@@ -556,8 +578,8 @@ class LocalFsConnector(BaseConnector):
             connector_id=self.connector_id,
             created_at=timestamp_ms,
             updated_at=timestamp_ms,
-            source_created_at=timestamp_ms,
-            source_updated_at=timestamp_ms,
+            source_created_at=created_time_ms,
+            source_updated_at=file_time_ms,
             weburl=None,
             hide_weburl=True,
             is_internal=True,
@@ -593,7 +615,7 @@ class LocalFsConnector(BaseConnector):
         rel_path: str,
         root: Path,
         external_record_group_id: str,
-        timestamp_ms: int,
+        event: LocalFsFileEvent,
         emitted_folder_paths: set[str],
         owner: Optional[User] = None,
     ) -> List[Tuple[FileRecord, List[Permission]]]:
@@ -607,8 +629,9 @@ class LocalFsConnector(BaseConnector):
                     folder_rel_path,
                     root,
                     external_record_group_id,
-                    timestamp_ms,
+                    event,
                     owner=owner,
+                    is_ancestor_placeholder=True,
                 )
             )
         return records
@@ -619,7 +642,7 @@ class LocalFsConnector(BaseConnector):
         rel_path: str,
         root: Path,
         external_record_group_id: str,
-        timestamp_ms: int,
+        event: LocalFsFileEvent,
         emitted_folder_paths: set[str],
         owner: Optional[User] = None,
     ) -> None:
@@ -631,7 +654,7 @@ class LocalFsConnector(BaseConnector):
                 normalized_rel_path,
                 root,
                 external_record_group_id,
-                timestamp_ms,
+                event,
                 emitted_folder_paths,
                 owner=owner,
             )
@@ -644,7 +667,7 @@ class LocalFsConnector(BaseConnector):
                 normalized_rel_path,
                 root,
                 external_record_group_id,
-                timestamp_ms,
+                event,
                 owner=owner,
             )
         )
@@ -668,7 +691,7 @@ class LocalFsConnector(BaseConnector):
         old_rel_path: str,
         root: Path,
         external_record_group_id: str,
-        timestamp_ms: int,
+        event: LocalFsFileEvent,
         owner: User,
         upsert_buffer: List[Tuple[FileRecord, List[Permission]]],
         move_buffer: List[Tuple[str, FileRecord, List[Permission]]],
@@ -686,7 +709,7 @@ class LocalFsConnector(BaseConnector):
                 rel_path,
                 root,
                 external_record_group_id,
-                timestamp_ms,
+                event,
                 emitted_folder_paths,
                 owner=owner,
             )
@@ -707,7 +730,7 @@ class LocalFsConnector(BaseConnector):
                     normalized_rel_path,
                     root,
                     external_record_group_id,
-                    timestamp_ms,
+                    event,
                     emitted_folder_paths,
                     owner=owner,
                 )
@@ -735,7 +758,7 @@ class LocalFsConnector(BaseConnector):
                 normalized_rel_path,
                 root,
                 external_record_group_id,
-                timestamp_ms,
+                event,
                 owner=owner,
             )
             if old_ext_id:
@@ -1073,6 +1096,7 @@ class LocalFsConnector(BaseConnector):
         name = Path(normalized_rel_path).name or "file"
         timestamp_ms = int(event.timestamp)
         file_time_ms = _event_file_time_ms(event)
+        created_time_ms = _event_created_time_ms(event)
         size = event.size if event.size is not None else 0
         guessed, _ = mimetypes.guess_type(name)
         mime = event.mimeType or guessed or MimeTypes.UNKNOWN.value
@@ -1098,7 +1122,7 @@ class LocalFsConnector(BaseConnector):
             connector_id=self.connector_id,
             created_at=timestamp_ms,
             updated_at=timestamp_ms,
-            source_created_at=file_time_ms,
+            source_created_at=created_time_ms,
             source_updated_at=file_time_ms,
             weburl=None,
             hide_weburl=True,
@@ -1384,7 +1408,7 @@ class LocalFsConnector(BaseConnector):
                     old_rel_path=old_rel_path,
                     root=root_for_display,
                     external_record_group_id=external_record_group_id,
-                    timestamp_ms=_event_file_time_ms(event),
+                    event=event,
                     owner=owner,
                     upsert_buffer=upsert_buffer,
                     move_buffer=move_buffer,
@@ -1458,7 +1482,7 @@ class LocalFsConnector(BaseConnector):
                     rel_path,
                     root_for_display,
                     external_record_group_id,
-                    _event_file_time_ms(event),
+                    event,
                     emitted_folder_paths,
                     owner=owner,
                 )

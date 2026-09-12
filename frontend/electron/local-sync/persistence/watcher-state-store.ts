@@ -17,6 +17,8 @@ export interface FileSnapshotEntry {
   mtimeMs: number;
   isDirectory: boolean;
   sha256?: string;
+  /** Inode birth time. Absent when the platform/filesystem doesn't report one. */
+  birthtimeMs?: number;
 }
 
 export type FileSnapshotMap = Record<string, FileSnapshotEntry>;
@@ -160,6 +162,7 @@ export async function scanSyncRoot(
       const inode = typeof st.ino === 'bigint' ? Number(st.ino) : st.ino;
       const size = st.isFile() ? st.size : 0;
       const mtimeMs = st.mtimeMs;
+      const birthtimeMs = st.birthtimeMs;
       let sha256: string | undefined;
       if (st.isFile()) {
         // Size+mtime reuse is for bookkeeping scans only; reconcile callers omit previousByRelPath.
@@ -170,7 +173,7 @@ export async function scanSyncRoot(
           sha256 = await computeFileHash(abs);
         }
       }
-      out.set(relKey, { inode, size, mtimeMs, isDirectory, sha256 });
+      out.set(relKey, { inode, size, mtimeMs, isDirectory, sha256, birthtimeMs });
       if (isDirectory && includeSubfolders) {
         await visit(abs);
       }
@@ -200,7 +203,8 @@ function parseFileEntry(raw: unknown): FileSnapshotEntry | null {
   if (!Number.isFinite(inode) || !Number.isFinite(size) || !Number.isFinite(mtimeMs)) return null;
   const isDirectory = Boolean(r.isDirectory);
   const sha256 = typeof r.sha256 === 'string' && r.sha256.length > 0 ? r.sha256 : undefined;
-  return { inode, size, mtimeMs, isDirectory, sha256 };
+  const birthtimeMs = Number.isFinite(Number(r.birthtimeMs)) ? Number(r.birthtimeMs) : undefined;
+  return { inode, size, mtimeMs, isDirectory, sha256, birthtimeMs };
 }
 
 export class WatcherStateStore {
@@ -337,6 +341,7 @@ export class WatcherStateStore {
         isDirectory: newEnt.isDirectory,
         sha256: newEnt.isDirectory ? undefined : newEnt.sha256,
         mtimeMs: newEnt.mtimeMs,
+        birthtimeMs: newEnt.birthtimeMs,
       });
       handledOld.add(oldPath);
       handledNew.add(newPath);
@@ -349,7 +354,7 @@ export class WatcherStateStore {
       const newEnt = currentScan.get(p)!;
       if (oldEnt.isDirectory !== newEnt.isDirectory) {
         events.push({ type: oldEnt.isDirectory ? 'DIR_DELETED' : 'DELETED', path: p, timestamp: now, isDirectory: oldEnt.isDirectory });
-        events.push({ type: newEnt.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory, sha256: newEnt.isDirectory ? undefined : newEnt.sha256, mtimeMs: newEnt.mtimeMs });
+        events.push({ type: newEnt.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory, sha256: newEnt.isDirectory ? undefined : newEnt.sha256, mtimeMs: newEnt.mtimeMs, birthtimeMs: newEnt.birthtimeMs });
         handledOld.add(p); handledNew.add(p);
         continue;
       }
@@ -368,7 +373,7 @@ export class WatcherStateStore {
         metaSame = oldEnt.size === newEnt.size && oldEnt.mtimeMs === newEnt.mtimeMs;
       }
       if (!metaSame) {
-        events.push({ type: 'MODIFIED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory, sha256: newEnt.isDirectory ? undefined : newEnt.sha256, mtimeMs: newEnt.mtimeMs });
+        events.push({ type: 'MODIFIED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory, sha256: newEnt.isDirectory ? undefined : newEnt.sha256, mtimeMs: newEnt.mtimeMs, birthtimeMs: newEnt.birthtimeMs });
       }
       handledOld.add(p); handledNew.add(p);
     }
@@ -381,7 +386,7 @@ export class WatcherStateStore {
     for (const p of newPaths) {
       if (handledNew.has(p)) continue;
       const e = currentScan.get(p)!;
-      events.push({ type: e.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: e.isDirectory ? undefined : e.size, isDirectory: e.isDirectory, sha256: e.isDirectory ? undefined : e.sha256, mtimeMs: e.mtimeMs });
+      events.push({ type: e.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: e.isDirectory ? undefined : e.size, isDirectory: e.isDirectory, sha256: e.isDirectory ? undefined : e.sha256, mtimeMs: e.mtimeMs, birthtimeMs: e.birthtimeMs });
     }
     return events;
   }

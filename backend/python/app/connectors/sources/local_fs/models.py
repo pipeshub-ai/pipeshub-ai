@@ -18,6 +18,9 @@ class LocalFsFileEvent(BaseModel):
     sha256: str | None = None
     mimeType: str | None = None
     mtimeMs: int | None = None
+    # Inode birth time. Absent on deletions and where the platform/filesystem
+    # doesn't report one (e.g. Linux without statx/btime support).
+    birthtimeMs: int | None = None
 
 
 class LocalFsPullRequest(BaseModel):

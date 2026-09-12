@@ -398,6 +398,7 @@ export class ConnectorFsWatcher {
     const inode = typeof stats.ino === 'bigint' ? Number(stats.ino) : stats.ino;
     const size = !isDirectory && typeof stats.size === 'number' ? stats.size : 0;
     const mtimeMs = typeof stats.mtimeMs === 'number' ? stats.mtimeMs : Date.now();
+    const birthtimeMs = typeof stats.birthtimeMs === 'number' ? stats.birthtimeMs : undefined;
     const sha256 = isDirectory ? undefined : await contentFileHash(absPath);
 
     this.stateStore.getSnapshot().files[relKey] = {
@@ -406,6 +407,7 @@ export class ConnectorFsWatcher {
       mtimeMs,
       isDirectory,
       sha256,
+      birthtimeMs,
     };
     this.stateStore.scheduleSave();
   }
@@ -440,6 +442,7 @@ export class ConnectorFsWatcher {
           mtimeMs: stats.mtimeMs,
           isDirectory: false,
           sha256,
+          birthtimeMs: stats.birthtimeMs,
         };
         this.stateStore.getSnapshot().files[nextPath] = entry;
         touched = true;
@@ -505,6 +508,7 @@ export class ConnectorFsWatcher {
           isDirectory: false,
           sha256: entry.sha256,
           mtimeMs: entry.mtimeMs,
+          birthtimeMs: entry.birthtimeMs,
         });
       }
       this.stateStore.applyScan(currentScan);
