@@ -178,6 +178,10 @@ describe('createAGUIEventHandler', () => {
       chunk: '',
       accumulated: body,
       citations: [],
+      // The trailer is stripped from the text, and the confidence it carried is
+      // surfaced as a field — this case sends /confidence in its final
+      // STATE_DELTA, so the handler is expected to pass it through.
+      confidence: 'High',
     });
   });
 
