@@ -244,7 +244,9 @@ PipesHub gồm ba phần:
 
 - **Ứng dụng web** (Next.js) — tìm kiếm, chat và quản trị trên trình duyệt.
 - **API** (Node.js) — tài khoản, quyền, kho tri thức và tệp.
-- **Dịch vụ Python** — trình kết nối đồng bộ nguồn; lập chỉ mục phân tích và nhúng; truy vấn trả lời kèm trích dẫn.
+- **Dịch vụ Python** — trình kết nối đồng bộ nguồn; lập chỉ mục phân tích tài liệu; truy vấn trả lời kèm trích dẫn.
+
+Các dịch vụ đó gọi **mô hình AI do bạn mang tới**. **Mô hình embedding** biến văn bản thành vector để tìm kiếm. **LLM** viết câu trả lời có trích dẫn. Dùng bất kỳ nhà cung cấp nào hoặc mô hình local (Ollama); máy chủ embedding local là mặc định.
 
 Dữ liệu nằm trong đồ thị tri thức (Neo4j), kho vector (Qdrant) và MongoDB. Redis là bộ nhớ đệm. Tệp nằm trên đĩa hoặc object storage. Các dịch vụ chuyển việc cho nhau qua Redis trên máy local, hoặc Kafka khi triển khai lớn hơn. Xem [tổng quan hệ thống](https://docs.pipeshub.com/system-overview).
 

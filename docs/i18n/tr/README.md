@@ -244,7 +244,9 @@ PipesHub üç parçadan oluşur:
 
 - **Web uygulaması** (Next.js) — tarayıcıda arama, sohbet ve yönetim.
 - **API** (Node.js) — hesaplar, izinler, bilgi tabanları ve dosyalar.
-- **Python hizmetleri** — bağlayıcılar kaynaklarınızı senkronize eder; indeksleme bunları ayrıştırıp gömer; sorgu alıntılarla yanıtlar.
+- **Python hizmetleri** — bağlayıcılar kaynaklarınızı senkronize eder; indeksleme belgeleri ayrıştırır; sorgu alıntılarla yanıtlar.
+
+Bu hizmetler **sizin getirdiğiniz yapay zekâ modellerini** çağırır. Bir **gömme modeli** metni arama için vektöre çevirir. Bir **LLM** alıntılı yanıtı yazar. Herhangi bir sağlayıcı veya yerel bir model (Ollama) kullanın; yerel gömme sunucusu varsayılandır.
 
 Veriler bir bilgi grafiğinde (Neo4j), bir vektör deposunda (Qdrant) ve MongoDB'de durur. Önbellek Redis'tir. Dosyalar diskte veya nesne depolamada durur. Hizmetler işi yerel makinede Redis üzerinden, daha büyük bir kurulumda Kafka üzerinden birbirine aktarır. [Sistem genel bakışına](https://docs.pipeshub.com/system-overview) bakın.
 

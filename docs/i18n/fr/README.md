@@ -244,7 +244,9 @@ PipesHub a trois parties :
 
 - **Application web** (Next.js) — recherche, chat et administration dans le navigateur.
 - **API** (Node.js) — comptes, permissions, bases de connaissances et fichiers.
-- **Services Python** — les connecteurs synchronisent vos sources ; l'indexation les analyse et les transforme en embeddings ; la requête répond avec des citations.
+- **Services Python** — les connecteurs synchronisent vos sources ; l'indexation analyse les documents ; la requête répond avec des citations.
+
+Ces services appellent des **modèles d'IA que vous apportez**. Un **modèle d'embeddings** transforme le texte en vecteurs pour la recherche. Un **LLM** rédige la réponse citée. Utilisez n'importe quel fournisseur ou un modèle local (Ollama) ; un serveur d'embeddings local est la valeur par défaut.
 
 Les données sont dans un graphe de connaissances (Neo4j), un magasin de vecteurs (Qdrant) et MongoDB. Redis est le cache. Les fichiers sont sur disque ou en stockage objet. Les services se transmettent le travail via Redis en local, ou via Kafka dans un déploiement plus large. Voir la [vue d'ensemble du système](https://docs.pipeshub.com/system-overview).
 
