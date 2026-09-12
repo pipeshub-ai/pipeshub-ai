@@ -240,7 +240,13 @@ PipesHub folgt dem Prinzip „Bring dein eigenes Modell mit“ – du kannst jed
 
 ### Wie sieht der Technologie-Stack aus?
 
-Eine Next.js-Oberfläche, eine Node.js-API und Python-Dienste für Konnektoren, Indexierung und Suche. Suchdaten liegen in Neo4j (Graph), Qdrant (Vektoren) und MongoDB (Metadaten); Redis dient als Cache. Lokale Installationen nutzen Redis auch, um Arbeit zwischen Diensten zu übergeben; Kafka ist die Alternative für größere Setups. Siehe die [Systemübersicht](https://docs.pipeshub.com/system-overview).
+PipesHub besteht aus drei Teilen:
+
+- **Web-App** (Next.js) — Suche, Chat und Verwaltung im Browser.
+- **API** (Node.js) — Konten, Berechtigungen, Wissensdatenbanken und Dateien.
+- **Python-Dienste** — Konnektoren synchronisieren deine Quellen; die Indexierung zerlegt und bettet sie ein; die Abfrage antwortet mit Zitaten.
+
+Die Daten liegen in einem Wissensgraphen (Neo4j), einem Vektorspeicher (Qdrant) und MongoDB. Redis ist der Cache. Dateien liegen auf der Festplatte oder in Object Storage. Die Dienste übergeben einander Arbeit über Redis auf einem lokalen Rechner, oder über Kafka in einer größeren Umgebung. Siehe die [Systemübersicht](https://docs.pipeshub.com/system-overview).
 
 ### Was ist die Funktion zum Wissensgraph-Abruf?
 

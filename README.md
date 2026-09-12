@@ -293,7 +293,13 @@ PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in y
 
 ### What is the tech stack?
 
-A Next.js UI, a Node.js API, and Python services for connectors, indexing, and search. Search data lives in Neo4j (graph), Qdrant (vectors), and MongoDB (metadata), with Redis for cache. Local deploys also use Redis to pass work between services; Kafka is the alternative for larger setups. See the [system overview](https://docs.pipeshub.com/system-overview).
+PipesHub has three parts:
+
+- **Web app** (Next.js) — search, chat, and admin in the browser.
+- **API** (Node.js) — accounts, permissions, knowledge bases, and files.
+- **Python services** — connectors sync your sources; indexing parses and embeds them; query answers with citations.
+
+Data sits in a knowledge graph (Neo4j), a vector store (Qdrant), and MongoDB. Redis is the cache. Files live on disk or object storage. Services hand work to each other over Redis on a local machine, or Kafka in a larger deployment. See the [system overview](https://docs.pipeshub.com/system-overview).
 
 ### What is the Knowledge Graph Retrieval feature?
 

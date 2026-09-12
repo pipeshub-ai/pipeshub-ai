@@ -240,7 +240,13 @@ PipesHub는 "자체 모델 사용(Bring Your Own Model)" 방식으로, 어떤 LL
 
 ### 기술 스택은 무엇인가요?
 
-Next.js UI, Node.js API, 커넥터·색인·검색용 Python 서비스입니다. 검색 데이터는 Neo4j(그래프), Qdrant(벡터), MongoDB(메타데이터)에 있고, 캐시는 Redis입니다. 로컬에서는 Redis가 서비스 사이 작업도 전달하고, 더 큰 환경에서는 Kafka를 쓸 수 있습니다. [시스템 개요](https://docs.pipeshub.com/system-overview)를 참고하세요.
+PipesHub는 세 부분으로 이루어져 있습니다.
+
+- **웹 앱** (Next.js) — 브라우저에서 검색, 채팅, 관리.
+- **API** (Node.js) — 계정, 권한, 지식 베이스, 파일.
+- **Python 서비스** — 커넥터가 소스를 동기화하고, 색인이 파싱·임베딩하며, 쿼리가 인용과 함께 답합니다.
+
+데이터는 지식 그래프(Neo4j), 벡터 저장소(Qdrant), MongoDB에 있습니다. 캐시는 Redis입니다. 파일은 디스크 또는 오브젝트 스토리지에 있습니다. 서비스 사이 작업은 로컬에서는 Redis로, 더 큰 환경에서는 Kafka로 넘깁니다. [시스템 개요](https://docs.pipeshub.com/system-overview)를 참고하세요.
 
 ### 지식 그래프 검색 기능이란 무엇인가요?
 

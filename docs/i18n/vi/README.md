@@ -240,7 +240,13 @@ PipesHub theo nguyên tắc "Mang mô hình của riêng bạn" — bạn có th
 
 ### Ngăn xếp công nghệ là gì?
 
-Giao diện Next.js, API Node.js và các dịch vụ Python cho trình kết nối, lập chỉ mục và tìm kiếm. Dữ liệu tìm kiếm nằm ở Neo4j (đồ thị), Qdrant (vector) và MongoDB (metadata), Redis dùng làm bộ nhớ đệm. Khi chạy local, Redis cũng chuyển việc giữa các dịch vụ; Kafka là lựa chọn cho các cài đặt lớn hơn. Xem [tổng quan hệ thống](https://docs.pipeshub.com/system-overview).
+PipesHub gồm ba phần:
+
+- **Ứng dụng web** (Next.js) — tìm kiếm, chat và quản trị trên trình duyệt.
+- **API** (Node.js) — tài khoản, quyền, kho tri thức và tệp.
+- **Dịch vụ Python** — trình kết nối đồng bộ nguồn; lập chỉ mục phân tích và nhúng; truy vấn trả lời kèm trích dẫn.
+
+Dữ liệu nằm trong đồ thị tri thức (Neo4j), kho vector (Qdrant) và MongoDB. Redis là bộ nhớ đệm. Tệp nằm trên đĩa hoặc object storage. Các dịch vụ chuyển việc cho nhau qua Redis trên máy local, hoặc Kafka khi triển khai lớn hơn. Xem [tổng quan hệ thống](https://docs.pipeshub.com/system-overview).
 
 ### Tính năng truy xuất bằng đồ thị tri thức là gì?
 

@@ -240,7 +240,13 @@ PipesHub "Kendi Modelini Getir" yaklaşımını benimser — herhangi bir LLM sa
 
 ### Teknoloji yığını nedir?
 
-Next.js arayüzü, bir Node.js API ve bağlayıcılar, indeksleme ve arama için Python hizmetleri. Arama verileri Neo4j (graf), Qdrant (vektörler) ve MongoDB (üst veri) üzerindedir; önbellek Redis'tir. Yerel kurulumda Redis hizmetler arasında iş de taşır; daha büyük kurulumlar için alternatif Kafka'dır. [Sistem genel bakışına](https://docs.pipeshub.com/system-overview) bakın.
+PipesHub üç parçadan oluşur:
+
+- **Web uygulaması** (Next.js) — tarayıcıda arama, sohbet ve yönetim.
+- **API** (Node.js) — hesaplar, izinler, bilgi tabanları ve dosyalar.
+- **Python hizmetleri** — bağlayıcılar kaynaklarınızı senkronize eder; indeksleme bunları ayrıştırıp gömer; sorgu alıntılarla yanıtlar.
+
+Veriler bir bilgi grafiğinde (Neo4j), bir vektör deposunda (Qdrant) ve MongoDB'de durur. Önbellek Redis'tir. Dosyalar diskte veya nesne depolamada durur. Hizmetler işi yerel makinede Redis üzerinden, daha büyük bir kurulumda Kafka üzerinden birbirine aktarır. [Sistem genel bakışına](https://docs.pipeshub.com/system-overview) bakın.
 
 ### Bilgi Grafiği ile Erişim özelliği nedir?
 

@@ -240,7 +240,13 @@ PipesHub は「自前のモデルを使用（Bring Your Own Model）」方式で
 
 ### 技術スタックは何ですか？
 
-Next.js の UI、Node.js API、コネクタ・索引・検索用の Python サービスです。検索データは Neo4j（グラフ）、Qdrant（ベクトル）、MongoDB（メタデータ）にあり、キャッシュは Redis です。ローカルでは Redis がサービス間の作業も中継し、規模が大きい場合の代替は Kafka です。詳しくは [システム概要](https://docs.pipeshub.com/system-overview) を参照してください。
+PipesHub は次の 3 つの部分でできています。
+
+- **Web アプリ** (Next.js) — ブラウザ上の検索、チャット、管理画面。
+- **API** (Node.js) — アカウント、権限、ナレッジベース、ファイル。
+- **Python サービス** — コネクタがソースを同期し、索引が解析して埋め込み、クエリが引用付きで答えます。
+
+データはナレッジグラフ (Neo4j)、ベクトルストア (Qdrant)、MongoDB にあります。キャッシュは Redis です。ファイルはディスクまたはオブジェクトストレージに置きます。サービス同士の作業の受け渡しは、ローカルでは Redis、規模が大きい場合は Kafka です。詳しくは [システム概要](https://docs.pipeshub.com/system-overview) を参照してください。
 
 ### ナレッジグラフ検索機能とは何ですか？
 

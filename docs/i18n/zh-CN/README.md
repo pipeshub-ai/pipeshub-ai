@@ -240,7 +240,13 @@ PipesHub 是“自带模型”——你可以使用任意 LLM 提供商。在你
 
 ### 技术栈是什么？
 
-Next.js 界面、Node.js API，以及用于连接器、索引和搜索的 Python 服务。搜索数据在 Neo4j（图）、Qdrant（向量）和 MongoDB（元数据）中，缓存用 Redis。本地部署时 Redis 也在服务之间传递任务；更大规模可以用 Kafka。详见 [系统概览](https://docs.pipeshub.com/system-overview)。
+PipesHub 由三部分组成：
+
+- **Web 应用**（Next.js）— 浏览器里的搜索、对话和管理。
+- **API**（Node.js）— 账号、权限、知识库和文件。
+- **Python 服务** — 连接器同步数据源；索引负责解析和向量化；查询带着引用作答。
+
+数据在知识图谱（Neo4j）、向量库（Qdrant）和 MongoDB 里。Redis 是缓存。文件在磁盘或对象存储上。服务之间在本地用 Redis 传任务，更大规模可以用 Kafka。详见 [系统概览](https://docs.pipeshub.com/system-overview)。
 
 ### 什么是知识图谱检索功能？
 
