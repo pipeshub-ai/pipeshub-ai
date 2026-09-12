@@ -228,6 +228,18 @@ _DOMAIN_SHARED_CODE_TOOL_NAMES: frozenset[str] = frozenset({
 # constant here rather than a magic number in `create()`.
 _MAX_TURNS = 15
 
+#: Traversal results both PRE_MODEL shapers keep past their turn window. A walk
+#: spans more turns than either window holds, and each hop is the address the
+#: next one needs — clearing an earlier hop strands the walk, and a summary of
+#: one answers nothing. Small enough to hold: a walk is ~7KB, a symbol read
+#: under 1KB. `query_code_graph` is deliberately absent — its 25-50KB directory
+#: dumps are re-callable, not something to carry.
+_CODE_TRAVERSAL_TOOLS = frozenset({
+    "codegraph__get_neighbour",
+    "codegraph__read_code",
+    "codegraph__find_symbol_path",
+})
+
 
 DIRECT_TRANSPORT = "direct"
 LANGCHAIN_TRANSPORT = "langchain"
@@ -945,6 +957,9 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())           # L1
         hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(          # L2
             keep_last_n_turns=2,
+            # Without this, a walk large enough to be registered as an artifact
+            # is stubbed here before L3's identical protection ever sees it.
+            protected_tool_names=_CODE_TRAVERSAL_TOOLS,
         ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_tool_result_clearing(         # L3
             protected_tool_names=frozenset({
@@ -960,7 +975,7 @@ class PipesHubAgentFactory:
                 # Same reasoning: fetch_full_record results carry [refN]
                 # markers that AnswerFinalizer needs to build citations.
                 "knowledgegraph__fetch_record",
-            }),
+            }) | _CODE_TRAVERSAL_TOOLS,
         ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_loop_compaction())            # L4
         hooks.on(HookEvent.PRE_MODEL).use(shape_sliding_window())             # L5

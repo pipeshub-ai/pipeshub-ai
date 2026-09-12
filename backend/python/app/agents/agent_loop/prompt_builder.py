@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.agent.prompt import render_skills_overview
 from app.agent_loop_lib.tools.errors import ToolNotFoundError
 from app.agents.agent_loop.confidence import confidence_enabled
+from app.agents.agent_loop.hooks.code_graph_unlock import CODE_GRAPH_TOOLSET
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled  # noqa: F401 — re-export for test patching
 from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.context.knowledge_context import _build_knowledge_context
@@ -147,6 +148,10 @@ _TOOL_REFERENCE_HEADER = (
 #: already in `RunScope.visible_tools` (pinned, fetch_tools, CODE_FILE unlock).
 BOUND_TOOL_NAMES_KEY = "bound_tool_names"
 
+#: Traversal tool the Navigating Code section is written around; named off the
+#: toolset the unlock hook grants so both move together.
+_CODE_WALK_TOOL = f"{CODE_GRAPH_TOOLSET}__get_neighbour"
+
 
 def _collect_leaf_toolsets(registry, *, exclude: frozenset[str] = frozenset()) -> list[str]:
     """Renders leaf toolsets (the ones with actual tools, not category
@@ -176,6 +181,36 @@ def _toolsets_covering(registry, tool_names: frozenset[str]) -> frozenset[str]:
         for group in registry.toolsets()
         if group.tool_names and any(n in tool_names for n in group.tool_names)
     )
+
+
+def _bound_tool_view(
+    tool_names: list[str],
+    registry,
+    pinned_toolsets: list[str] | None,
+    state: dict[str, Any],
+) -> tuple[list[str], frozenset[str]]:
+    """Under lazy disclosure: ``(names callable this turn, toolset groups loaded)``.
+
+    Both answers come off the same bound-name set, so a steering section and
+    the Available Tools list can never disagree about what the model can call.
+    """
+    bound = frozenset(state.get(BOUND_TOOL_NAMES_KEY) or ())
+    # Unlock hook also stores names here before the sync runs.
+    bound |= frozenset(state.get("unlocked_codegraph_tools") or ())
+
+    loaded_groups = frozenset(pinned_toolsets or []) | _toolsets_covering(registry, bound)
+
+    loaded_tool_names: set[str] = set(bound)
+    for group in registry.toolsets():
+        if group.name in loaded_groups:
+            loaded_tool_names.update(group.tool_names)
+
+    grouped = registry.grouped_tool_names()
+    callable_names = [
+        n for n in tool_names
+        if n not in grouped or n in loaded_tool_names
+    ]
+    return callable_names, loaded_groups
 
 
 
@@ -430,6 +465,47 @@ def _build_code_execution_section(*, composed: bool, networked: bool) -> str:
     )
 
 
+def _build_code_navigation_section() -> str:
+    """The order to use the codegraph toolset in, for turns where it is callable.
+
+    Each tool's own schema says what that tool returns; what no schema can say
+    is which tool comes next. This section is that sequence — traverse by
+    edges, confirm by reading source — plus the one composition a set-shaped
+    question needs, where one walk gives the members and another the
+    population. How to reach a repository in the first place belongs to the
+    retrieval tools' own schemas (`get_neighbour` states that it needs a
+    `Connector ID` from a search result), so it is not restated here.
+    """
+    return (
+        "\n## Navigating Code\n\n"
+        "Code questions are answered by traversing the graph, in this order.\n\n"
+        "**1. Traverse with `codegraph__get_neighbour`.** This is how you move through a "
+        "codebase. Give it the address you hold, `edge_types` omitted on the first call, and the "
+        "result tells you what the node is — its container, its heritage, what it reaches and "
+        "what reaches it. Walk outbound for what a symbol depends on, inbound for what depends "
+        "on it; what reaches a symbol leaves no trace in the symbol itself, so no amount of "
+        "reading recovers it. A member a subclass never overrode lives on the base, so walk "
+        "containment and heritage to the definition before taking edges from it. Every "
+        "neighbour returned is the address of the next call — one hop is not a traversal.\n\n"
+        "**2. Confirm with `codegraph__read_code`.** Edges say what connects, source says what "
+        "it does. Read the symbols the answer rests on, and keep alternating: walk, read, walk. "
+        f"This is the only way to read code: `{_FETCH_FULL_RECORD_TOOL_NAME}` returns a whole "
+        "document and can address neither a symbol nor a line range, so never reach for it to "
+        "open a file.\n\n"
+        "**3. Use `codegraph__query_code_graph` to orient** — what a directory or a file holds, "
+        "when you need the shape of an area rather than one symbol's edges. It ranks and caps, "
+        "so read every result as a sample of that area, never as its contents.\n\n"
+        "**4. Answer a question about a set with two walks, not a listing.** The members that "
+        "share a behaviour are the inbound edges of the symbol implementing it. The population "
+        "they are drawn from is also a walk — the inbound heritage edges of the type they all "
+        "extend, or of the interface they implement. Subtract or intersect those two. A set "
+        "assembled from a search result or a directory glob is a guess: both rank and cap, so "
+        "neither can tell you that something is absent.\n\n"
+        "Claim completeness only when a result does. `truncated: false` is a full set; "
+        "`truncated` or `scan_capped` marks a sample, and a sample cannot prove an absence.\n"
+    )
+
+
 def _build_attachment_context(attachments: list[dict[str, Any]] | None) -> str:
     """Renders a concise prompt section listing user-uploaded attachments so
     the agent knows what files are available and prioritizes them over
@@ -592,11 +668,23 @@ class PipesHubPromptBuilder:
 
         # ── Available tools (Band B: grows with fetch_tools / unlocks) ───────
         if spec.tool_disclosure == "lazy" and runtime.tool_registry is not None:
+            callable_names, _ = _bound_tool_view(
+                tool_names, runtime.tool_registry, spec.pinned_toolsets, state,
+            )
             tpl.set("available_tools", self._build_lazy_tool_reference_section(
                 tool_names, runtime, spec.pinned_toolsets, tool_state=state,
             ))
         else:
+            callable_names = tool_names
             tpl.set("available_tools", self._build_tool_reference_section(tool_names, runtime) or None)
+
+        # ── Code navigation (Band B: appears when the toolset unlocks) ───────
+        # Gated on the walk tool specifically: without it the rest of the
+        # section describes a traversal the model cannot perform.
+        tpl.set("code_navigation", (
+            _build_code_navigation_section()
+            if _CODE_WALK_TOOL in callable_names else None
+        ))
 
         # ── Knowledge sources (Band B) ────────────────────────────────────────
         knowledge_context = _build_knowledge_context(state, log, catalog=catalog, tool_names=tool_names)
@@ -734,24 +822,9 @@ class PipesHubPromptBuilder:
         `fetch_tools` first.
         """
         registry = runtime.tool_registry
-        state = tool_state or {}
-        bound = frozenset(state.get(BOUND_TOOL_NAMES_KEY) or ())
-        # Unlock hook also stores names here before the sync runs.
-        bound |= frozenset(state.get("unlocked_codegraph_tools") or ())
-
-        pinned = frozenset(pinned_toolsets or [])
-        loaded_groups = pinned | _toolsets_covering(registry, bound)
-
-        loaded_tool_names: set[str] = set(bound)
-        for group in registry.toolsets():
-            if group.name in loaded_groups:
-                loaded_tool_names.update(group.tool_names)
-
-        grouped = registry.grouped_tool_names()
-        visible_names = [
-            n for n in tool_names
-            if n not in grouped or n in loaded_tool_names
-        ]
+        visible_names, loaded_groups = _bound_tool_view(
+            tool_names, registry, pinned_toolsets, tool_state or {},
+        )
 
         lines: list[str] = []
         for name in visible_names:
