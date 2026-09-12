@@ -240,7 +240,7 @@ PipesHub folgt dem Prinzip „Bring dein eigenes Modell mit“ – du kannst jed
 
 ### Wie sieht der Technologie-Stack aus?
 
-Next.js-UI, eine Node.js-API und Python-Dienste für Konnektoren, Indexierung und Abfragen. Der Installer setzt standardmäßig Neo4j, Qdrant, MongoDB, Kafka und Redis ein. Siehe die [Systemübersicht](https://docs.pipeshub.com/system-overview).
+Next.js-UI, eine Node.js-API und Python-Dienste für Konnektoren, Indexierung und Abfragen. Der Installer setzt standardmäßig Neo4j, Qdrant, MongoDB und Redis ein. Slim nutzt Redis Streams als Message-Broker; Full nutzt Kafka. Siehe die [Systemübersicht](https://docs.pipeshub.com/system-overview).
 
 ### Was ist die Funktion zum Wissensgraph-Abruf?
 

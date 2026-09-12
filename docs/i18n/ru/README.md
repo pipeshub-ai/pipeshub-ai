@@ -240,7 +240,7 @@ PipesHub работает по принципу «Используйте сво�
 
 ### Какой технологический стек используется?
 
-Интерфейс Next.js, API на Node.js и Python-сервисы для коннекторов, индексации и запросов. Установщик по умолчанию разворачивает Neo4j, Qdrant, MongoDB, Kafka и Redis. См. [обзор системы](https://docs.pipeshub.com/system-overview).
+Интерфейс Next.js, API на Node.js и Python-сервисы для коннекторов, индексации и запросов. Установщик по умолчанию разворачивает Neo4j, Qdrant, MongoDB и Redis. Slim использует Redis Streams как брокер сообщений; full использует Kafka. См. [обзор системы](https://docs.pipeshub.com/system-overview).
 
 ### Что такое функция извлечения по графу знаний?
 

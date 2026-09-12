@@ -240,7 +240,7 @@ PipesHub theo nguyên tắc "Mang mô hình của riêng bạn" — bạn có th
 
 ### Ngăn xếp công nghệ là gì?
 
-Giao diện Next.js, API Node.js và các dịch vụ Python cho trình kết nối, lập chỉ mục và truy vấn. Trình cài đặt mặc định dùng Neo4j, Qdrant, MongoDB, Kafka và Redis. Xem [tổng quan hệ thống](https://docs.pipeshub.com/system-overview).
+Giao diện Next.js, API Node.js và các dịch vụ Python cho trình kết nối, lập chỉ mục và truy vấn. Trình cài đặt mặc định dùng Neo4j, Qdrant, MongoDB và Redis. Slim dùng Redis Streams làm message broker; full dùng Kafka. Xem [tổng quan hệ thống](https://docs.pipeshub.com/system-overview).
 
 ### Tính năng truy xuất bằng đồ thị tri thức là gì?
 

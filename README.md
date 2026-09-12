@@ -293,7 +293,7 @@ PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in y
 
 ### What is the tech stack?
 
-Next.js UI, a Node.js API, and Python services for connectors, indexing, and query. The installer defaults to Neo4j, Qdrant, MongoDB, Kafka, and Redis. See the [system overview](https://docs.pipeshub.com/system-overview).
+Next.js UI, a Node.js API, and Python services for connectors, indexing, and query. The installer defaults to Neo4j, Qdrant, MongoDB, and Redis. Slim uses Redis Streams as the message broker; full uses Kafka. See the [system overview](https://docs.pipeshub.com/system-overview).
 
 ### What is the Knowledge Graph Retrieval feature?
 

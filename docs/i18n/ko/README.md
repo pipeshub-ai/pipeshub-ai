@@ -240,7 +240,7 @@ PipesHub는 "자체 모델 사용(Bring Your Own Model)" 방식으로, 어떤 LL
 
 ### 기술 스택은 무엇인가요?
 
-Next.js UI, Node.js API, 커넥터·색인·쿼리용 Python 서비스입니다. 설치 프로그램 기본값은 Neo4j, Qdrant, MongoDB, Kafka, Redis입니다. [시스템 개요](https://docs.pipeshub.com/system-overview)를 참고하세요.
+Next.js UI, Node.js API, 커넥터·색인·쿼리용 Python 서비스입니다. 설치 프로그램 기본값은 Neo4j, Qdrant, MongoDB, Redis입니다. slim은 메시지 브로커로 Redis Streams를, full은 Kafka를 사용합니다. [시스템 개요](https://docs.pipeshub.com/system-overview)를 참고하세요.
 
 ### 지식 그래프 검색 기능이란 무엇인가요?
 

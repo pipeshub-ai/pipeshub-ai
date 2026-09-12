@@ -240,7 +240,7 @@ PipesHub 是“自带模型”——你可以使用任意 LLM 提供商。在你
 
 ### 技术栈是什么？
 
-Next.js 界面、Node.js API，以及用于连接器、索引和查询的 Python 服务。安装程序默认使用 Neo4j、Qdrant、MongoDB、Kafka 和 Redis。详见 [系统概览](https://docs.pipeshub.com/system-overview)。
+Next.js 界面、Node.js API，以及用于连接器、索引和查询的 Python 服务。安装程序默认使用 Neo4j、Qdrant、MongoDB 和 Redis。slim 的消息代理是 Redis Streams，full 是 Kafka。详见 [系统概览](https://docs.pipeshub.com/system-overview)。
 
 ### 什么是知识图谱检索功能？
 
