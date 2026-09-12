@@ -11,6 +11,7 @@ PAYLOAD_KEYWORD_INDEXES = (
     (ORG_ID_FIELD, {"type": "keyword"}),
     (CONNECTOR_IDS_FIELD, {"type": "keyword"}),
     (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
+    ("filters_hash", {"type": "keyword"}),
 )
 
 VECTOR_DB_SERVICE_NAME = os.getenv("VECTOR_DB_TYPE", "qdrant")

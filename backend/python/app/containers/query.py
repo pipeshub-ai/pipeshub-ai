@@ -5,6 +5,7 @@ from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.modules.reranker.reranker import RerankerService
+from app.services.cache.semantic_cache import SemanticCacheService
 from app.utils.logger import create_logger
 
 
@@ -63,6 +64,11 @@ class QueryAppContainer(BaseAppContainer):
         blob_store=blob_store,
         collection_registry=collection_registry,
     )
+    semantic_cache_service = providers.Singleton(
+        SemanticCacheService,
+        vector_db_service=vector_db_service,
+    )
+    
     reranker_service = providers.Singleton(
         RerankerService,
         model_name="BAAI/bge-reranker-base",  # Choose model based on speed/accuracy needs
