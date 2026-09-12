@@ -1903,7 +1903,7 @@ class TestSweepOrphanedVirtualRecordMappings:
 
 
 def _stranded_env(after_seconds=3600.0):
-    """Set the sweep's threshold; 0 (the default) disables it entirely.
+    """Set the sweep's threshold; 0 disables it entirely (default is 3600).
 
     Patches the environment rather than the property because messaging_env
     re-reads os.getenv on every access by design.
@@ -2151,3 +2151,80 @@ class TestRepublishStrandedRecords:
             assert await _run_stranded(graph, producer, manager) == 0
 
         manager.release.assert_awaited_once_with("record:r1", ANY)
+
+
+class TestRepublishClaimIsWrittenBeforeTheSend:
+    """The republish marker is a durable claim taken *before* the send.
+
+    Written after the send, a Neo4j failure following a successful Redis send
+    left `lastRepublishedAt` unset, so the record stayed eligible and was
+    re-sent every 60s tick until the consumer moved it out of
+    QUEUED/NOT_STARTED -- and the 60s loop passes no concurrency_manager, so
+    nothing else bounded it. Under a backlog that inflates the very backlog
+    delaying the consumer. Claiming first means a record can never be sent
+    without a persisted claim, which caps it at one send per interval.
+    """
+
+    @staticmethod
+    def _row():
+        return TestRepublishStrandedRecords._old_record()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_claim_write_sends_nothing(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._row()]}, active_ids={"live"}
+        )
+        graph.update_node = AsyncMock(return_value=False)
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_raising_claim_write_sends_nothing(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._row()]}, active_ids={"live"}
+        )
+        graph.update_node = AsyncMock(side_effect=RuntimeError("neo4j down"))
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_claim_is_persisted_before_the_send(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._row()]}, active_ids={"live"}
+        )
+        order: list[str] = []
+        graph.update_node = AsyncMock(side_effect=lambda *a, **k: order.append("claim") or True)
+        producer = AsyncMock()
+        producer.send_event = AsyncMock(side_effect=lambda **k: order.append("send") or True)
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+        assert order == ["claim", "send"]
+        claim_fields = graph.update_node.await_args_list[0].args[2]
+        assert isinstance(claim_fields["lastRepublishedAt"], int)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_send_clears_the_claim_so_the_next_tick_retries(self):
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._row()]}, active_ids={"live"}
+        )
+        graph.update_node = AsyncMock(return_value=True)
+        producer = AsyncMock()
+        producer.send_event = AsyncMock(side_effect=RuntimeError("redis down"))
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        writes = [c.args[2] for c in graph.update_node.await_args_list]
+        assert len(writes) == 2
+        assert isinstance(writes[0]["lastRepublishedAt"], int)   # the claim
+        assert writes[1] == {"lastRepublishedAt": None}          # cleared on failure
