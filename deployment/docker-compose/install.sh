@@ -352,9 +352,36 @@ resolve_banner_dirs() {
 # Compose --progress tty|plain from a TTY flag. Keep this explicit instead of
 # `--progress auto`: auto is the same split inside Compose, but would re-detect
 # independently of the health-wait spinner. One _is_tty drives both.
-resolve_compose_progress() { # args: is_tty (true|false) -> tty|plain
-  [[ "$1" == true ]] && { echo tty; return; }
+#
+# Git Bash mintty is a TTY to bash ([[ -t 1 ]]) but not a Windows console.
+# docker.exe --progress tty then dies with "failed to get console: The handle
+# is invalid." Pass IS_WINDOWS as the second arg so that path stays plain.
+resolve_compose_progress() { # args: is_tty (true|false) [is_windows (true|false)] -> tty|plain
+  if [[ "$1" == true && "${2:-false}" != true ]]; then
+    echo tty
+    return
+  fi
   echo plain
+}
+
+# Git Bash (MSYS) rewrites arguments that look like POSIX paths when it invokes
+# docker.exe. That turns container paths such as /tmp/hc.json into
+# C:/Program Files/Git/tmp/hc.json. Disable it for every subsequent docker call,
+# and give docker.exe Windows mixed paths for host files (-f, --env-file).
+docker_cli_path() {
+  if ${IS_WINDOWS:-false} && command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+apply_windows_docker_cli_compat() {
+  ${IS_WINDOWS:-false} || return 0
+  export MSYS_NO_PATHCONV=1
+  export MSYS2_ARG_CONV_EXCL='*'
+  COMPOSE_FILE="$(docker_cli_path "$COMPOSE_FILE")"
+  ENV_FILE="$(docker_cli_path "$ENV_FILE")"
 }
 
 # PIPESHUB_PROJECT wins. Else COMPOSE_PROJECT_NAME in this directory's .env so
@@ -552,6 +579,8 @@ case "$OS_TYPE" in
     warn "Unrecognised OS: $OS_TYPE. Proceeding; some checks may not work."
     ;;
 esac
+
+apply_windows_docker_cli_compat
 
 # Docker binary — use --version (no daemon required)
 if ! command -v docker >/dev/null 2>&1; then
@@ -1307,8 +1336,12 @@ fi  # end wizard
 
 # Reused .env files from older installs may still be 644. Always lock them
 # before we print secrets in the summary or start containers.
-if [[ -f "$ENV_FILE" ]] && ! chmod 600 "$ENV_FILE"; then
-  die "Could not restrict permissions on $ENV_FILE"
+if [[ -f "$ENV_FILE" ]] && ! chmod 600 "$ENV_FILE" 2>/dev/null; then
+  if $IS_WINDOWS; then
+    warn "Could not restrict permissions on $ENV_FILE (common on Git Bash/NTFS). It contains secrets — keep it private."
+  else
+    die "Could not restrict permissions on $ENV_FILE"
+  fi
 fi
 
 # Keep .env and -p in sync so later --stop / --uninstall only tear down this copy.
@@ -1594,8 +1627,10 @@ _USE_BUILD=false
 # progress is the majority install path. Forced `--progress plain` on a TTY
 # prints a new line per layer tick and floods the log. Captured stdout (CI,
 # tee, redirect) still gets plain so cursor-escape frames do not explode.
+# Git Bash: spinner can still use _is_tty; Compose progress must not (see
+# resolve_compose_progress).
 _is_tty=false; [[ -t 1 ]] && _is_tty=true
-_PROGRESS=(--progress "$(resolve_compose_progress "$_is_tty")")
+_PROGRESS=(--progress "$(resolve_compose_progress "$_is_tty" "$IS_WINDOWS")")
 
 compose_up()        { docker compose "${_PROGRESS[@]}" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" up -d "$@"; }
 compose_logs_tail() { docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true; }

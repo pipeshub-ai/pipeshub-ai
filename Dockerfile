@@ -428,7 +428,10 @@ while true; do
 done
 EOF
 
-RUN chmod +x /app/process_monitor.sh
+# Windows Git (core.autocrlf=true) checks the Dockerfile out as CRLF, and BuildKit
+# copies that into the heredoc. A CR in `#!/bin/bash` makes the kernel look for
+# `/bin/bash\r`, and dash then reports: exec: /app/process_monitor.sh: not found.
+RUN sed -i 's/\r$//' /app/process_monitor.sh && chmod +x /app/process_monitor.sh
 
 EXPOSE 3000 8002 8092 8093
 
