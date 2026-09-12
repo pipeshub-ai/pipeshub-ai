@@ -6739,7 +6739,11 @@ class TestNotionConnectorResilience:
 # ===================================================================
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations  # noqa: E402
-from app.connectors.sources.notion.connector import RECORD_GONE, _DatabaseGone  # noqa: E402
+from app.connectors.sources.notion.connector import (  # noqa: E402
+    RECORD_GONE,
+    _DatabaseGone,
+    _DatabaseUnavailable,
+)
 
 
 def _make_stub(**kwargs):
@@ -7130,14 +7134,14 @@ class TestRetireDatabaseContainer:
             await conn._retrieve_database_payload("db-gone")
 
     @pytest.mark.asyncio
-    async def test_retrieve_429_raises_runtime_error(self):
+    async def test_retrieve_429_is_unavailable(self):
         conn = _make_connector_fullcov()
         conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
             retrieve_database=AsyncMock(
                 return_value=_api_resp(False, status=429, error="rate limited")
             )
         ))
-        with pytest.raises(RuntimeError, match="rate limited"):
+        with pytest.raises(_DatabaseUnavailable, match="rate limited"):
             await conn._retrieve_database_payload("db-busy")
 
     @pytest.mark.asyncio
@@ -7291,6 +7295,119 @@ class TestRetireLeftoverDatabaseRecords:
         await conn._retire_leftover_database_records()
 
         assert conn._retire_database_container_record.await_count == 2
+
+
+class TestDatabaseParentLookupFailures:
+    """A transient database lookup must never save a record without its parent."""
+
+    _PAGE_UNDER_DATABASE = {
+        "id": "p1",
+        "parent": {"type": "database_id", "database_id": "db-1"},
+        "properties": {},
+    }
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_propagates_from_transform(self):
+        conn = _make_connector_fullcov()
+        conn._resolve_database_id_as_record_parent = AsyncMock(
+            side_effect=_DatabaseUnavailable("rate limited")
+        )
+        with pytest.raises(_DatabaseUnavailable):
+            await conn._transform_to_webpage_record(dict(self._PAGE_UNDER_DATABASE), "page")
+
+    @pytest.mark.asyncio
+    async def test_gone_database_syncs_page_without_parent(self):
+        conn = _make_connector_fullcov()
+        conn._resolve_database_id_as_record_parent = AsyncMock(
+            side_effect=_DatabaseGone("database db-1 not found")
+        )
+        record = await conn._transform_to_webpage_record(dict(self._PAGE_UNDER_DATABASE), "page")
+        assert record is not None
+        assert record.parent_external_record_id is None
+        assert record.parent_record_type is None
+
+    @pytest.mark.asyncio
+    async def test_block_under_database_propagates_transient_failure(self):
+        conn = _make_connector_fullcov()
+        ds = MagicMock()
+        ds.retrieve_block = AsyncMock(return_value=_api_resp(True, {
+            "parent": {"type": "database_id", "database_id": "db-1"}
+        }))
+        conn._get_fresh_datasource = AsyncMock(return_value=ds)
+        conn._resolve_database_id_as_record_parent = AsyncMock(
+            side_effect=_DatabaseUnavailable("rate limited")
+        )
+        with pytest.raises(_DatabaseUnavailable):
+            await conn._resolve_block_parent_recursive("block-1")
+
+    @pytest.mark.asyncio
+    async def test_page_sync_aborts_without_advancing_checkpoint(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_sync_time": "2024-01-01T00:00:00.000Z"}
+        )
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+        page = {
+            "id": "p-new",
+            "last_edited_time": "2024-06-02T10:00:00Z",
+            "url": "https://notion.so/p-new",
+            "parent": {"type": "database_id", "database_id": "db-1"},
+        }
+        connector._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            search=AsyncMock(return_value=_make_api_response(
+                data={"results": [page], "has_more": False, "next_cursor": None}
+            ))
+        ))
+        connector._transform_to_webpage_record = AsyncMock(
+            side_effect=_DatabaseUnavailable("rate limited")
+        )
+        connector._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {}))
+
+        with pytest.raises(_DatabaseUnavailable):
+            await connector._sync_objects_by_type("page")
+
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+        connector.pages_sync_point.update_sync_point.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_data_source_stubs_wait_for_transient_parent_failure(self):
+        conn = _make_connector_fullcov()
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            retrieve_database=AsyncMock(return_value=_api_resp(True, {
+                "data_sources": [{"id": "ds-1", "name": "View 1"}],
+                "parent": {"type": "page_id", "page_id": "page-p"},
+            }))
+        ))
+        conn._parent_ref_from_database_payload = AsyncMock(
+            side_effect=_DatabaseUnavailable("rate limited")
+        )
+        conn._batch_get_or_create_child_records = AsyncMock()
+
+        assert await conn._resolve_database_to_data_sources("db-1") == []
+        conn._batch_get_or_create_child_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_data_source_stubs_get_no_parent_when_parent_is_gone(self):
+        conn = _make_connector_fullcov()
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            retrieve_database=AsyncMock(return_value=_api_resp(True, {
+                "data_sources": [{"id": "ds-1", "name": "View 1"}],
+                "parent": {"type": "page_id", "page_id": "page-p"},
+            }))
+        ))
+        conn._parent_ref_from_database_payload = AsyncMock(side_effect=_DatabaseGone("gone"))
+        conn._batch_get_or_create_child_records = AsyncMock(return_value={
+            "ds-1": ChildRecord(child_type=ChildType.RECORD, child_id="r1", child_name="View 1"),
+        })
+
+        result = await conn._resolve_database_to_data_sources("db-1")
+
+        assert len(result) == 1
+        spec = conn._batch_get_or_create_child_records.await_args[0][0]["ds-1"]
+        assert spec[2] is None and spec[3] is None
 
 
 import re  # noqa: E402

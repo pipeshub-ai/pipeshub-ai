@@ -110,7 +110,14 @@ class ReposSync:
             )
             return
 
-        incremental_ok = await self._sync_repo_incremental(project_id, project_path, last_sha, current_sha)
+        try:
+            incremental_ok = await self._sync_repo_incremental(project_id, project_path, last_sha, current_sha)
+        except Exception as e:
+            # e.g. a graph error in folder cleanup: fall back rather than fail every remaining project
+            self.logger.warning(
+                "Incremental code sync raised for project %s: %s", project_id, e, exc_info=True,
+            )
+            incremental_ok = False
         if incremental_ok:
             await self._update_code_repo_checkpoint(project_id, current_sha)
             return

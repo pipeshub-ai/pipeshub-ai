@@ -144,6 +144,10 @@ class _DatabaseGone(Exception):
     """Notion returned a definitive 404/trash for a database container."""
 
 
+class _DatabaseUnavailable(RuntimeError):
+    """Notion could not answer for a database right now (429, 5xx, unusable payload)."""
+
+
 class UnconvertibleImageError(Exception):
     """An image that will never convert: the SVG converter is unavailable, or the
     object is permanently gone or of an unsupported type.
@@ -2870,15 +2874,18 @@ class NotionConnector(BaseConnector):
                 self.logger.debug(f"Database {database_id} has no data_sources")
                 return []
 
+            # A transient failure falls through to the outer handler: no stubs beats stubs
+            # created without their parent.
             try:
                 database_parent_id, database_parent_type = (
                     await self._parent_ref_from_database_payload(
                         database_data, {database_id}
                     )
                 )
-            except Exception as e:
-                self.logger.warning(
-                    "Could not resolve parent for database %s: %s", database_id, e,
+            except _DatabaseGone as e:
+                self.logger.info(
+                    "Parent of database %s is gone; its data sources get no parent: %s",
+                    database_id, e,
                 )
                 database_parent_id, database_parent_type = None, None
 
@@ -3754,6 +3761,8 @@ class NotionConnector(BaseConnector):
                 # No parent or workspace parent
                 return None, None
 
+        except _DatabaseUnavailable:
+            raise
         except Exception as e:
             self.logger.warning(
                 f"Error resolving block parent for {block_id}: {e}",
@@ -3777,13 +3786,13 @@ class NotionConnector(BaseConnector):
 
         if not response or not response.success or not response.data:
             error_msg = response.error if response else "No response"
-            raise RuntimeError(
+            raise _DatabaseUnavailable(
                 f"Failed to retrieve database {database_id} for parent lookup: {error_msg}"
             )
 
         database_data = response.data.json()
         if not isinstance(database_data, dict):
-            raise RuntimeError(
+            raise _DatabaseUnavailable(
                 f"Invalid database payload for {database_id}: expected object"
             )
         if database_data.get("archived") or database_data.get("in_trash"):
@@ -3868,6 +3877,9 @@ class NotionConnector(BaseConnector):
 
         Returns:
             WebpageRecord, or None when the object is not a page/data source
+
+        Raises:
+            _DatabaseUnavailable: a database parent could not be resolved right now
         """
         try:
             obj_id = obj_data.get("id")
@@ -3920,10 +3932,10 @@ class NotionConnector(BaseConnector):
                             parent_id, parent_record_type = (
                                 await self._resolve_database_id_as_record_parent(database_id)
                             )
-                        except Exception as e:
-                            self.logger.warning(
-                                "Failed to resolve database parent %s for %s: %s",
-                                database_id, obj_id, e,
+                        except _DatabaseGone:
+                            self.logger.info(
+                                "Database parent %s of %s is gone; syncing it without a parent",
+                                database_id, obj_id,
                             )
                 elif parent_type == "block_id":
                     # Recursively resolve block_id to find the actual page/database/datasource parent
@@ -3967,6 +3979,9 @@ class NotionConnector(BaseConnector):
                 source_updated_at=source_updated_at,
             )
 
+        except _DatabaseUnavailable:
+            # Saving without the parent would clear its PARENT_CHILD edge; let the caller retry.
+            raise
         except Exception as e:
             self.logger.error(f"Failed to transform {object_type}: {e}", exc_info=True)
             return None
