@@ -68,6 +68,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_records_by_parent(self, connector_id, parent_external_record_id, record_type=None):
         return []
 
+    async def get_records_by_record_type(self, connector_id, record_type):
+        return []
+
     async def get_record_path(self, record_id):
         return None
 

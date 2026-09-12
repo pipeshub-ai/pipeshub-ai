@@ -236,6 +236,27 @@ class TestSyncProjectsErrorIsolation:
         # Both projects should have been attempted (issues/MRs for p2 should be called)
         assert c.issues.fetch_issues_batched.call_count >= 1
 
+    async def test_code_step_raise_does_not_abort_remaining_projects(self) -> None:
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+
+        p1 = _project(1, "eng/proj-a")
+        p2 = _project(2, "eng/proj-b")
+
+        projects_sync = ProjectsSync(c)
+        projects_sync._resolve_projects_with_filters = AsyncMock(return_value=[p1, p2])
+        projects_sync._sync_project_members_as_pseudo = AsyncMock()
+
+        c.issues = MagicMock()
+        c.issues.fetch_issues_batched = AsyncMock()
+        c.merge_requests = MagicMock()
+        c.merge_requests.fetch_prs_batched = AsyncMock()
+        c.repos = MagicMock()
+        c.repos.run = AsyncMock(side_effect=[RuntimeError("graph fail"), None])
+
+        await projects_sync._sync_projects()
+        assert c.repos.run.await_count == 2
+
 
 # ===========================================================================
 # _create_permission_from_principal

@@ -789,6 +789,19 @@ class TestSyncRepoMainRouting:
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
         repos._sync_repo_full.assert_called_once_with(_PROJECT_ID, _PROJECT_PATH)
 
+    async def test_incremental_raise_falls_back_to_full_sync(self) -> None:
+        c, repos = _make_incremental_connector()
+        c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))
+        repos._get_code_repo_checkpoint = AsyncMock(return_value="old-sha")
+        repos._sync_repo_incremental = AsyncMock(side_effect=RuntimeError("graph fail"))
+        repos._sync_repo_full = AsyncMock(return_value=True)
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
+        repos._sync_repo_full.assert_called_once_with(_PROJECT_ID, _PROJECT_PATH)
+        # The full walk never deletes, so the raised pass's pending deletes need a compare
+        # from last_sha next run — advancing the checkpoint would lose them.
+        repos._update_code_repo_checkpoint.assert_not_called()
+
     async def test_incremental_failure_checkpoint_updated_on_full_success(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))

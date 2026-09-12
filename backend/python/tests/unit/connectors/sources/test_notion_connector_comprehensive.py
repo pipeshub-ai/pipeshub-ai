@@ -37,6 +37,7 @@ def mock_deps():
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+    data_entities_processor.get_records_by_record_type = AsyncMock(return_value=[])
 
     data_store_provider = MagicMock()
     config_service = AsyncMock()
@@ -443,9 +444,12 @@ class TestResolveBlockParentRecursive:
         mock_ds.retrieve_block = AsyncMock(return_value=mock_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
+        connector._resolve_database_id_as_record_parent = AsyncMock(
+            return_value=("ds-1", RecordType.DATASOURCE)
+        )
         parent_id, parent_type = await connector._resolve_block_parent_recursive("block-2")
-        assert parent_id == "db-1"
-        assert parent_type == RecordType.DATABASE
+        assert parent_id == "ds-1"
+        assert parent_type == RecordType.DATASOURCE
 
     async def test_max_depth_reached(self, connector):
         parent_id, parent_type = await connector._resolve_block_parent_recursive("block-3", max_depth=0)
@@ -538,16 +542,21 @@ class TestGetDatabaseParentRef:
 
     async def test_database_parent(self, connector):
         mock_ds = MagicMock()
-        mock_response = MagicMock()
-        mock_response.success = True
-        mock_data = MagicMock()
-        mock_data.json.return_value = {"parent": {"type": "database_id", "database_id": "parent-db"}}
-        mock_response.data = mock_data
-        mock_ds.retrieve_database = AsyncMock(return_value=mock_response)
+        nested = MagicMock()
+        nested.success = True
+        nested_data = MagicMock()
+        nested_data.json.return_value = {"parent": {"type": "database_id", "database_id": "parent-db"}}
+        nested.data = nested_data
+        page = MagicMock()
+        page.success = True
+        page_data = MagicMock()
+        page_data.json.return_value = {"parent": {"type": "page_id", "page_id": "parent-page"}}
+        page.data = page_data
+        mock_ds.retrieve_database = AsyncMock(side_effect=[nested, page])
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         result = await connector._get_database_parent_ref("db-5")
-        assert result == ("parent-db", RecordType.DATABASE)
+        assert result == ("parent-page", RecordType.WEBPAGE)
 
 
 # ===========================================================================

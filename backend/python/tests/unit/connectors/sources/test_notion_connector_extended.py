@@ -73,6 +73,7 @@ def _make_connector():
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_record_group_by_external_id = AsyncMock(return_value=None)
     dep.get_user_by_source_id = AsyncMock(return_value=None)
+    dep.get_records_by_record_type = AsyncMock(return_value=[])
 
     dsp = MagicMock()
     mock_tx = MagicMock()
@@ -795,8 +796,7 @@ class TestTransformToWebpageRecord:
         }
         with patch.object(c, '_parse_iso_timestamp', return_value=1000):
             result = await c._transform_to_webpage_record(obj_data, "database")
-        assert result is not None
-        assert result.record_type == RecordType.DATABASE
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_data_source(self):
@@ -835,6 +835,9 @@ class TestTransformToWebpageRecord:
     @pytest.mark.asyncio
     async def test_page_with_database_parent(self):
         c = _make_connector()
+        c._resolve_database_id_as_record_parent = AsyncMock(
+            return_value=("ds-parent-1", RecordType.DATASOURCE)
+        )
         obj_data = {
             "id": "page-db-parent",
             "properties": {"title": {"type": "title", "title": [{"plain_text": "DB Child"}]}},
@@ -846,7 +849,8 @@ class TestTransformToWebpageRecord:
         with patch.object(c, '_parse_iso_timestamp', return_value=1000):
             result = await c._transform_to_webpage_record(obj_data, "page")
         assert result is not None
-        assert result.parent_external_record_id == "db-parent-1"
+        assert result.parent_external_record_id == "ds-parent-1"
+        assert result.parent_record_type == RecordType.DATASOURCE
 
     @pytest.mark.asyncio
     async def test_error(self):
@@ -1239,9 +1243,12 @@ class TestResolveBlockParentRecursive:
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         block_data = {"parent": {"type": "database_id", "database_id": "db-parent"}}
         ds.retrieve_block = AsyncMock(return_value=_make_api_response(True, block_data))
+        c._resolve_database_id_as_record_parent = AsyncMock(
+            return_value=("ds-parent", RecordType.DATASOURCE)
+        )
         parent_id, parent_type = await c._resolve_block_parent_recursive("block-2")
-        assert parent_id == "db-parent"
-        assert parent_type == RecordType.DATABASE
+        assert parent_id == "ds-parent"
+        assert parent_type == RecordType.DATASOURCE
 
     @pytest.mark.asyncio
     async def test_max_depth(self):
