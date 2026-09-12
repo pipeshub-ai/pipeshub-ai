@@ -32,6 +32,11 @@ export const handleMCPRequest =
     next: NextFunction,
   ): Promise<void> => {
     try {
+      const pipeshubRequestId = req.headers['x-pipeshub-request-id'];
+      if (pipeshubRequestId) {
+        logger.info('Incoming MCP request', { 'x-pipeshub-request-id': pipeshubRequestId });
+      }
+
       // Extract the raw Bearer token from the Authorization header for the MCP SDK
       const token = req.headers.authorization?.replace('Bearer ', '') || '';
       const serverURL = `${appConfig.oauthBackendUrl}/api/v1`;
