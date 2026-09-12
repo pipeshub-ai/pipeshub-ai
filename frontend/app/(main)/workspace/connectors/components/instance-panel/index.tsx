@@ -18,6 +18,7 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
+import { removeElectronLocalSync } from '../../utils/electron-local-sync';
 import type { ConnectorScope, InstancePanelTab } from '../../types';
 import { OverviewTab } from './overview-tab';
 import { SettingsTab } from './settings-tab';
@@ -108,6 +109,15 @@ export function InstanceManagementPanel() {
         variant: 'success',
         title: t('workspace.connectors.removeInstanceDialog.successTitle'),
         duration: 3000,
+      });
+      // Purge the desktop's journal for this connector too. Unmounting alone
+      // leaves its meta on disk, and the next launch remounts a watcher that
+      // holds the sync root against any new connector on the same folder.
+      // Best-effort: the backend delete (and local store update above) already
+      // succeeded, so a failure here must not surface as a deletion error or
+      // undo the removal.
+      void removeElectronLocalSync(id).catch((error) => {
+        console.warn('[local-sync] failed to purge journal for removed connector:', error);
       });
     } catch (error: unknown) {
       let description: string | undefined;

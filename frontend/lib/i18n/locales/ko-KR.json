@@ -377,6 +377,7 @@
       "subtitleExisting": "PipesHub 서버 URL을 확인하거나 업데이트하세요.",
       "label": "서버 URL",
       "submit": "연결",
+      "changeServer": "서버 변경",
       "errors": {
         "empty": "서버 URL을 입력해 주세요.",
         "invalid": "유효한 URL을 입력해 주세요 (예: http://localhost:3000).",
@@ -1988,7 +1989,9 @@
           "needsAuth": "인증 필요",
           "needsAuthTooltip": "구성은 저장되었지만 이 인스턴스는 아직 인증이 필요합니다.",
           "ready": "완료",
-          "readyTooltip": "구성과 인증이 완료되었습니다. 활성화하면 동기화를 실행할 수 있습니다."
+          "readyTooltip": "구성과 인증이 완료되었습니다. 활성화하면 동기화를 실행할 수 있습니다.",
+          "desktopOffline": "데스크톱 오프라인",
+          "desktopOfflineTooltip": "이 폴더를 관리하는 데스크톱 앱이 연결되어 있지 않습니다. 동기화하려면 해당 컴퓨터에서 앱을 여세요."
         },
         "sync": {
           "kind": "동기화",

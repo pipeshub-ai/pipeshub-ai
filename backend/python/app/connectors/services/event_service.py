@@ -17,6 +17,10 @@ from app.config.constants.arangodb import (
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorSyncSkippedError,
+)
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
@@ -444,7 +448,10 @@ class EventService:
         else:
             # --- Normal sync: set status only, no lock ---
             try:
-                await self._update_app_status(connector_id, status=AppStatus.SYNCING.value)
+                await self._update_app_status(
+                    connector_id,
+                    status=AppStatus.SYNCING.value,
+                )
                 self.logger.info(f"Set status=SYNCING for connector {connector_id}")
             except Exception as status_err:
                 self.logger.error(f"❌ Failed to set SYNCING status for connector {connector_id}: {status_err}")
@@ -480,6 +487,7 @@ class EventService:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
         start = time.monotonic()
         cancelled = False
+        skipped_code: str | None = None
         try:
             await connector.run_sync()
         except asyncio.CancelledError:
@@ -488,6 +496,10 @@ class EventService:
             # finished its work.
             cancelled = True
             raise
+        except ConnectorSyncSkippedError as exc:
+            # Not a crash: the connector declined to run (e.g. Local FS with no
+            # desktop connected). Logged only; the UI reads live presence.
+            skipped_code = exc.code
         finally:
             elapsed = time.monotonic() - start
             mins, secs = divmod(elapsed, 60)
@@ -496,12 +508,20 @@ class EventService:
                 self.logger.warning(
                     f"⚠️ Sync cancelled for connector {connector_id} after {elapsed_str}"
                 )
+            if skipped_code:
+                self.logger.info(
+                    f"Sync skipped for connector {connector_id} "
+                    f"({skipped_code}, {elapsed_str})"
+                )
             else:
                 self.logger.info(
                     f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
                 )
             try:
-                await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
+                await self._update_app_status(
+                    connector_id,
+                    status=AppStatus.IDLE.value,
+                )
                 self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")
             except Exception as clear_err:
                 self.logger.error(f"❌ Failed to clear status for connector {connector_id}: {clear_err}")

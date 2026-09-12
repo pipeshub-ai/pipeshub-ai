@@ -1,36 +1,41 @@
 /**
- * Socket.IO gateway for desktop clients: authenticated REST proxy over `/rest-proxy`.
+ * Socket.IO gateway for desktop clients: authenticates the handshake on
+ * `/rest-proxy` and routes Local FS messages to `LocalFsRelay`.
  */
 import { Server as HttpServer } from 'http';
 import { Namespace, Server, Socket } from 'socket.io';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
+import { LocalFsRelay } from './local-fs-relay';
 import {
-  DEFAULT_REST_PROXY_ALLOWED_PREFIXES,
-  normalizeAndAssertRestProxyPath,
-} from './desktop-proxy-allowlist';
-
-type JsonPrimitive = string | number | boolean | null;
-type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
-
-type RestProxyQuery = Record<string, JsonPrimitive | undefined>;
+  DesktopRegisterAck,
+  DesktopRegisterPayload,
+  DesktopUnregisterPayload,
+  LocalFsContentAbortPayload,
+  LocalFsContentChunkPayload,
+  LocalFsFetchContentPayload,
+  LocalFsPullRequestPayload,
+  LocalFsPullResult,
+} from '../types/local-fs.types';
 
 type RestProxySocketData = {
   userId: string;
   orgId: string;
+  deviceId?: string;
 };
 
 type ClientToServerEvents = {
-  'rpc:request': (
-    req: RpcRequest,
-    ack?: (res: RpcResponse) => void,
+  'desktop:register': (
+    payload: DesktopRegisterPayload,
+    ack?: (res: DesktopRegisterAck) => void,
   ) => void;
+  'desktop:unregister': (payload: DesktopUnregisterPayload) => void;
+  'localfs:content:chunk': (payload: LocalFsContentChunkPayload) => void;
+  'localfs:content:abort': (payload: LocalFsContentAbortPayload) => void;
 };
 
-type ServerToClientEvents = {
-  'rpc:response': (res: RpcResponse) => void;
-};
+type ServerToClientEvents = Record<string, never>;
 
 type InterServerEvents = Record<string, never>;
 
@@ -41,37 +46,8 @@ type RestProxySocket = Socket<
   RestProxySocketData
 >;
 
-type RpcRequest = {
-  type: 'request';
-  id: string;
-  op: 'restProxy';
-  payload: {
-    method: string;
-    path: string;
-    query?: RestProxyQuery;
-    body?: JsonValue;
-  };
-};
-
-type RpcResponse =
-  | {
-      type: 'response';
-      id: string;
-      ok: true;
-      result: { status: number; body: JsonValue };
-    }
-  | {
-      type: 'response';
-      id: string;
-      ok: false;
-      error: { code: string; message: string; status?: number };
-    };
-
-const ALLOWED_PREFIXES = DEFAULT_REST_PROXY_ALLOWED_PREFIXES;
-const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const NAMESPACE = '/rest-proxy';
 const SOCKET_PATH = '/socket.io-rest-proxy';
-const INTERNAL_REST_PROXY_FETCH_TIMEOUT_MS = 30_000;
 
 export class DesktopProxySocketGateway {
   private readonly logger = Logger.getInstance({
@@ -79,11 +55,9 @@ export class DesktopProxySocketGateway {
   });
   private io: Server | null = null;
   private namespace: Namespace | null = null;
+  private readonly localFsRelay = new LocalFsRelay();
 
-  constructor(
-    private readonly authTokenService: AuthTokenService,
-    private readonly getPort: () => number,
-  ) {}
+  constructor(private readonly authTokenService: AuthTokenService) {}
 
   initialize(server: HttpServer): void {
     const rawOrigins = process.env.ALLOWED_ORIGINS;
@@ -115,8 +89,16 @@ export class DesktopProxySocketGateway {
       this.authTokenService
         .verifyToken(extractedToken)
         .then((decoded) => {
-          socket.data.userId = String(decoded.userId ?? '');
-          socket.data.orgId = String(decoded.orgId ?? '');
+          const userId = String(decoded.userId ?? '');
+          const orgId = String(decoded.orgId ?? '');
+          if (!userId || !orgId) {
+            // Otherwise the socket connects but can never be addressed,
+            // which reads as "desktop offline" forever.
+            next(new BadRequestError('Token is missing userId or orgId'));
+            return;
+          }
+          socket.data.userId = userId;
+          socket.data.orgId = orgId;
           next();
         })
         .catch(() => {
@@ -125,20 +107,41 @@ export class DesktopProxySocketGateway {
     });
 
     this.namespace.on('connection', (socket: RestProxySocket) => {
+      socket.join(`${socket.data.orgId}:${socket.data.userId}`);
+
       socket.on(
-        'rpc:request',
-        async (req: RpcRequest, ack?: (res: RpcResponse) => void) => {
-          const response = await this.handleRequest(req, socket);
-          if (ack) {
-            ack(response);
-          } else {
-            socket.emit('rpc:response', response);
-          }
+        'desktop:register',
+        (
+          payload: DesktopRegisterPayload,
+          ack?: (res: DesktopRegisterAck) => void,
+        ) => {
+          const result = this.localFsRelay.register(
+            socket,
+            payload?.connectorIds || [],
+            payload?.deviceId,
+          );
+          if (ack) ack(result);
         },
       );
+
+      socket.on('desktop:unregister', (payload: DesktopUnregisterPayload) => {
+        this.localFsRelay.unregister(socket, payload?.connectorIds || []);
+      });
+
+      socket.on('localfs:content:chunk', (payload: LocalFsContentChunkPayload) => {
+        this.localFsRelay.handleContentChunk(socket, payload);
+      });
+
+      socket.on('localfs:content:abort', (payload: LocalFsContentAbortPayload) => {
+        this.localFsRelay.handleContentAbort(socket, payload);
+      });
+
+      socket.on('disconnect', () => {
+        this.localFsRelay.handleDisconnect(socket);
+      });
     });
 
-    this.logger.info('REST proxy Socket.IO namespace initialized');
+    this.logger.info('Desktop relay Socket.IO namespace initialized');
   }
 
   shutdown(): void {
@@ -148,146 +151,63 @@ export class DesktopProxySocketGateway {
     this.io = null;
   }
 
-  private async handleRequest(
-    req: RpcRequest,
-    socket: RestProxySocket,
-  ): Promise<RpcResponse> {
-    if (req.id.trim().length === 0) {
-      return {
-        type: 'response',
-        id: 'unknown',
-        ok: false,
-        error: { code: 'BAD_REQUEST', message: 'Invalid RPC envelope' },
-      };
-    }
-    const { id, payload } = req;
-    const methodRaw = payload.method.trim();
-    const rawPath = payload.path.trim();
-    const method = methodRaw.length > 0 ? methodRaw.toUpperCase() : 'GET';
-    if (!ALLOWED_METHODS.has(method)) {
-      return {
-        type: 'response',
-        id,
-        ok: false,
-        error: {
-          code: 'METHOD_NOT_ALLOWED',
-          message: `Method ${method} is not allowed`,
-        },
-      };
-    }
+  /** False until initialize() runs, which happens after routes are mounted. */
+  isReady(): boolean {
+    return this.namespace !== null;
+  }
 
-    const handshakeToken = this.getHandshakeToken(socket);
-    const extractedForVerify = this.extractToken(handshakeToken);
-    if (extractedForVerify === null) {
-      return {
-        type: 'response',
-        id,
-        ok: false,
-        error: {
-          code: 'UNAUTHORIZED',
-          message: 'Authentication token missing',
-          status: 401,
-        },
-      };
-    }
-    try {
-      await this.authTokenService.verifyToken(extractedForVerify);
-    } catch {
-      return {
-        type: 'response',
-        id,
-        ok: false,
-        error: {
-          code: 'TOKEN_EXPIRED',
-          message: 'Authentication token expired or invalid',
-          status: 401,
-        },
-      };
-    }
+  /**
+   * Any desktop socket of this user on this replica, whether or not it has
+   * claimed a given connector. Every socket joins the org:user room on
+   * connect. `null` before the namespace is attached.
+   */
+  isDesktopConnected(orgId: string, userId: string): boolean | null {
+    if (!this.namespace) return null;
+    const room = this.namespace.adapter.rooms.get(`${orgId}:${userId}`);
+    return (room?.size ?? 0) > 0;
+  }
 
-    const pathCheck = normalizeAndAssertRestProxyPath(
-      rawPath,
-      ALLOWED_PREFIXES,
+  /**
+   * `null` before the namespace is attached: at that point no desktop could
+   * have registered yet, so "offline" would be wrong for every connector.
+   */
+  isLocalFsDesktopOnline(
+    orgId: string,
+    userId: string,
+    connectorId: string,
+  ): boolean | null {
+    if (!this.isReady()) return null;
+    return this.localFsRelay.hasDesktop(orgId, userId, connectorId);
+  }
+
+  /** Ask the desktop that registered this connector for one page of file events. */
+  async requestLocalFsFileEvents(
+    orgId: string,
+    userId: string,
+    connectorId: string,
+    payload: LocalFsPullRequestPayload,
+  ): Promise<LocalFsPullResult> {
+    return this.localFsRelay.requestFileEvents(
+      orgId,
+      userId,
+      connectorId,
+      payload,
     );
-    if (!pathCheck.ok) {
-      return {
-        type: 'response',
-        id,
-        ok: false,
-        error: {
-          code: 'PATH_NOT_ALLOWED',
-          message: pathCheck.reason,
-        },
-      };
-    }
-
-    const url = this.buildInternalUrl(pathCheck.normalizedPath, payload.query);
-    try {
-      const token = extractedForVerify;
-      const controller = new AbortController();
-      const timer = setTimeout(
-        () => controller.abort(),
-        INTERNAL_REST_PROXY_FETCH_TIMEOUT_MS,
-      );
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          method,
-          signal: controller.signal,
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-          },
-          body:
-            payload.body === undefined ? undefined : JSON.stringify(payload.body),
-        });
-      } finally {
-        clearTimeout(timer);
-      }
-      const text = await response.text();
-      return {
-        type: 'response',
-        id,
-        ok: true,
-        result: {
-          status: response.status,
-          body: this.tryParseJson(text),
-        },
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        type: 'response',
-        id,
-        ok: false,
-        error: { code: 'UPSTREAM_ERROR', message },
-      };
-    }
   }
 
-  private buildInternalUrl(
-    path: string,
-    query: RestProxyQuery | undefined,
-  ): string {
-    const port = this.getPort() || 3000;
-    const url = new URL(`http://127.0.0.1:${port}${path}`);
-    if (query) {
-      for (const [key, value] of Object.entries(query)) {
-        if (value === null || value === undefined) continue;
-        url.searchParams.set(key, String(value));
-      }
-    }
-    return url.toString();
-  }
-
-  private tryParseJson(text: string): JsonValue {
-    if (!text.trim()) return null;
-    try {
-      return JSON.parse(text) as JsonValue;
-    } catch {
-      return text;
-    }
+  /** Fetch one file's bytes from the desktop. Same seam as the pull above. */
+  async requestLocalFsContent(
+    orgId: string,
+    userId: string,
+    connectorId: string,
+    payload: LocalFsFetchContentPayload,
+  ): Promise<Buffer> {
+    return this.localFsRelay.requestContent(
+      orgId,
+      userId,
+      connectorId,
+      payload,
+    );
   }
 
   private extractToken(token: string): string | null {

@@ -5,18 +5,15 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { LocalSyncManager } from '..';
-import type { DispatchFileEventBatchArgs } from '../transport/file-event-dispatcher';
+import {
+  decodeCursor,
+  encodeCursor,
+  type ServePullPage,
+  type ServePullRequest,
+  type ServePullResponse,
+} from '../pull-responder-types';
 import type { WatchEvent } from '../watcher/replay-event-expander';
 
-interface DispatchedRecord {
-  connectorId: string;
-  events: WatchEvent[];
-  resetBeforeApply: boolean;
-  batchId: string;
-}
-
-const TOKEN = 'test-token';
-const API_BASE = 'http://127.0.0.1:1';
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const ALL_CHANGE_FINAL_PATHS = [
   'created.txt',
@@ -24,57 +21,16 @@ const ALL_CHANGE_FINAL_PATHS = [
   'nested/move-to.txt',
   'rename-to.txt',
 ].sort();
-const ALL_CHANGE_REMOVED_PATHS = [
-  'delete-me.txt',
-  'move-from.txt',
-  'rename-from.txt',
-];
-
-function markFullSyncSeen(manager: LocalSyncManager, connectorId: string, rootPath: string): void {
-  const signature = JSON.stringify({
-    rootPath: path.resolve(String(rootPath || '')),
-    apiBaseUrl: API_BASE,
-    includeSubfolders: true,
-  });
-  (manager as unknown as {
-    lastReplaceSyncSignature: Map<string, string>;
-  }).lastReplaceSyncSignature.set(connectorId, signature);
-}
 
 function setup() {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-userdata-'));
   const syncRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-syncroot-'));
-  const dispatched: DispatchedRecord[] = [];
-  const dispatchFileEventBatch = async (args: DispatchFileEventBatchArgs) => {
-    dispatched.push({
-      connectorId: args.connectorId,
-      events: args.events,
-      resetBeforeApply: args.resetBeforeApply === true,
-      batchId: args.batchId,
-    });
-    return null;
-  };
-  const app = { getPath: () => userData };
-  const manager = new LocalSyncManager({ app, dispatchFileEventBatch });
-  return { manager, dispatched, syncRoot, userData };
+  const manager = new LocalSyncManager({ app: { getPath: () => userData } });
+  return { manager, syncRoot, userData };
 }
 
 function reopen(userData: string) {
-  const dispatched: DispatchedRecord[] = [];
-  const dispatchFileEventBatch = async (args: DispatchFileEventBatchArgs) => {
-    dispatched.push({
-      connectorId: args.connectorId,
-      events: args.events,
-      resetBeforeApply: args.resetBeforeApply === true,
-      batchId: args.batchId,
-    });
-    return null;
-  };
-  const manager = new LocalSyncManager({
-    app: { getPath: () => userData },
-    dispatchFileEventBatch,
-  });
-  return { manager, dispatched };
+  return new LocalSyncManager({ app: { getPath: () => userData } });
 }
 
 async function seedAllChangeFiles(syncRoot: string): Promise<void> {
@@ -93,10 +49,67 @@ async function applyAllChangeTypes(syncRoot: string): Promise<void> {
   await fsp.unlink(path.join(syncRoot, 'delete-me.txt'));
 }
 
-function flattenEvents(dispatched: DispatchedRecord[], opts?: { resetBeforeApply?: boolean }): WatchEvent[] {
-  return dispatched
-    .filter((record) => opts?.resetBeforeApply === undefined || record.resetBeforeApply === opts.resetBeforeApply)
-    .flatMap((record) => record.events || []);
+function pullArgs(overrides: Partial<ServePullRequest> = {}): ServePullRequest {
+  return {
+    connectorId: 'c-1',
+    runId: 'run-1',
+    batchIndex: 0,
+    mode: 'INCREMENTAL',
+    cursor: null,
+    maxEvents: 50,
+    ...overrides,
+  };
+}
+
+function countEvents(events: WatchEvent[], match: (e: WatchEvent) => boolean): number {
+  return events.filter(match).length;
+}
+
+/** A move must not also be described as a delete of the old path or a create of
+ * the new one — that pair is what mints a second record server-side. */
+function assertNoStrayChildEvents(events: WatchEvent[], oldPath: string, newPath: string): void {
+  assert.equal(
+    countEvents(events, (e) => e.type === 'DELETED' && e.path === oldPath),
+    0,
+    `moved child ${oldPath} must not also be reported as DELETED, got ${JSON.stringify(events)}`,
+  );
+  assert.equal(
+    countEvents(events, (e) => e.type === 'CREATED' && e.path === newPath),
+    0,
+    `moved child ${newPath} must not also be reported as CREATED, got ${JSON.stringify(events)}`,
+  );
+}
+
+function asPage(response: ServePullResponse, message: string): ServePullPage {
+  assert.equal(response.ok, true, `${message}: expected a page, got ${JSON.stringify(response)}`);
+  return response as ServePullPage;
+}
+
+/** Drain every incremental page of a run, acking each by asking for the next. */
+async function drainRun(
+  manager: LocalSyncManager,
+  connectorId: string,
+  runId: string,
+  mode: 'FULL' | 'INCREMENTAL' = 'INCREMENTAL',
+  maxEvents = 50,
+): Promise<{ events: WatchEvent[]; cursor: string | null; pages: number }> {
+  const events: WatchEvent[] = [];
+  let cursor: string | null = null;
+  let batchIndex = 0;
+  let pages = 0;
+  for (;;) {
+    const page = asPage(
+      await manager.servePull(pullArgs({ connectorId, runId, batchIndex, mode, cursor, maxEvents })),
+      `drainRun page ${batchIndex}`,
+    );
+    events.push(...page.events);
+    cursor = page.cursor;
+    pages += 1;
+    batchIndex += 1;
+    if (!page.hasMore) break;
+    assert.ok(batchIndex < 500, 'drainRun did not terminate');
+  }
+  return { events, cursor, pages };
 }
 
 function assertAllLiveChangeEvents(events: WatchEvent[], message: string): void {
@@ -122,606 +135,446 @@ function assertAllLiveChangeEvents(events: WatchEvent[], message: string): void 
   );
 }
 
-function assertNoLiveChangeEvents(dispatched: DispatchedRecord[], message: string): void {
-  const events = flattenEvents(dispatched, { resetBeforeApply: false });
-  const changedPaths = new Set([...ALL_CHANGE_FINAL_PATHS, ...ALL_CHANGE_REMOVED_PATHS]);
-  const leaked = events.filter((event) => changedPaths.has(event.path) || (event.oldPath && changedPaths.has(event.oldPath)));
-  assert.deepEqual(leaked, [], `${message}: expected no live change dispatches, got ${JSON.stringify(leaked)}`);
-}
-
-function assertFullSyncFinalState(dispatched: DispatchedRecord[], message: string): void {
-  const fullSync = dispatched.find((record) => record.resetBeforeApply === true);
-  assert.ok(fullSync, `${message}: expected a resetBeforeApply full-sync, got ${JSON.stringify(dispatched)}`);
-
-  const events = fullSync!.events || [];
-  const paths = events.map((event) => event.path).sort();
-  assert.deepEqual(paths, ALL_CHANGE_FINAL_PATHS, `${message}: full-sync paths should match current disk state`);
-  assert.ok(
-    events.every((event) => event.type === 'CREATED'),
-    `${message}: full-sync should express the replacement snapshot as CREATED events, got ${JSON.stringify(events)}`,
-  );
-}
-
-test('MANUAL: file create dispatches within ~2s', async () => {
-  const { manager, dispatched, syncRoot } = setup();
-  await manager.start({
-    connectorId: 'c-manual',
-    connectorName: 'Manual Test',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'MANUAL',
-  });
+test('Live edits reach the server only when it pulls', async () => {
+  const { manager, syncRoot } = setup();
+  await manager.start({ connectorId: 'c-1', connectorName: 'Live', rootPath: syncRoot });
   await sleep(700); // chokidar 'ready'
 
   await fsp.writeFile(path.join(syncRoot, 'a.txt'), 'hello');
-  await sleep(2500); // correlator (250ms) + awaitWriteFinish (200ms) + dispatcher (1000ms)
+  await sleep(2500); // correlator (250ms) + awaitWriteFinish (1500ms) + dispatcher (1000ms)
 
-  await manager.stop('c-manual');
-
-  const created = dispatched
-    .flatMap((d) => d.events || [])
-    .filter((e) => e.type === 'CREATED' && e.path === 'a.txt');
+  const { events } = await drainRun(manager, 'c-1', 'run-1');
   assert.equal(
-    created.length,
+    events.filter((e) => e.type === 'CREATED' && e.path === 'a.txt').length,
     1,
-    `expected 1 CREATED event for a.txt, got ${created.length} (dispatched=${JSON.stringify(dispatched)})`,
+    `expected exactly one CREATED a.txt, got ${JSON.stringify(events)}`,
   );
+
+  await manager.shutdown();
 });
 
-test('MANUAL: create, content change, rename, move, and delete dispatch right away', async () => {
-  const { manager, dispatched, syncRoot } = setup();
+test('Create, content change, rename, move and delete all reach one pull', async () => {
+  const { manager, syncRoot } = setup();
   await seedAllChangeFiles(syncRoot);
-  markFullSyncSeen(manager, 'c-manual-all', syncRoot);
-
-  await manager.start({
-    connectorId: 'c-manual-all',
-    connectorName: 'Manual All Changes',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'MANUAL',
-  });
+  await manager.start({ connectorId: 'c-1', connectorName: 'All', rootPath: syncRoot });
   await sleep(1000);
 
   await applyAllChangeTypes(syncRoot);
   await sleep(3500);
 
-  await manager.stop('c-manual-all');
+  const { events } = await drainRun(manager, 'c-1', 'run-1');
+  assertAllLiveChangeEvents(events, 'incremental pull');
 
-  assertAllLiveChangeEvents(
-    flattenEvents(dispatched, { resetBeforeApply: false }),
-    'MANUAL all changes',
-  );
+  await manager.shutdown();
 });
 
-test('MANUAL: directory rename dispatches folder and child file changes', async () => {
-  const { manager, dispatched, syncRoot } = setup();
+test('Directory rename expands to the folder and its children', async () => {
+  const { manager, syncRoot } = setup();
   const docDir = path.join(syncRoot, 'doc');
   await fsp.mkdir(docDir, { recursive: true });
   await fsp.writeFile(path.join(docDir, 'note.txt'), 'hello');
-  markFullSyncSeen(manager, 'c-manual-dir-rename', syncRoot);
 
-  await manager.start({
-    connectorId: 'c-manual-dir-rename',
-    connectorName: 'Manual Directory Rename',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'MANUAL',
-  });
+  await manager.start({ connectorId: 'c-1', connectorName: 'Dir rename', rootPath: syncRoot });
   await sleep(1000);
+  // The seed batch from first start covers the pre-rename state; drop it so the
+  // assertion below is about the rename alone.
+  await drainRun(manager, 'c-1', 'seed-run');
 
   await fsp.rename(docDir, path.join(syncRoot, 'docs'));
   await sleep(3500);
 
-  await manager.stop('c-manual-dir-rename');
-
-  const events = flattenEvents(dispatched, { resetBeforeApply: false });
-  assert.ok(
-    events.some((e) => e.type === 'DIR_RENAMED' && e.oldPath === 'doc' && e.path === 'docs' && e.isDirectory),
-    `expected DIR_RENAMED doc -> docs, got ${JSON.stringify(events)}`,
-  );
-  assert.ok(
-    events.some((e) => e.type === 'RENAMED' && e.oldPath === 'doc/note.txt' && e.path === 'docs/note.txt'),
-    `expected child RENAMED doc/note.txt -> docs/note.txt, got ${JSON.stringify(events)}`,
-  );
-});
-
-test('SCHEDULED: file create is held until tick fires', async () => {
-  const { manager, dispatched, syncRoot } = setup();
-  await manager.start({
-    connectorId: 'c-sched',
-    connectorName: 'Scheduled Test',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'SCHEDULED',
-    scheduledConfig: { intervalMinutes: 60 }, // won't fire during the test
-  });
-  await sleep(700);
-
-  await fsp.writeFile(path.join(syncRoot, 'b.txt'), 'world');
-  await sleep(2500);
-
-  // SCHEDULED gate holds the live batch in the journal as 'pending'.
-  // (The initial REPLACE full-sync dispatches an empty batch with
-  // resetBeforeApply=true on first start; we only care that no live event for
-  // b.txt has been dispatched.)
-  const beforeTick = dispatched.flatMap((d) => d.events || []).filter((e) => e.path === 'b.txt');
+  const { events } = await drainRun(manager, 'c-1', 'rename-run');
+  // Exact counts, not `some`: the child is described twice by the OS (once by
+  // the directory event we expand, once by its own unlink/add) and both
+  // descriptions used to reach the backend as separate records.
   assert.equal(
-    beforeTick.length,
-    0,
-    `expected 0 events for b.txt before tick, got ${beforeTick.length}`,
+    countEvents(events, (e) => e.type === 'DIR_RENAMED' && e.oldPath === 'doc' && e.path === 'docs' && e.isDirectory),
+    1,
+    `expected exactly one DIR_RENAMED doc -> docs, got ${JSON.stringify(events)}`,
   );
-
-  // Manual tick drains the pending journal batch.
-  await manager.runScheduledTick('c-sched');
-
-  await manager.stop('c-sched');
-
-  const created = dispatched
-    .flatMap((d) => d.events || [])
-    .filter((e) => e.type === 'CREATED' && e.path === 'b.txt');
-  assert.ok(
-    created.length >= 1,
-    `expected ≥1 CREATED event for b.txt after tick, got ${created.length}`,
+  assert.equal(
+    countEvents(events, (e) => e.type === 'RENAMED' && e.oldPath === 'doc/note.txt' && e.path === 'docs/note.txt'),
+    1,
+    `expected exactly one child RENAMED doc/note.txt -> docs/note.txt, got ${JSON.stringify(events)}`,
   );
-});
-
-test('SCHEDULED: create, content change, rename, move, and delete are held until tick', async () => {
-  const { manager, dispatched, syncRoot } = setup();
-  await seedAllChangeFiles(syncRoot);
-  markFullSyncSeen(manager, 'c-sched-all', syncRoot);
-
-  await manager.start({
-    connectorId: 'c-sched-all',
-    connectorName: 'Scheduled All Changes',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'SCHEDULED',
-    scheduledConfig: { intervalMinutes: 60 },
-  });
-  await sleep(1000);
-
-  await applyAllChangeTypes(syncRoot);
-  await sleep(3500);
-
-  assertNoLiveChangeEvents(dispatched, 'SCHEDULED before tick');
-
-  await manager.runScheduledTick('c-sched-all');
-  await manager.stop('c-sched-all');
-
-  assertAllLiveChangeEvents(
-    flattenEvents(dispatched, { resetBeforeApply: false }),
-    'SCHEDULED after tick',
-  );
-});
-
-test('SCHEDULED metadata omits credentials', async () => {
-  const { manager, syncRoot } = setup();
-  const status = await manager.start({
-    connectorId: 'c-clean-meta',
-    connectorName: 'Clean Meta',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'SCHEDULED',
-    scheduledConfig: {
-      intervalMinutes: 60,
-      timezone: 'UTC',
-    },
-  });
-
-  const meta = manager.journal.getMeta('c-clean-meta') as Record<string, unknown>;
-  assert.deepEqual(Object.keys(meta).filter((key) => key.toLowerCase().includes('token')), []);
-  assert.deepEqual(meta.scheduledConfig, { intervalMinutes: 60, timezone: 'UTC' });
-  assert.deepEqual(status.scheduledConfig, { intervalMinutes: 60, timezone: 'UTC' });
+  assertNoStrayChildEvents(events, 'doc/note.txt', 'docs/note.txt');
 
   await manager.shutdown();
 });
 
-test('Close → reopen: full-sync sends current disk state with resetBeforeApply', async () => {
+test('Moving a populated directory reports each child exactly once', async () => {
+  const { manager, syncRoot } = setup();
+  const photos = path.join(syncRoot, 'photos');
+  await fsp.mkdir(photos, { recursive: true });
+  await fsp.writeFile(path.join(photos, 'a.jpg'), 'aaa');
+  await fsp.writeFile(path.join(photos, 'b.jpg'), 'bbb');
+  await fsp.mkdir(path.join(syncRoot, 'album'), { recursive: true });
+
+  await manager.start({ connectorId: 'c-1', connectorName: 'Dir move', rootPath: syncRoot });
+  await sleep(1000);
+  await drainRun(manager, 'c-1', 'seed-run');
+
+  await fsp.rename(photos, path.join(syncRoot, 'album', 'photos'));
+  // Long enough for the children's own unlink/add to arrive and be dropped —
+  // not merely long enough for the directory event itself.
+  await sleep(4000);
+
+  const { events } = await drainRun(manager, 'c-1', 'move-run');
+  assert.equal(
+    countEvents(events, (e) => e.isDirectory && e.oldPath === 'photos' && e.path === 'album/photos'),
+    1,
+    `expected exactly one directory move event, got ${JSON.stringify(events)}`,
+  );
+  for (const name of ['a.jpg', 'b.jpg']) {
+    assert.equal(
+      countEvents(events, (e) => e.path === `album/photos/${name}` && e.oldPath === `photos/${name}`),
+      1,
+      `expected exactly one move event for ${name}, got ${JSON.stringify(events)}`,
+    );
+    assertNoStrayChildEvents(events, `photos/${name}`, `album/photos/${name}`);
+  }
+
+  await manager.shutdown();
+});
+
+test('A file created inside a just-moved directory is still reported', async () => {
+  const { manager, syncRoot } = setup();
+  const docDir = path.join(syncRoot, 'doc');
+  await fsp.mkdir(docDir, { recursive: true });
+  await fsp.writeFile(path.join(docDir, 'note.txt'), 'hello');
+
+  await manager.start({ connectorId: 'c-1', connectorName: 'Dir move + create', rootPath: syncRoot });
+  await sleep(1000);
+  await drainRun(manager, 'c-1', 'seed-run');
+
+  await fsp.rename(docDir, path.join(syncRoot, 'docs'));
+  // Inside the move's suppression window: only the children carried over by the
+  // move may be dropped, never a genuinely new file that lands next to them.
+  await fsp.writeFile(path.join(syncRoot, 'docs', 'fresh.txt'), 'brand new');
+  await sleep(4000);
+
+  const { events } = await drainRun(manager, 'c-1', 'move-run');
+  assert.equal(
+    countEvents(events, (e) => e.type === 'CREATED' && e.path === 'docs/fresh.txt'),
+    1,
+    `expected the new file to survive the move window, got ${JSON.stringify(events)}`,
+  );
+
+  await manager.shutdown();
+});
+
+test('First-ever start seeds pre-existing files, which the first pull delivers', async () => {
+  const { manager, syncRoot } = setup();
+  await seedAllChangeFiles(syncRoot);
+
+  await manager.start({ connectorId: 'c-1', connectorName: 'Seed', rootPath: syncRoot });
+  await sleep(700);
+
+  const { events } = await drainRun(manager, 'c-1', 'run-1');
+  const created = events.filter((e) => e.type === 'CREATED').map((e) => e.path).sort();
+  assert.deepEqual(
+    created,
+    ['delete-me.txt', 'existing.txt', 'move-from.txt', 'rename-from.txt'],
+    `expected every pre-existing file seeded as CREATED, got ${JSON.stringify(events)}`,
+  );
+
+  await manager.shutdown();
+});
+
+test('A repeated (runId, batchIndex) returns the identical page and does not advance', async () => {
+  const { manager, syncRoot } = setup();
+  await fsp.writeFile(path.join(syncRoot, 'a.txt'), 'a');
+  await fsp.writeFile(path.join(syncRoot, 'b.txt'), 'b');
+  await manager.start({ connectorId: 'c-1', connectorName: 'Idempotent', rootPath: syncRoot });
+  await sleep(700);
+
+  const first = asPage(await manager.servePull(pullArgs({ maxEvents: 1 })), 'first');
+  const retry = asPage(await manager.servePull(pullArgs({ maxEvents: 1 })), 'retry');
+
+  assert.deepEqual(retry, first, 'a re-sent index must answer byte-identically');
+  // And still nothing committed: the ack is the *next* index arriving.
+  assert.equal(
+    manager.journal.listBatches('c-1').every((b) => b.status !== 'synced'),
+    true,
+    'a served page must not be marked synced',
+  );
+
+  await manager.shutdown();
+});
+
+test('A batch is only marked synced once the next pull arrives past it', async () => {
+  const { manager, syncRoot } = setup();
+  await fsp.writeFile(path.join(syncRoot, 'a.txt'), 'a');
+  await manager.start({ connectorId: 'c-1', connectorName: 'Commit', rootPath: syncRoot });
+  await sleep(700);
+
+  const first = asPage(await manager.servePull(pullArgs()), 'first page');
+  assert.ok(first.events.length > 0, 'expected the seed batch on page 0');
+  assert.ok(first.cursor, 'expected a cursor after serving events');
+  assert.deepEqual(
+    manager.journal.listBatches('c-1').map((b) => b.status),
+    ['pending'],
+    'serving must not commit',
+  );
+
+  await manager.servePull(pullArgs({ batchIndex: 1, cursor: first.cursor }));
+  assert.deepEqual(
+    manager.journal.listBatches('c-1').map((b) => b.status),
+    ['synced'],
+    'the next pull past the batch is its ack',
+  );
+
+  await manager.shutdown();
+});
+
+test('An unresolvable cursor answers CURSOR_UNKNOWN rather than guessing', async () => {
+  const { manager, syncRoot } = setup();
+  await manager.start({ connectorId: 'c-1', connectorName: 'Cursor', rootPath: syncRoot });
+  await sleep(700);
+
+  const unknown = await manager.servePull(
+    pullArgs({ cursor: encodeCursor({ v: 1, mode: 'INCREMENTAL', afterBatchId: 'nope' }) }),
+  );
+  assert.equal(unknown.ok, false);
+  assert.equal((unknown as { error: { code: string } }).error.code, 'CURSOR_UNKNOWN');
+
+  // A FULL token handed to an incremental run is equally unresolvable — the two
+  // position spaces are not interchangeable.
+  const wrongMode = await manager.servePull(
+    pullArgs({ runId: 'run-2', cursor: encodeCursor({ v: 1, mode: 'FULL', afterPath: 'x' }) }),
+  );
+  assert.equal(wrongMode.ok, false);
+  assert.equal((wrongMode as { error: { code: string } }).error.code, 'CURSOR_UNKNOWN');
+
+  await manager.shutdown();
+});
+
+test('A superseded run is told STALE_RUN instead of resurrecting', async () => {
+  const { manager, syncRoot } = setup();
+  await fsp.writeFile(path.join(syncRoot, 'a.txt'), 'a');
+  await manager.start({ connectorId: 'c-1', connectorName: 'Stale', rootPath: syncRoot });
+  await sleep(700);
+
+  await manager.servePull(pullArgs({ runId: 'run-old' }));
+  await manager.servePull(pullArgs({ runId: 'run-new' }));
+
+  const straggler = await manager.servePull(pullArgs({ runId: 'run-old', batchIndex: 1 }));
+  assert.equal(straggler.ok, false);
+  assert.equal((straggler as { error: { code: string } }).error.code, 'STALE_RUN');
+
+  await manager.shutdown();
+});
+
+test('A quiet connector still answers one page with hasMore false', async () => {
+  const { manager, syncRoot } = setup();
+  await manager.start({ connectorId: 'c-1', connectorName: 'Quiet', rootPath: syncRoot });
+  await sleep(700);
+
+  const page = asPage(await manager.servePull(pullArgs()), 'quiet page');
+  assert.deepEqual(page.events, []);
+  assert.equal(page.hasMore, false, 'a quiet tick must terminate, not block until timeout');
+
+  await manager.shutdown();
+});
+
+test('FULL: the walk is served in sorted path order and resumes at afterPath', async () => {
+  const { manager, syncRoot } = setup();
+  await fsp.mkdir(path.join(syncRoot, 'nested'), { recursive: true });
+  await fsp.writeFile(path.join(syncRoot, 'a.txt'), 'a');
+  await fsp.writeFile(path.join(syncRoot, 'm.txt'), 'm');
+  await fsp.writeFile(path.join(syncRoot, 'nested', 'z.txt'), 'z');
+  await manager.start({ connectorId: 'c-1', connectorName: 'Full', rootPath: syncRoot });
+  await sleep(700);
+
+  const first = asPage(
+    await manager.servePull(pullArgs({ mode: 'FULL', maxEvents: 2 })),
+    'full page 0',
+  );
+  assert.equal(first.events.length, 2);
+  assert.equal(first.hasMore, true);
+  const firstPaths = first.events.map((e) => e.path);
+  assert.deepEqual(firstPaths, [...firstPaths].sort(), 'walk must be in sorted path order');
+
+  const resumeToken = decodeCursor(first.cursor, 'FULL');
+  assert.ok(resumeToken, 'a mid-walk page must carry a FULL cursor');
+  assert.equal(
+    (resumeToken as { afterPath: string }).afterPath,
+    firstPaths[firstPaths.length - 1],
+    'cursor names the last path served',
+  );
+
+  const second = asPage(
+    await manager.servePull(
+      pullArgs({ mode: 'FULL', batchIndex: 1, cursor: first.cursor, maxEvents: 2 }),
+    ),
+    'full page 1',
+  );
+  assert.ok(
+    second.events.every((e) => !firstPaths.includes(e.path)),
+    `page 1 must resume past page 0, got ${JSON.stringify(second.events)}`,
+  );
+
+  await manager.shutdown();
+});
+
+test('FULL: the whole disk snapshot is delivered exactly once', async () => {
+  const { manager, syncRoot } = setup();
+  await seedAllChangeFiles(syncRoot);
+  await applyAllChangeTypes(syncRoot);
+  await manager.start({ connectorId: 'c-1', connectorName: 'Full all', rootPath: syncRoot });
+  await sleep(700);
+
+  const { events } = await drainRun(manager, 'c-1', 'full-run', 'FULL', 2);
+  const files = events.filter((e) => !e.isDirectory).map((e) => e.path).sort();
+  assert.deepEqual(files, ALL_CHANGE_FINAL_PATHS, 'full walk must match current disk state');
+  assert.ok(
+    events.every((e) => e.type === 'CREATED' || e.type === 'DIR_CREATED'),
+    `full walk should express the snapshot as creations, got ${JSON.stringify(events)}`,
+  );
+  assert.equal(new Set(files).size, files.length, 'no path may appear twice in one walk');
+
+  await manager.shutdown();
+});
+
+test('FULL: the final page hands off an incremental cursor, so the next run is not FULL again', async () => {
+  const { manager, syncRoot } = setup();
+  await fsp.writeFile(path.join(syncRoot, 'a.txt'), 'a');
+  await manager.start({ connectorId: 'c-1', connectorName: 'Handoff', rootPath: syncRoot });
+  await sleep(700);
+
+  const { cursor } = await drainRun(manager, 'c-1', 'full-run', 'FULL', 50);
+  assert.ok(cursor, 'a non-empty journal must yield a handoff cursor');
+  assert.equal(
+    decodeCursor(cursor, 'FULL'),
+    null,
+    'the handoff cursor must not be a FULL token',
+  );
+  assert.ok(
+    decodeCursor(cursor, 'INCREMENTAL'),
+    'the handoff cursor must resolve as an incremental position',
+  );
+
+  // And the connector's next run, which is INCREMENTAL, accepts it.
+  const next = asPage(
+    await manager.servePull(pullArgs({ runId: 'next-run', cursor })),
+    'incremental run after a full one',
+  );
+  assert.equal(next.hasMore, false);
+
+  await manager.shutdown();
+});
+
+test('FULL: a resumed walk this process no longer holds answers CURSOR_UNKNOWN', async () => {
   const { manager, syncRoot, userData } = setup();
-  await manager.start({
-    connectorId: 'c-reopen',
-    connectorName: 'Reopen Test',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'MANUAL',
-  });
+  await fsp.writeFile(path.join(syncRoot, 'a.txt'), 'a');
+  await manager.start({ connectorId: 'c-1', connectorName: 'Lost walk', rootPath: syncRoot });
+  await sleep(700);
+  await manager.shutdown();
+
+  const m2 = reopen(userData);
+  const response = await m2.servePull(
+    pullArgs({ mode: 'FULL', batchIndex: 3, cursor: encodeCursor({ v: 1, mode: 'FULL', afterPath: 'a.txt' }) }),
+  );
+  assert.equal(response.ok, false);
+  assert.equal((response as { error: { code: string } }).error.code, 'CURSOR_UNKNOWN');
+
+  await m2.shutdown();
+});
+
+test('Close then reopen: offline create and delete surface on the next pull', async () => {
+  const { manager, syncRoot, userData } = setup();
+  await manager.start({ connectorId: 'c-1', connectorName: 'Reopen', rootPath: syncRoot });
   await sleep(700);
   await fsp.writeFile(path.join(syncRoot, 'a.txt'), 'a');
   await sleep(2500);
-
-  // Close.
+  await drainRun(manager, 'c-1', 'run-before');
   await manager.shutdown();
 
-  // Modify on disk while the manager is "closed".
   await fsp.writeFile(path.join(syncRoot, 'b.txt'), 'b');
   await fsp.unlink(path.join(syncRoot, 'a.txt'));
 
-  // Reopen — same userData carries the journal forward.
-  const { manager: m2, dispatched: d2 } = reopen(userData);
-  await m2.init();
+  const m2 = reopen(userData);
+  await m2.bootstrapFromJournal();
   await sleep(500);
-  assert.equal(d2.length, 0, 'init must not dispatch without a live access token');
 
-  await m2.start({
-    connectorId: 'c-reopen',
-    connectorName: 'Reopen Test',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'MANUAL',
-  });
-  // start's full-sync is fire-and-forget; wait for it to finish.
-  await sleep(1500);
-
-  const fullSync = d2.find((d) => d.resetBeforeApply === true);
+  const { events } = await drainRun(m2, 'c-1', 'run-after');
   assert.ok(
-    fullSync,
-    `expected a full-sync dispatch with resetBeforeApply=true, got ${JSON.stringify(d2)}`,
+    events.some((e) => e.type === 'CREATED' && e.path === 'b.txt'),
+    `expected reconcile CREATED for b.txt, got ${JSON.stringify(events)}`,
   );
-  const paths = (fullSync!.events || []).map((e) => e.path);
-  assert.ok(paths.includes('b.txt'), 'b.txt should be in full-sync (created while closed)');
-  assert.ok(!paths.includes('a.txt'), 'a.txt should NOT be in full-sync (deleted while closed)');
+  assert.ok(
+    events.some((e) => e.type === 'DELETED' && e.path === 'a.txt'),
+    `expected reconcile DELETED for a.txt, got ${JSON.stringify(events)}`,
+  );
 
   await m2.shutdown();
 });
 
-test('Close → reopen: full-sync catches create, content change, rename, move, and delete', async () => {
+test('A pull with nothing mounted lazily mounts the watcher', async () => {
   const { manager, syncRoot, userData } = setup();
-  await seedAllChangeFiles(syncRoot);
-  markFullSyncSeen(manager, 'c-reopen-all', syncRoot);
-
-  await manager.start({
-    connectorId: 'c-reopen-all',
-    connectorName: 'Reopen All Changes',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'MANUAL',
-  });
-  await sleep(1000);
-
-  await manager.shutdown();
-
-  await applyAllChangeTypes(syncRoot);
-
-  const { manager: m2, dispatched: d2 } = reopen(userData);
-  await m2.init();
-  await sleep(500);
-  assert.equal(d2.length, 0, 'init must not dispatch without a live access token');
-
-  await m2.start({
-    connectorId: 'c-reopen-all',
-    connectorName: 'Reopen All Changes',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'MANUAL',
-  });
-  await sleep(1500);
-
-  assertFullSyncFinalState(d2, 'Close reopen all changes');
-
-  await m2.shutdown();
-});
-
-test('Closed during scheduled tick: tick is dropped, reopen full-sync covers it', async () => {
-  const { manager, dispatched, syncRoot, userData } = setup();
-  await manager.start({
-    connectorId: 'c-tickclose',
-    connectorName: 'Tick-Close Test',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'SCHEDULED',
-    scheduledConfig: { intervalMinutes: 60 },
-  });
+  await manager.start({ connectorId: 'c-1', connectorName: 'Lazy', rootPath: syncRoot });
   await sleep(700);
-
-  await fsp.writeFile(path.join(syncRoot, 'a.txt'), 'a');
-  await sleep(2500);
-
-  // Tick has not fired (60 min interval, test ran <5s). The only allowed
-  // dispatch is the initial REPLACE full-sync (empty events when start()
-  // ran against an empty syncRoot). The live a.txt event must remain queued.
-  const beforeClose = dispatched.flatMap((d) => d.events || []).filter((e) => e.path === 'a.txt');
-  assert.equal(
-    beforeClose.length,
-    0,
-    `expected 0 events for a.txt before close, got ${beforeClose.length}`,
-  );
-
-  // Close — the scheduled timer is cleared (manager stop() clearInterval).
   await manager.shutdown();
 
-  // Reopen — init waits for a live token; start's full-sync brings backend to current disk state.
-  const { manager: m2, dispatched: d2 } = reopen(userData);
-  await m2.init();
-  await sleep(500);
-  assert.equal(d2.length, 0, 'init must not dispatch without a live access token');
+  await fsp.writeFile(path.join(syncRoot, 'offline.txt'), 'offline');
 
-  await m2.start({
-    connectorId: 'c-tickclose',
-    connectorName: 'Tick-Close Test',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'SCHEDULED',
-    scheduledConfig: { intervalMinutes: 60 },
-  });
-  await sleep(1500);
+  // Fresh process, nothing bootstrapped: servePull is the only thing that can
+  // bring the watcher up, and it has to before it can find anything.
+  const m2 = reopen(userData);
+  assert.equal((m2.getStatus('c-1') as { watcherState: string }).watcherState, 'stopped');
 
-  const fullSync = d2.find((d) => d.resetBeforeApply === true);
+  const { events } = await drainRun(m2, 'c-1', 'run-1');
+  assert.equal((m2.getStatus('c-1') as { watcherState: string }).watcherState, 'watching');
   assert.ok(
-    fullSync,
-    `expected full-sync after reopen to cover the dropped tick, got ${JSON.stringify(d2)}`,
-  );
-  const created = (fullSync!.events || []).filter((e) => e.type === 'CREATED' && e.path === 'a.txt');
-  assert.equal(
-    created.length,
-    1,
-    `expected a.txt in full-sync CREATED events, got ${created.length}`,
+    events.some((e) => e.type === 'CREATED' && e.path === 'offline.txt'),
+    `expected the lazily mounted watcher to reconcile offline.txt, got ${JSON.stringify(events)}`,
   );
 
   await m2.shutdown();
 });
 
-test('Closed during scheduled tick: full-sync catches create, content change, rename, move, and delete', async () => {
-  const { manager, dispatched, syncRoot, userData } = setup();
-  await seedAllChangeFiles(syncRoot);
-  markFullSyncSeen(manager, 'c-tickclose-all', syncRoot);
-
-  await manager.start({
-    connectorId: 'c-tickclose-all',
-    connectorName: 'Tick-Close All Changes',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'SCHEDULED',
-    scheduledConfig: { intervalMinutes: 60 },
-  });
-  await sleep(1000);
-
-  await applyAllChangeTypes(syncRoot);
-  await sleep(3500);
-
-  assertNoLiveChangeEvents(dispatched, 'SCHEDULED all changes before close');
-
-  await manager.shutdown();
-
-  const { manager: m2, dispatched: d2 } = reopen(userData);
-  await m2.init();
-  await sleep(500);
-  assert.equal(d2.length, 0, 'init must not dispatch without a live access token');
-
-  await m2.start({
-    connectorId: 'c-tickclose-all',
-    connectorName: 'Tick-Close All Changes',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'SCHEDULED',
-    scheduledConfig: { intervalMinutes: 60 },
-  });
-  await sleep(1500);
-
-  assertFullSyncFinalState(d2, 'Closed during scheduled tick all changes');
-
-  await m2.shutdown();
+test('An unconfigured connector answers CONFIG_MISMATCH, not an empty sync', async () => {
+  const { manager } = setup();
+  const response = await manager.servePull(pullArgs({ connectorId: 'never-seen' }));
+  assert.equal(response.ok, false);
+  assert.equal((response as { error: { code: string } }).error.code, 'CONFIG_MISMATCH');
+  assert.equal((response as { error: { retryable: boolean } }).error.retryable, false);
 });
 
-test('Quarantine: a batch that fails repeatedly is set aside and replay drains the rest', async () => {
-  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-userdata-'));
-  const syncRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-syncroot-'));
-  // Mocked dispatcher: fail every dispatch for 'a.txt' (the poison path) but
-  // succeed for everything else. After MAX_BATCH_ATTEMPTS=8 the poison batch
-  // should be quarantined and replay should advance to 'b.txt'.
-  const dispatched: string[] = [];
-  const dispatchFileEventBatch = async (args: DispatchFileEventBatchArgs) => {
-    const paths = (args.events || []).map((e: WatchEvent) => e.path);
-    if (paths.includes('a.txt')) {
-      throw new Error('simulated permanent 403 for a.txt');
-    }
-    dispatched.push(...paths);
-    return null;
-  };
-  const app = { getPath: () => userData };
-  const manager = new LocalSyncManager({ app, dispatchFileEventBatch });
-
-  markFullSyncSeen(manager, 'c-quar', syncRoot);
-  await manager.start({
-    connectorId: 'c-quar',
-    connectorName: 'Quarantine Test',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'MANUAL',
-  });
-
-  // Seed the journal directly with two pending batches so replay sees them in
-  // order. Batch order matters: a.txt (poison) before b.txt; without quarantine
-  // logic the b.txt batch never replays because the loop halts on the first failure.
-  manager.journal.appendBatch('c-quar', {
-    batchId: 'poison',
-    timestamp: Date.now(),
-    events: [{ type: 'CREATED', path: 'a.txt', timestamp: Date.now(), isDirectory: false }],
-  });
-  manager.journal.appendBatch('c-quar', {
-    batchId: 'good',
-    timestamp: Date.now(),
-    events: [{ type: 'CREATED', path: 'b.txt', timestamp: Date.now(), isDirectory: false }],
-  });
-
-  // Re-run replay until the poison is quarantined. Cap attempts at 12 to bound
-  // the test; MAX_BATCH_ATTEMPTS is 8 in the production code.
-  for (let i = 0; i < 12; i += 1) {
-    try { await manager.replay('c-quar'); } catch { /* expected while poison is still 'failed' */ }
-    const all = manager.journal.listBatches('c-quar');
-    const poison = all.find((b) => b.batchId === 'poison');
-    if (poison && poison.status === 'quarantined') break;
-  }
-
-  const all = manager.journal.listBatches('c-quar');
-  const poison = all.find((b) => b.batchId === 'poison');
-  const good = all.find((b) => b.batchId === 'good');
-
-  assert.equal(poison?.status, 'quarantined', `poison should be quarantined, got ${poison?.status}`);
-  assert.equal(good?.status, 'synced', `good should drain past quarantined poison, got ${good?.status}`);
-  assert.deepEqual(dispatched, ['b.txt'], `expected only b.txt dispatched, got ${JSON.stringify(dispatched)}`);
-
-  await manager.shutdown();
-  fs.rmSync(userData, { recursive: true, force: true });
-  fs.rmSync(syncRoot, { recursive: true, force: true });
-});
-
-test('Single-flight scheduled tick: concurrent calls coalesce', async () => {
+test('start() called twice with unchanged config is a no-op', async () => {
   const { manager, syncRoot } = setup();
-  await manager.start({
-    connectorId: 'c-singleflight',
-    connectorName: 'Single-flight',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'SCHEDULED',
-    scheduledConfig: { intervalMinutes: 60 },
-  });
+  await fsp.writeFile(path.join(syncRoot, 'existing.txt'), 'hello');
+  const startArgs = { connectorId: 'c-1', connectorName: 'Revisit', rootPath: syncRoot };
+
+  await manager.start(startArgs);
   await sleep(700);
+  const afterFirst = manager.journal.listBatches('c-1').length;
+  await manager.start(startArgs);
+  await manager.start(startArgs);
+  await sleep(300);
 
-  // Fire two ticks at the same microtask. Implementation contract: same
-  // promise returned, only one rescan/replay actually executes.
-  const t1 = manager.runScheduledTick('c-singleflight');
-  const t2 = manager.runScheduledTick('c-singleflight');
-  assert.strictEqual(t1, t2, 'concurrent runScheduledTick calls must return the same in-flight promise');
-
-  await Promise.all([t1, t2]);
-  await manager.stop('c-singleflight');
-});
-
-test('REPLACE/replay serialization: opChain prevents concurrent execution', async () => {
-  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-userdata-'));
-  const syncRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-syncroot-'));
-  // Slow dispatch: hold each call for 80ms. Track the in-flight count to
-  // detect any concurrent overlap.
-  let inFlight = 0;
-  let maxObserved = 0;
-  const dispatchFileEventBatch = async () => {
-    inFlight += 1;
-    if (inFlight > maxObserved) maxObserved = inFlight;
-    await sleep(80);
-    inFlight -= 1;
-    return null;
-  };
-  const manager = new LocalSyncManager({
-    app: { getPath: () => userData },
-    dispatchFileEventBatch,
-  });
-
-  await fsp.writeFile(path.join(syncRoot, 'x.txt'), 'x');
-  markFullSyncSeen(manager, 'c-serial', syncRoot);
-  await manager.start({
-    connectorId: 'c-serial',
-    connectorName: 'Serial Test',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'MANUAL',
-  });
-
-  // Seed one pending batch so replay has work to do. The runtime token from
-  // start() is required; credentials are not persisted in journal metadata.
-  manager.journal.appendBatch('c-serial', {
-    batchId: 'live-1',
-    timestamp: Date.now(),
-    events: [{ type: 'CREATED', path: 'x.txt', timestamp: Date.now(), isDirectory: false }],
-  });
-  // Kick off replace and replay simultaneously. The opChain must serialize
-  // them — at no point should both be in dispatch at the same time.
-  const fs1 = manager.triggerBackendFullSync('c-serial');
-  const r1 = manager.replay('c-serial');
-  await Promise.all([fs1, r1]);
-
-  assert.equal(maxObserved, 1, `replay and full-sync ran concurrently (observed=${maxObserved})`);
-
-  await manager.shutdown();
-  fs.rmSync(userData, { recursive: true, force: true });
-  fs.rmSync(syncRoot, { recursive: true, force: true });
-});
-
-test('Shutdown: live events drained on close are journaled, not dispatched', async () => {
-  const { manager, dispatched, syncRoot } = setup();
-  await manager.start({
-    connectorId: 'c-shutdown',
-    connectorName: 'Shutdown Test',
-    rootPath: syncRoot,
-    apiBaseUrl: API_BASE,
-    accessToken: TOKEN,
-    syncStrategy: 'MANUAL',
-  });
-  await sleep(700);
-
-  await fsp.writeFile(path.join(syncRoot, 'late.txt'), 'late');
-  // Sleep into the window where chokidar (~1500ms awaitWriteFinish) + the
-  // correlator (~250ms) have already pushed the event into the dispatcher
-  // buffer, but before the dispatcher's 1000ms flush timer would have fired
-  // an actual dispatch. Then shutdown — the drain inside watcher.stop must
-  // hit the journal-only fast path, not the network, otherwise app quit
-  // would block on a 30s dispatch timeout.
-  await sleep(1900);
-  await manager.shutdown();
-
-  // Live dispatches have resetBeforeApply=false. REPLACE full-sync (from
-  // start) has resetBeforeApply=true and runs against an empty disk so its
-  // events are []. Either way, no `late.txt` should appear in any dispatched
-  // batch — it should only live in the journal until the next session.
-  const liveDispatchedLate = dispatched
-    .filter((d) => !d.resetBeforeApply)
-    .flatMap((d) => d.events || [])
-    .filter((e) => e.path === 'late.txt');
   assert.equal(
-    liveDispatchedLate.length,
-    0,
-    `late.txt must not be live-dispatched on shutdown; got ${JSON.stringify(liveDispatchedLate)}`,
+    manager.journal.listBatches('c-1').length,
+    afterFirst,
+    'a repeated start must not remount and re-seed the journal',
   );
 
-  // The drained event landed in the journal so the next token-backed start()
-  // can replay it (or the REPLACE full-sync from disk re-uploads it).
-  const journaled = manager.journal.listBatches('c-shutdown');
-  const hasLate = journaled.some(
-    (b) => (b.events || []).some((e: WatchEvent) => e.path === 'late.txt'),
-  );
-  assert.ok(hasLate, `late.txt should be persisted in journal, got ${JSON.stringify(journaled)}`);
+  await manager.shutdown();
 });
 
 test('Duplicate root path: one local folder is watched by at most one connector', async () => {
   const { manager, syncRoot } = setup();
 
   const starts = await Promise.allSettled([
-    manager.start({
-      connectorId: 'c-one',
-      connectorName: 'First Local FS',
-      rootPath: syncRoot,
-      apiBaseUrl: API_BASE,
-      accessToken: TOKEN,
-      syncStrategy: 'MANUAL',
-    }),
+    manager.start({ connectorId: 'c-one', connectorName: 'First Local FS', rootPath: syncRoot }),
     manager.start({
       connectorId: 'c-two',
       connectorName: 'Second Local FS',
       rootPath: path.join(syncRoot, '.'),
-      apiBaseUrl: API_BASE,
-      accessToken: TOKEN,
-      syncStrategy: 'MANUAL',
     }),
   ]);
 
   assert.equal(starts.filter((result) => result.status === 'fulfilled').length, 1);
-  assert.equal(starts.filter((result) => result.status === 'rejected').length, 1);
   const rejected = starts.find((result) => result.status === 'rejected') as PromiseRejectedResult;
   assert.match(String(rejected.reason?.message || ''), /already watched/);
 
@@ -731,6 +584,82 @@ test('Duplicate root path: one local folder is watched by at most one connector'
     1,
     `expected only one active watcher, got ${JSON.stringify(statuses)}`,
   );
+
+  await manager.shutdown();
+});
+
+test('A deleted connector does not come back on the next launch and frees its root', async () => {
+  const { manager, syncRoot, userData } = setup();
+  await manager.start({ connectorId: 'c-deleted', connectorName: 'T1', rootPath: syncRoot });
+  await sleep(700);
+  await manager.shutdown();
+
+  // Reopen and reap against the backend's list, which no longer has it.
+  const m2 = reopen(userData);
+  await m2.bootstrapFromJournal();
+  assert.equal(
+    (m2.getStatus('c-deleted') as { watcherState: string }).watcherState,
+    'watching',
+    'precondition: the journal remounts every connector it knows about',
+  );
+
+  const removed = await m2.reap([]);
+  assert.deepEqual(removed, ['c-deleted']);
+  assert.deepEqual(m2.listConnectorIds(), [], 'journal meta must be gone');
+
+  // The freed root is now available to a different connector — this is the
+  // failure users hit: "already watched by connector T1" after deleting T1.
+  await m2.start({ connectorId: 'c-new', connectorName: 'T2', rootPath: syncRoot });
+  assert.equal((m2.getStatus('c-new') as { watcherState: string }).watcherState, 'watching');
+
+  // And a relaunch must not resurrect it.
+  await m2.shutdown();
+  const m3 = reopen(userData);
+  await m3.bootstrapFromJournal();
+  assert.deepEqual(m3.listConnectorIds(), ['c-new']);
+
+  await m3.shutdown();
+});
+
+test('reap keeps a connector that still exists but is switched off', async () => {
+  const { manager, syncRoot } = setup();
+  await fsp.writeFile(path.join(syncRoot, 'pending.txt'), 'unsynced');
+  await manager.start({ connectorId: 'c-off', connectorName: 'Toggled off', rootPath: syncRoot });
+  await sleep(700);
+  await manager.stop('c-off');
+
+  // Deactivating is not deleting: its pending events must survive.
+  const removed = await manager.reap(['c-off']);
+  assert.deepEqual(removed, []);
+  assert.deepEqual(manager.listConnectorIds(), ['c-off']);
+  assert.ok(manager.journal.listBatches('c-off').length > 0, 'journal must be intact');
+
+  await manager.shutdown();
+});
+
+test('A watcher that fails to start does not hold the sync root', async () => {
+  const { manager, userData } = setup();
+  const missing = path.join(userData, 'no-such-folder');
+
+  await assert.rejects(
+    () => manager.start({ connectorId: 'c-broken', connectorName: 'Broken', rootPath: missing }),
+    /does not exist/,
+  );
+
+  // The failed runtime must not linger and block the retry that would work.
+  fs.mkdirSync(missing, { recursive: true });
+  await manager.start({ connectorId: 'c-broken', connectorName: 'Broken', rootPath: missing });
+  assert.equal((manager.getStatus('c-broken') as { watcherState: string }).watcherState, 'watching');
+
+  await manager.shutdown();
+});
+
+test('listConnectorIds only reports connectors with a configured folder', async () => {
+  const { manager, syncRoot } = setup();
+  await manager.start({ connectorId: 'c-configured', connectorName: 'Configured', rootPath: syncRoot });
+  manager.journal.setMeta('c-bare', { connectorName: 'No folder yet' });
+
+  assert.deepEqual(manager.listConnectorIds(), ['c-configured']);
 
   await manager.shutdown();
 });

@@ -478,6 +478,7 @@ class TestBuildConnectorInfo:
         assert info["isActive"] is True
         assert info["_key"] == "conn1"
         assert info["name"] == "My Gmail"
+        assert "lastError" not in info
 
 
 # ===========================================================================

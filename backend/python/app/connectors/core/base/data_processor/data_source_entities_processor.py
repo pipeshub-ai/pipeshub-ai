@@ -1302,6 +1302,7 @@ class DataSourceEntitiesProcessor:
         records_to_reindex: list[Record] = []
         new_records_to_publish: list[Record] = []
         membership_vrids: list[str] = []
+        duplicate_delete_payloads: list[dict] = []
 
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -1315,11 +1316,45 @@ class DataSourceEntitiesProcessor:
                     )
 
                     if old_record is None:
-                        # Old record was never stored (dotfile, skipped, etc.) — treat as add.
+                        # Old record was never stored (skipped) — treat as add.
                         processed = await self._process_record(new_record, permissions, tx_store)
                         if processed:
                             new_records_to_publish.append(processed)
                         continue
+
+                    # A CREATED for the new path can be applied before this move
+                    # (the desktop reports both, and one page concatenates several
+                    # journal batches), minting a second vertex at the id we are
+                    # about to write. Records upsert by vertex id, not external id,
+                    # so both would survive and every lookup would resolve to an
+                    # arbitrary one of the pair.
+                    duplicate = await tx_store.get_record_by_external_id(
+                        connector_id=new_record.connector_id,
+                        external_id=new_record.external_record_id,
+                    )
+                    if duplicate is not None and duplicate.id != old_record.id:
+                        self.logger.warning(
+                            "Retiring duplicate record %s: external id %s is already "
+                            "held by the record being moved (%s)",
+                            duplicate.id,
+                            new_record.external_record_id,
+                            old_record.id,
+                        )
+                        # Capture the cleanup payload before the vertex is gone —
+                        # once deleted it can no longer be looked up by id, and an
+                        # indexed duplicate would otherwise leave an orphaned,
+                        # unreachable vector behind (see _publish_delete_events).
+                        duplicate_vrid = getattr(duplicate, "virtual_record_id", None)
+                        if isinstance(duplicate_vrid, str) and duplicate_vrid:
+                            duplicate_delete_payloads.append({
+                                "orgId": getattr(duplicate, "org_id", self.org_id),
+                                "recordId": duplicate.id,
+                                "version": getattr(duplicate, "version", 1),
+                                "virtualRecordId": duplicate_vrid,
+                                "connectorId": getattr(duplicate, "connector_id", None),
+                            })
+                        await tx_store.delete_parent_child_edge_to_record(duplicate.id)
+                        await tx_store.delete_record_by_key(duplicate.id)
 
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
@@ -1475,6 +1510,11 @@ class DataSourceEntitiesProcessor:
                         )
                         for vrid in unique_membership_vrids
                     ],
+                )
+
+            if duplicate_delete_payloads:
+                await self._publish_delete_events(
+                    {"payloads": duplicate_delete_payloads}
                 )
 
         except Exception as e:
@@ -2270,6 +2310,35 @@ class DataSourceEntitiesProcessor:
                 record_type=type_value,
             )
 
+    async def get_records_by_status(
+        self,
+        connector_id: str,
+        status_filters: list[str] | None,
+        limit: int | None = None,
+        offset: int = 0,
+        record_group_id: str | None = None,
+        is_placeholder: bool | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
+    ) -> list[Record]:
+        """Get records by indexing status, scoped to the current org.
+
+        Mirrors ``tx_store.get_records_by_status`` — see there for parameter
+        semantics (pagination, placeholder/record-group scoping, etc).
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_records_by_status(
+                org_id=self.org_id,
+                connector_id=connector_id,
+                status_filters=status_filters,
+                limit=limit,
+                offset=offset,
+                record_group_id=record_group_id,
+                is_placeholder=is_placeholder,
+                after_key=after_key,
+                exclude_statuses=exclude_statuses,
+            )
+
     async def get_placeholder_records(
         self,
         connector_id: str,
@@ -2281,14 +2350,12 @@ class DataSourceEntitiesProcessor:
         never synced (e.g. filtered out of scope). Pass ``record_group_id`` to
         scope the sweep to a single record group.
         """
-        async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_records_by_status(
-                org_id=self.org_id,
-                connector_id=connector_id,
-                status_filters=None,
-                record_group_id=record_group_id,
-                is_placeholder=True,
-            )
+        return await self.get_records_by_status(
+            connector_id,
+            status_filters=None,
+            record_group_id=record_group_id,
+            is_placeholder=True,
+        )
 
     async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:
         """

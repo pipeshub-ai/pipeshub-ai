@@ -264,8 +264,12 @@ class TestDelegateMethods:
             org_id="org-1",
             connector_id="conn-1",
             status_filters=None,
+            limit=None,
+            offset=0,
             record_group_id="rg-1",
             is_placeholder=True,
+            after_key=None,
+            exclude_statuses=None,
         )
 
     @pytest.mark.asyncio

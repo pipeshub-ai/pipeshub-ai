@@ -1,3 +1,6 @@
+import * as path from 'path';
+import { contentFileHash } from '../persistence/watcher-state-store';
+
 /**
  * Per-file expansion of directory-level events. Needed for replay because the
  * backend expects file granularity, and by the time we replay a failed batch
@@ -9,7 +12,8 @@ export interface FileStateEntry {
   size?: number;
   mtimeMs?: number;
   isDirectory: boolean;
-  quickHash?: string;
+  sha256?: string;
+  birthtimeMs?: number;
 }
 
 export type FileStateMap = Record<string, FileStateEntry>;
@@ -19,8 +23,14 @@ export interface WatchEvent {
   path: string;
   oldPath?: string;
   timestamp: number;
+  // When the event was observed. Not a file time.
   size?: number;
   isDirectory: boolean;
+  sha256?: string;
+  /** modified time of the file */
+  mtimeMs?: number;
+  /** Inode birth time. Absent on deletions and when the platform/filesystem doesn't report one. */
+  birthtimeMs?: number;
 }
 
 function listFilesUnderPrefix(files: FileStateMap, prefix: string): string[] {
@@ -34,10 +44,34 @@ function listFilesUnderPrefix(files: FileStateMap, prefix: string): string[] {
     .sort((a, b) => a.localeCompare(b));
 }
 
-export function expandWatchEventsForReplay(
+/**
+ * Best-effort fresh hash for a file expanded out of a directory move: right
+ * after a live `DIR_RENAMED`/`DIR_MOVED` the file genuinely exists at its new
+ * path, but a stale batch replayed later may find it already gone — in which
+ * case the last known hash captured in the state snapshot is the best
+ * available answer.
+ */
+async function resolveExpandedFileHash(
+  rootPath: string | undefined,
+  newRelPath: string,
+  cachedSha256: string | undefined,
+): Promise<string | undefined> {
+  if (rootPath) {
+    const fresh = await contentFileHash(path.resolve(rootPath, newRelPath));
+    if (fresh !== undefined) return fresh;
+  }
+  return cachedSha256;
+}
+
+function eventIdentity(event: WatchEvent): string {
+  return JSON.stringify([event.type, event.path, event.oldPath || '']);
+}
+
+export async function expandWatchEventsForReplay(
   events: WatchEvent[],
   files: FileStateMap,
-): WatchEvent[] {
+  rootPath?: string,
+): Promise<WatchEvent[]> {
   const expanded: WatchEvent[] = [];
   for (const event of events) {
     if (!event.isDirectory) { expanded.push(event); continue; }
@@ -54,13 +88,26 @@ export function expandWatchEventsForReplay(
       for (const oldRelPath of listFilesUnderPrefix(files, oldPrefix)) {
         const suffix = oldRelPath.slice(oldPrefix.length).replace(/^\/+/, '');
         const newRelPath = [event.path, suffix].filter(Boolean).join('/');
+        const sha256 = await resolveExpandedFileHash(rootPath, newRelPath, files[oldRelPath]?.sha256);
         expanded.push({
           type: event.type === 'DIR_MOVED' ? 'MOVED' : 'RENAMED',
           path: newRelPath, oldPath: oldRelPath,
           timestamp: event.timestamp, isDirectory: false,
+          sha256,
+          mtimeMs: files[oldRelPath]?.mtimeMs,
+          birthtimeMs: files[oldRelPath]?.birthtimeMs,
         });
       }
     }
   }
-  return expanded;
+  // A directory event that survives expansion alongside its own children would
+  // expand again if this ran twice over the same array. Collapsing identical
+  // events keeps that idempotent whatever the caller does.
+  const seen = new Set<string>();
+  return expanded.filter((event) => {
+    const identity = eventIdentity(event);
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
 }
