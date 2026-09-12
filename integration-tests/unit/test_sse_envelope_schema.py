@@ -14,6 +14,8 @@ import pytest
 from helper.agui_sse import _parse_frame, decode_sse_envelope
 from helper.openapi_search_validator import assert_matches_component_schema
 
+pytestmark = pytest.mark.unit
+
 # Frames as the server writes them (PipesHub 0.7.0), one per stream family.
 _CONVERSATION_FRAMES = [
     (
