@@ -240,7 +240,7 @@ PipesHub "Kendi Modelini Getir" yaklaşımını benimser — herhangi bir LLM sa
 
 ### Teknoloji yığını nedir?
 
-Next.js arayüzü, bir Node.js API ve bağlayıcılar, indeksleme ve sorgu için Python hizmetleri. Yükleyici varsayılan olarak Neo4j, Qdrant, MongoDB ve Redis kullanır. Slim ileti aracısı olarak Redis Streams kullanır; full Kafka kullanır. [Sistem genel bakışına](https://docs.pipeshub.com/system-overview) bakın.
+Next.js arayüzü, bir Node.js API ve bağlayıcılar, indeksleme ve arama için Python hizmetleri. Arama verileri Neo4j (graf), Qdrant (vektörler) ve MongoDB (üst veri) üzerindedir; önbellek Redis'tir. Yerel kurulumda Redis hizmetler arasında iş de taşır; daha büyük kurulumlar için alternatif Kafka'dır. [Sistem genel bakışına](https://docs.pipeshub.com/system-overview) bakın.
 
 ### Bilgi Grafiği ile Erişim özelliği nedir?
 

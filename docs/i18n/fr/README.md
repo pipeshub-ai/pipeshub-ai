@@ -240,7 +240,7 @@ PipesHub fonctionne selon le principe « Apportez votre propre modèle » — vo
 
 ### Quelle est la stack technique ?
 
-Interface Next.js, une API Node.js et des services Python pour les connecteurs, l'indexation et la requête. L'installateur déploie par défaut Neo4j, Qdrant, MongoDB et Redis. Slim utilise Redis Streams comme courtier de messages ; full utilise Kafka. Voir la [vue d'ensemble du système](https://docs.pipeshub.com/system-overview).
+Une interface Next.js, une API Node.js et des services Python pour les connecteurs, l'indexation et la recherche. Les données de recherche vivent dans Neo4j (graphe), Qdrant (vecteurs) et MongoDB (métadonnées), avec Redis en cache. En local, Redis fait aussi transiter le travail entre services ; Kafka est l'alternative pour les déploiements plus importants. Voir la [vue d'ensemble du système](https://docs.pipeshub.com/system-overview).
 
 ### Qu'est-ce que la fonctionnalité de récupération par graphe de connaissances ?
 

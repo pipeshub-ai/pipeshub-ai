@@ -242,7 +242,7 @@ PipesHub פועל לפי עקרון "הבא את המודל שלך" — אתה �
 
 ### מהי ערכת הטכנולוגיות?
 
-ממשק Next.js, API ב-Node.js ושירותי Python למחברים, אינדוקס ושאילתות. ברירת המחדל של המתקין היא Neo4j, Qdrant, MongoDB ו-Redis. Slim משתמש ב-Redis Streams כברוקר ההודעות; full משתמש ב-Kafka. ראו את [סקירת המערכת](https://docs.pipeshub.com/system-overview).
+ממשק Next.js, API ב-Node.js ושירותי Python למחברים, אינדוקס וחיפוש. נתוני החיפוש נמצאים ב-Neo4j (גרף), Qdrant (וקטורים) ו-MongoDB (מטא-דאטה), ו-Redis משמש כמטמון. בהתקנה מקומית Redis גם מעביר עבודה בין השירותים; Kafka היא החלופה להתקנות גדולות יותר. ראו את [סקירת המערכת](https://docs.pipeshub.com/system-overview).
 
 ### מהי תכונת האחזור מבוסס גרף הידע?
 

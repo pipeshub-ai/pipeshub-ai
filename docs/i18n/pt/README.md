@@ -240,7 +240,7 @@ O PipesHub é "Use seu próprio modelo" — você pode usar qualquer provedor de
 
 ### Qual é o stack tecnológico?
 
-UI Next.js, uma API Node.js e serviços Python para conectores, indexação e consulta. O instalador usa por padrão Neo4j, Qdrant, MongoDB e Redis. Slim usa Redis Streams como broker de mensagens; full usa Kafka. Veja a [visão geral do sistema](https://docs.pipeshub.com/system-overview).
+Uma UI Next.js, uma API Node.js e serviços Python para conectores, indexação e busca. Os dados de busca ficam no Neo4j (grafo), Qdrant (vetores) e MongoDB (metadados), com Redis no cache. Em um deploy local, o Redis também passa o trabalho entre serviços; Kafka é a alternativa para setups maiores. Veja a [visão geral do sistema](https://docs.pipeshub.com/system-overview).
 
 ### O que é o recurso de recuperação por grafo de conhecimento?
 
