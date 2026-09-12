@@ -1492,3 +1492,44 @@ class TestScrollMigrationGuard:
         )
         result = await connected_service.scroll("my-idx", FilterExpression(), limit=5)
         assert result.next_offset == '["p4"]'
+
+
+class TestScrollMembershipArrays:
+    """Qdrant's scroll returns the whole payload and Redis rebuilds every array;
+    OpenSearch hand-builds one, so a key missing here is a silent divergence
+    between backends rather than an error."""
+
+    @pytest.mark.asyncio
+    async def test_scroll_returns_all_three_membership_arrays(self, connected_service):
+        connected_service.client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "doc-1",
+                            "sort": ["doc-1"],
+                            "_source": {
+                                "metadata": {"orgId": "org1"},
+                                "page_content": "hello",
+                                "connectorIds": ["conn-1"],
+                                "recordGroupIds": ["thread-1"],
+                                "rootRecordGroupIds": ["channel-1"],
+                            },
+                        }
+                    ]
+                }
+            }
+        )
+        result = await connected_service.scroll("my-idx", FilterExpression(), 100)
+        payload = result.points[0].payload
+        assert payload["connectorIds"] == ["conn-1"]
+        assert payload["recordGroupIds"] == ["thread-1"]
+        assert payload["rootRecordGroupIds"] == ["channel-1"]
+
+    @pytest.mark.asyncio
+    async def test_scroll_membership_arrays_default_to_empty(self, connected_service):
+        connected_service.client.search = AsyncMock(
+            return_value={"hits": {"hits": [{"_id": "doc-1", "_source": {}}]}}
+        )
+        result = await connected_service.scroll("my-idx", FilterExpression(), 100)
+        assert result.points[0].payload["rootRecordGroupIds"] == []

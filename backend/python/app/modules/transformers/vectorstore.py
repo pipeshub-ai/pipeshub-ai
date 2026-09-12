@@ -44,7 +44,7 @@ from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     reset_membership_context,
-    resolve_vector_membership,
+    resolve_virtual_record_state,
     rewrite_or_delete_virtual_record,
     set_membership_context,
     sync_vector_membership,
@@ -777,9 +777,12 @@ class VectorStore(Transformer):
         instead so it retries.
         """
         try:
-            connector_ids, record_group_ids = await resolve_vector_membership(
+            state = await resolve_virtual_record_state(
                 self.graph_provider, virtual_record_id, current_record=record
             )
+            connector_ids = state.connector_ids
+            record_group_ids = state.record_group_ids
+            root_record_group_ids = state.root_record_group_ids
         except Exception as e:
             self.logger.error(
                 "Failed to resolve vector membership for %s: %s",
@@ -797,7 +800,9 @@ class VectorStore(Transformer):
                 "vector filters until backfilled",
                 virtual_record_id,
             )
-        return set_membership_context(connector_ids, record_group_ids)
+        return set_membership_context(
+            connector_ids, record_group_ids, root_record_group_ids
+        )
 
     # ------------------------------------------------------------------
     # Embedding model initialisation

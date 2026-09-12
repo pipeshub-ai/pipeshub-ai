@@ -94,19 +94,24 @@ class Connectors(Enum):
 
 
 class PermissionModel(Enum):
-    """How a connector's records derive their per-user visibility.
+    """How a record derives its per-user visibility, declared on its container.
 
-    ``APP_LEVEL`` means access to the connector app implies access to every
-    record it syncs — the source has no per-record ACLs, so each connector
-    writes one blanket ORG (or single creator-USER) permission. ``RECORD_LEVEL``
-    means the source syncs real per-record ACLs and visibility must be resolved
-    per user. Declared per connector via ``ConnectorBuilder.configure(...)``;
-    ``RECORD_LEVEL`` is the default because assuming per-record ACLs can only
-    under-share, never over-share.
+    ``APP_LEVEL``: reaching the app implies reaching every record it syncs.
+    ``RECORD_LEVEL``: the source has real per-record ACLs. Both are declared per
+    connector; ``RECORD_LEVEL`` is the default, since assuming per-record ACLs
+    can only under-share.
+
+    ``RECORD_GROUP_LEVEL`` is set on a RecordGroup, not a connector, and lets
+    search skip the per-record check for records in that group. Only safe when
+    every record under the group really inherits from it: ``recordGroupIds`` is
+    built from ``belongsTo`` (always written) while inheritance follows
+    ``INHERIT_PERMISSIONS`` (conditional), so one ``inherit_permissions=False``
+    record in the group makes it over-share. Leave unset to verify each record.
     """
 
     APP_LEVEL = "APP_LEVEL"
     RECORD_LEVEL = "RECORD_LEVEL"
+    RECORD_GROUP_LEVEL = "RECORD_GROUP_LEVEL"
 
 
 class AppGroups(Enum):

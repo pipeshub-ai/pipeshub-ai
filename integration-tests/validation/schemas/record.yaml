@@ -119,6 +119,9 @@ fields:
   related_record_ids:
     required: false
     type: array
+  root_record_group_id:
+    required: false
+    type: string
   semantic_metadata:
     required: false
     type: object

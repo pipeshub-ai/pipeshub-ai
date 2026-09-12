@@ -30,13 +30,16 @@ QUERY_FILE=${PIPESHUB_QUERY_FILE:-$HERE/queries.txt}
 # users=0 is the collect-only mode (someone else drives the load): no requests
 # are sent from here, so no credential is needed.
 #
-# TOKENS[] is what the load loop indexes by user. It comes either from
-# PIPESHUB_USERS (email:password pairs, logged in here) or from a single TOKEN.
-# Anything cached per user has to be measured with real distinct identities —
-# one shared token makes a per-user cache look like it always hits.
+# TOKENS[] is what the load loop indexes by user. It comes from
+# PIPESHUB_USERS (email:password pairs, logged in here), PIPESHUB_TOKENS
+# (tokens already issued, for a deployment whose passwords you do not hold), or
+# a single TOKEN. Anything cached per user has to be measured with real distinct
+# identities — one shared token makes a per-user cache look like it always hits.
+# Passwords are still preferable: they are exchanged for tokens at test start,
+# so they cannot expire mid-run the way a pasted token can.
 TOKENS=()
 if [ "$USERS" -gt 0 ]; then
-  if [ -n "${PIPESHUB_USERS:-}${PIPESHUB_EMAILS:-}" ]; then
+  if [ -n "${PIPESHUB_USERS:-}${PIPESHUB_EMAILS:-}${PIPESHUB_TOKENS:-}" ]; then
     detect_python || exit 1
     echo "== logging in load-test users"
     if ! TOKEN_BLOB=$(PIPESHUB_HOST="$HOST" LOADTEST_DIR="$HERE" \

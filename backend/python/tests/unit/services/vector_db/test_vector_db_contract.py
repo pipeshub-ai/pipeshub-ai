@@ -104,6 +104,53 @@ class TestSetPayloadContract:
         assert "metadata.recordGroupIds" not in keys
 
 
+class TestContainerPermissionFilterContract:
+    """The shape container-scoped search relies on: `must` AND at-least-one
+    `should`.
+
+    Every provider must mean the same thing by it. OpenSearch is the one that
+    would silently disagree — its `minimum_should_match` defaults to 0 when a
+    `must` clause is present, which turns every should clause into a scoring
+    hint and matches the whole index.
+    """
+
+    @pytest.mark.asyncio
+    async def test_must_and_should_survive_together(self, connected_service):
+        expr = await connected_service.filter_collection(
+            must={"orgId": "o1"},
+            should={
+                "connectorIds": ["c1"],
+                "recordGroupIds": ["rg1"],
+                "virtualRecordId": ["v1"],
+            },
+        )
+        assert {c.key for c in expr.must} == {"metadata.orgId"}
+        assert {c.key for c in expr.should} == {
+            "connectorIds",
+            "recordGroupIds",
+            "metadata.virtualRecordId",
+        }
+
+    @pytest.mark.asyncio
+    async def test_min_should_match_is_not_required(self, connected_service):
+        """The retrieval path must not pass it — Redis raises on it even with
+        no should clauses — so every provider has to be correct without it."""
+        expr = await connected_service.filter_collection(
+            must={"orgId": "o1"}, should={"connectorIds": ["c1"]}
+        )
+        assert expr.must and expr.should
+
+    @pytest.mark.asyncio
+    async def test_empty_should_values_produce_no_condition(self, connected_service):
+        """An empty list must not become a condition. If it did, the filter
+        would degenerate to `orgId` alone and match every document in the org —
+        which is why the caller refuses to build a filter from empty buckets."""
+        expr = await connected_service.filter_collection(
+            must={"orgId": "o1"}, should={"connectorIds": []}
+        )
+        assert not expr.should
+
+
 class TestFilterCollectionContract:
     @pytest.mark.asyncio
     async def test_must_filter_builds_conditions(self, connected_service):

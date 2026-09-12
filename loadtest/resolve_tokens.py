@@ -20,6 +20,16 @@ def main() -> int:
     host = os.environ.get("PIPESHUB_HOST", "http://localhost:3000")
     try:
         credentials = credentials_from_env()
+        raw = os.environ.get("PIPESHUB_TOKENS", "")
+        preissued = [t.strip() for t in raw.replace(",", " ").split() if t.strip()]
+        if preissued:
+            # Verified by the auth probe in perftest.sh before any load is
+            # sent, so an expired one aborts the run rather than turning
+            # every request into a 401 that reads as a throughput collapse.
+            for token in preissued:
+                print(token)
+            return 0
+
         if not credentials:
             raise AuthError("PIPESHUB_USERS/PIPESHUB_EMAILS is set but parsed to no credentials")
         for token in resolve_tokens(host, credentials):

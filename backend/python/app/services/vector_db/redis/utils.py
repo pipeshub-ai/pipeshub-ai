@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
 )
 from app.services.vector_db.models import (
     FieldCondition,
@@ -157,7 +158,11 @@ def vector_point_to_hash_fields(point: VectorPoint, dtype: str = "FLOAT16") -> D
     for k, v in metadata.items():
         fields[f"metadata_{k}"] = _coerce_hash_value(v)
 
-    for field in (CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD):
+    for field in (
+        CONNECTOR_IDS_FIELD,
+        RECORD_GROUP_IDS_FIELD,
+        ROOT_RECORD_GROUP_IDS_FIELD,
+    ):
         fields[field] = join_tag_values(point.payload.get(field))
 
     return fields
@@ -214,6 +219,9 @@ def hash_doc_to_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
         "metadata": reconstruct_metadata(doc),
         CONNECTOR_IDS_FIELD: split_tag_values(doc.get(CONNECTOR_IDS_FIELD)),
         RECORD_GROUP_IDS_FIELD: split_tag_values(doc.get(RECORD_GROUP_IDS_FIELD)),
+        ROOT_RECORD_GROUP_IDS_FIELD: split_tag_values(
+            doc.get(ROOT_RECORD_GROUP_IDS_FIELD)
+        ),
     }
 
 
