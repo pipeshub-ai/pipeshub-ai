@@ -26,6 +26,7 @@ from typing import Callable, Dict, List, Optional, Union
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
 )
 from app.services.vector_db.models import (
     FieldCondition,
@@ -35,7 +36,9 @@ from app.services.vector_db.models import (
 )
 
 # Top-level payload fields — must not be auto-prefixed with ``metadata.``.
-TOP_LEVEL_FILTER_FIELDS = frozenset({CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD})
+TOP_LEVEL_FILTER_FIELDS = frozenset(
+    {CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD, ROOT_RECORD_GROUP_IDS_FIELD}
+)
 
 
 def canonical_filter_key(key: str) -> str:

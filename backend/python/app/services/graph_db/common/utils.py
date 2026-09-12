@@ -1,5 +1,52 @@
 from typing import Any, Dict, List, Optional
 
+from app.config.constants.arangodb import Connectors
+
+# Connectors whose record groups are scoped by their root instead of by the full
+# descendant closure. Slack qualifies because grants sit on the channel and every
+# thread under it inherits, so carrying one group id per thread buys nothing —
+# a busy workspace has ~50x more threads than channels. Records from these
+# connectors must set `rootRecordGroupId`; see ROOT_RECORD_GROUP_IDS_FIELD.
+ROOT_SCOPED_CONNECTOR_TYPES = frozenset(
+    value.upper()
+    for value in (Connectors.SLACK.value, Connectors.SLACK_WORKSPACE.value)
+)
+
+# A virtualRecordId is a content identity, so several records can share one —
+# the same file synced from two connectors, say. Adjudicating a VRID only needs
+# enough candidates to find one the user may read; a pathological VRID
+# (boilerplate duplicated across a corpus) must not turn one search into an
+# unbounded scan. Shared so both providers cap identically — a difference here
+# would show up as one backend returning results the other does not.
+MAX_RECORD_CANDIDATES_PER_VRID = 20
+
+# Records granted directly to a user with no container covering them. Expected
+# near-empty: app-level connectors write a blanket ORG grant and land in
+# app_ids, Drive shared-with-me files get a synthetic group, KB uploads land in
+# app_ids. What is left is a record-level connector granting per record while
+# creating no record group.
+#
+# On overflow the whole request falls back to the record-id path. Truncating
+# instead would be a permanent, silent, error-free hole — exactly the failure
+# mode container filtering is supposed to avoid.
+MAX_DIRECT_GRANT_RECORDS = 2_000
+
+# Ceiling on |app_ids| + |record_group_ids| + |direct_records| in one filter.
+# Filter size is what actually breaks: OpenSearch rejects a terms clause above
+# index.max_terms_count (65,536 by default) and degrades well before it, Redis
+# parses the query string on its main thread outside search-timeout, and Qdrant
+# probes the payload index once per value per segment. Far below all three, so
+# that hitting it means something is wrong upstream rather than that the tenant
+# is merely large.
+CONTAINER_FILTER_MAX_TERMS = 25_000
+
+# Depth for the INHERIT_PERMISSIONS closure when expanding accessible record
+# groups. Not a taste call — an invariant: the closure must be at least as deep
+# as the per-record verifier, which walks `1..20`. A shallower closure omits
+# containers whose records the verifier would have admitted, and a container
+# omitted is unrecoverable recall loss with nothing to notice.
+CONTAINER_INHERIT_MAX_DEPTH = 20
+
 
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
     """

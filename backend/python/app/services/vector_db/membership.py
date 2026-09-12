@@ -38,13 +38,15 @@ from __future__ import annotations
 import asyncio
 import weakref
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from app.config.constants.arangodb import CollectionNames
+from app.services.graph_db.common.utils import ROOT_SCOPED_CONNECTOR_TYPES
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
 )
 
 
@@ -88,23 +90,32 @@ _cv_connector_ids: ContextVar[tuple[str, ...]] = ContextVar(
 _cv_record_group_ids: ContextVar[tuple[str, ...]] = ContextVar(
     "vector_record_group_ids", default=()
 )
+_cv_root_record_group_ids: ContextVar[tuple[str, ...]] = ContextVar(
+    "vector_root_record_group_ids", default=()
+)
 
 _RECORD_GROUPS_PREFIX = f"{CollectionNames.RECORD_GROUPS.value}/"
+
+_MAX_GROUP_ROOT_DEPTH = 20  # cycle guard; real hierarchies are 1-2 deep
 
 
 def set_membership_context(
     connector_ids: Sequence[str],
     record_group_ids: Sequence[str],
-) -> tuple[Token, Token]:
+    root_record_group_ids: Sequence[str] = (),
+) -> tuple[Token, Token, Token]:
     return (
         _cv_connector_ids.set(tuple(connector_ids)),
         _cv_record_group_ids.set(tuple(record_group_ids)),
+        _cv_root_record_group_ids.set(tuple(root_record_group_ids)),
     )
 
 
-def reset_membership_context(tokens: tuple[Token, Token]) -> None:
+def reset_membership_context(tokens: tuple[Token, ...]) -> None:
     _cv_connector_ids.reset(tokens[0])
     _cv_record_group_ids.reset(tokens[1])
+    if len(tokens) > 2:
+        _cv_root_record_group_ids.reset(tokens[2])
 
 
 def vector_point_payload(metadata: dict, page_content: str) -> dict[str, Any]:
@@ -114,6 +125,7 @@ def vector_point_payload(metadata: dict, page_content: str) -> dict[str, Any]:
         "metadata": metadata,
         CONNECTOR_IDS_FIELD: list(_cv_connector_ids.get()),
         RECORD_GROUP_IDS_FIELD: list(_cv_record_group_ids.get()),
+        ROOT_RECORD_GROUP_IDS_FIELD: list(_cv_root_record_group_ids.get()),
     }
 
 
@@ -236,6 +248,96 @@ def _record_group_id_from_edge(edge: dict) -> Optional[str]:
     return None
 
 
+def _is_root_scoped(record: Any) -> bool:
+    """Whether this record's connector filters by group root rather than by
+    every descendant group. Read off the record so it costs no extra query."""
+    if record is None:
+        return False
+    if isinstance(record, dict):
+        name = record.get("connectorName") or record.get("connector_name")
+    else:
+        name = getattr(record, "connector_name", None)
+        name = getattr(name, "value", name)
+    return bool(name) and str(name).upper() in ROOT_SCOPED_CONNECTOR_TYPES
+
+
+def _root_record_group_id_from_record(record: Any) -> Optional[str]:
+    if record is None:
+        return None
+    if isinstance(record, dict):
+        return record.get("rootRecordGroupId") or record.get("root_record_group_id")
+    return getattr(record, "root_record_group_id", None) or getattr(
+        record, "rootRecordGroupId", None
+    )
+
+
+async def _derive_group_root(
+    graph_provider, group_id: str, cache: dict[str, Optional[str]]
+) -> Optional[str]:
+    """Walk a group's ``belongsTo`` chain up to the group with no parent.
+
+    Records written before ``rootRecordGroupId`` existed have no stored value,
+    so the backfill derives it from the edges rather than needing a re-sync.
+    """
+    if not group_id:
+        return None
+    if group_id in cache:
+        return cache[group_id]
+
+    current = group_id
+    seen = {current}
+    reached_root = False
+    for _ in range(_MAX_GROUP_ROOT_DEPTH):
+        try:
+            edges = await graph_provider.get_edges_from_node(
+                f"{_RECORD_GROUPS_PREFIX}{current}", CollectionNames.BELONGS_TO.value
+            )
+        except Exception:
+            # Abort, not "arrived": on the first hop `current` is still the
+            # group we started from, and returning it would publish a thread
+            # group as its own root. Container filtering drops a root-scoped
+            # connector's descendants, so such a value matches nothing and the
+            # record disappears from search with nothing to notice it. None
+            # tells the caller the walk failed, so it leaves the stored root
+            # alone rather than overwriting it.
+            return None
+        parent = None
+        if isinstance(edges, (list, tuple)):
+            for edge in edges:
+                if isinstance(edge, dict):
+                    candidate = _record_group_id_from_edge(edge)
+                    if candidate and candidate not in seen:
+                        parent = candidate
+                        break
+        if parent is None:
+            # No unseen parent: either a genuine root, or a cycle. A cycle means
+            # the hierarchy is malformed, and guessing a root from it is the
+            # same silent-loss risk as above.
+            reached_root = not _has_parent_edge(edges, seen)
+            break
+        seen.add(parent)
+        current = parent
+
+    if not reached_root:
+        return None
+    cache[group_id] = current
+    return current
+
+
+def _has_parent_edge(edges: Any, seen: set) -> bool:
+    """Whether the node had a parent at all, as opposed to none to follow.
+
+    Distinguishes a genuine root (no parent edge) from a cycle (a parent edge
+    pointing back into the path already walked).
+    """
+    if not isinstance(edges, (list, tuple)):
+        return False
+    return any(
+        isinstance(edge, dict) and _record_group_id_from_edge(edge) in seen
+        for edge in edges
+    )
+
+
 @dataclass(frozen=True)
 class VirtualRecordState:
     """Everything the graph knows about one VRID, resolved in a single pass.
@@ -256,6 +358,13 @@ class VirtualRecordState:
     #: ``records`` list makes a collection look abandoned when it is not.
     #: Destructive callers must refuse to act on an incomplete read.
     complete: bool = True
+    #: Root of each record's group chain; empty for connectors that don't set it.
+    root_record_group_ids: list[str] = field(default_factory=list)
+    #: False when a root had to be derived from the graph and that walk failed.
+    #: Separate from ``complete``, which gates the destructive path: here the
+    #: records read fine, only the root is missing, and writing the array anyway
+    #: would replace a good root with an empty one on a transient graph error.
+    roots_resolved: bool = True
 
 
 async def resolve_vector_membership(
@@ -286,8 +395,12 @@ async def resolve_virtual_record_state(
     """
     connector_ids: list[str] = []
     record_group_ids: list[str] = []
+    root_record_group_ids: list[str] = []
     seen_connectors: set[str] = set()
     seen_groups: set[str] = set()
+    seen_roots: set[str] = set()
+    root_cache: dict[str, Optional[str]] = {}
+    roots_resolved = True
 
     record_keys: list[str] = []
     docs: list[Any] = []
@@ -326,7 +439,14 @@ async def resolve_virtual_record_state(
 
         for rec, edges in zip(docs, edge_lists):
             _add_unique(connector_ids, seen_connectors, _connector_id_from_record(rec))
-            _add_unique(record_group_ids, seen_groups, _record_group_id_from_record(rec))
+            own_group = _record_group_id_from_record(rec)
+            _add_unique(record_group_ids, seen_groups, own_group)
+            root = _root_record_group_id_from_record(rec)
+            if not root and own_group and _is_root_scoped(rec):
+                root = await _derive_group_root(graph_provider, own_group, root_cache)
+                if root is None:
+                    roots_resolved = False
+            _add_unique(root_record_group_ids, seen_roots, root)
             if not isinstance(edges, (list, tuple)):
                 continue
             for edge in edges:
@@ -339,9 +459,16 @@ async def resolve_virtual_record_state(
         _add_unique(
             connector_ids, seen_connectors, _connector_id_from_record(current_record)
         )
-        _add_unique(
-            record_group_ids, seen_groups, _record_group_id_from_record(current_record)
-        )
+        current_group = _record_group_id_from_record(current_record)
+        _add_unique(record_group_ids, seen_groups, current_group)
+        current_root = _root_record_group_id_from_record(current_record)
+        if not current_root and current_group and _is_root_scoped(current_record):
+            current_root = await _derive_group_root(
+                graph_provider, current_group, root_cache
+            )
+            if current_root is None:
+                roots_resolved = False
+        _add_unique(root_record_group_ids, seen_roots, current_root)
 
     # Only documents the graph actually returned: a None from a failed
     # get_document must not reach a strategy as if it were a record.
@@ -349,6 +476,8 @@ async def resolve_virtual_record_state(
     return VirtualRecordState(
         connector_ids=connector_ids,
         record_group_ids=record_group_ids,
+        root_record_group_ids=root_record_group_ids,
+        roots_resolved=roots_resolved,
         records=resolved,
         # A key that resolved to nothing is either a read that failed or a
         # record deleted mid-flight. Neither is safe to read as "no record
@@ -422,15 +551,24 @@ async def _sync_vector_membership_locked(
     filt = await vector_db.filter_collection(
         must={"virtualRecordId": virtual_record_id}
     )
-    for collection_name in collections:
-        await vector_db.set_payload(
-            collection_name,
-            {
-                CONNECTOR_IDS_FIELD: connector_ids,
-                RECORD_GROUP_IDS_FIELD: record_group_ids,
-            },
-            filt,
+    payload: dict[str, Any] = {
+        CONNECTOR_IDS_FIELD: connector_ids,
+        RECORD_GROUP_IDS_FIELD: record_group_ids,
+    }
+    # set_payload merges, so omitting the key leaves whatever root is already
+    # there. Writing the array we resolved would replace a good root with an
+    # empty one, and a root-scoped connector's records are then matched by
+    # nothing — invisible in search, with no signal that it happened.
+    if state.roots_resolved:
+        payload[ROOT_RECORD_GROUP_IDS_FIELD] = state.root_record_group_ids
+    elif logger is not None:
+        logger.warning(
+            "Leaving rootRecordGroupIds untouched for %s: a group root could "
+            "not be derived from the graph",
+            virtual_record_id,
         )
+    for collection_name in collections:
+        await vector_db.set_payload(collection_name, payload, filt)
     if logger is not None:
         # Counts at info, contents at debug: the backfill runs this for every
         # VRID in the corpus, and full arrays at info would drown the log.

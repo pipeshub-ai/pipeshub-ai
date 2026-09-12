@@ -15,6 +15,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     ExtensionTypes,
     MimeTypes,
@@ -110,6 +111,7 @@ _DRIVE_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
     .with_description("Sync files and folders from Google Drive")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Drive",

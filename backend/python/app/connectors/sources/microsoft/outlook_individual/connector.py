@@ -14,6 +14,7 @@ from msgraph.generated.models.recipient import Recipient  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -128,6 +129,7 @@ from app.utils.time_conversion import (
     .with_description("Sync emails from your personal Outlook mailbox")\
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name=OutlookConnectorNames.PERSONAL,
