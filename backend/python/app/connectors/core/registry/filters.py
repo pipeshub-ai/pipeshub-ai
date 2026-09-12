@@ -1051,7 +1051,7 @@ def require_single_value(
     field became single-select) fail loudly instead of syncing the wrong scope.
     """
     f = filters.get(key) if filters else None
-    values = [str(v) for v in f.as_list()] if f and not f.is_empty() else []
+    values = _selected_ids(f.as_list()) if f and not f.is_empty() else []
     if len(values) != 1:
         raise ValueError(
             f"{display_name}: exactly one must be selected for this connector "
