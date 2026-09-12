@@ -7,6 +7,7 @@ each write path that makes records appear or disappear actually calls one.
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.sync.sync_runner import run_sync_task
 from app.connectors.services.event_service import EventService
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.services.cache import invalidation_hooks as hooks
@@ -82,46 +84,49 @@ class TestRegistration:
 
 
 class TestSyncCompletionSite:
+    """Every entry path ends in run_sync_task's finalizer, so that is the site.
+
+    The event path and the boot-resume path used to invalidate separately, and
+    one of them could be changed without the other. They now converge here.
+    """
+
     async def test_fires_after_a_successful_sync(self) -> None:
-        service = EventService(MagicMock(), MagicMock(), MagicMock())
-        service._update_app_status = AsyncMock()
         connector = MagicMock()
         connector.run_sync = AsyncMock()
+        # run_sync_task reads org_id off the processor, not an argument.
+        connector.data_entities_processor = MagicMock(org_id="org-1")
+        graph = AsyncMock()
 
-        with patch.object(
-            hooks, "notify_connector_sync_completed", new=AsyncMock()
-        ) as notify:
-            # The module imported the symbol directly, so patch it there too.
-            with patch(
-                "app.connectors.services.event_service.notify_connector_sync_completed",
-                new=notify,
-            ):
-                await service._run_sync_and_clear_status(connector, "conn-1")
-
-        notify.assert_awaited_once_with("conn-1", None)
-
-    async def test_fires_even_when_the_sync_raises(self) -> None:
-        service = EventService(MagicMock(), MagicMock(), MagicMock())
-        service._update_app_status = AsyncMock()
-        connector = MagicMock()
-        connector.run_sync = AsyncMock(side_effect=RuntimeError("sync failed"))
-
-        notify = AsyncMock()
-        with patch(
-            "app.connectors.services.event_service.notify_connector_sync_completed", new=notify
-        ):
-            with pytest.raises(RuntimeError, match="sync failed"):
-                await service._run_sync_and_clear_status(connector, "conn-1", "org-1")
+        with patch.object(hooks, "notify_connector_sync_completed", new=AsyncMock()) as notify:
+            await run_sync_task(connector, "conn-1", graph, logging.getLogger("t"))
 
         notify.assert_awaited_once_with("conn-1", "org-1")
 
-    async def test_boot_resume_path_also_fires(self) -> None:
+    async def test_fires_even_when_the_sync_raises(self) -> None:
+        """The finalizer is shielded, so a failed sync still drops the cache."""
+        connector = MagicMock()
+        connector.run_sync = AsyncMock(side_effect=RuntimeError("sync failed"))
+        connector.data_entities_processor = MagicMock(org_id="org-1")
+        graph = AsyncMock()
+
+        with patch.object(hooks, "notify_connector_sync_completed", new=AsyncMock()) as notify:
+            # The failure still propagates; the point is that the finalizer ran
+            # before it did.
+            with pytest.raises(RuntimeError, match="sync failed"):
+                await run_sync_task(connector, "conn-1", graph, logging.getLogger("t"))
+
+        notify.assert_awaited_once_with("conn-1", "org-1")
+
+    async def test_a_registered_invalidator_is_reached(self) -> None:
+        """End to end through the real hook rather than a patch."""
         connector = MagicMock()
         connector.run_sync = AsyncMock()
+        # run_sync_task reads org_id off the processor, not an argument.
         connector.data_entities_processor = MagicMock(org_id="org-1")
+        graph = AsyncMock()
         invalidator = _register()
 
-        await ConnectorFactory._run_sync_and_invalidate(connector, "conn-1")
+        await run_sync_task(connector, "conn-1", graph, logging.getLogger("t"))
 
         connector.run_sync.assert_awaited_once()
         invalidator.on_connector_sync_completed.assert_awaited_once_with("conn-1", "org-1")

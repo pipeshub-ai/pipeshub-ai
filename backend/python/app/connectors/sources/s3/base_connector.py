@@ -310,6 +310,10 @@ class S3CompatibleBaseConnector(BaseConnector):
         self.bucket_name: str | None = None
         self.region: str | None = None
         self.bucket_regions: dict[str, str] = {}  # Cache for bucket-to-region mapping
+        # Folder records already upserted during the current sync run, keyed by
+        # "{bucket}/{segment}". Cleared at the start of every run_sync so a
+        # folder removed between runs is still re-created.
+        self._ensured_folders: set[str] = set()
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
@@ -359,6 +363,10 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             if not self.data_source:
                 raise ConnectionError(f"{self.connector_name} connector is not initialized.")
+
+            # Per-run, so folder edges are still rebuilt on every full sync —
+            # the memo only removes repeats *within* one run.
+            self._ensured_folders.clear()
 
             # Reload sync and indexing filters to pick up configuration changes
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -841,7 +849,11 @@ class S3CompatibleBaseConnector(BaseConnector):
 
         S3 list_objects only returns object keys; there are no separate folder objects.
         For each segment (e.g. 'a', 'a/b', 'a/b/c'), upsert a folder record and its edges.
-        Always processes all segments so that edges are re-created after full sync.
+        Every segment is processed once per sync run, so edges are still re-created
+        on a full sync; segments already handled during *this* run are skipped.
+        Without that memo the same handful of folders is re-upserted once per
+        object per depth level — thousands of redundant graph round-trips on a
+        bucket of any size, and profiling showed it dominating the sync.
         Process in order so parent exists before child. Aligns with Box _ensure_parent_folders_exist pattern.
         """
         if not path_segments:
@@ -849,6 +861,8 @@ class S3CompatibleBaseConnector(BaseConnector):
         timestamp_ms = get_epoch_timestamp_in_ms()
         for i, segment in enumerate(path_segments):
             external_id = f"{bucket_name}/{segment}"
+            if external_id in self._ensured_folders:
+                continue
             # Root folder: first segment has no parent. Others: parent is previous segment.
             parent_external_id = (
                 f"{bucket_name}/{path_segments[i - 1]}" if i > 0 else None
@@ -885,6 +899,9 @@ class S3CompatibleBaseConnector(BaseConnector):
             )
             permissions = await self._create_s3_permissions(bucket_name, segment + "/")
             await self.data_entities_processor.on_new_records([(folder_record, permissions)])
+            # Marked only after a successful upsert, so a failure part-way
+            # through leaves the folder to be retried by the next object.
+            self._ensured_folders.add(external_id)
 
     async def _process_s3_object(
         self, obj: dict, bucket_name: str

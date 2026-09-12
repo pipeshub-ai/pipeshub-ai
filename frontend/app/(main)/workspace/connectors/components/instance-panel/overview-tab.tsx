@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, Box } from '@radix-ui/themes';
@@ -9,7 +9,10 @@ import { ConnectorsApi } from '../../api';
 import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
-import { runConnectorResync } from '../../utils/connector-sync-actions';
+import { runConnectorResync, stopConnectorSync } from '../../utils/connector-sync-actions';
+import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
+import { isSyncRunning } from '../instance-card/primitives';
+import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { isElectron } from '@/lib/electron';
 import { isLocalFsConnectorType } from '../../utils/local-fs-helpers';
 import {
@@ -42,6 +45,8 @@ interface OverviewTabProps {
   connectorConfig?: ConnectorConfig;
   /** Local sync runtime status from Electron watcher manager */
   localSyncStatus?: LocalSyncStatus;
+  /** Portal host from the drawer, so dialogs stack above it rather than behind. */
+  nestedModalHost?: HTMLElement | null;
 }
 
 // ========================================
@@ -54,6 +59,7 @@ export function OverviewTab({
   statsLoading = false,
   connectorConfig,
   localSyncStatus,
+  nestedModalHost,
 }: OverviewTabProps) {
   const { t } = useTranslation();
   const router = useRouter();
@@ -66,6 +72,16 @@ export function OverviewTab({
   const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
   const [isReindexFailedBusy, setIsReindexFailedBusy] = useState(false);
   const [isManualIndexBusy, setIsManualIndexBusy] = useState(false);
+  const [isStopBusy, setIsStopBusy] = useState(false);
+
+  // The panel outlives the run, so a stop the backend could not complete
+  // synchronously would otherwise leave this stuck and block the next stop.
+  useEffect(() => {
+    if (!isSyncRunning(instance.status)) setIsStopBusy(false);
+  }, [instance.status]);
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
+  const isFullSyncRunning =
+    (instance.status ?? '').toUpperCase() === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING;
   const configForDerive =
     connectorConfig ?? (instance._key ? instanceConfigs[instance._key] : undefined);
   const syncStatus = deriveSyncStatus(instance, stats ?? undefined, configForDerive);
@@ -167,6 +183,29 @@ export function OverviewTab({
     }
   }, [instance._key, instance.type, instance.isActive, isHeaderSyncBusy, addToast, bumpCatalogRefresh]);
 
+  const handleConfirmStopSync = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId) return;
+    setIsStopBusy(true);
+    try {
+      const { stopped } = await stopConnectorSync(connectorId);
+      addToast(
+        stopped
+          ? { variant: 'success', title: 'Sync stopped' }
+          : { variant: 'info', title: 'Stopping sync — it will finish shortly' }
+      );
+      // Left busy while the backend still reports SYNCING: the run is winding
+      // down, and offering Sync again here would only be declined.
+      if (stopped) setIsStopBusy(false);
+    } catch (error) {
+      setIsStopBusy(false);
+      console.error('Failed to stop sync', { connectorId, error });
+      addToast({ variant: 'error', title: 'Failed to stop sync' });
+    } finally {
+      setStopConfirmOpen(false);
+    }
+  }, [instance._key, addToast]);
+
   const handleReindexFailed = useCallback(async () => {
     const connectorId = instance._key;
     if (!connectorId || !instance.isActive || isReindexFailedBusy) return;
@@ -258,12 +297,61 @@ export function OverviewTab({
         onReindexFailed={handleReindexFailed}
         onManualIndex={handleManualIndex}
         onNavigateToRecords={navigateToRecords}
-        onSync={instance.isActive ? handleOverviewResync : undefined}
+        onSync={
+          instance.isActive && !isSyncRunning(instance.status)
+            ? handleOverviewResync
+            : undefined
+        }
+        onStop={
+          instance.isActive && isSyncRunning(instance.status)
+            ? async () => setStopConfirmOpen(true)
+            : undefined
+        }
         showSyncActions={instance.isActive}
         isRefreshBusy={isRefreshStatsBusy}
         isSyncBusy={isHeaderSyncBusy}
+        isStopBusy={isStopBusy}
+        stopLabel={
+          isFullSyncRunning
+            ? t('workspace.connectors.stopSync.labelFull', {
+                defaultValue: 'Stop full sync',
+              })
+            : t('workspace.connectors.stopSync.label', { defaultValue: 'Stop sync' })
+        }
         isReindexFailedBusy={isReindexFailedBusy}
         isManualIndexBusy={isManualIndexBusy}
+      />
+
+      <ConfirmationDialog
+        container={nestedModalHost}
+        open={stopConfirmOpen}
+        onOpenChange={setStopConfirmOpen}
+        title={
+          isFullSyncRunning
+            ? t('workspace.connectors.stopSyncConfirm.titleFull', {
+                defaultValue: 'Stop the running full sync?',
+              })
+            : t('workspace.connectors.stopSyncConfirm.title', {
+                defaultValue: 'Stop the running sync?',
+              })
+        }
+        message={t('workspace.connectors.stopSyncConfirm.message', {
+          defaultValue:
+            'Records already synced are kept, but the rest of this run is abandoned. The sync may take a moment to wind down. You can start it again afterwards.',
+        })}
+        confirmLabel={
+          isFullSyncRunning
+            ? t('workspace.connectors.stopSyncConfirm.confirmFull', {
+                defaultValue: 'Stop full sync',
+              })
+            : t('workspace.connectors.stopSyncConfirm.confirm', {
+                defaultValue: 'Stop sync',
+              })
+        }
+        cancelLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+        confirmVariant="danger"
+        isLoading={isStopBusy}
+        onConfirm={() => void handleConfirmStopSync()}
       />
     </Flex>
   );

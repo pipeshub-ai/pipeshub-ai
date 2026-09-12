@@ -1,0 +1,15 @@
+# Eight connectors syncing at once — the scenario the worker-split work exists
+# to improve. On today's single-process, single-loop service these eight syncs
+# share one event loop, so this is where API stalls and head-of-line blocking
+# show up most sharply.
+#
+# Same total record count as `single` (8 x 2500 = 20000) is deliberate: it
+# isolates the cost of concurrency from the cost of volume.
+name: fleet
+source: minio
+units: 8
+scale: 2500
+repeat: 3
+warmup: 1
+profile: true
+sync_timeout: 3600

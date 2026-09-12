@@ -1,5 +1,8 @@
 # Measurement output — reports, flame graphs, CSVs. Local only.
 results/
+runs/
+__pycache__/
+*.pyc
 
 # Bearer tokens for the target environment. Never commit.
 .env

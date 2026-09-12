@@ -110,3 +110,29 @@ export async function startConnectorSync(
   }
   return runConnectorResync({ connectorId: instance._key, connectorType: type });
 }
+
+/**
+ * Ask the backend to stop the in-flight sync, then re-read the instance.
+ *
+ * Returns whether the connector had actually reached IDLE by the time we
+ * looked. Stopping only *signals* the running task, which then unwinds at its
+ * own pace, so `stopped: false` means "still stopping" — not "the stop failed".
+ * Callers should keep showing a stopping state rather than claiming success.
+ */
+export async function stopConnectorSync(
+  connectorId: string
+): Promise<{ stopped: boolean }> {
+  if (!connectorId) {
+    throw new Error('stopConnectorSync: connectorId is required');
+  }
+  await ConnectorsApi.stopConnectorSync(connectorId);
+  // The stop itself already landed. A failed refresh only means we cannot yet
+  // tell whether the run has finished winding down — which is exactly what
+  // `stopped: false` says — so it must not surface as "failed to stop".
+  try {
+    const fresh = await refreshConnectorInstanceDetails(connectorId);
+    return { stopped: isIdleSyncStatus(fresh.status) };
+  } catch {
+    return { stopped: false };
+  }
+}

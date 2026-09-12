@@ -18,6 +18,7 @@ const SYNC_VALUE_COLOR: Record<
   string
 > = {
   blue: 'var(--blue-11)',
+  amber: 'var(--amber-11)',
   red: 'var(--red-11)',
 };
 
@@ -54,24 +55,29 @@ const SETUP_TOOLTIP_I18N: Record<InstanceSetupStatusKey, string> = {
 const SYNC_I18N: Record<InstanceSyncOperationKey, string> = {
   syncing: 'workspace.connectors.instanceStatus.sync.syncing',
   full_syncing: 'workspace.connectors.instanceStatus.sync.fullSyncing',
+  queued: 'workspace.connectors.instanceStatus.sync.queued',
   deleting: 'workspace.connectors.instanceStatus.sync.removing',
 };
 
 const SYNC_TOOLTIP_I18N: Record<InstanceSyncOperationKey, string> = {
   syncing: 'workspace.connectors.instanceStatus.sync.syncingTooltip',
   full_syncing: 'workspace.connectors.instanceStatus.sync.fullSyncingTooltip',
+  queued: 'workspace.connectors.instanceStatus.sync.queuedTooltip',
   deleting: 'workspace.connectors.instanceStatus.sync.removingTooltip',
 };
 
 const SYNC_LABEL_DEFAULTS: Record<InstanceSyncOperationKey, string> = {
   syncing: 'Sync in progress',
   full_syncing: 'Full sync in progress',
+  queued: 'Queued',
   deleting: 'Removing',
 };
 
 const SYNC_TOOLTIP_DEFAULTS: Record<InstanceSyncOperationKey, string> = {
   syncing: 'This connector is syncing new and updated content.',
   full_syncing: 'This connector is running a full re-sync from the source.',
+  queued:
+    'Waiting for a free sync slot. It will start automatically when one frees up.',
   deleting: 'This connector instance is being removed.',
 };
 
@@ -86,7 +92,10 @@ export function InstanceSyncOperationIndicator({ instance }: { instance: Connect
   const tooltipContent = t(SYNC_TOOLTIP_I18N[syncOp.key], {
     defaultValue: SYNC_TOOLTIP_DEFAULTS[syncOp.key],
   });
-  const isInProgress = syncOp.key === 'syncing' || syncOp.key === 'full_syncing';
+  const isInProgress =
+    syncOp.key === 'syncing' ||
+    syncOp.key === 'full_syncing' ||
+    syncOp.key === 'queued';
 
   return (
     <Tooltip content={tooltipContent}>

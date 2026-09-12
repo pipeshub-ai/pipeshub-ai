@@ -97,9 +97,13 @@ from app.connectors.core.constants import (
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
+from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
-from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
+from app.connectors.core.sync.sync_coordinator import get_coordinator
+from app.edition_services import max_connector_workers, sync_executor_enabled
+from app.connectors.core.sync.sync_dispatcher import get_dispatcher
+from app.connectors.core.sync.sync_runner import write_app_status
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.sources.local_fs.connector import LocalFsConnector
 from app.connectors.sources.local_fs.file_events import (
@@ -109,7 +113,6 @@ from app.connectors.sources.local_fs.file_events import (
     _update_connector_status,
 )
 from app.connectors.sources.local_fs.models import (
-    LocalFsFileEventBatchStats,
     LocalFsFileEventSubmissionResponse,
 )
 from app.connectors.services.kafka_service import KafkaService
@@ -690,6 +693,7 @@ async def get_validated_connector_instance(
 _LOCK_STATUS_MESSAGES: dict[str, str] = {
     AppStatus.FULL_SYNCING.value: "A full sync is in progress. Please wait and try again.",
     AppStatus.SYNCING.value: "A sync is already in progress. Please wait and try again.",
+    AppStatus.QUEUED.value: ("A sync is already queued for this connector and will start shortly."),
 }
 
 
@@ -4277,6 +4281,204 @@ async def submit_connector_file_event_uploads(
     finally:
         with contextlib.suppress(Exception):
             await _update_connector_status(graph_provider, connector_id, AppStatus.IDLE.value)
+
+
+@router.post(
+    "/api/v1/connectors/{connector_id}/sync/stop",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))],
+)
+async def stop_connector_sync(
+    connector_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
+    """Request cancellation of the in-flight sync for a connector.
+
+    Fire-and-forget: cancels the task without awaiting its unwind, because a
+    task stuck in a blocking SDK call cannot be interrupted until it yields and
+    would otherwise hang this request. The task writes IDLE itself when it
+    actually stops.
+
+    When nothing is running, this self-heals a stale SYNCING/FULL_SYNCING
+    status or a stuck isLocked, so a crash never leaves the UI wedged until the
+    next service restart.
+
+    Deliberately not guarded by a not-locked dependency — stop must work during
+    the full-sync lock window and against a stuck lock.
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    instance = await get_validated_connector_instance(connector_id, request)
+
+    # Before any branch below: a request queued behind this run would otherwise
+    # be re-issued the moment it ends, by the finalizer or a later sweep, and
+    # the connector the user just stopped would start again.
+    try:
+        await graph_provider.update_node(
+            connector_id,
+            CollectionNames.APPS.value,
+            {
+                ConnectorStateKeys.PENDING_RESYNC: False,
+                # pendingFullSync as well: _mark_queued sets both, and clearing
+                # only the first left the flag to be merged into the NEXT plain
+                # Sync, which then silently ran a full sync -- deleting sync
+                # points and re-reading the entire source.
+                ConnectorStateKeys.PENDING_FULL_SYNC: False,
+            },
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not clear pending resync flags for {connector_id} "
+            f"while stopping: {e}"
+        )
+
+    coordinator = get_coordinator()
+    if coordinator is not None and coordinator.is_running_here(connector_id):
+        await coordinator.request_stop(connector_id)
+        return {
+            "success": True,
+            "stopped": True,
+            "status": instance.get("status"),
+            "message": "Stop requested. The sync will halt shortly.",
+        }
+
+    # Running on another process: record the stop and leave the graph alone.
+    # Falling through to the repair block below would mark a live sync IDLE,
+    # after which the start guard reads IDLE and lets a second one begin — a
+    # second, independent route to duplicate records.
+    dispatcher = get_dispatcher()
+    if dispatcher is not None and await dispatcher.request_stop(connector_id):
+        return {
+            "success": True,
+            "stopped": True,
+            "status": instance.get("status"),
+            "message": "Stop requested. The sync will halt shortly.",
+        }
+
+    # Nothing running: idempotent no-op, plus repair of stale stored state.
+    try:
+        app_doc = await graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value
+        )
+    except Exception as e:
+        logger.error(f"Failed to read app doc for {connector_id} during stop: {e}")
+        app_doc = None
+
+    if app_doc and (
+        app_doc.get("status")
+        in (
+            AppStatus.SYNCING.value,
+            AppStatus.FULL_SYNCING.value,
+            AppStatus.QUEUED.value,
+        )
+        or app_doc.get("isLocked")
+    ):
+        # Re-check: reading the doc yielded the loop, so a sync event may have
+        # been consumed meanwhile — repairing now would mark a just-started
+        # sync IDLE. Cancel it instead, as if it had been running all along.
+        if coordinator is not None and coordinator.is_running_here(connector_id):
+            await coordinator.request_stop(connector_id)
+            return {
+                "success": True,
+                "stopped": True,
+                "status": app_doc.get("status"),
+                "message": "Stop requested. The sync will halt shortly.",
+            }
+
+        # Never repair on a guess. Two ways to be wrong here, and the boot sweep
+        # already guards both (connectors_main.reset_stale_sync_state).
+        #
+        # First: no coordinator at all, or one that cannot answer for other
+        # processes, in a deployment where other processes exist. Its view is
+        # then a per-process dict. Repairing writes IDLE over a sync still
+        # running elsewhere, and unlike the case below there is no claim left to
+        # decline the follow-up, so a genuinely concurrent second sync can start.
+        if max_connector_workers() > 1 or sync_executor_enabled():
+            if coordinator is None or not getattr(
+                coordinator, "reports_liveness", False
+            ):
+                logger.warning(
+                    "Not repairing %s: sync state in another process cannot be "
+                    "told from a stale status here", connector_id,
+                )
+                return {
+                    "success": True,
+                    "stopped": False,
+                    "status": app_doc.get("status"),
+                    "message": (
+                        "Could not determine whether a sync is running on "
+                        "another process. Nothing was changed."
+                    ),
+                }
+
+        # Second: a transient error inside request_stop returns False, which is
+        # not the same as "nothing is running". Ask the coordinator directly.
+        if coordinator is not None and getattr(coordinator, "reports_liveness", False):
+            try:
+                if connector_id in await coordinator.peek_many([connector_id]):
+                    return {
+                        "success": True,
+                        "stopped": True,
+                        "status": app_doc.get("status"),
+                        "message": "Stop requested. The sync will halt shortly.",
+                    }
+            except Exception as e:
+                logger.error(
+                    f"Could not confirm whether {connector_id} is syncing "
+                    f"elsewhere; leaving its status alone: {e}"
+                )
+                return {
+                    "success": True,
+                    "stopped": False,
+                    "status": app_doc.get("status"),
+                    "message": (
+                        "Could not determine whether a sync is running. "
+                        "Nothing was changed; try again shortly."
+                    ),
+                }
+
+        # A doc mid-deletion is not stale sync state. Clearing its lock removes
+        # the guard other routes use to refuse work while deletion runs.
+        if app_doc.get("status") == "DELETING":
+            return {
+                "success": True,
+                "stopped": False,
+                "status": "DELETING",
+                "message": "Connector is being deleted; nothing to stop.",
+            }
+
+        repair_status = (
+            app_doc.get("status")
+            if app_doc.get("status") == "DELETING"
+            else AppStatus.IDLE.value
+        )
+        repaired = await write_app_status(
+            graph_provider, logger, connector_id, repair_status, is_locked=False
+        )
+        logger.warning(
+            f"Repaired stale sync status for connector {connector_id} via stop request"
+        )
+        # Report what the connector is actually left in. Claiming IDLE after a
+        # failed write, or for a doc deliberately kept DELETING, tells the
+        # caller the connector is usable when it is still wedged.
+        return {
+            "success": True,
+            "stopped": False,
+            "status": repair_status if repaired else app_doc.get("status"),
+            "message": (
+                "No sync was running; stale status repaired."
+                if repaired
+                else "No sync is running, but the stored status could not be repaired."
+            ),
+        }
+
+    return {
+        "success": True,
+        "stopped": False,
+        "status": (app_doc or {}).get("status") or AppStatus.IDLE.value,
+        "message": "No sync is currently running.",
+    }
 
 
 @router.post(

@@ -361,6 +361,19 @@ export const ConnectorsApi = {
   },
 
   /**
+   * Ask the backend to stop the in-flight sync for a connector.
+   *
+   * Best-effort by nature: the request returns as soon as the stop is signalled,
+   * but the running sync unwinds asynchronously, so the instance can still
+   * report SYNCING for a while afterwards. Callers should refresh rather than
+   * assume the connector is idle on return.
+   */
+  async stopConnectorSync(connectorId: string) {
+    const { data } = await apiClient.post(`${BASE_URL}/${connectorId}/sync/stop`, {});
+    return data;
+  },
+
+  /**
    * Reindex all records for a connector instance, optionally filtered by
    * indexing status. Omitting statusFilters reindexes everything for a KB
    * connector; other connector types default server-side to FAILED-only.

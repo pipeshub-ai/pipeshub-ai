@@ -23,9 +23,18 @@ export interface IndexingStatsPanelProps {
   onNavigateToRecords?: (statuses?: IndexingStatus[]) => void;
   /** Connector-only: shows a "Sync now" button beside Refresh. Omit for KB collections. */
   onSync?: () => Promise<void>;
+  /**
+   * Connector-only: when supplied, replaces "Sync now" with Stop. Supplied only
+   * while a sync is actually running, so its presence is the signal. KB
+   * collections never pass it.
+   */
+  onStop?: () => Promise<void>;
+  /** "Stop sync" vs "Stop full sync" — the caller knows which run is in flight. */
+  stopLabel?: string;
   showSyncActions?: boolean;
   isRefreshBusy?: boolean;
   isSyncBusy?: boolean;
+  isStopBusy?: boolean;
   isReindexFailedBusy?: boolean;
   isManualIndexBusy?: boolean;
 }
@@ -38,9 +47,12 @@ export function IndexingStatsPanel({
   onManualIndex,
   onNavigateToRecords,
   onSync,
+  onStop,
+  stopLabel,
   showSyncActions = false,
   isRefreshBusy = false,
   isSyncBusy = false,
+  isStopBusy = false,
   isReindexFailedBusy = false,
   isManualIndexBusy = false,
 }: IndexingStatsPanelProps) {
@@ -82,14 +94,33 @@ export function IndexingStatsPanel({
               style={{ marginLeft: 'auto', flexShrink: 0 }}
             >
               <Flex align="center" gap="1">
-                {onSync && (
+                {onStop ? (
                   <StatusActionButton
-                    label="Sync now"
-                    icon="sync"
-                    onClick={() => void onSync()}
-                    disabled={isSyncBusy || reindexActionsBusy}
-                    loading={isSyncBusy}
+                    label={
+                      isStopBusy
+                        ? t('workspace.connectors.stopSync.stopping', {
+                            defaultValue: 'Stopping…',
+                          })
+                        : (stopLabel ??
+                          t('workspace.connectors.stopSync.label', {
+                            defaultValue: 'Stop sync',
+                          }))
+                    }
+                    icon="stop_circle"
+                    onClick={() => void onStop()}
+                    disabled={isStopBusy}
+                    loading={isStopBusy}
                   />
+                ) : (
+                  onSync && (
+                    <StatusActionButton
+                      label="Sync now"
+                      icon="sync"
+                      onClick={() => void onSync()}
+                      disabled={isSyncBusy || reindexActionsBusy}
+                      loading={isSyncBusy}
+                    />
+                  )
                 )}
                 <StatusActionButton
                   label={t('action.refresh')}

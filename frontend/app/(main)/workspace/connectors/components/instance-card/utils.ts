@@ -84,7 +84,13 @@ export function deriveSyncStatusState(
   if (instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) {
     return { status: 'sync_disabled', oauthAuthIncompleteForSync };
   }
-  if (instance.status === CONNECTOR_INSTANCE_STATUS.SYNCING) {
+  if (
+    instance.status === CONNECTOR_INSTANCE_STATUS.SYNCING ||
+    instance.status === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING ||
+    // Queued has a sync owed, so it must not fall through to the
+    // stats-derived branch and render as whatever the counters say.
+    instance.status === CONNECTOR_INSTANCE_STATUS.QUEUED
+  ) {
     return { status: 'syncing', oauthAuthIncompleteForSync };
   }
 

@@ -412,15 +412,17 @@ class TestHandleAppDisabled:
         })
         gp.batch_upsert_nodes = AsyncMock()
 
-        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as mock_stm:
-            mock_stm.cancel_sync = AsyncMock()
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc_mock_stm:
+
+            mock_stm = _gc_mock_stm.return_value
+            mock_stm.request_stop = AsyncMock()
             result = await svc.process_event("appDisabled", {
                 "orgId": "org-1",
                 "apps": ["Drive"],
                 "connectorId": "conn-1",
             })
         assert result is True
-        mock_stm.cancel_sync.assert_awaited_once_with("conn-1")
+        mock_stm.request_stop.assert_awaited_once_with("conn-1")
 
     @pytest.mark.asyncio
     async def test_missing_org_or_apps(self):
@@ -455,8 +457,10 @@ class TestHandleAppDisabled:
         live_connector.cleanup = AsyncMock()
         container.connectors_map = {"conn-1": live_connector}
 
-        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as mock_stm:
-            mock_stm.cancel_sync = AsyncMock()
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc_mock_stm:
+
+            mock_stm = _gc_mock_stm.return_value
+            mock_stm.request_stop = AsyncMock()
             result = await svc.process_event("appDisabled", {
                 "orgId": "org-1",
                 "apps": ["Drive"],
@@ -478,8 +482,10 @@ class TestHandleAppDisabled:
         live_connector.cleanup = AsyncMock(side_effect=Exception("cleanup failed"))
         container.connectors_map = {"conn-1": live_connector}
 
-        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as mock_stm:
-            mock_stm.cancel_sync = AsyncMock()
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc_mock_stm:
+
+            mock_stm = _gc_mock_stm.return_value
+            mock_stm.request_stop = AsyncMock()
             result = await svc.process_event("appDisabled", {
                 "orgId": "org-1",
                 "apps": ["Drive"],
@@ -498,8 +504,10 @@ class TestHandleAppDisabled:
         })
         gp.batch_upsert_nodes = AsyncMock()
 
-        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as mock_stm:
-            mock_stm.cancel_sync = AsyncMock(side_effect=Exception("cancel error"))
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc_mock_stm:
+
+            mock_stm = _gc_mock_stm.return_value
+            mock_stm.request_stop = AsyncMock(side_effect=Exception("cancel error"))
             result = await svc.process_event("appDisabled", {
                 "orgId": "org-1",
                 "apps": ["Slack"],
@@ -683,8 +691,10 @@ class TestAppDisabledDrainsQueuedRecords:
         gp.batch_upsert_nodes = AsyncMock()
         gp.reset_indexing_status_for_connector = AsyncMock()
 
-        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as stm:
-            stm.cancel_sync = AsyncMock()
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc_stm:
+
+            stm = _gc_stm.return_value
+            stm.request_stop = AsyncMock()
             result = await svc.process_event("appDisabled", {
                 "orgId": "org-1",
                 "apps": ["Drive"],
@@ -716,8 +726,10 @@ class TestAppDisabledDrainsQueuedRecords:
             side_effect=RuntimeError("graph unavailable")
         )
 
-        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as stm:
-            stm.cancel_sync = AsyncMock()
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc_stm:
+
+            stm = _gc_stm.return_value
+            stm.request_stop = AsyncMock()
             result = await svc.process_event("appDisabled", {
                 "orgId": "org-1",
                 "apps": ["Drive"],
@@ -741,8 +753,10 @@ class TestAppDisabledDrainsQueuedRecords:
             side_effect=lambda *a, **k: order.append("sweep")
         )
 
-        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as stm:
-            stm.cancel_sync = AsyncMock(side_effect=lambda *a: order.append("cancel"))
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc_stm:
+
+            stm = _gc_stm.return_value
+            stm.request_stop = AsyncMock(side_effect=lambda *a: order.append("cancel"))
             await svc.process_event("appDisabled", {
                 "orgId": "org-1",
                 "apps": ["Drive"],

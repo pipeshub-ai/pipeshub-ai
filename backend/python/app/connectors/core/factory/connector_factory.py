@@ -1,8 +1,12 @@
 """Generic Connector Factory for creating and managing connectors"""
 
+import contextlib
 import logging
 
+from app.config.constants.arangodb import AppStatus, CollectionNames
+from app.connectors.core.constants import ConnectorStateKeys
 from app.config.configuration_service import ConfigurationService
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.connectors.core.base.connector.connector_service import BaseConnector
 
 # from app.connectors.core.interfaces.data_store.data_store_provider import DataStoreProvider
@@ -17,7 +21,9 @@ from app.connectors.core.registry.connector import (
     ZendeskConnector,
 )
 from app.connectors.core.registry.connector_builder import SyncStrategy
-from app.connectors.core.sync.task_manager import sync_task_manager
+from app.connectors.core.sync.sync_coordinator import Admission, get_coordinator
+from app.connectors.core.sync.sync_dispatcher import SyncSpec
+from app.connectors.core.sync.sync_runner import run_sync_task
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
@@ -46,8 +52,9 @@ from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
-from app.connectors.sources.local_fs.connector import LocalFsConnector
 from app.connectors.sources.github.connector import GithubConnector
+from app.connectors.sources.gitlab.connector import GitLabConnector
+from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
 )
@@ -57,38 +64,33 @@ from app.connectors.sources.google.gmail.individual.connector import (
 )
 from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
 from app.connectors.sources.google_cloud_storage.connector import GCSConnector
-from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
+from app.connectors.sources.linear.connector import LinearConnector
+from app.connectors.sources.local_fs.connector import LocalFsConnector
+from app.connectors.sources.mariadb.connector import MariaDBConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
-from app.connectors.sources.microsoft.outlook_individual.connector import (
-    OutlookIndividualConnector,
-)
-from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    SharePointConnector,
-)
+from app.connectors.sources.microsoft.outlook_individual.connector import OutlookIndividualConnector
+from app.connectors.sources.microsoft.sharepoint_online.connector import SharePointConnector
+from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 from app.connectors.sources.minio.connector import MinIOConnector
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.connectors.sources.notion.connector import NotionConnector
 from app.connectors.sources.notion_personal.connector import NotionPersonalConnector
 from app.connectors.sources.rss.connector import RSSConnector
 from app.connectors.sources.s3.connector import S3Connector
+from app.connectors.sources.salesforce.connector import SalesforceConnector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
+from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
+from app.connectors.sources.slack.team.connector import SlackConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
-from app.connectors.sources.salesforce.connector import SalesforceConnector
-from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
-from app.connectors.sources.slack.team.connector import SlackConnector
 
-from app.connectors.sources.gitlab.connector import GitLabConnector
-from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
 
-from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 
 from app.connectors.sources.snowflake.connector import SnowflakeConnector
 from app.connectors.sources.postgres.connector import PostgreSQLConnector
-from app.connectors.sources.mariadb.connector import MariaDBConnector
 
 class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
@@ -312,17 +314,24 @@ class ConnectorFactory:
         return None
 
     @staticmethod
-    async def _run_sync_and_invalidate(connector: BaseConnector, connector_id: str) -> None:
-        """Run a sync started outside `EventService`, then drop the connector's
-        cached accessible-record map the same way that path does."""
-        from app.services.cache.invalidation_hooks import notify_connector_sync_completed
+    async def is_manual_sync_strategy(
+        config_service: ConfigurationService, connector_id: str
+    ) -> bool:
+        """Whether this connector opted out of automatic syncing.
 
+        MANUAL means "do not sync on a schedule or at startup" — it does not
+        mean "never sync", so the user's resync button must still work. That is
+        why this gates the boot-resume publisher and not the event handler.
+        """
         try:
-            await connector.run_sync()
-        finally:
-            processor = getattr(connector, "data_entities_processor", None)
-            org_id = getattr(processor, "org_id", None) if processor is not None else None
-            await notify_connector_sync_completed(connector_id, org_id)
+            config = await config_service.get_config(
+                f"/services/connectors/{connector_id}/config"
+            )
+        except Exception:
+            return False
+        return (config or {}).get("sync", {}).get(
+            "selectedStrategy"
+        ) == SyncStrategy.MANUAL.value
 
     @classmethod
     async def create_and_start_sync(
@@ -334,9 +343,17 @@ class ConnectorFactory:
         connector_id: str,
         scope: str,
         created_by: str,
+        *,
+        start_sync: bool = True,
         **kwargs,
     ) -> BaseConnector | None:
-        """Create, initialize, and start sync for a connector"""
+        """Create, initialize, and optionally start a sync for a connector.
+
+        ``start_sync=False`` builds and initialises the connector but does not
+        run anything. Used when sync execution lives in another process: the
+        caller keeps a warm connector for the API's own routes and publishes a
+        resync event instead of starting one here.
+        """
         connector = await cls.initialize_connector(
             name=name,
             logger=logger,
@@ -352,19 +369,112 @@ class ConnectorFactory:
             f"/services/connectors/{connector_id}/config"
         )
         sync_strategy = (config or {}).get("sync", {}).get("selectedStrategy")
+        if connector and not start_sync:
+            return connector
+
         if connector:
+            # Bound before the try so the handler below cannot raise
+            # UnboundLocalError over the real failure.
+            coordinator = None
+            lease = None
             try:
                 if sync_strategy == SyncStrategy.MANUAL.value:
                     logger.info(
                         f"Skipping sync for {name} {connector_id} connector because selected strategy is MANUAL"
                     )
                 else:
-                    await sync_task_manager.start_sync(
-                        connector_id, cls._run_sync_and_invalidate(connector, connector_id)
+                    # run_sync_task writes SYNCING/IDLE around run_sync, so a
+                    # startup-resumed sync is visible in the stored status
+                    # rather than looking IDLE while it runs.
+                    #
+                    # Every sync task holds a lease, this path included —
+                    # otherwise a boot-time resume would race a resync event
+                    # already in flight on another process.
+                    coordinator = get_coordinator()
+                    if coordinator is None:
+                        logger.warning(
+                            f"No sync coordinator configured; not starting "
+                            f"{name} {connector_id}"
+                        )
+                        return connector
+
+                    admission, lease = await coordinator.begin(connector_id)
+                    if admission is not Admission.GRANTED or lease is None:
+                        # AT_CAPACITY matters here as much as the rest: boot
+                        # resumes every enabled connector at once, and this path
+                        # used to bypass the limit entirely, so the ceiling only
+                        # ever applied to the event traffic that came afterwards.
+                        logger.info(
+                            "Not starting %s %s at boot: %s",
+                            name, connector_id, admission.value,
+                        )
+                        if admission is Admission.AT_CAPACITY:
+                            # Leave it QUEUED and flagged, or nothing can ever
+                            # find it again: the drain selects on status, the
+                            # sweep on pendingResync, and the status sweep on SYNCING.
+                            # Logging and returning would strand it until someone
+                            # pressed resync.
+                            try:
+                                await data_store_provider.graph_provider.update_node(
+                                    connector_id,
+                                    CollectionNames.APPS.value,
+                                    {
+                                        "status": AppStatus.QUEUED.value,
+                                        ConnectorStateKeys.PENDING_RESYNC: True,
+                                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                                    },
+                                )
+                            except Exception as mark_err:
+                                logger.error(
+                                    "Could not queue %s at boot: %s",
+                                    connector_id, mark_err,
+                                )
+                        return connector
+
+                    # Carry a spec so this sync can hand back any resync that
+                    # gets declined while it holds the lease. Without it a
+                    # request declined against a factory-started sync is
+                    # recorded and never re-issued, and the connector can end up
+                    # never syncing at all.
+                    task = await coordinator.spawn(
+                        lease,
+                        run_sync_task(
+                            connector,
+                            connector_id,
+                            data_store_provider.graph_provider,
+                            logger,
+                            lease=lease,
+                            coordinator=coordinator,
+                            resync_spec=SyncSpec(
+                                connector_id=connector_id,
+                                connector_name=name,
+                                # The processor is where org_id is actually set (see
+                                # create_connector); the OSS data store has no such attribute,
+                                # and an empty orgId makes the re-issued event undeliverable.
+                                org_id=(
+                                    getattr(
+                                        getattr(connector, "data_entities_processor", None),
+                                        "org_id",
+                                        None,
+                                    )
+                                    or getattr(data_store_provider, "org_id", "")
+                                    or ""
+                                ),
+                            ),
+                        ),
                     )
-                    logger.info(f"Started sync for {name} {connector_id} connector")
+                    if task is None:
+                        await coordinator.end(lease)
+                    else:
+                        logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector
             except Exception as e:
+                # spawn() assigns lease.task; if it raised before that, nothing
+                # else will ever release the claim and the connector becomes
+                # permanently un-startable.
+                if coordinator is not None and lease is not None and lease.task is None:
+                    with contextlib.suppress(Exception):
+                        await coordinator.end(lease)
                 logger.error(
                     f"❌ Failed to start sync for {name} {connector_id} connector: {str(e)}"
                 )
