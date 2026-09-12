@@ -49,13 +49,21 @@ def result_identity(result: Any) -> tuple:
 
     A search returns *chunks*, not documents: one record legitimately
     contributes several blocks and the caller reassembles them. So identity is
-    ``(virtualRecordId, blockId)`` — the same block found in two collections,
-    which the deduplication matrix allows by design.
+    ``(virtualRecordId, blockId, text)`` — the same chunk found in two
+    collections, which the deduplication matrix allows by design.
 
     Point ids cannot serve: they are freshly minted uuid4s per write, so the
     same block indexed under two connectors carries two different ids. And
     ``virtualRecordId`` alone must not serve either — collapsing on it would
     keep one chunk per document and quietly gut recall.
+
+    The text is part of the key because ``blockId`` is not unique per vector:
+    ``vectorstore._build_text_documents`` emits a whole-block document *and*
+    one per sentence, or a set of overlapping windows when the block is
+    oversized, and every one of them carries the same ``blockId``. Keying on
+    the block alone would collapse two genuinely different sentences of one
+    paragraph into a single hit and lose the second — a recall loss, not a
+    deduplication.
 
     A hit missing either half falls back to its point id, so it is passed
     through rather than collapsed against unrelated hits.
@@ -65,7 +73,8 @@ def result_identity(result: Any) -> tuple:
     vrid = metadata.get("virtualRecordId")
     block_id = metadata.get("blockId")
     if vrid and block_id:
-        return ("block", vrid, block_id)
+        content = payload.get("page_content")
+        return ("block", vrid, block_id, content if isinstance(content, str) else None)
     return ("point", getattr(result, "id", None))
 
 

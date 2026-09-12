@@ -26,6 +26,7 @@ from app.modules.retrieval.result_merging import (
     ResultMerger,
     merge_collection_results,
     merger_for,
+    result_identity,
 )
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -931,12 +932,20 @@ class RetrievalService:
         collections = await self._resolve_search_collections(org_id, user_id)
         search_results = await self._fan_out_searches(collections, requests, limit)
 
+        # Identity is (virtualRecordId, blockId, text), not the point id -- see
+        # `result_identity`. Point ids are freshly minted uuid4s per write, so
+        # the same chunk indexed under two connectors carries two different
+        # ids and deduplicating on them lets it through once per collection it
+        # lives in. `merge_collection_results` already collapses those within a
+        # query; this is the same identity applied across the expanded queries,
+        # so the two layers agree.
         seen_points: set = set()
         for batch in search_results:
             for point in batch:
-                if point.id in seen_points:
+                identity = result_identity(point)
+                if identity in seen_points:
                     continue
-                seen_points.add(point.id)
+                seen_points.add(identity)
                 metadata = point.payload.get("metadata") or {}
                 metadata["point_id"] = point.id
                 doc = Document(
