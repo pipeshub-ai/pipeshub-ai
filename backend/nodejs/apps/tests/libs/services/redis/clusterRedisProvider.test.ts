@@ -111,7 +111,11 @@ describe('ClusterRedisProvider', () => {
       provider.createClient();
       const [, clusterOptions] = capture.capturedClusterArgs[0];
       expect(clusterOptions.dnsLookup).to.be.a('function');
-      clusterOptions.dnsLookup!('clustercfg.example.amazonaws.com', (err: unknown, address: string) => {
+      const { dnsLookup } = clusterOptions;
+      if (!dnsLookup) {
+        throw new Error('Expected dnsLookup for a TLS cluster client');
+      }
+      dnsLookup('clustercfg.example.amazonaws.com', (err: unknown, address: string) => {
         expect(err).to.equal(null);
         expect(address).to.equal('clustercfg.example.amazonaws.com');
       });
