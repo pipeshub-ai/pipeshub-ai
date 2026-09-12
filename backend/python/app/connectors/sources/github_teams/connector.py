@@ -139,7 +139,7 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
         .add_filter_field(FilterField(
             name=SyncFilterKey.REPO_IDS.value,
             display_name="Repository",
-            description="Select the repository to sync (one per connector instance)",
+            description="Select the repository to sync.",
             filter_type=FilterType.SELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
             required=True,

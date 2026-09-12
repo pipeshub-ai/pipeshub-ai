@@ -1151,6 +1151,16 @@ class TestSyncFilterSelectionProblems:
         values = {"org_ids": {"operator": "in", "value": ["a", "b"]}}
         assert sync_filter_selection_problems([ORG_FIELD], values) == []
 
+    def test_legacy_not_in_select_blocks_enable(self) -> None:
+        values = {"repo_ids": {"operator": "not_in", "value": [{"id": "o/r", "label": "o/r"}]}}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == ["Repository must use the 'in' operator (got 'not_in')."]
+
+    def test_blank_ids_do_not_count_as_a_selection(self) -> None:
+        values = {"repo_ids": {"operator": "in", "value": ["", {"id": "  "}]}}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == ["Select a repository before enabling this connector."]
+
 
 class TestRequireSingleValue:
     def _collection(self, value: list[str], operator: str = "in") -> FilterCollection:

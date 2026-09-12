@@ -193,7 +193,7 @@ class GitLabPersonalProjectsSync(ProjectsSync):
             FilterField(
                 name=SyncFilterKey.PROJECT_IDS.value,
                 display_name="Repository",
-                description="Select the repository to sync (one per connector instance)",
+                description="Select the repository to sync.",
                 filter_type=FilterType.SELECT,
                 category=FilterCategory.SYNC,
                 option_source_type=OptionSourceType.DYNAMIC,

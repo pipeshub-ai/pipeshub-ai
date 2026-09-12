@@ -76,11 +76,6 @@ export function hasAnySyncFiltersSelected(
   return syncFields.some((field) => isMeaningfulFilterRow(field, syncFormValues[field.name]));
 }
 
-/** formErrors key for a sync filter row (kept apart from custom sync field names). */
-export function syncFilterErrorKey(fieldName: string): string {
-  return `syncFilter:${fieldName}`;
-}
-
 /**
  * Save-time rule mirrored from the backend registry (`sync_filter_selection_problems`):
  * a required sync filter needs a value and a `select` filter takes exactly one.
@@ -89,16 +84,21 @@ export function syncFilterErrorKey(fieldName: string): string {
 export function syncFilterRowError(field: FilterSchemaField, raw: unknown): string | null {
   const ft = String(field.filterType ?? '').toLowerCase();
   const rawValue = isFilterRow(raw) ? raw.value : undefined;
-  const values = Array.isArray(rawValue)
-    ? rawValue
-    : typeof rawValue === 'string' && rawValue.trim()
-      ? [rawValue]
-      : [];
+  const items: unknown[] = Array.isArray(rawValue) ? rawValue : typeof rawValue === 'string' ? [rawValue] : [];
+  const values = items
+    .map((item) => (item && typeof item === 'object' && 'id' in item ? (item as { id: unknown }).id : item))
+    .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
   if (field.required && values.length === 0) {
     return `Select a ${field.displayName.toLowerCase()} before saving.`;
   }
   if (ft === 'select' && values.length > 1) {
     return `${field.displayName} allows only one selection, but ${values.length} are configured.`;
+  }
+  if (ft === 'select' && values.length === 1) {
+    const operator = isFilterRow(raw) ? String(raw.operator ?? '').trim().toLowerCase() : '';
+    if (operator !== 'in') {
+      return `${field.displayName} must use the 'in' operator (got '${operator}').`;
+    }
   }
   return null;
 }
