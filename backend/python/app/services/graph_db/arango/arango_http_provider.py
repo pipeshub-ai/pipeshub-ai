@@ -16032,6 +16032,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Note: _get_user_app_ids accepts external userId and converts to user_key internally
             user_apps_ids = await self._get_user_app_ids(user_id, org_id)
 
+            # Get record to verify it exists before running complex query
+            record_doc = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
+            if not record_doc:
+                self.logger.warning(f"⚠️ Record not found: {record_id}")
+                return None
+
             # Build app record filter for connector records
             app_record_filter = 'FILTER record.origin != "CONNECTOR" OR record.connectorId IN @user_apps_ids'
 

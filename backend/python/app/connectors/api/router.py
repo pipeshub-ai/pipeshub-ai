@@ -1702,6 +1702,8 @@ async def get_record_by_id(
             raise HTTPException(
                 status_code=404, detail="You do not have access to this record"
             )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error checking record access: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to check record access") from e
