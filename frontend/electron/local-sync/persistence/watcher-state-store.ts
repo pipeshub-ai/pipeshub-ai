@@ -61,6 +61,19 @@ function toPosixRelKey(rel: string): string {
   return rel.split(path.sep).join('/');
 }
 
+/**
+ * `fs.Stats` times are floats with sub-millisecond precision (NTFS keeps 100ns
+ * ticks), but the connector service's contract is integer epoch ms. Floor
+ * rather than round so the desktop and the server derive the same millisecond
+ * from one stat, and apply it on load too so a snapshot written by an older
+ * build still compares equal to a freshly stat'd file.
+ */
+export function toEpochMs(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.floor(n) : undefined;
+}
+
 export function normalizeRelKey(absPath: string, syncRoot: string): string {
   const rel = path.relative(syncRoot, absPath);
   if (rel === '' || rel === '.') return '';
@@ -161,8 +174,8 @@ export async function scanSyncRoot(
       const isDirectory = st.isDirectory();
       const inode = typeof st.ino === 'bigint' ? Number(st.ino) : st.ino;
       const size = st.isFile() ? st.size : 0;
-      const mtimeMs = st.mtimeMs;
-      const birthtimeMs = st.birthtimeMs;
+      const mtimeMs = toEpochMs(st.mtimeMs) ?? 0;
+      const birthtimeMs = toEpochMs(st.birthtimeMs);
       let sha256: string | undefined;
       if (st.isFile()) {
         // Size+mtime reuse is for bookkeeping scans only; reconcile callers omit previousByRelPath.
@@ -199,11 +212,11 @@ function parseFileEntry(raw: unknown): FileSnapshotEntry | null {
   const r = raw as Record<string, unknown>;
   const inode = Number(r.inode);
   const size = Number(r.size);
-  const mtimeMs = Number(r.mtimeMs);
-  if (!Number.isFinite(inode) || !Number.isFinite(size) || !Number.isFinite(mtimeMs)) return null;
+  const mtimeMs = toEpochMs(r.mtimeMs);
+  if (!Number.isFinite(inode) || !Number.isFinite(size) || mtimeMs === undefined) return null;
   const isDirectory = Boolean(r.isDirectory);
   const sha256 = typeof r.sha256 === 'string' && r.sha256.length > 0 ? r.sha256 : undefined;
-  const birthtimeMs = Number.isFinite(Number(r.birthtimeMs)) ? Number(r.birthtimeMs) : undefined;
+  const birthtimeMs = toEpochMs(r.birthtimeMs);
   return { inode, size, mtimeMs, isDirectory, sha256, birthtimeMs };
 }
 

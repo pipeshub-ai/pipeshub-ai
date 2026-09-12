@@ -350,7 +350,7 @@ class TestLocalFsConnectorHelpers:
 
     def test_extension_allowed_empty_filter(self, folder_connector: LocalFsConnector):
         coll = FilterCollection(filters=[])
-        assert folder_connector._extension_allowed(Path("a.PDF"), coll) is True
+        assert folder_connector._pass_extension_filters(Path("a.PDF"), coll) is True
 
     def test_extension_allowed_in(self, folder_connector: LocalFsConnector):
         coll = FilterCollection(
@@ -363,10 +363,10 @@ class TestLocalFsConnectorHelpers:
                 )
             ]
         )
-        assert folder_connector._extension_allowed(Path("x.pdf"), coll) is True
-        assert folder_connector._extension_allowed(Path("x.PDF"), coll) is True
-        assert folder_connector._extension_allowed(Path("x.md"), coll) is False
-        assert folder_connector._extension_allowed(Path("README"), coll) is False
+        assert folder_connector._pass_extension_filters(Path("x.pdf"), coll) is True
+        assert folder_connector._pass_extension_filters(Path("x.PDF"), coll) is True
+        assert folder_connector._pass_extension_filters(Path("x.md"), coll) is False
+        assert folder_connector._pass_extension_filters(Path("README"), coll) is False
 
     def test_extension_allowed_not_in(self, folder_connector: LocalFsConnector):
         coll = FilterCollection(
@@ -379,9 +379,33 @@ class TestLocalFsConnectorHelpers:
                 )
             ]
         )
-        assert folder_connector._extension_allowed(Path("x.pdf"), coll) is False
-        assert folder_connector._extension_allowed(Path("x.md"), coll) is True
-        assert folder_connector._extension_allowed(Path("README"), coll) is True
+        assert folder_connector._pass_extension_filters(Path("x.pdf"), coll) is False
+        assert folder_connector._pass_extension_filters(Path("x.md"), coll) is True
+        assert folder_connector._pass_extension_filters(Path("README"), coll) is True
+
+    def test_extension_filter_skips_directories(self, folder_connector: LocalFsConnector):
+        coll = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.FILE_EXTENSIONS.value,
+                    type=FilterType.MULTISELECT,
+                    operator=MultiselectOperator.IN,
+                    value=["pdf"],
+                )
+            ]
+        )
+        assert (
+            folder_connector._pass_extension_filters(
+                Path("docs"), coll, is_directory=True
+            )
+            is True
+        )
+        assert (
+            folder_connector._pass_extension_filters(
+                Path("archive.pdf"), coll, is_directory=True
+            )
+            is True
+        )
 
     def test_build_file_record_indexing_off_and_no_owner_perms(
         self, folder_connector: LocalFsConnector
@@ -2133,7 +2157,7 @@ class TestEventDateFilters:
             type="CREATED", path="x", timestamp=1000, isDirectory=False,
         )
         assert (
-            LocalFsConnector._event_matches_date_filters(
+            LocalFsConnector._pass_date_filters(
                 ev, FilterCollection(filters=[])
             )
             is True
@@ -2147,7 +2171,7 @@ class TestEventDateFilters:
         )
         flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
         assert (
-            LocalFsConnector._event_matches_date_filters(
+            LocalFsConnector._pass_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
             is True
@@ -2161,7 +2185,7 @@ class TestEventDateFilters:
         )
         flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
         assert (
-            LocalFsConnector._event_matches_date_filters(
+            LocalFsConnector._pass_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
             is False
@@ -2175,7 +2199,7 @@ class TestEventDateFilters:
         )
         flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
         assert (
-            LocalFsConnector._event_matches_date_filters(
+            LocalFsConnector._pass_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
             is False
@@ -2191,7 +2215,7 @@ class TestEventDateFilters:
         )
         flt = self._filter(SyncFilterKey.CREATED.value, 5000, 6000)
         assert (
-            LocalFsConnector._event_matches_date_filters(
+            LocalFsConnector._pass_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
             is True
@@ -2208,7 +2232,7 @@ class TestEventDateFilters:
         )
         flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
         assert (
-            LocalFsConnector._event_matches_date_filters(
+            LocalFsConnector._pass_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
             is True
@@ -2223,7 +2247,7 @@ class TestEventDateFilters:
         )
         flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
         assert (
-            LocalFsConnector._event_matches_date_filters(
+            LocalFsConnector._pass_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
             is False
@@ -2238,7 +2262,21 @@ class TestEventDateFilters:
         )
         flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
         assert (
-            LocalFsConnector._event_matches_date_filters(
+            LocalFsConnector._pass_date_filters(
+                ev, FilterCollection(filters=[flt])
+            )
+            is True
+        )
+
+    def test_date_filter_skips_directories(self):
+        from app.connectors.core.registry.filters import SyncFilterKey
+
+        ev = LocalFsFileEvent(
+            type="MODIFIED", path="docs", timestamp=1000, isDirectory=True,
+        )
+        flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
+        assert (
+            LocalFsConnector._pass_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
             is True

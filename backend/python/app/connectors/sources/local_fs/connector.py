@@ -496,7 +496,13 @@ class LocalFsConnector(BaseConnector):
         )
 
     @staticmethod
-    def _extension_allowed(path: Path, sync_filters: FilterCollection) -> bool:
+    def _pass_extension_filters(
+        path: Path,
+        sync_filters: FilterCollection,
+        is_directory: bool = False,
+    ) -> bool:
+        if is_directory:
+            return True
         extensions_filter = sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
         if extensions_filter is None or extensions_filter.is_empty():
             return True
@@ -1058,7 +1064,7 @@ class LocalFsConnector(BaseConnector):
                 )
 
     @staticmethod
-    def _event_matches_date_filters(
+    def _pass_date_filters(
         event: LocalFsFileEvent, sync_filters: FilterCollection
     ) -> bool:
         """Apply the modified-date sync filter to the event's file mtime.
@@ -1066,6 +1072,8 @@ class LocalFsConnector(BaseConnector):
         A filesystem has no per-file creation date that survives a copy, so
         there is deliberately no created-date filter to pair with this one.
         """
+        if event.isDirectory:
+            return True
         modified_f = sync_filters.get(SyncFilterKey.MODIFIED)
         if modified_f is None or modified_f.is_empty():
             return True
@@ -1180,6 +1188,9 @@ class LocalFsConnector(BaseConnector):
         sync_filters, indexing_filters = await load_connector_filters(
             self.config_service, "localfs", self.connector_id, self.logger
         )
+
+        self.logger.info(f"sync_filters: {sync_filters}")
+        self.logger.info(f"indexing_filters: {indexing_filters}")
 
         await self.data_entities_processor.on_new_app_users([self._to_app_user(owner)])
 
@@ -1457,10 +1468,20 @@ class LocalFsConnector(BaseConnector):
                 skipped += 1
                 continue
 
-            if not self._extension_allowed(Path(rel_path), sync_filters):
+            if not self._pass_extension_filters(
+                Path(rel_path), sync_filters, is_directory=event.isDirectory
+            ):
+                self.logger.debug(
+                    "Local FS: skipping %s — extension filter",
+                    rel_path,
+                )
                 skipped += 1
                 continue
-            if not self._event_matches_date_filters(event, sync_filters):
+            if not self._pass_date_filters(event, sync_filters):
+                self.logger.debug(
+                    "Local FS: skipping %s — date filter",
+                    rel_path,
+                )
                 skipped += 1
                 continue
 

@@ -1,8 +1,25 @@
 """Request/response models for Local FS (API and connector)."""
 
-from typing import Literal
+import math
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, BeforeValidator
+
+
+def _floor_to_epoch_ms(value: object) -> object:
+    """Accept the sub-millisecond floats Node's ``fs.Stats`` reports.
+
+    NTFS keeps 100ns ticks, so ``mtimeMs`` arrives as e.g.
+    ``1789203332890.1865`` and Pydantic refuses the lossy narrowing to ``int``.
+    Floor rather than round so the desktop and the server derive the same
+    millisecond from one stat call.
+    """
+    if isinstance(value, float) and math.isfinite(value):
+        return math.floor(value)
+    return value
+
+
+EpochMs = Annotated[int, BeforeValidator(_floor_to_epoch_ms)]
 
 
 class LocalFsFileEvent(BaseModel):
@@ -12,15 +29,15 @@ class LocalFsFileEvent(BaseModel):
     # When the desktop observed the event, which for live and reconcile events
     # is wall-clock rather than a file time. Prefer ``mtimeMs`` for anything
     # that means "when was this file last changed".
-    timestamp: int
+    timestamp: EpochMs
     size: int | None = None
     isDirectory: bool
     sha256: str | None = None
     mimeType: str | None = None
-    mtimeMs: int | None = None
+    mtimeMs: EpochMs | None = None
     # Inode birth time. Absent on deletions and where the platform/filesystem
     # doesn't report one (e.g. Linux without statx/btime support).
-    birthtimeMs: int | None = None
+    birthtimeMs: EpochMs | None = None
 
 
 class LocalFsPullRequest(BaseModel):
