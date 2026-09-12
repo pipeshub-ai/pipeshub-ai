@@ -898,14 +898,16 @@ async def _validate_sync_filter_selections(
     variant resolves to no metadata and skips validation entirely.
     """
     metadata = await connector_registry.get_connector_metadata(connector_type)
+    if not isinstance(metadata, dict):
+        return  # unknown connector type: nothing to validate against
     schema_fields = (
-        (metadata or {})
-        .get("config", {})
+        metadata.get("config", {})
         .get("filters", {})
         .get("sync", {})
         .get("schema", {})
         .get("fields", [])
     )
+    schema_fields = [f for f in schema_fields if isinstance(f, dict)]
     sync_values = ((config.get("filters") or {}).get("sync") or {}).get("values") or {}
     problems = sync_filter_selection_problems(
         schema_fields, sync_values if isinstance(sync_values, dict) else {}, action
