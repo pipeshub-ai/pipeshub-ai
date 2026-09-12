@@ -27,7 +27,7 @@ import type { TagItem } from '@/app/(main)/workspace/components/tag-input';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import type { FilterSchemaField } from '../../types';
-import { isMeaningfulFilterRow, syncFilterErrorKey } from '../../utils/sync-filter-save-guards';
+import { isMeaningfulFilterRow } from '../../utils/sync-filter-save-guards';
 import { MANUAL_INDEXING_TOOLTIP_TEXT } from '../../utils/manual-indexing-tooltip';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 
@@ -736,7 +736,16 @@ function ConnectorFilterSelect({
     ? (labelsById[selectedId] ?? visibleOptions.find((o) => o.id === selectedId)?.label ?? selectedId)
     : null;
 
+  const clearSearchTimer = () => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+  };
+  useEffect(() => clearSearchTimer, []);
+
   const handleOpenChange = (next: boolean) => {
+    clearSearchTimer();
     setOpen(next);
     if (next) {
       setQuery('');
@@ -747,7 +756,7 @@ function ConnectorFilterSelect({
   const handleQueryChange = (q: string) => {
     setQuery(q);
     if (!dyn.isDynamic) return;
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    clearSearchTimer();
     searchTimerRef.current = setTimeout(() => dyn.search(q), 300);
   };
 
@@ -758,6 +767,7 @@ function ConnectorFilterSelect({
   };
 
   const pick = (opt: PickerOption) => {
+    clearSearchTimer();
     onValueChange(buildListPersistedValue([opt.id], value, [{ value: opt.id, label: opt.label }]));
     setOpen(false);
   };
@@ -1440,9 +1450,6 @@ function FilterFieldRow({
   }, [field.operators, field.defaultOperator, row.operator]);
 
   const selectField = isSelectField(field);
-  const selectErrorKey = syncFilterErrorKey(field.name);
-  const selectError = useConnectorsStore((s) => s.formErrors[selectErrorKey]);
-  const mergeFormErrors = useConnectorsStore((s) => s.mergeFormErrors);
   const listLike = isListLikeField(field);
   const freeTextList = isFreeTextListField(field);
   const isBooleanField = field.filterType === 'boolean';
@@ -1501,20 +1508,14 @@ function FilterFieldRow({
           <ConnectorFilterSelect
             field={field}
             value={row.value}
-            onValueChange={(v) => {
-              mergeFormErrors({ [selectErrorKey]: '' });
-              commit({ ...row, operator: defaultFilterOperator(field), value: v });
-            }}
+            onValueChange={(v) =>
+              commit({ ...row, operator: defaultFilterOperator(field), value: v })
+            }
             connectorId={connectorId}
             portalContainer={panelBodyPortal}
             optionContextGroupPaths={projectOptionsScope?.include}
             optionExcludeContextGroupPaths={projectOptionsScope?.exclude}
           />
-          {selectError ? (
-            <Text size="1" color="red">
-              {selectError}
-            </Text>
-          ) : null}
         </Flex>
       </Box>
     );

@@ -890,29 +890,12 @@ async def _validate_sync_filter_selections(
         .get("schema", {})
         .get("fields", [])
     )
-    if not any(f.get("required") or f.get("filterType") == "select" for f in schema_fields):
-        return
     sync_values = ((config.get("filters") or {}).get("sync") or {}).get("values") or {}
     problems = sync_filter_selection_problems(
         schema_fields, sync_values if isinstance(sync_values, dict) else {}, action
     )
     if problems:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
-
-
-async def _require_sync_filter_selections(
-    container: ConnectorAppContainer,
-    connector_registry: ConnectorRegistry,
-    connector_id: str,
-    connector_type: str,
-    org_id: str,
-) -> None:
-    """Enable-toggle variant: validates the stored config."""
-    config_service = resolve_config_service(container, org_id)
-    config = await config_service.get_config(_get_config_path_for_instance(connector_id)) or {}
-    await _validate_sync_filter_selections(
-        connector_registry, connector_type, config, "enabling this connector"
-    )
 
 
 def _is_scoped_service_token(user: Any) -> bool:
@@ -4868,9 +4851,10 @@ async def update_connector_instance_filters_sync_config(
                 if key in body["filters"]:
                     new_config["filters"][key] = body["filters"][key]
 
-        await _validate_sync_filter_selections(
-            connector_registry, instance.get("type", ""), new_config, "saving"
-        )
+        if isinstance((body.get("filters") or {}).get("sync"), dict):
+            await _validate_sync_filter_selections(
+                connector_registry, instance.get("type", ""), new_config, "saving"
+            )
 
         # Only delete sync points and edges when sync filters change
         new_sync_filters = new_config.get("filters", {}).get("sync", {})
@@ -5031,7 +5015,7 @@ async def update_connector_instance_config(
                     # Section doesn't exist, add it
                     new_config[section] = body[section]
 
-        if isinstance(body.get("filters"), dict):
+        if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
                 connector_registry, instance.get("type", ""), new_config, "saving"
             )
@@ -7325,12 +7309,8 @@ async def toggle_connector_instance(
                         detail="Connector must be configured before enabling"
                     )
 
-            await _require_sync_filter_selections(
-                container,
-                connector_registry,
-                connector_id,
-                instance.get("type", ""),
-                org_id,
+            await _validate_sync_filter_selections(
+                connector_registry, instance.get("type", ""), config or {}, "enabling this connector"
             )
 
             # Initialize connector when enabling (if not already initialized)

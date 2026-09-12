@@ -678,6 +678,7 @@ class Filter(BaseModel):
                     FilterType.BOOLEAN: bool,
                     FilterType.LIST: list,
                     FilterType.MULTISELECT: list,
+                    FilterType.SELECT: list,
                     FilterType.NUMBER: (int, float),
                 }
                 expected = expected_types.get(self.type)
@@ -687,8 +688,8 @@ class Filter(BaseModel):
                         f"expected {expected}, got {type(self.value).__name__}"
                     )
 
-            # For LIST and MULTISELECT types, validate all elements are strings
-            if self.type in (FilterType.LIST, FilterType.MULTISELECT):
+            # For list-valued types, validate all elements are strings
+            if self.type in (FilterType.LIST, FilterType.MULTISELECT, FilterType.SELECT):
                 for i, item in enumerate(self.value):
                     if not isinstance(item, str):
                         raise ValueError(
@@ -987,16 +988,34 @@ class FilterCollection(BaseModel):
         return cls(filters=filters)
 
 
+def _selected_ids(raw: Any) -> list[str]:
+    """Ids held by a stored list-like value; blanks (``""`` / ``{"id": ""}``) do not count."""
+    if isinstance(raw, str):
+        items: list[Any] = [raw]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        return []
+    ids: list[str] = []
+    for item in items:
+        candidate = item.get("id") if isinstance(item, dict) else item
+        if isinstance(candidate, str) and candidate.strip():
+            ids.append(candidate.strip())
+    return ids
+
+
 def sync_filter_selection_problems(
     schema_fields: list[dict[str, Any]],
     sync_values: dict[str, Any],
     action: str = "enabling this connector",
 ) -> list[str]:
     """Reasons to refuse ``action``: a required sync filter with no value, or a
-    SELECT filter holding more than one (legacy multi-repo config).
+    SELECT filter holding more than one value or a non-``in`` operator (both
+    possible in configs written while the field was still a multiselect).
 
     Called on the enable toggle (a connector can be enabled straight after
     authentication without ever saving filters) and on the filter save routes.
+    Must agree with ``require_single_value``, the run-time backstop.
     """
     problems: list[str] = []
     for field in schema_fields:
@@ -1004,20 +1023,19 @@ def sync_filter_selection_problems(
         if not name:
             continue
         entry = sync_values.get(name)
-        raw = entry.get("value") if isinstance(entry, dict) else None
-        if isinstance(raw, str):
-            values: list[Any] = [raw] if raw.strip() else []
-        elif isinstance(raw, list):
-            values = raw
-        else:
-            values = []
+        values = _selected_ids(entry.get("value")) if isinstance(entry, dict) else []
         display = str(field.get("displayName") or name)
+        is_select = field.get("filterType") == FilterType.SELECT.value
         if field.get("required") and not values:
             problems.append(f"Select a {display.lower()} before {action}.")
-        elif field.get("filterType") == FilterType.SELECT.value and len(values) > 1:
+        elif is_select and len(values) > 1:
             problems.append(
                 f"{display} allows only one selection, but {len(values)} are configured."
             )
+        elif is_select and values:
+            operator = str((entry or {}).get("operator") or "")
+            if operator != FilterOperator.IN:
+                problems.append(f"{display} must use the 'in' operator (got '{operator}').")
     return problems
 
 
