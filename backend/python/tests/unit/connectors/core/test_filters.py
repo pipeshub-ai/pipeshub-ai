@@ -1180,6 +1180,11 @@ class TestRequireSingleValue:
         with pytest.raises(ValueError, match="found 0"):
             require_single_value(filters, SyncFilterKey.REPO_IDS, "Repository")
 
+    def test_blank_entries_are_ignored(self) -> None:
+        assert require_single_value(self._collection([" ", "o/r"]), SyncFilterKey.REPO_IDS, "Repository") == "o/r"
+        with pytest.raises(ValueError, match="found 0"):
+            require_single_value(self._collection([" "]), SyncFilterKey.REPO_IDS, "Repository")
+
     def test_legacy_multi_repo_config_raises(self) -> None:
         legacy = FilterCollection.from_dict({
             "repo_ids": {"type": "multiselect", "operator": "in", "value": ["a/b", "c/d"]},
