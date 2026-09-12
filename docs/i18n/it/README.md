@@ -87,23 +87,6 @@
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
-## Formati di file supportati
-
-| Formato | Dettagli |
-|--------|---------|
-| PDF | Inclusi i PDF scansionati |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Valori separati da virgola |
-| Markdown | File .md |
-| HTML | Pagine web |
-| Text | File di testo semplice |
-| Google Docs, Sheets, Slides | Formati di Google Workspace |
-| Immagini | PNG, JPG, ecc. |
-| Audio | File audio |
-| Video | File video |
-
 ## Stack tecnologico
 
 ### Frontend
@@ -246,7 +229,11 @@ PipesHub è completamente open source (Apache 2.0) e auto-ospitabile — i tuoi 
 
 ### Quali connettori supporta PipesHub?
 
-PipesHub dispone di oltre 30 connettori aziendali con indicizzazione in tempo reale e pianificata. Supporta formati di file come PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, immagini, audio e video.
+PipesHub dispone di oltre 30 connettori aziendali con indicizzazione in tempo reale e pianificata. Vedi la [panoramica dei connettori](https://docs.pipeshub.com/connectors/overview).
+
+### Quali formati di file può indicizzare PipesHub?
+
+PDF (incluse le scansioni), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, testo semplice e immagini. Audio e video possono essere archiviati ma non sono ancora indicizzati. Il servizio di storage accetta un insieme più ampio di tipi MIME — vedi [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### Come si distribuisce PipesHub?
 

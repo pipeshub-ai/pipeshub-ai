@@ -87,23 +87,6 @@
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
-## Поддерживаемые форматы файлов
-
-| Формат | Подробности |
-|--------|---------|
-| PDF | Включая отсканированные PDF |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Значения, разделённые запятыми |
-| Markdown | Файлы .md |
-| HTML | Веб-страницы |
-| Text | Текстовые файлы |
-| Google Docs, Sheets, Slides | Форматы Google Workspace |
-| Изображения | PNG, JPG и т. д. |
-| Аудио | Аудиофайлы |
-| Видео | Видеофайлы |
-
 ## Технологический стек
 
 ### Фронтенд
@@ -246,7 +229,11 @@ PipesHub полностью открыт (Apache 2.0) и поддерживае�
 
 ### Какие коннекторы поддерживает PipesHub?
 
-PipesHub имеет более 30 корпоративных коннекторов с индексацией в реальном времени и по расписанию. Он поддерживает такие форматы файлов, как PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, изображения, аудио и видео.
+PipesHub имеет более 30 корпоративных коннекторов с индексацией в реальном времени и по расписанию. См. [обзор коннекторов](https://docs.pipeshub.com/connectors/overview).
+
+### Какие форматы файлов PipesHub может индексировать?
+
+PDF (включая сканы), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, обычный текст и изображения. Аудио и видео можно хранить, но они пока не индексируются. Служба хранения принимает более широкий набор MIME-типов — см. [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### Как развернуть PipesHub?
 

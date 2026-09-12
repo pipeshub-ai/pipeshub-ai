@@ -87,23 +87,6 @@
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
-## 対応ファイル形式
-
-| 形式 | 詳細 |
-|--------|---------|
-| PDF | スキャンされた PDF を含む |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | カンマ区切り値 |
-| Markdown | .md ファイル |
-| HTML | ウェブページ |
-| Text | プレーンテキストファイル |
-| Google Docs、Sheets、Slides | Google Workspace 形式 |
-| 画像 | PNG、JPG など |
-| 音声 | 音声ファイル |
-| 動画 | 動画ファイル |
-
 ## 技術スタック
 
 ### フロントエンド
@@ -246,7 +229,11 @@ PipesHub は完全にオープンソース（Apache 2.0）でセルフホスト�
 
 ### PipesHub はどのようなコネクタに対応していますか？
 
-PipesHub はリアルタイムおよびスケジュール索引に対応した 30 以上のエンタープライズコネクタを備えています。PDF、Docx、XLSX、PPTX、CSV、Markdown、HTML、Google Docs/Sheets/Slides、画像、音声、動画などのファイル形式に対応しています。
+PipesHub はリアルタイムおよびスケジュール索引に対応した 30 以上のエンタープライズコネクタを備えています。詳しくは [コネクタの概要](https://docs.pipeshub.com/connectors/overview) を参照してください。
+
+### PipesHub はどのファイル形式を索引できますか？
+
+PDF（スキャンを含む）、Microsoft Office（Word、Excel、PowerPoint）、Google Docs/Sheets/Slides、Markdown、HTML、CSV、プレーンテキスト、画像。音声と動画は保存できますが、まだ索引されません。ストレージはより幅広い MIME タイプを受け付けます — [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage) を参照してください。
 
 ### PipesHub はどうやってデプロイしますか？
 

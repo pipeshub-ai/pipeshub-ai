@@ -87,23 +87,6 @@
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
-## Các định dạng tệp được hỗ trợ
-
-| Định dạng | Chi tiết |
-|--------|---------|
-| PDF | Bao gồm cả PDF đã quét |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Giá trị phân tách bằng dấu phẩy |
-| Markdown | Tệp .md |
-| HTML | Trang web |
-| Text | Tệp văn bản thuần |
-| Google Docs, Sheets, Slides | Định dạng Google Workspace |
-| Hình ảnh | PNG, JPG, v.v. |
-| Âm thanh | Tệp âm thanh |
-| Video | Tệp video |
-
 ## Ngăn xếp công nghệ
 
 ### Frontend
@@ -246,7 +229,11 @@ PipesHub hoàn toàn mã nguồn mở (Apache 2.0) và có thể tự lưu trữ
 
 ### PipesHub hỗ trợ những trình kết nối nào?
 
-PipesHub có hơn 30 trình kết nối doanh nghiệp với lập chỉ mục thời gian thực và theo lịch. Nó hỗ trợ các định dạng tệp như PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, hình ảnh, âm thanh và video.
+PipesHub có hơn 30 trình kết nối doanh nghiệp với lập chỉ mục thời gian thực và theo lịch. Xem [tổng quan trình kết nối](https://docs.pipeshub.com/connectors/overview).
+
+### PipesHub có thể lập chỉ mục những định dạng tệp nào?
+
+PDF (kể cả bản quét), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, văn bản thuần và hình ảnh. Âm thanh và video có thể được lưu trữ nhưng chưa được lập chỉ mục. Dịch vụ lưu trữ chấp nhận tập MIME rộng hơn — xem [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### Tôi triển khai PipesHub như thế nào?
 

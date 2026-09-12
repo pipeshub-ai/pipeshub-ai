@@ -87,23 +87,6 @@
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
-## 支持的文件格式
-
-| 格式 | 详情 |
-|--------|---------|
-| PDF | 包括扫描版 PDF |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | 逗号分隔值 |
-| Markdown | .md 文件 |
-| HTML | 网页 |
-| Text | 纯文本文件 |
-| Google Docs、Sheets、Slides | Google Workspace 格式 |
-| 图像 | PNG、JPG 等 |
-| 音频 | 音频文件 |
-| 视频 | 视频文件 |
-
 ## 技术栈
 
 ### 前端
@@ -246,7 +229,11 @@ PipesHub 完全开源（Apache 2.0）且可自托管——你的数据永不离�
 
 ### PipesHub 支持哪些连接器？
 
-PipesHub 拥有 30 多个企业级连接器，支持实时和定时索引。它支持 PDF、Docx、XLSX、PPTX、CSV、Markdown、HTML、Google Docs/Sheets/Slides、图像、音频和视频等文件格式。
+PipesHub 拥有 30 多个企业级连接器，支持实时和定时索引。详见 [连接器概览](https://docs.pipeshub.com/connectors/overview)。
+
+### PipesHub 可以索引哪些文件格式？
+
+PDF（含扫描件）、Microsoft Office（Word、Excel、PowerPoint）、Google Docs/Sheets/Slides、Markdown、HTML、CSV、纯文本和图像。音频和视频可以存储，但尚不索引。存储服务接受更广的 MIME 类型 — 见 [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage)。
 
 ### 如何部署 PipesHub？
 

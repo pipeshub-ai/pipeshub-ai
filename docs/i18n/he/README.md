@@ -89,23 +89,6 @@
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
-## פורמטים של קבצים נתמכים
-
-| פורמט | פרטים |
-|--------|---------|
-| PDF | כולל קובצי PDF סרוקים |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | ערכים מופרדים בפסיקים |
-| Markdown | קובצי ‎.md |
-| HTML | דפי אינטרנט |
-| Text | קובצי טקסט רגיל |
-| Google Docs, Sheets, Slides | פורמטים של Google Workspace |
-| תמונות | PNG, JPG וכו' |
-| שמע | קובצי שמע |
-| וידאו | קובצי וידאו |
-
 ## ערכת הטכנולוגיות
 
 ### צד לקוח (Frontend)
@@ -248,7 +231,11 @@ PipesHub הוא קוד פתוח לחלוטין (Apache 2.0) וניתן לאחס�
 
 ### אילו מחברים PipesHub תומך בהם?
 
-ל-PipesHub יש יותר מ-30 מחברים ארגוניים עם אינדוקס בזמן אמת ומתוזמן. הוא תומך בפורמטים של קבצים כגון PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, תמונות, שמע ווידאו.
+ל-PipesHub יש יותר מ-30 מחברים ארגוניים עם אינדוקס בזמן אמת ומתוזמן. ראו את [סקירת המחברים](https://docs.pipeshub.com/connectors/overview).
+
+### אילו פורמטי קבצים PipesHub יכול לאנדקס?
+
+PDF (כולל סריקות), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, טקסט רגיל ותמונות. אפשר לאחסן שמע ווידאו, אך הם עדיין לא מאונדקסים. שירות האחסון מקבל רשימת MIME רחבה יותר — ראו [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### כיצד אני פורס את PipesHub?
 

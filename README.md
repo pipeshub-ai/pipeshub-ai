@@ -101,23 +101,6 @@ Prefer a fully managed PipesHub without running your own infrastructure? PipesHu
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
-## File Formats Supported
-
-| Format | Details |
-|--------|---------|
-| PDF | Including scanned PDFs |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Comma-separated values |
-| Markdown | .md files |
-| HTML | Web pages |
-| Text | Plain text files |
-| Google Docs, Sheets, Slides | Google Workspace formats |
-| Images | PNG, JPG, etc. |
-| Audio | Audio files (Coming Soon) |
-| Video | Video files (Coming Soon) |
-
 ## Tech Stack
 
 ### Frontend
@@ -306,7 +289,11 @@ PipesHub is fully open-source (Apache 2.0) and self-hostable — your data never
 
 ### What connectors does PipesHub support?
 
-PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
+PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. See the [connectors overview](https://docs.pipeshub.com/connectors/overview).
+
+### What file formats can PipesHub index?
+
+PDF (including scans), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, plain text, and images. Audio and video can be stored but are not indexed yet. Storage accepts a wider set of MIME types — see [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### How do I deploy PipesHub?
 

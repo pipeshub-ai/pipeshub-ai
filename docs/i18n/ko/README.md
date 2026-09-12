@@ -87,23 +87,6 @@
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
-## 지원 파일 형식
-
-| 형식 | 세부 정보 |
-|--------|---------|
-| PDF | 스캔된 PDF 포함 |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | 쉼표로 구분된 값 |
-| Markdown | .md 파일 |
-| HTML | 웹 페이지 |
-| Text | 일반 텍스트 파일 |
-| Google Docs, Sheets, Slides | Google Workspace 형식 |
-| 이미지 | PNG, JPG 등 |
-| 오디오 | 오디오 파일 |
-| 비디오 | 비디오 파일 |
-
 ## 기술 스택
 
 ### 프런트엔드
@@ -246,7 +229,11 @@ PipesHub는 완전한 오픈소스(Apache 2.0)이며 셀프 호스팅이 가능�
 
 ### PipesHub는 어떤 커넥터를 지원하나요?
 
-PipesHub는 실시간 및 예약 색인을 지원하는 30개 이상의 엔터프라이즈 커넥터를 갖추고 있습니다. PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, 이미지, 오디오, 비디오 같은 파일 형식을 지원합니다.
+PipesHub는 실시간 및 예약 색인을 지원하는 30개 이상의 엔터프라이즈 커넥터를 갖추고 있습니다. [커넥터 개요](https://docs.pipeshub.com/connectors/overview)를 참고하세요.
+
+### PipesHub는 어떤 파일 형식을 색인하나요?
+
+PDF(스캔 포함), Microsoft Office(Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, 일반 텍스트, 이미지. 오디오와 비디오는 저장할 수 있지만 아직 색인되지 않습니다. 스토리지는 더 넓은 MIME 유형을 받습니다 — [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage)를 참고하세요.
 
 ### PipesHub는 어떻게 배포하나요?
 

@@ -87,23 +87,6 @@
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
-## Desteklenen Dosya Biçimleri
-
-| Biçim | Ayrıntılar |
-|--------|---------|
-| PDF | Taranmış PDF'ler dahil |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Virgülle ayrılmış değerler |
-| Markdown | .md dosyaları |
-| HTML | Web sayfaları |
-| Text | Düz metin dosyaları |
-| Google Docs, Sheets, Slides | Google Workspace biçimleri |
-| Görüntüler | PNG, JPG vb. |
-| Ses | Ses dosyaları |
-| Video | Video dosyaları |
-
 ## Teknoloji Yığını
 
 ### Ön Uç (Frontend)
@@ -246,7 +229,11 @@ PipesHub tamamen açık kaynaklıdır (Apache 2.0) ve kendi sunucunuzda barınd�
 
 ### PipesHub hangi bağlayıcıları destekler?
 
-PipesHub'ın gerçek zamanlı ve zamanlanmış indekslemeli 30'dan fazla kurumsal bağlayıcısı vardır. PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, görüntü, ses ve video gibi dosya biçimlerini destekler.
+PipesHub'ın gerçek zamanlı ve zamanlanmış indekslemeli 30'dan fazla kurumsal bağlayıcısı vardır. [Bağlayıcı genel bakışına](https://docs.pipeshub.com/connectors/overview) bakın.
+
+### PipesHub hangi dosya biçimlerini indeksleyebilir?
+
+PDF (taramalar dahil), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, düz metin ve görüntüler. Ses ve video depolanabilir ancak henüz indekslenmez. Depolama daha geniş bir MIME türü kümesini kabul eder — [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage) sayfasına bakın.
 
 ### PipesHub'ı nasıl dağıtırım?
 
