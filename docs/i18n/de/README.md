@@ -104,34 +104,6 @@
 | Audio | Audiodateien |
 | Video | Videodateien |
 
-## Technologie-Stack
-
-### Frontend
-
-| Technologie | Beschreibung |
-|-----------|-------------|
-| Next.js | App-Router-UI (clientseitig gerendertes React) |
-| TypeScript | Stark typisierte JavaScript-Obermenge |
-| Radix UI Themes | Barrierefreie Komponenten-Primitive und Styling |
-| Zod | Schemavalidierung und -parsing |
-| React Hook Form | Flexible Verwaltung des Formularzustands |
-
-### Backend
-
-| Technologie | Beschreibung |
-|-----------|-------------|
-| FastAPI | Hochperformantes Python-Web-Framework |
-| LangChain | Framework für LLM-Pipelines |
-| Qdrant | Engine für Vektor-Ähnlichkeitssuche |
-| Neo4j / ArangoDB | Graphdatenbank |
-| Kafka / Redis Streams | Verteilte Event-Streaming-Plattform |
-| Redis | Caching |
-| Redis / etcd3 | Verteilter Key-Value-Konfigurationsspeicher |
-| Celery | Verteiltes Task-Queue-System |
-| Docling | Toolkit zum Parsen und Extrahieren von Dokumenten |
-| PyMuPDF | Bibliothek zur PDF-Verarbeitung |
-| pandas | Datenanalyse und -verarbeitung |
-
 ## 🚀 Bereitstellungsanleitung
 
 PipesHub (die KI-Plattform für den Arbeitsplatz) kann lokal ausgeführt oder mit Docker Compose in der Cloud bereitgestellt werden.
@@ -264,7 +236,11 @@ Hinweis: Verwende HTTPS für Cloud-Bereitstellungen. HTTP kann zu Sicherheitsblo
 
 ### Welche LLM-Anbieter unterstützt PipesHub?
 
-PipesHub folgt dem Prinzip „Bring dein eigenes Modell mit“ – du kannst jeden LLM-Anbieter verwenden. Stelle in deiner VPC die Modelle deiner Wahl bereit. Der Technologie-Stack umfasst LangChain für LLM-Pipelines und -Workflows.
+PipesHub folgt dem Prinzip „Bring dein eigenes Modell mit“ – du kannst jeden LLM-Anbieter verwenden. Stelle in deiner VPC die Modelle deiner Wahl bereit.
+
+### Wie sieht der Technologie-Stack aus?
+
+Next.js-UI, eine Node.js-API und Python-Dienste für Konnektoren, Indexierung und Abfragen. Der Installer setzt standardmäßig Neo4j, Qdrant, MongoDB, Kafka und Redis ein. Siehe die [Systemübersicht](https://docs.pipeshub.com/system-overview).
 
 ### Was ist die Funktion zum Wissensgraph-Abruf?
 

@@ -104,34 +104,6 @@
 | Audio | Archivos de audio |
 | Vídeo | Archivos de vídeo |
 
-## Stack tecnológico
-
-### Frontend
-
-| Tecnología | Descripción |
-|-----------|-------------|
-| Next.js | UI con App Router (React renderizado en el cliente) |
-| TypeScript | Superconjunto de JavaScript con tipado fuerte |
-| Radix UI Themes | Primitivos de componentes accesibles y estilos |
-| Zod | Validación y análisis de esquemas |
-| React Hook Form | Gestión flexible del estado de formularios |
-
-### Backend
-
-| Tecnología | Descripción |
-|-----------|-------------|
-| FastAPI | Framework web de Python de alto rendimiento |
-| LangChain | Framework para pipelines de LLM |
-| Qdrant | Motor de búsqueda por similitud vectorial |
-| Neo4j / ArangoDB | Base de datos de grafos |
-| Kafka / Redis Streams | Plataforma de streaming de eventos distribuida |
-| Redis | Almacenamiento en caché |
-| Redis / etcd3 | Almacén de configuración clave-valor distribuido |
-| Celery | Sistema de colas de tareas distribuidas |
-| Docling | Kit de herramientas de análisis y extracción de documentos |
-| PyMuPDF | Biblioteca de procesamiento de PDF |
-| pandas | Análisis y manipulación de datos |
-
 ## 🚀 Guía de despliegue
 
 PipesHub (la plataforma de IA para el trabajo) puede ejecutarse localmente o desplegarse en la nube mediante Docker Compose.
@@ -264,7 +236,11 @@ Nota: Usa HTTPS para los despliegues en la nube. HTTP puede provocar bloqueos de
 
 ### ¿Qué proveedores de LLM admite PipesHub?
 
-PipesHub funciona con el modelo "Usa tu propio modelo": puedes usar cualquier proveedor de LLM. Despliega en tu VPC con los modelos que prefieras. El stack tecnológico incluye LangChain para pipelines y flujos de trabajo de LLM.
+PipesHub funciona con el modelo "Usa tu propio modelo": puedes usar cualquier proveedor de LLM. Despliega en tu VPC con los modelos que prefieras.
+
+### ¿Cuál es el stack tecnológico?
+
+Interfaz Next.js, una API Node.js y servicios Python para conectores, indexación y consulta. El instalador usa por defecto Neo4j, Qdrant, MongoDB, Kafka y Redis. Consulta la [visión general del sistema](https://docs.pipeshub.com/system-overview).
 
 ### ¿Qué es la función de recuperación con grafo de conocimiento?
 

@@ -104,34 +104,6 @@
 | Ses | Ses dosyaları |
 | Video | Video dosyaları |
 
-## Teknoloji Yığını
-
-### Ön Uç (Frontend)
-
-| Teknoloji | Açıklama |
-|-----------|-------------|
-| Next.js | App Router arayüzü (istemcide işlenen React) |
-| TypeScript | Güçlü tipli JavaScript üst kümesi |
-| Radix UI Themes | Erişilebilir bileşen ilkelleri ve stillendirme |
-| Zod | Şema doğrulama ve ayrıştırma |
-| React Hook Form | Esnek form durumu yönetimi |
-
-### Arka Uç (Backend)
-
-| Teknoloji | Açıklama |
-|-----------|-------------|
-| FastAPI | Yüksek performanslı Python web çerçevesi |
-| LangChain | LLM ardışık düzenleri için çerçeve |
-| Qdrant | Vektör benzerliği arama motoru |
-| Neo4j / ArangoDB | Grafik veritabanı |
-| Kafka / Redis Streams | Dağıtık olay akışı platformu |
-| Redis | Önbellekleme |
-| Redis / etcd3 | Dağıtık anahtar-değer yapılandırma deposu |
-| Celery | Dağıtık görev kuyruğu sistemi |
-| Docling | Belge ayrıştırma ve çıkarma araç seti |
-| PyMuPDF | PDF işleme kitaplığı |
-| pandas | Veri analizi ve işleme |
-
 ## 🚀 Dağıtım Kılavuzu
 
 PipesHub (İş Yeri Yapay Zekâ Platformu) yerel olarak çalıştırılabilir veya Docker Compose kullanılarak bulutta dağıtılabilir.
@@ -264,7 +236,11 @@ Not: Bulut dağıtımları için HTTPS kullanın. HTTP, ön uçta güvenlik enge
 
 ### PipesHub hangi LLM sağlayıcılarını destekler?
 
-PipesHub "Kendi Modelini Getir" yaklaşımını benimser — herhangi bir LLM sağlayıcısını kullanabilirsiniz. Tercih ettiğiniz modellerle kendi VPC'nizde dağıtım yapın. Teknoloji yığını, LLM ardışık düzenleri ve iş akışları için LangChain içerir.
+PipesHub "Kendi Modelini Getir" yaklaşımını benimser — herhangi bir LLM sağlayıcısını kullanabilirsiniz. Tercih ettiğiniz modellerle kendi VPC'nizde dağıtım yapın.
+
+### Teknoloji yığını nedir?
+
+Next.js arayüzü, bir Node.js API ve bağlayıcılar, indeksleme ve sorgu için Python hizmetleri. Yükleyici varsayılan olarak Neo4j, Qdrant, MongoDB, Kafka ve Redis kullanır. [Sistem genel bakışına](https://docs.pipeshub.com/system-overview) bakın.
 
 ### Bilgi Grafiği ile Erişim özelliği nedir?
 

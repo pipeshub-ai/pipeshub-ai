@@ -104,34 +104,6 @@
 | Áudio | Arquivos de áudio |
 | Vídeo | Arquivos de vídeo |
 
-## Stack tecnológico
-
-### Frontend
-
-| Tecnologia | Descrição |
-|-----------|-------------|
-| Next.js | UI com App Router (React renderizado no cliente) |
-| TypeScript | Superconjunto de JavaScript com tipagem forte |
-| Radix UI Themes | Primitivos de componentes acessíveis e estilização |
-| Zod | Validação e análise de esquemas |
-| React Hook Form | Gerenciamento flexível de estado de formulários |
-
-### Backend
-
-| Tecnologia | Descrição |
-|-----------|-------------|
-| FastAPI | Framework web Python de alto desempenho |
-| LangChain | Framework para pipelines de LLM |
-| Qdrant | Mecanismo de busca por similaridade vetorial |
-| Neo4j / ArangoDB | Banco de dados de grafos |
-| Kafka / Redis Streams | Plataforma distribuída de streaming de eventos |
-| Redis | Cache |
-| Redis / etcd3 | Armazenamento de configuração chave-valor distribuído |
-| Celery | Sistema de filas de tarefas distribuídas |
-| Docling | Kit de ferramentas de análise e extração de documentos |
-| PyMuPDF | Biblioteca de processamento de PDF |
-| pandas | Análise e manipulação de dados |
-
 ## 🚀 Guia de implantação
 
 O PipesHub (a plataforma de IA para o trabalho) pode ser executado localmente ou implantado na nuvem usando o Docker Compose.
@@ -264,7 +236,11 @@ Observação: Use HTTPS para implantações na nuvem. O HTTP pode causar bloquei
 
 ### Quais provedores de LLM o PipesHub suporta?
 
-O PipesHub é "Use seu próprio modelo" — você pode usar qualquer provedor de LLM. Implante na sua VPC com os modelos de sua preferência. O stack tecnológico inclui LangChain para pipelines e fluxos de trabalho de LLM.
+O PipesHub é "Use seu próprio modelo" — você pode usar qualquer provedor de LLM. Implante na sua VPC com os modelos de sua preferência.
+
+### Qual é o stack tecnológico?
+
+UI Next.js, uma API Node.js e serviços Python para conectores, indexação e consulta. O instalador usa por padrão Neo4j, Qdrant, MongoDB, Kafka e Redis. Veja a [visão geral do sistema](https://docs.pipeshub.com/system-overview).
 
 ### O que é o recurso de recuperação por grafo de conhecimento?
 

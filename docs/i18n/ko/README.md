@@ -104,34 +104,6 @@
 | 오디오 | 오디오 파일 |
 | 비디오 | 비디오 파일 |
 
-## 기술 스택
-
-### 프런트엔드
-
-| 기술 | 설명 |
-|-----------|-------------|
-| Next.js | App Router UI(클라이언트 렌더링 React) |
-| TypeScript | 강타입 JavaScript 상위 집합 |
-| Radix UI Themes | 접근성 있는 컴포넌트 프리미티브 및 스타일링 |
-| Zod | 스키마 검증 및 파싱 |
-| React Hook Form | 유연한 폼 상태 관리 |
-
-### 백엔드
-
-| 기술 | 설명 |
-|-----------|-------------|
-| FastAPI | 고성능 Python 웹 프레임워크 |
-| LangChain | LLM 파이프라인용 프레임워크 |
-| Qdrant | 벡터 유사도 검색 엔진 |
-| Neo4j / ArangoDB | 그래프 데이터베이스 |
-| Kafka / Redis Streams | 분산 이벤트 스트리밍 플랫폼 |
-| Redis | 캐싱 |
-| Redis / etcd3 | 분산 키-값 구성 저장소 |
-| Celery | 분산 작업 큐 시스템 |
-| Docling | 문서 파싱 및 추출 툴킷 |
-| PyMuPDF | PDF 처리 라이브러리 |
-| pandas | 데이터 분석 및 조작 |
-
 ## 🚀 배포 가이드
 
 PipesHub(업무용 AI 플랫폼)는 로컬에서 실행하거나 Docker Compose를 사용하여 클라우드에 배포할 수 있습니다.
@@ -264,7 +236,11 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### PipesHub는 어떤 LLM 제공업체를 지원하나요?
 
-PipesHub는 "자체 모델 사용(Bring Your Own Model)" 방식으로, 어떤 LLM 제공업체든 사용할 수 있습니다. 원하는 모델을 VPC에 배포하세요. 기술 스택에는 LLM 파이프라인과 워크플로를 위한 LangChain이 포함됩니다.
+PipesHub는 "자체 모델 사용(Bring Your Own Model)" 방식으로, 어떤 LLM 제공업체든 사용할 수 있습니다. 원하는 모델을 VPC에 배포하세요.
+
+### 기술 스택은 무엇인가요?
+
+Next.js UI, Node.js API, 커넥터·색인·쿼리용 Python 서비스입니다. 설치 프로그램 기본값은 Neo4j, Qdrant, MongoDB, Kafka, Redis입니다. [시스템 개요](https://docs.pipeshub.com/system-overview)를 참고하세요.
 
 ### 지식 그래프 검색 기능이란 무엇인가요?
 

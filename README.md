@@ -118,37 +118,6 @@ Prefer a fully managed PipesHub without running your own infrastructure? PipesHu
 | Audio | Audio files (Coming Soon) |
 | Video | Video files (Coming Soon) |
 
-## Tech Stack
-
-### Frontend
-
-| Technology | Description |
-|-----------|-------------|
-| Next.js | App Router UI (client-rendered React) |
-| TypeScript | Strongly typed JavaScript superset |
-| Radix UI Themes | Accessible component primitives and styling |
-| Zod | Schema validation and parsing |
-| React Hook Form | Flexible form state management |
-
-### Backend
-
-| Category | Technologies |
-|----------|--------------|
-| GraphDB | Neo4j / ArangoDB |
-| VectorDB | Qdrant / OpenSearch / Redis |
-| Document Store | MongoDB |
-| Blob Storage | Local filesystem / S3 / Azure Blob |
-| Message Broker | Kafka / Redis Streams |
-| Cache | Redis |
-| KV Store | Redis / etcd |
-| Task Queue | Celery |
-| Web Framework | FastAPI |
-| LLM Interface | LangChain (multi-provider model access) |
-| Embeddings | sentence-transformers / fastembed |
-| Document Parsing | pdfplumber, selectolax, markdown-it, openpyxl, csv (default) — or Docling, opt-in via `PARSER_BACKEND` |
-| Document Conversion | LibreOffice, CairoSVG |
-| Data Analysis | pandas |
-
 ## 🚀 Deployment Guide
 
 PipesHub can be run locally or deployed on any server using Docker Compose. The interactive installer handles all configuration — including secrets, graph DB, broker, and image tag selection — and generates a `.env` for you.
@@ -320,7 +289,11 @@ Developers building from source should clone the repository and run `./install.s
 
 ### What LLM providers does PipesHub support?
 
-PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain for LLM pipelines and workflows.
+PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models.
+
+### What is the tech stack?
+
+Next.js UI, a Node.js API, and Python services for connectors, indexing, and query. The installer defaults to Neo4j, Qdrant, MongoDB, Kafka, and Redis. See the [system overview](https://docs.pipeshub.com/system-overview).
 
 ### What is the Knowledge Graph Retrieval feature?
 

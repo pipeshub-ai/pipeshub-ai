@@ -104,34 +104,6 @@
 | Âm thanh | Tệp âm thanh |
 | Video | Tệp video |
 
-## Ngăn xếp công nghệ
-
-### Frontend
-
-| Công nghệ | Mô tả |
-|-----------|-------------|
-| Next.js | Giao diện App Router (React kết xuất phía client) |
-| TypeScript | Tập cha của JavaScript với kiểu mạnh |
-| Radix UI Themes | Các thành phần nguyên thủy dễ truy cập và tạo kiểu |
-| Zod | Xác thực và phân tích lược đồ |
-| React Hook Form | Quản lý trạng thái biểu mẫu linh hoạt |
-
-### Backend
-
-| Công nghệ | Mô tả |
-|-----------|-------------|
-| FastAPI | Khung web Python hiệu năng cao |
-| LangChain | Khung cho các pipeline LLM |
-| Qdrant | Công cụ tìm kiếm theo độ tương đồng vectơ |
-| Neo4j / ArangoDB | Cơ sở dữ liệu đồ thị |
-| Kafka / Redis Streams | Nền tảng truyền sự kiện phân tán |
-| Redis | Bộ nhớ đệm |
-| Redis / etcd3 | Kho cấu hình khóa-giá trị phân tán |
-| Celery | Hệ thống hàng đợi tác vụ phân tán |
-| Docling | Bộ công cụ phân tích và trích xuất tài liệu |
-| PyMuPDF | Thư viện xử lý PDF |
-| pandas | Phân tích và xử lý dữ liệu |
-
 ## 🚀 Hướng dẫn triển khai
 
 PipesHub (Nền tảng AI cho nơi làm việc) có thể chạy cục bộ hoặc triển khai trên đám mây bằng Docker Compose.
@@ -264,7 +236,11 @@ Lưu ý: Hãy dùng HTTPS cho việc triển khai trên đám mây. HTTP có th�
 
 ### PipesHub hỗ trợ những nhà cung cấp LLM nào?
 
-PipesHub theo nguyên tắc "Mang mô hình của riêng bạn" — bạn có thể dùng bất kỳ nhà cung cấp LLM nào. Triển khai trong VPC của bạn với các mô hình bạn ưa thích. Ngăn xếp công nghệ bao gồm LangChain cho các pipeline và quy trình LLM.
+PipesHub theo nguyên tắc "Mang mô hình của riêng bạn" — bạn có thể dùng bất kỳ nhà cung cấp LLM nào. Triển khai trong VPC của bạn với các mô hình bạn ưa thích.
+
+### Ngăn xếp công nghệ là gì?
+
+Giao diện Next.js, API Node.js và các dịch vụ Python cho trình kết nối, lập chỉ mục và truy vấn. Trình cài đặt mặc định dùng Neo4j, Qdrant, MongoDB, Kafka và Redis. Xem [tổng quan hệ thống](https://docs.pipeshub.com/system-overview).
 
 ### Tính năng truy xuất bằng đồ thị tri thức là gì?
 

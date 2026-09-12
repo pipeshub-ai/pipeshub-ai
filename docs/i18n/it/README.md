@@ -104,34 +104,6 @@
 | Audio | File audio |
 | Video | File video |
 
-## Stack tecnologico
-
-### Frontend
-
-| Tecnologia | Descrizione |
-|-----------|-------------|
-| Next.js | UI con App Router (React renderizzato lato client) |
-| TypeScript | Superset di JavaScript fortemente tipizzato |
-| Radix UI Themes | Primitive di componenti accessibili e stile |
-| Zod | Validazione e parsing degli schemi |
-| React Hook Form | Gestione flessibile dello stato dei form |
-
-### Backend
-
-| Tecnologia | Descrizione |
-|-----------|-------------|
-| FastAPI | Framework web Python ad alte prestazioni |
-| LangChain | Framework per pipeline di LLM |
-| Qdrant | Motore di ricerca per similarità vettoriale |
-| Neo4j / ArangoDB | Database a grafo |
-| Kafka / Redis Streams | Piattaforma distribuita di streaming di eventi |
-| Redis | Caching |
-| Redis / etcd3 | Archivio di configurazione chiave-valore distribuito |
-| Celery | Sistema distribuito di code di attività |
-| Docling | Toolkit per l'analisi e l'estrazione di documenti |
-| PyMuPDF | Libreria per l'elaborazione di PDF |
-| pandas | Analisi e manipolazione dei dati |
-
 ## 🚀 Guida al deployment
 
 PipesHub (la piattaforma di IA per il lavoro) può essere eseguito localmente o distribuito sul cloud usando Docker Compose.
@@ -264,7 +236,11 @@ Nota: Usa HTTPS per i deployment sul cloud. L'HTTP può causare blocchi di sicur
 
 ### Quali provider di LLM supporta PipesHub?
 
-PipesHub adotta il principio "Porta il tuo modello" — puoi usare qualsiasi provider di LLM. Distribuisci nella tua VPC con i modelli che preferisci. Lo stack tecnologico include LangChain per le pipeline e i flussi di lavoro di LLM.
+PipesHub adotta il principio "Porta il tuo modello" — puoi usare qualsiasi provider di LLM. Distribuisci nella tua VPC con i modelli che preferisci.
+
+### Qual è lo stack tecnologico?
+
+UI Next.js, un'API Node.js e servizi Python per connettori, indicizzazione e query. L'installer usa di default Neo4j, Qdrant, MongoDB, Kafka e Redis. Vedi la [panoramica del sistema](https://docs.pipeshub.com/system-overview).
 
 ### Che cos'è la funzionalità di recupero tramite grafo della conoscenza?
 

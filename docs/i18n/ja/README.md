@@ -104,34 +104,6 @@
 | 音声 | 音声ファイル |
 | 動画 | 動画ファイル |
 
-## 技術スタック
-
-### フロントエンド
-
-| 技術 | 説明 |
-|-----------|-------------|
-| Next.js | App Router の UI（クライアントレンダリングの React） |
-| TypeScript | 強い型付けを持つ JavaScript のスーパーセット |
-| Radix UI Themes | アクセシブルなコンポーネントプリミティブとスタイリング |
-| Zod | スキーマ検証とパース |
-| React Hook Form | 柔軟なフォーム状態管理 |
-
-### バックエンド
-
-| 技術 | 説明 |
-|-----------|-------------|
-| FastAPI | 高性能な Python Web フレームワーク |
-| LangChain | LLM パイプライン向けフレームワーク |
-| Qdrant | ベクトル類似度検索エンジン |
-| Neo4j / ArangoDB | グラフデータベース |
-| Kafka / Redis Streams | 分散イベントストリーミングプラットフォーム |
-| Redis | キャッシュ |
-| Redis / etcd3 | 分散キーバリュー構成ストア |
-| Celery | 分散タスクキューシステム |
-| Docling | ドキュメント解析・抽出ツールキット |
-| PyMuPDF | PDF 処理ライブラリ |
-| pandas | データ分析・操作 |
-
 ## 🚀 デプロイガイド
 
 PipesHub（職場向け AI プラットフォーム）は、ローカルで実行することも、Docker Compose を使用してクラウドにデプロイすることもできます。
@@ -264,7 +236,11 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### PipesHub はどの LLM プロバイダーに対応していますか？
 
-PipesHub は「自前のモデルを使用（Bring Your Own Model）」方式で、任意の LLM プロバイダーを使用できます。お好みのモデルを VPC 内にデプロイしてください。技術スタックには、LLM パイプラインとワークフローのための LangChain が含まれます。
+PipesHub は「自前のモデルを使用（Bring Your Own Model）」方式で、任意の LLM プロバイダーを使用できます。お好みのモデルを VPC 内にデプロイしてください。
+
+### 技術スタックは何ですか？
+
+Next.js の UI、Node.js API、コネクタ・索引・クエリ用の Python サービスです。インストーラーの既定は Neo4j、Qdrant、MongoDB、Kafka、Redis です。詳しくは [システム概要](https://docs.pipeshub.com/system-overview) を参照してください。
 
 ### ナレッジグラフ検索機能とは何ですか？
 

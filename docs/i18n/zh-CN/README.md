@@ -104,34 +104,6 @@
 | 音频 | 音频文件 |
 | 视频 | 视频文件 |
 
-## 技术栈
-
-### 前端
-
-| 技术 | 说明 |
-|-----------|-------------|
-| Next.js | App Router 界面（客户端渲染的 React） |
-| TypeScript | 强类型的 JavaScript 超集 |
-| Radix UI Themes | 无障碍的组件原语与样式 |
-| Zod | 模式校验与解析 |
-| React Hook Form | 灵活的表单状态管理 |
-
-### 后端
-
-| 技术 | 说明 |
-|-----------|-------------|
-| FastAPI | 高性能的 Python Web 框架 |
-| LangChain | 用于 LLM 流水线的框架 |
-| Qdrant | 向量相似度搜索引擎 |
-| Neo4j / ArangoDB | 图数据库 |
-| Kafka / Redis Streams | 分布式事件流平台 |
-| Redis | 缓存 |
-| Redis / etcd3 | 分布式键值配置存储 |
-| Celery | 分布式任务队列系统 |
-| Docling | 文档解析与抽取工具包 |
-| PyMuPDF | PDF 处理库 |
-| pandas | 数据分析与处理 |
-
 ## 🚀 部署指南
 
 PipesHub（职场 AI 平台）可以在本地运行，也可以使用 Docker Compose 部署到云端。
@@ -264,7 +236,11 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### PipesHub 支持哪些 LLM 提供商？
 
-PipesHub 是“自带模型”——你可以使用任意 LLM 提供商。在你的 VPC 中部署你偏好的模型。技术栈包括用于 LLM 流水线和工作流的 LangChain。
+PipesHub 是“自带模型”——你可以使用任意 LLM 提供商。在你的 VPC 中部署你偏好的模型。
+
+### 技术栈是什么？
+
+Next.js 界面、Node.js API，以及用于连接器、索引和查询的 Python 服务。安装程序默认使用 Neo4j、Qdrant、MongoDB、Kafka 和 Redis。详见 [系统概览](https://docs.pipeshub.com/system-overview)。
 
 ### 什么是知识图谱检索功能？
 
