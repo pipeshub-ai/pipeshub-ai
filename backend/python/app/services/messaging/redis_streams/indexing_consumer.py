@@ -962,6 +962,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         topic, message_id, stable_message_id, parsed_message
                     ):
                         continue
+                    # XPENDING + XRANGE are read-only: the entry's idle timer
+                    # kept climbing, so a peer's XAUTOCLAIM (min_idle_time=30 s)
+                    # can steal it between the scan and this dispatch. Reassert
+                    # ownership and reset idle time — same pattern as
+                    # __refresh_held_ownership for buffered entries. JUSTID
+                    # avoids inflating times_delivered.
+                    await self.__reclaim_for_dispatch(topic, message_id)
                     processed_any = True
                     self.logger.info(
                         "Recovering own pending message: stream=%s, id=%s",
@@ -1094,6 +1101,34 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 break
             cursor = f"({last_id}"
         return found
+
+    async def __reclaim_for_dispatch(self, topic: str, message_id: str) -> None:
+        """Reassert ownership of a PEL entry before dispatching it.
+
+        Phase 2 discovers entries with read-only XPENDING + XRANGE, so the
+        entry's idle timer is never reset by the scan itself. A peer's
+        XAUTOCLAIM (min_idle_time = ``claim_min_idle_ms``) can therefore steal
+        the entry between the scan and the dispatch. ``XCLAIM JUSTID`` with
+        ``min_idle_time=0`` resets the idle timer without inflating
+        ``times_delivered``, closing the window for the next
+        ``claim_min_idle_ms`` milliseconds.
+        """
+        if self.redis is None:
+            return
+        try:
+            await self.redis.xclaim(  # type: ignore
+                topic,
+                self.config.group_id,
+                self.consumer_name,
+                min_idle_time=0,
+                message_ids=[message_id],
+                justid=True,
+            )
+        except Exception as e:
+            self.logger.debug(
+                "Could not reclaim %s on %s before dispatch: %s",
+                message_id, topic, e,
+            )
 
     async def __refresh_held_ownership(self) -> None:
         """Reset the idle timer on entries this consumer is holding.

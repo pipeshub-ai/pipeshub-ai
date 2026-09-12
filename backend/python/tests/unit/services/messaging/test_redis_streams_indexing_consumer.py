@@ -2265,6 +2265,38 @@ class TestDrainPending:
         consumer.redis.xreadgroup.assert_not_awaited()
         assert mock_process.await_count == 2
 
+    @pytest.mark.asyncio
+    async def test_drain_phase2_reclaims_ownership_before_dispatch(self, consumer):
+        """Phase 2 uses read-only XPENDING + XRANGE, so the entry's idle
+        timer is never reset by the scan.  Before dispatching, the consumer
+        must XCLAIM JUSTID min_idle_time=0 to close the window where a peer
+        could XAUTOCLAIM the entry."""
+        consumer.running = True
+        consumer.redis = AsyncMock()
+        consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
+        consumer.redis.xclaim = AsyncMock(return_value=[])
+
+        async def pending_range(stream, *args, **kwargs):
+            if stream == consumer.config.topics[0]:
+                return [{"message_id": "9-0"}]
+            return []
+
+        consumer.redis.xpending_range = AsyncMock(side_effect=pending_range)
+        consumer.redis.xrange = AsyncMock(return_value=[("9-0", _valid_fields())])
+
+        with patch.object(
+            consumer, "_start_processing_task", new_callable=AsyncMock
+        ):
+            await consumer._drain_pending()
+
+        # XCLAIM JUSTID must have been called for the recovered entry.
+        consumer.redis.xclaim.assert_awaited()
+        call_kwargs = consumer.redis.xclaim.await_args.kwargs
+        assert call_kwargs["message_ids"] == ["9-0"]
+        assert call_kwargs["justid"] is True
+        assert call_kwargs["min_idle_time"] == 0
+
 
 # ===================================================================
 # _should_dead_letter  (dead-letter logic)
