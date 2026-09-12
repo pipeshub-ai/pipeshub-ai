@@ -67,11 +67,9 @@ from app.connectors.core.registry.connector_builder import (
 )
 from app.connectors.core.registry.filters import (
     Filter,
-    FilterCategory,
     FilterCollection,
-    FilterField,
+    FilterOperator,
     FilterOptionsResponse,
-    FilterType,
     IndexingFilterKey,
     SyncFilterKey,
     load_connector_filters,
@@ -176,6 +174,17 @@ def _get_datetime_filter_bounds_ms(
         parse_timestamp(after_iso) if after_iso else None,
         parse_timestamp(before_iso) if before_iso else None,
     )
+
+
+def _event_file_time_ms(event: LocalFsFileEvent) -> int:
+    """File mtime when the desktop sent one, else the observed event time.
+
+    The fallback keeps pre-upgrade desktops and journaled replays working; for
+    those, live events carry wall-clock rather than a file time.
+    """
+    if event.mtimeMs is not None and event.mtimeMs > 0:
+        return int(event.mtimeMs)
+    return int(event.timestamp)
 
 
 def _get_sync_config_value(
@@ -325,63 +334,8 @@ class LocalFsApp(App):
                 "Only sync files modified within this range (optional)."
             )
         )
-        .add_filter_field(
-            CommonFields.created_date_filter(
-                "Only sync files created within this range (optional)."
-            )
-        )
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(CommonFields.file_extension_filter())
-        .add_filter_field(
-            FilterField(
-                name=IndexingFilterKey.FILES.value,
-                display_name="Index files",
-                filter_type=FilterType.BOOLEAN,
-                category=FilterCategory.INDEXING,
-                description="Index file content from this folder.",
-                default_value=True,
-            )
-        )
-        .add_filter_field(
-            FilterField(
-                name=IndexingFilterKey.DOCUMENTS.value,
-                display_name="Index documents",
-                filter_type=FilterType.BOOLEAN,
-                category=FilterCategory.INDEXING,
-                description="Index document types (PDF, Office, etc.).",
-                default_value=True,
-            )
-        )
-        .add_filter_field(
-            FilterField(
-                name=IndexingFilterKey.IMAGES.value,
-                display_name="Index images",
-                filter_type=FilterType.BOOLEAN,
-                category=FilterCategory.INDEXING,
-                description="Index image files.",
-                default_value=True,
-            )
-        )
-        .add_filter_field(
-            FilterField(
-                name=IndexingFilterKey.VIDEOS.value,
-                display_name="Index videos",
-                filter_type=FilterType.BOOLEAN,
-                category=FilterCategory.INDEXING,
-                description="Index video files.",
-                default_value=True,
-            )
-        )
-        .add_filter_field(
-            FilterField(
-                name=IndexingFilterKey.ATTACHMENTS.value,
-                display_name="Index attachments",
-                filter_type=FilterType.BOOLEAN,
-                category=FilterCategory.INDEXING,
-                description="Index attachment-like files when applicable.",
-                default_value=True,
-            )
-        )
     )
     .build_decorator()
 )
@@ -532,13 +486,37 @@ class LocalFsConnector(BaseConnector):
 
     @staticmethod
     def _extension_allowed(path: Path, sync_filters: FilterCollection) -> bool:
-        raw = sync_filters.get_value(SyncFilterKey.FILE_EXTENSIONS)
-        if not raw:
+        extensions_filter = sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+        if extensions_filter is None or extensions_filter.is_empty():
             return True
-        items = raw if isinstance(raw, (list, tuple, set)) else [raw]
-        allowed = {str(x).lower().lstrip(".") for x in items}
-        ext = path.suffix.lower().lstrip(".") or ""
-        return ext in allowed
+
+        allowed_values = extensions_filter.value
+        if not isinstance(allowed_values, list):
+            return True
+
+        operator = extensions_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, "value") else str(operator)
+
+        file_name = path.name
+        if "." in file_name:
+            file_extension = file_name.rsplit(".", 1)[-1].lower().lstrip(".")
+        else:
+            file_extension = None
+
+        # No extension: IN never matches; NOT_IN passes (not in the excluded list).
+        if file_extension is None:
+            return operator_str == FilterOperator.NOT_IN
+
+        normalized_extensions = [
+            ext.lower().lstrip(".") for ext in allowed_values
+        ]
+
+        if operator_str == FilterOperator.IN:
+            return file_extension in normalized_extensions
+        if operator_str == FilterOperator.NOT_IN:
+            return file_extension not in normalized_extensions
+
+        return True
 
     @staticmethod
     def _parent_folder_rel_paths_for_file(rel_path: str) -> List[str]:
@@ -1060,24 +1038,21 @@ class LocalFsConnector(BaseConnector):
     def _event_matches_date_filters(
         event: LocalFsFileEvent, sync_filters: FilterCollection
     ) -> bool:
-        """Apply sync date filters to Local FS watcher event timestamps."""
-        timestamp_ms = int(event.timestamp)
+        """Apply the modified-date sync filter to the event's file mtime.
+
+        A filesystem has no per-file creation date that survives a copy, so
+        there is deliberately no created-date filter to pair with this one.
+        """
         modified_f = sync_filters.get(SyncFilterKey.MODIFIED)
-        if modified_f is not None and not modified_f.is_empty():
-            after_ms, before_ms = _get_datetime_filter_bounds_ms(modified_f)
-            if after_ms is not None and timestamp_ms < after_ms:
-                return False
-            if before_ms is not None and timestamp_ms > before_ms:
-                return False
+        if modified_f is None or modified_f.is_empty():
+            return True
 
-        created_f = sync_filters.get(SyncFilterKey.CREATED)
-        if created_f is not None and not created_f.is_empty():
-            after_ms, before_ms = _get_datetime_filter_bounds_ms(created_f)
-            if after_ms is not None and timestamp_ms < after_ms:
-                return False
-            if before_ms is not None and timestamp_ms > before_ms:
-                return False
-
+        after_ms, before_ms = _get_datetime_filter_bounds_ms(modified_f)
+        timestamp_ms = _event_file_time_ms(event)
+        if after_ms is not None and timestamp_ms < after_ms:
+            return False
+        if before_ms is not None and timestamp_ms > before_ms:
+            return False
         return True
 
     def _build_file_record(
@@ -1097,6 +1072,7 @@ class LocalFsConnector(BaseConnector):
         )
         name = Path(normalized_rel_path).name or "file"
         timestamp_ms = int(event.timestamp)
+        file_time_ms = _event_file_time_ms(event)
         size = event.size if event.size is not None else 0
         guessed, _ = mimetypes.guess_type(name)
         mime = event.mimeType or guessed or MimeTypes.UNKNOWN.value
@@ -1122,8 +1098,8 @@ class LocalFsConnector(BaseConnector):
             connector_id=self.connector_id,
             created_at=timestamp_ms,
             updated_at=timestamp_ms,
-            source_created_at=timestamp_ms,
-            source_updated_at=timestamp_ms,
+            source_created_at=file_time_ms,
+            source_updated_at=file_time_ms,
             weburl=None,
             hide_weburl=True,
             parent_external_record_id=(
@@ -1146,7 +1122,9 @@ class LocalFsConnector(BaseConnector):
 
         if not LOCAL_FS_DESKTOP_CONTENT_AVAILABLE:
             file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-        elif not indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+        elif indexing_filters.is_enabled(
+            IndexingFilterKey.ENABLE_MANUAL_SYNC, default=False
+        ):
             file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
         effective_owner = owner or self._owner_user_for_permissions
@@ -1406,7 +1384,7 @@ class LocalFsConnector(BaseConnector):
                     old_rel_path=old_rel_path,
                     root=root_for_display,
                     external_record_group_id=external_record_group_id,
-                    timestamp_ms=int(event.timestamp),
+                    timestamp_ms=_event_file_time_ms(event),
                     owner=owner,
                     upsert_buffer=upsert_buffer,
                     move_buffer=move_buffer,
@@ -1480,7 +1458,7 @@ class LocalFsConnector(BaseConnector):
                     rel_path,
                     root_for_display,
                     external_record_group_id,
-                    int(event.timestamp),
+                    _event_file_time_ms(event),
                     emitted_folder_paths,
                     owner=owner,
                 )

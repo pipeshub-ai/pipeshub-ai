@@ -336,6 +336,7 @@ export class WatcherStateStore {
         size: newEnt.isDirectory ? undefined : newEnt.size,
         isDirectory: newEnt.isDirectory,
         sha256: newEnt.isDirectory ? undefined : newEnt.sha256,
+        mtimeMs: newEnt.mtimeMs,
       });
       handledOld.add(oldPath);
       handledNew.add(newPath);
@@ -348,7 +349,7 @@ export class WatcherStateStore {
       const newEnt = currentScan.get(p)!;
       if (oldEnt.isDirectory !== newEnt.isDirectory) {
         events.push({ type: oldEnt.isDirectory ? 'DIR_DELETED' : 'DELETED', path: p, timestamp: now, isDirectory: oldEnt.isDirectory });
-        events.push({ type: newEnt.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory, sha256: newEnt.isDirectory ? undefined : newEnt.sha256 });
+        events.push({ type: newEnt.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory, sha256: newEnt.isDirectory ? undefined : newEnt.sha256, mtimeMs: newEnt.mtimeMs });
         handledOld.add(p); handledNew.add(p);
         continue;
       }
@@ -367,7 +368,7 @@ export class WatcherStateStore {
         metaSame = oldEnt.size === newEnt.size && oldEnt.mtimeMs === newEnt.mtimeMs;
       }
       if (!metaSame) {
-        events.push({ type: 'MODIFIED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory, sha256: newEnt.isDirectory ? undefined : newEnt.sha256 });
+        events.push({ type: 'MODIFIED', path: p, timestamp: now, size: newEnt.isDirectory ? undefined : newEnt.size, isDirectory: newEnt.isDirectory, sha256: newEnt.isDirectory ? undefined : newEnt.sha256, mtimeMs: newEnt.mtimeMs });
       }
       handledOld.add(p); handledNew.add(p);
     }
@@ -380,7 +381,7 @@ export class WatcherStateStore {
     for (const p of newPaths) {
       if (handledNew.has(p)) continue;
       const e = currentScan.get(p)!;
-      events.push({ type: e.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: e.isDirectory ? undefined : e.size, isDirectory: e.isDirectory, sha256: e.isDirectory ? undefined : e.sha256 });
+      events.push({ type: e.isDirectory ? 'DIR_CREATED' : 'CREATED', path: p, timestamp: now, size: e.isDirectory ? undefined : e.size, isDirectory: e.isDirectory, sha256: e.isDirectory ? undefined : e.sha256, mtimeMs: e.mtimeMs });
     }
     return events;
   }

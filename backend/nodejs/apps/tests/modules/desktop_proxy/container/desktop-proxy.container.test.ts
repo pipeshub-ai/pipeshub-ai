@@ -17,7 +17,7 @@ describe('DesktopProxyContainer', () => {
 
   describe('initialize', () => {
     it('returns an inversify Container with required bindings', async () => {
-      const container = await DesktopProxyContainer.initialize(appConfig, () => 3001)
+      const container = await DesktopProxyContainer.initialize(appConfig)
 
       expect(container).to.exist
       expect(container.isBound(AuthTokenService)).to.equal(true)
@@ -25,7 +25,7 @@ describe('DesktopProxyContainer', () => {
     })
 
     it('binds AuthTokenService as a constant value reused across resolutions', async () => {
-      const container = await DesktopProxyContainer.initialize(appConfig, () => 3001)
+      const container = await DesktopProxyContainer.initialize(appConfig)
 
       const auth1 = container.get(AuthTokenService)
       const auth2 = container.get(AuthTokenService)
@@ -35,7 +35,7 @@ describe('DesktopProxyContainer', () => {
     })
 
     it('binds DesktopProxySocketGateway in singleton scope', async () => {
-      const container = await DesktopProxyContainer.initialize(appConfig, () => 3001)
+      const container = await DesktopProxyContainer.initialize(appConfig)
 
       const gateway1 = container.get(DesktopProxySocketGateway)
       const gateway2 = container.get(DesktopProxySocketGateway)
@@ -44,27 +44,15 @@ describe('DesktopProxyContainer', () => {
       expect(gateway1).to.equal(gateway2)
     })
 
-    it('passes the getPort resolver to the gateway so it reads the live port', async () => {
-      let currentPort = 4000
-      const getPort = () => currentPort
-
-      const container = await DesktopProxyContainer.initialize(appConfig, getPort)
-      const gateway = container.get(DesktopProxySocketGateway) as any
-
-      expect(gateway.getPort()).to.equal(4000)
-      currentPort = 4100
-      expect(gateway.getPort()).to.equal(4100)
-    })
-
     it('exposes the container via the static field after initialize', async () => {
-      const container = await DesktopProxyContainer.initialize(appConfig, () => 3001)
+      const container = await DesktopProxyContainer.initialize(appConfig)
 
       expect((DesktopProxyContainer as any).container).to.equal(container)
     })
 
     it('returns an isolated container per call', async () => {
-      const containerA = await DesktopProxyContainer.initialize(appConfig, () => 3001)
-      const containerB = await DesktopProxyContainer.initialize(appConfig, () => 4001)
+      const containerA = await DesktopProxyContainer.initialize(appConfig)
+      const containerB = await DesktopProxyContainer.initialize(appConfig)
 
       expect(containerA).to.not.equal(containerB)
       expect((DesktopProxyContainer as any).container).to.equal(containerB)
@@ -73,7 +61,7 @@ describe('DesktopProxyContainer', () => {
 
   describe('dispose', () => {
     it('unbinds all bindings on the active container', async () => {
-      const container = await DesktopProxyContainer.initialize(appConfig, () => 3001)
+      const container = await DesktopProxyContainer.initialize(appConfig)
 
       DesktopProxyContainer.dispose()
 

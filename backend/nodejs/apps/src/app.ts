@@ -231,7 +231,7 @@ export class Application {
           appConfig,
         );
       this.desktopProxyContainer =
-        await DesktopProxyContainer.initialize(appConfig, () => this.port);
+        await DesktopProxyContainer.initialize(appConfig);
 
       this.oauthProviderContainer = await OAuthProviderContainer.initialize(
         configurationManagerConfig,

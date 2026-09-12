@@ -504,6 +504,7 @@ export class ConnectorFsWatcher {
           size: entry.size,
           isDirectory: false,
           sha256: entry.sha256,
+          mtimeMs: entry.mtimeMs,
         });
       }
       this.stateStore.applyScan(currentScan);

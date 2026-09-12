@@ -681,11 +681,10 @@ export class LocalSyncManager {
       return {
         type: entry.isDirectory ? 'DIR_CREATED' : 'CREATED',
         path: relPath,
-        // The file's own mtime, not now(): the connector stamps records with
-        // this and applies the modified/created sync filters against it.
         timestamp: Math.round(entry.mtimeMs) || Date.now(),
         ...(entry.isDirectory ? {} : { size: entry.size, sha256: entry.sha256 }),
         isDirectory: entry.isDirectory,
+        mtimeMs: entry.mtimeMs,
       } as WatchEvent;
     });
   }
