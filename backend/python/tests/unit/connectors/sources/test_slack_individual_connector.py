@@ -1812,6 +1812,9 @@ class TestFindBurstAndHandleEdited:
         existing.source_created_at = 1000
         existing.weburl = "u"
         existing.record_group_id = "rg"
+        # Real Records type this `str | None`; an auto-MagicMock here is not a
+        # value the rebuilt MessageRecord would accept.
+        existing.root_record_group_id = None
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         with patch.object(c, "_record_changed", return_value=False):
             assert await c._handle_edited_message(md, "C1", "1.0") == 0
@@ -3346,6 +3349,43 @@ class TestReindexRootRecordGroup:
         c = _make_connector()
         assert c._channel_ext_id("thread_C1_1699887.001200") == "C1"
         assert c._channel_ext_id("C1") == "C1"
+
+    @pytest.mark.asyncio
+    async def test_edited_thread_message_roots_at_the_channel(self):
+        """An edited message takes the _make_ctx path, not the ProcessingContext
+        one. Its record_group_id is the *thread* group, so without an explicit
+        root the ctx fallback persists the thread as its own root — and a stored
+        wrong value blocks the membership backfill from ever repairing it."""
+        c = _make_connector()
+        c.rate_limiter = AsyncMock()
+        c.channel_groups_cache = {"C1": "rg-channel"}
+        existing = MagicMock()
+        existing.record_group_id = "rg-thread"
+        existing.root_record_group_id = None
+        existing.id = "rec-1"
+        existing.version = 2
+        existing.weburl = "https://slack.example/archives/C1/p1"
+        existing.thread_id = "1699887.0000"
+        existing.is_reply = True
+        existing.has_replies = False
+        existing.parent_external_record_id = "1699887.0000"
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        c._record_changed = MagicMock(return_value=True)
+        from app.models.blocks import BlocksContainer
+        c._build_single_block_containers = MagicMock(return_value=BlocksContainer())
+        c._replace_mentions_in_text = MagicMock(return_value="edited text")
+        saved = {}
+
+        async def _capture(rec):
+            saved["rec"] = rec
+
+        c.data_entities_processor.on_record_content_update = _capture
+
+        rc = await c._handle_edited_message({"text": "hi", "ts": "1699887.0001"}, "C1", "1699887.0001")
+
+        assert rc == 1
+        assert saved["rec"].root_record_group_id == "rg-channel"
+        assert saved["rec"].root_record_group_id != "rg-thread"
 
     @pytest.mark.asyncio
     async def test_check_updated_file_roots_a_legacy_thread_file_at_the_channel(self):

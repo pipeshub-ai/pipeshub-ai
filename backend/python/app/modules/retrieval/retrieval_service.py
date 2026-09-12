@@ -4,7 +4,6 @@ import os
 import time
 import traceback
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
 from langchain_core.documents import Document
