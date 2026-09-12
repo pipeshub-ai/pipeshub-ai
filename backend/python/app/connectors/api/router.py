@@ -867,6 +867,22 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
 
     return trimmed_config
 
+def _require_filter_sections_are_objects(filters: object) -> None:
+    """400 when ``filters.sync`` / ``filters.indexing`` is present but not an object.
+
+    The merge below stores the section verbatim, and a stored ``null`` later
+    breaks ``load_connector_filters`` (``.get`` on ``None``) at sync time.
+    """
+    if not isinstance(filters, dict):
+        return
+    for key in ("sync", "indexing"):
+        if key in filters and not isinstance(filters[key], dict):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"filters.{key} must be an object",
+            )
+
+
 async def _validate_sync_filter_selections(
     connector_registry: ConnectorRegistry,
     connector_type: str,
@@ -4809,6 +4825,7 @@ async def update_connector_instance_filters_sync_config(
 
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
+        _require_filter_sections_are_objects(body.get("filters"))
 
         # Validation: Connector must be disabled
         if instance.get("isActive"):
@@ -4955,6 +4972,7 @@ async def update_connector_instance_config(
 
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
+        _require_filter_sections_are_objects(body.get("filters"))
 
         # Prevent saving configuration when connector is active
         # Only allow filter/sync updates when connector is active (these don't require re-initialization)
