@@ -159,6 +159,7 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_USERNAME=${REDIS_USERNAME:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
       - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
@@ -198,6 +199,7 @@ services:
       # AWS Bedrock (optional)
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_REGION=${AWS_REGION:-}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
 
       # Rate limits

@@ -46,6 +46,10 @@ def _make_store(key_prefix="pipeshub:kv:"):
     # `test_pubsub_uses_a_dedicated_provider_connection` below.
     store._provider = MagicMock()
     store._provider.create_pubsub_client = MagicMock(return_value=mock_client)
+    # PUBLISH likewise goes through `provider.publish()` -- async RedisCluster
+    # has no `.publish()`. Delegate lazily so tests can keep configuring
+    # `_mock_client.publish` (return values, side_effects) as they always did.
+    store._provider.publish = lambda *a, **kw: mock_client.publish(*a, **kw)
     store._mock_provider = store._provider
     return store
 
@@ -503,6 +507,24 @@ class TestPublishCacheInvalidation:
         store._mock_client.publish.assert_called_once_with(
             store.CACHE_INVALIDATION_CHANNEL, "some_key"
         )
+
+    @pytest.mark.asyncio
+    async def test_publish_goes_through_the_provider_not_the_command_client(self):
+        """Regression: `_get_client().publish()` raised
+        `'RedisCluster' object has no attribute 'publish'` on MemoryDB because
+        redis-py's async cluster client has no such method (R13)."""
+        store = _make_store()
+        store._mock_client.publish = AsyncMock(
+            side_effect=AttributeError("'RedisCluster' object has no attribute 'publish'")
+        )
+        store._provider.publish = AsyncMock(return_value=1)
+
+        await store.publish_cache_invalidation("some_key")
+
+        store._provider.publish.assert_awaited_once_with(
+            store.CACHE_INVALIDATION_CHANNEL, "some_key"
+        )
+        store._mock_client.publish.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_retries_on_failure(self):

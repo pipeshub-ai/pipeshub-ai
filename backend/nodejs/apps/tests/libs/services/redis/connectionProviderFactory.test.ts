@@ -85,7 +85,7 @@ describe('RedisConnectionProviderFactory', () => {
 
     it('throws for an unknown mode', () => {
       expect(() =>
-        RedisConnectionProviderFactory.create(config(), 'memorydb'),
+        RedisConnectionProviderFactory.create(config(), 'no-such-mode'),
       ).to.throw(/Unknown REDIS_MODE/);
     });
 
@@ -196,6 +196,7 @@ describe('RedisConnectionProviderFactory', () => {
       // real module (not a mock) must be enough for its `register()` side
       // effect to land in the shared registry, exactly as an EE
       // `REDIS_PROVIDER_MODULE=@pipeshub-ee/redis-memorydb-provider` would.
+      process.env.REDIS_MODE = FIXTURE_MODE;
       process.env.REDIS_PROVIDER_MODULE = require.resolve(
         '../../../fixtures/fakeRedisProviderModule',
       );
@@ -207,6 +208,26 @@ describe('RedisConnectionProviderFactory', () => {
         FIXTURE_MODE,
       );
       expect(provider.mode).to.equal(FIXTURE_MODE);
+    });
+
+    it('skips the import when REDIS_MODE is already registered', async () => {
+      // The Docker image runs Node and Python from one .env, so this is
+      // routinely a Python dotted path Node cannot resolve. An EE edition
+      // switch has already registered the mode by the time preInit runs.
+      RedisConnectionProviderFactory.register(
+        'fake',
+        (c) => new FakeProvider(c),
+      );
+      process.env.REDIS_MODE = 'fake';
+      process.env.REDIS_PROVIDER_MODULE = require.resolve(
+        '../../../fixtures/fakeRedisProviderModule',
+      );
+
+      await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
+
+      expect(RedisConnectionProviderFactory.registeredModes()).to.not.include(
+        FIXTURE_MODE,
+      );
     });
   });
 });

@@ -96,6 +96,8 @@ import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
+// Side-effect import: registers edition-specific Redis providers for this process.
+import './redisProviders';
 import {
   RedisConnectionProviderFactory,
   closeAllRedisProviders,

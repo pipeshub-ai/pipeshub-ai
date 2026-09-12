@@ -123,3 +123,59 @@ describe('Architecture guard: no direct ioredis client imports outside providers
     }
   });
 });
+
+// Node-only (no Python mirror): the Python factory discovers providers
+// lazily inside create(), but Node's create() is synchronous while module
+// loading is not, so each *process* must import the edition switch up front.
+// The all-in-one image runs the API and the Slack bot as separate processes;
+// a registration in one is invisible to the other.
+const REDIS_EDITION_SWITCH = 'redisProviders';
+
+function processEntryPoints(): string[] {
+  const entries = ['app.ts'];
+  const integrationsDir = path.join(SRC_ROOT, 'integrations');
+  if (!fs.existsSync(integrationsDir)) {
+    return entries;
+  }
+  for (const entry of fs.readdirSync(integrationsDir, { withFileTypes: true })) {
+    const rel = `integrations/${entry.name}/src/index.ts`;
+    if (entry.isDirectory() && fs.existsSync(path.join(SRC_ROOT, rel))) {
+      entries.push(rel);
+    }
+  }
+  return entries;
+}
+
+function importsRedisEditionSwitch(filePath: string): boolean {
+  const target = path.join(SRC_ROOT, REDIS_EDITION_SWITCH);
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    fs.readFileSync(filePath, 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  return sourceFile.statements.some(
+    (node) =>
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      path.resolve(path.dirname(filePath), node.moduleSpecifier.text) === target,
+  );
+}
+
+describe('Architecture guard: every process entry point imports the Redis edition switch', () => {
+  it(`src/${REDIS_EDITION_SWITCH}.ts exists`, () => {
+    expect(fs.existsSync(path.join(SRC_ROOT, `${REDIS_EDITION_SWITCH}.ts`))).to.equal(true);
+  });
+
+  it('app.ts and every integrations/*/src/index.ts import it', () => {
+    const missing = processEntryPoints().filter(
+      (rel) => !importsRedisEditionSwitch(path.join(SRC_ROOT, rel)),
+    );
+    expect(
+      missing,
+      `These process entry points never import src/${REDIS_EDITION_SWITCH}, so an ` +
+        'EE REDIS_MODE is unknown in that process:\n' +
+        missing.join('\n'),
+    ).to.have.lengthOf(0);
+  });
+});

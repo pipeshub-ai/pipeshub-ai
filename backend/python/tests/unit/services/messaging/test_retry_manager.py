@@ -101,35 +101,37 @@ class TestRetryManagerIncrementAndCheck:
     @pytest.mark.asyncio
     async def test_increment_first_attempt(self, mock_logger, mock_redis):
         """Test first attempt increments to 1."""
-        pipeline = _make_pipeline([1, True])
-        mock_redis.pipeline = MagicMock(return_value=pipeline)
+        mock_redis.eval = AsyncMock(return_value=1)
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         count, should_dead_letter = await manager.increment_and_check("msg-1", 3)
 
         assert count == 1
         assert should_dead_letter is False
-        # One MULTI/EXEC: a Redis failure between INCR and EXPIRE used to
-        # leave a counter with no TTL.
-        mock_redis.pipeline.assert_called_once_with(transaction=True)
-        pipeline.incr.assert_called_once_with("messaging:retry:msg-1")
-        pipeline.expire.assert_called_once_with("messaging:retry:msg-1", manager.ttl_seconds)
+        # One single-key Lua script does INCR+EXPIRE atomically: a Redis
+        # failure between the two used to leave a counter with no TTL, and
+        # the MULTI/EXEC pipeline that replaced it is refused by RedisCluster
+        # ("transaction is deprecated in cluster mode").
+        mock_redis.eval.assert_awaited_once()
+        script, numkeys, key, ttl = mock_redis.eval.await_args.args
+        assert "INCR" in script and "EXPIRE" in script
+        assert (numkeys, key, ttl) == (1, "messaging:retry:msg-1", manager.ttl_seconds)
+        mock_redis.pipeline.assert_not_called()
         mock_redis.incr.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_record_delivery_counts_under_its_own_key(self, mock_logger, mock_redis) -> None:
-        pipeline = _make_pipeline([4, True])
-        mock_redis.pipeline = MagicMock(return_value=pipeline)
+        mock_redis.eval = AsyncMock(return_value=4)
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         assert await manager.record_delivery("msg-1") == 4
-        pipeline.incr.assert_called_once_with("messaging:deliveries:msg-1")
-        pipeline.expire.assert_called_once_with("messaging:deliveries:msg-1", manager.ttl_seconds)
+        _, numkeys, key, ttl = mock_redis.eval.await_args.args
+        assert (numkeys, key, ttl) == (1, "messaging:deliveries:msg-1", manager.ttl_seconds)
 
     @pytest.mark.asyncio
     async def test_increment_second_attempt(self, mock_logger, mock_redis):
         """Test second attempt increments to 2."""
-        mock_redis.pipeline = MagicMock(return_value=_make_pipeline([2, True]))
+        mock_redis.eval = AsyncMock(return_value=2)
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         count, should_dead_letter = await manager.increment_and_check("msg-1", 3)
@@ -140,7 +142,7 @@ class TestRetryManagerIncrementAndCheck:
     @pytest.mark.asyncio
     async def test_increment_reaches_max(self, mock_logger, mock_redis):
         """Test when max attempts reached, should_dead_letter is True."""
-        mock_redis.pipeline = MagicMock(return_value=_make_pipeline([3, True]))
+        mock_redis.eval = AsyncMock(return_value=3)
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         count, should_dead_letter = await manager.increment_and_check("msg-1", 3)
@@ -151,7 +153,7 @@ class TestRetryManagerIncrementAndCheck:
     @pytest.mark.asyncio
     async def test_increment_exceeds_max(self, mock_logger, mock_redis):
         """Test when count exceeds max attempts."""
-        mock_redis.pipeline = MagicMock(return_value=_make_pipeline([5, True]))
+        mock_redis.eval = AsyncMock(return_value=5)
         manager = RetryManager(mock_logger, redis_client=mock_redis)
 
         count, should_dead_letter = await manager.increment_and_check("msg-1", 3)

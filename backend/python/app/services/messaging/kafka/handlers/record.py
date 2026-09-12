@@ -74,6 +74,12 @@ class RecordEventHandler(BaseEventService):
         ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
         ProgressStatus.FAILED.value,
     })
+    # A live handler owns this record. The stale-IN_PROGRESS scan republishes
+    # if that handler actually died; rewriting FAILED here races the worker
+    # and is what the idle-drain backstop was doing to healthy PDFs.
+    _IN_FLIGHT_STATUSES = frozenset({
+        ProgressStatus.IN_PROGRESS.value,
+    })
 
     async def on_message_abandoned(
         self,
@@ -128,10 +134,10 @@ class RecordEventHandler(BaseEventService):
                 return
 
             current_status = record.get("indexingStatus")
-            if current_status in self._SETTLED_STATUSES:
+            if current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES:
                 self.logger.info(
                     "Discarded message for record %s after %d attempt(s); "
-                    "leaving settled status %s untouched: %s",
+                    "leaving status %s untouched: %s",
                     record_id,
                     attempts,
                     current_status,

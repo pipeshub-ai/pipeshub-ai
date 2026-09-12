@@ -95,6 +95,15 @@ export class RedisConnectionProviderFactory {
     if (!moduleName || this.discoveredModules.has(moduleName)) {
       return;
     }
+    // Same lazy semantics as the Python factory: the module's only job is to
+    // register REDIS_MODE, so skip it when that mode is already registered
+    // (e.g. an EE edition switch imported the provider). The Docker image runs
+    // Node and Python from one .env, so this value is often a Python dotted
+    // path that Node could never resolve.
+    const mode = process.env.REDIS_MODE ?? 'standalone';
+    if (this.registry.has(mode)) {
+      return;
+    }
     this.discoveredModules.add(moduleName);
     try {
       await import(moduleName);

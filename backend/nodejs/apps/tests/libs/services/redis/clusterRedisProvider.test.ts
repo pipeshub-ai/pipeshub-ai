@@ -87,6 +87,44 @@ describe('ClusterRedisProvider', () => {
     });
   });
 
+  describe('lazyConnect follows blocking (parity with StandaloneRedisProvider)', () => {
+    it('is true for a blocking client so its owner can call connect() itself', () => {
+      const provider = new ClusterRedisProvider(config());
+      provider.createClient({ blocking: true });
+      const [, clusterOptions] = capture.capturedClusterArgs[0];
+      expect(clusterOptions.lazyConnect).to.equal(true);
+    });
+
+    it('is false for a non-blocking client so it auto-connects', () => {
+      const provider = new ClusterRedisProvider(config());
+      provider.createClient();
+      const [, clusterOptions] = capture.capturedClusterArgs[0];
+      expect(clusterOptions.lazyConnect).to.equal(false);
+    });
+  });
+
+  describe('dnsLookup under TLS', () => {
+    it('passes the startup hostname through unresolved so SNI / cert checks see it', () => {
+      const provider = new ClusterRedisProvider(
+        config({ tls: true, clusterEndpoints: ['clustercfg.example.amazonaws.com:6379'] }),
+      );
+      provider.createClient();
+      const [, clusterOptions] = capture.capturedClusterArgs[0];
+      expect(clusterOptions.dnsLookup).to.be.a('function');
+      clusterOptions.dnsLookup!('clustercfg.example.amazonaws.com', (err: unknown, address: string) => {
+        expect(err).to.equal(null);
+        expect(address).to.equal('clustercfg.example.amazonaws.com');
+      });
+    });
+
+    it('leaves ioredis default resolution in place without TLS', () => {
+      const provider = new ClusterRedisProvider(config({ tls: false }));
+      provider.createClient();
+      const [, clusterOptions] = capture.capturedClusterArgs[0];
+      expect(clusterOptions.dnsLookup).to.equal(undefined);
+    });
+  });
+
   describe('getClient caching', () => {
     it('returns the same client instance across calls', () => {
       const provider = new ClusterRedisProvider(config());

@@ -151,7 +151,14 @@ class StandaloneRedisProvider(IRedisConnectionProvider):
         return self._track(client)
 
     def create_pubsub_client(self) -> Redis:
-        return self.create_client(ClientOptions(blocking=True))
+        client = self.create_client(ClientOptions(blocking=True))
+        # A subscriber sits idle waiting for messages; any finite
+        # socket_timeout kills the connection during that wait.
+        client.connection_pool.connection_kwargs["socket_timeout"] = None
+        return client
+
+    async def publish(self, channel: str, message: str) -> int:
+        return int(await self.get_client().publish(channel, message))
 
     async def scan_keys(self, pattern: str, count: int = 100) -> AsyncIterator[str]:
         client = self.get_client()
