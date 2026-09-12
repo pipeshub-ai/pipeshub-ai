@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { Request } from 'express'
 import { OAuthProviderController } from '../../../../src/modules/oauth_provider/controller/oauth.provider.controller'
 import {
   InvalidClientError,
@@ -251,6 +252,19 @@ describe('OAuthProviderController', () => {
       } as any
 
       await controller.revoke(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(200)).to.be.true
+    })
+
+    it('should revoke successfully for a public client without a client_secret', async () => {
+      mockOAuthAppService.verifyClientCredentials.resolves({ isConfidential: false })
+      mockOAuthTokenService.revokeToken.resolves(true)
+      const req = {
+        body: { token: 'tok', client_id: 'public_cid' },
+      } as unknown as Request
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthAppService.verifyClientCredentials.calledWith('public_cid', undefined)).to.be.true
+      expect(mockOAuthTokenService.revokeToken.called).to.be.true
       expect(mockRes.status.calledWith(200)).to.be.true
     })
 
@@ -527,6 +541,7 @@ describe('OAuthProviderController', () => {
       }
       mockOAuthAppService.getAppByClientId.resolves(mockApp)
       mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockOAuthAppService.verifyClientCredentials.rejects(new InvalidClientError('client_secret required for confidential clients'))
 
       const req = {
         body: {
@@ -617,6 +632,7 @@ describe('OAuthProviderController', () => {
 
       mockOAuthAppService.getAppByClientId.resolves({ isConfidential: true })
       mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockOAuthAppService.verifyClientCredentials.rejects(new InvalidClientError('client_secret required for confidential clients'))
 
       await controller.token(req, mockRes, mockNext)
       expect(mockRes.status.calledWith(401)).to.be.true

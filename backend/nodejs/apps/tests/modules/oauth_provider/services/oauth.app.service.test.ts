@@ -757,6 +757,7 @@ describe('OAuthAppService', () => {
         clientId: 'cid',
         clientSecretEncrypted: 'encrypted',
         status: OAuthAppStatus.ACTIVE,
+        isConfidential: true,
       }
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
       mockEncryptionService.decrypt.returns(secret)
@@ -771,6 +772,7 @@ describe('OAuthAppService', () => {
         clientId: 'cid',
         clientSecretEncrypted: 'encrypted',
         status: OAuthAppStatus.ACTIVE,
+        isConfidential: true,
       }
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
       mockEncryptionService.decrypt.returns('stored-secret')
