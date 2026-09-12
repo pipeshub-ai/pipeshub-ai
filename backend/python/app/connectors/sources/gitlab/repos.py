@@ -110,6 +110,7 @@ class ReposSync:
             )
             return
 
+        incremental_raised = False
         try:
             incremental_ok = await self._sync_repo_incremental(project_id, project_path, last_sha, current_sha)
         except Exception as e:
@@ -118,20 +119,30 @@ class ReposSync:
                 "Incremental code sync raised for project %s: %s", project_id, e, exc_info=True,
             )
             incremental_ok = False
+            incremental_raised = True
         if incremental_ok:
             await self._update_code_repo_checkpoint(project_id, current_sha)
             return
 
         self.logger.warning("Incremental code sync failed for project %s; falling back to full sync", project_id)
         full_ok = await self._sync_repo_full(project_id, project_path)
-        if full_ok:
-            await self._update_code_repo_checkpoint(project_id, current_sha)
-        else:
+        if not full_ok:
             self.logger.warning(
                 "Full sync fallback for project %s completed with errors; "
                 "checkpoint not advanced so the next run will retry",
                 project_id,
             )
+        elif incremental_raised:
+            # The full walk only upserts. Whatever the interrupted incremental pass still owed
+            # — deleted files, emptied folders — stays pending, and only a compare from
+            # last_sha names those paths again. Advancing here would strand them forever.
+            self.logger.warning(
+                "Full sync fallback for project %s succeeded, but the incremental pass raised; "
+                "checkpoint left at %s so its pending deletes are retried next run",
+                project_id, last_sha,
+            )
+        else:
+            await self._update_code_repo_checkpoint(project_id, current_sha)
 
     # ------------------------------------------------------------------
     # Checkpoints
