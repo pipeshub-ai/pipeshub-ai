@@ -4892,7 +4892,8 @@ components:
             - done
             - error
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: JSON-encoded event payload. Shape depends on `event`.
 
     IndexingStatusFilter:
@@ -10968,7 +10969,8 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
             JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
@@ -11080,7 +11082,8 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
             JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
@@ -11141,7 +11144,8 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
             JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
@@ -11190,7 +11194,8 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
             JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
@@ -11248,7 +11253,8 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
             JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
@@ -13188,7 +13194,8 @@ components:
           enum:
             - progress
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
             JSON-encoded `EmbeddingDownloadProgressPayload` plus a
             `timestamp` (epoch ms) field.
