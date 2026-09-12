@@ -26,19 +26,11 @@ describe('tokens_manager/services/cm.service', () => {
   // randomKeyGenerator
   // =========================================================================
   describe('randomKeyGenerator', () => {
-    it('should generate a string of length 20', () => {
-      const key = randomKeyGenerator()
-      expect(key).to.have.lengthOf(20)
-    })
-
-    it('should return a string', () => {
+    it('should generate a 64-char hex string (256 bits, HS256 minimum per RFC 7518)', () => {
       const key = randomKeyGenerator()
       expect(key).to.be.a('string')
-    })
-
-    it('should only contain alphanumeric characters', () => {
-      const key = randomKeyGenerator()
-      expect(key).to.match(/^[A-Za-z0-9]+$/)
+      expect(key).to.have.lengthOf(64)
+      expect(key).to.match(/^[0-9a-f]{64}$/)
     })
 
     it('should generate different keys on consecutive calls', () => {
@@ -48,27 +40,24 @@ describe('tokens_manager/services/cm.service', () => {
       expect(key1).to.not.equal(key2)
     })
 
-    it('should generate keys from the expected character set', () => {
-      const validChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-      const key = randomKeyGenerator()
-      for (const char of key) {
-        expect(validChars).to.include(char)
-      }
-    })
-
     it('should not use Math.random (signing secrets must come from a CSPRNG)', () => {
       const mathRandomSpy = sinon.spy(Math, 'random')
       randomKeyGenerator()
       expect(mathRandomSpy.called).to.be.false
     })
 
-    it('should draw every character via crypto.randomInt over the full charset', () => {
-      const randomIntStub = sinon.stub<[number], number>().returns(0)
-      sinon.replace(crypto, 'randomInt', randomIntStub as typeof crypto.randomInt)
+    it('should draw 32 bytes from crypto.randomBytes', () => {
+      const randomBytesStub = sinon
+        .stub<[number], Buffer>()
+        .callsFake((size: number) => Buffer.alloc(size, 0xab))
+      sinon.replace(
+        crypto,
+        'randomBytes',
+        randomBytesStub as unknown as typeof crypto.randomBytes,
+      )
       const key = randomKeyGenerator()
-      expect(key).to.equal('A'.repeat(20))
-      expect(randomIntStub.callCount).to.equal(20)
-      expect(randomIntStub.alwaysCalledWithExactly(62)).to.be.true
+      expect(randomBytesStub.calledOnceWithExactly(32)).to.be.true
+      expect(key).to.equal('ab'.repeat(32))
     })
   })
 
@@ -273,7 +262,7 @@ describe('tokens_manager/services/cm.service', () => {
       for (let i = 0; i < 50; i++) {
         keys.add(randomKeyGenerator())
       }
-      // With 62^20 possible keys, 50 should all be unique
+      // With 2^256 possible keys, 50 should all be unique
       expect(keys.size).to.equal(50)
     })
 
@@ -414,15 +403,15 @@ describe('tokens_manager/services/cm.service', () => {
   // randomKeyGenerator stress tests
   // =========================================================================
   describe('randomKeyGenerator (stress)', () => {
-    it('should always produce length 20 across 100 iterations', () => {
+    it('should always produce a 64-char hex string across 100 iterations', () => {
       for (let i = 0; i < 100; i++) {
         const key = randomKeyGenerator()
-        expect(key).to.have.lengthOf(20)
+        expect(key).to.match(/^[0-9a-f]{64}$/)
       }
     })
 
     it('should contain at least 3 distinct characters', () => {
-      // A random 20-char alphanumeric string should have variety
+      // A random 64-char hex string should have variety
       const key = randomKeyGenerator()
       const uniqueChars = new Set(key.split(''))
       expect(uniqueChars.size).to.be.at.least(3)
@@ -943,7 +932,7 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves(null)
         const result = await configService.getJwtSecret()
         expect(result).to.be.a('string')
-        expect(result).to.have.lengthOf(20)
+        expect(result).to.have.lengthOf(64)
         expect(mockKvStore.set.calledOnce).to.be.true
       })
 
@@ -952,7 +941,7 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves('encrypted:' + JSON.stringify(secretData))
         const result = await configService.getJwtSecret()
         expect(result).to.be.a('string')
-        expect(result).to.have.lengthOf(20)
+        expect(result).to.have.lengthOf(64)
       })
     })
 
@@ -968,7 +957,7 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves(null)
         const result = await configService.getScopedJwtSecret()
         expect(result).to.be.a('string')
-        expect(result).to.have.lengthOf(20)
+        expect(result).to.have.lengthOf(64)
       })
     })
 
@@ -984,7 +973,7 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves(null)
         const result = await configService.getCookieSecret()
         expect(result).to.be.a('string')
-        expect(result).to.have.lengthOf(20)
+        expect(result).to.have.lengthOf(64)
       })
     })
 
@@ -1889,7 +1878,7 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getJwtSecret()
       expect(result).to.be.a('string')
-      expect(result).to.have.lengthOf(20)
+      expect(result).to.have.lengthOf(64)
       expect(mockKvStore.set.called).to.be.true
     })
 
@@ -1900,7 +1889,7 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getJwtSecret()
       expect(result).to.be.a('string')
-      expect(result).to.have.lengthOf(20)
+      expect(result).to.have.lengthOf(64)
     })
   })
 
@@ -1922,7 +1911,7 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getScopedJwtSecret()
       expect(result).to.be.a('string')
-      expect(result).to.have.lengthOf(20)
+      expect(result).to.have.lengthOf(64)
       expect(mockKvStore.set.called).to.be.true
     })
   })
@@ -1945,7 +1934,7 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getCookieSecret()
       expect(result).to.be.a('string')
-      expect(result).to.have.lengthOf(20)
+      expect(result).to.have.lengthOf(64)
     })
   })
 

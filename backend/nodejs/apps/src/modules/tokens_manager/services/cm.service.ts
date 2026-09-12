@@ -1,4 +1,4 @@
-import { randomInt } from 'crypto';
+import { randomBytes } from 'crypto';
 
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
@@ -17,15 +17,7 @@ export interface SmtpConfig {
   fromEmail: string;
 }
 
-export const randomKeyGenerator = () => {
-  const chars =
-    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < 20; i++) {
-    result += chars.charAt(randomInt(chars.length));
-  }
-  return result;
-};
+export const randomKeyGenerator = (): string => randomBytes(32).toString('hex');
 
 export interface KafkaConfig {
   brokers: string[];
