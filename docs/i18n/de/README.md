@@ -59,7 +59,7 @@
 - 📝 **Erklärbare Antworten:** PipesHub liefert fundierte Antworten mit präzisen Block-Zitaten zu den Originaldokumenten.
 - 🔒 **Berechtigungsbewusste Suche:** Erzwingt Zugriffskontrollen auf Quellenebene, sodass Nutzer nur das sehen, wozu sie berechtigt sind.
 - 🕸️ **Wissensgraph-Abruf:** Graphgestützter Abruf, der Beziehungen über Unternehmensdaten hinweg erfasst.
-- 🔌 **Unternehmens-Konnektoren:** Über 30 Konnektoren mit Echtzeit- und geplanter Indexierung – sofort einsatzbereit.
+- 🔌 **Unternehmens-Konnektoren:** Über 50 Konnektoren mit Echtzeit- und geplanter Indexierung – sofort einsatzbereit.
 - 🔍 **Einheitliche Suche, Deep Research und Agenten:** Suche, Q&A, Deep Research, Websuche und KI-Agenten auf einer einzigen Kontextschicht.
 - 📊 **Artefakte und Codeausführung:** Erstelle Berichte, Diagramme und Dashboards in einer sicheren Ausführungs-Sandbox.
 - 🎙️ **Multimodale Unterstützung:** Verständnis von Bildern, Diagrammen und gescannten Dateien sowie sprachbasierte Interaktion.
@@ -229,7 +229,7 @@ PipesHub ist vollständig quelloffen (Apache 2.0) und selbst hostbar – deine D
 
 ### Welche Konnektoren unterstützt PipesHub?
 
-PipesHub verfügt über mehr als 30 Unternehmens-Konnektoren mit Echtzeit- und geplanter Indexierung. Siehe die [Konnektoren-Übersicht](https://docs.pipeshub.com/connectors/overview).
+PipesHub verfügt über mehr als 50 Unternehmens-Konnektoren mit Echtzeit- und geplanter Indexierung. Siehe die [Konnektoren-Übersicht](https://docs.pipeshub.com/connectors/overview).
 
 ### Welche Dateiformate kann PipesHub indexieren?
 

@@ -59,7 +59,7 @@
 - 📝 **Respuestas explicables:** PipesHub ofrece respuestas fundamentadas con citas precisas de bloques a los documentos originales.
 - 🔒 **Búsqueda con reconocimiento de permisos:** Aplica controles de acceso a nivel de fuente para que los usuarios solo vean aquello a lo que están autorizados.
 - 🕸️ **Recuperación con grafo de conocimiento:** Recuperación basada en grafos que captura las relaciones entre los datos empresariales.
-- 🔌 **Conectores empresariales:** Más de 30 conectores con indexación en tiempo real y programada, listos para usar.
+- 🔌 **Conectores empresariales:** Más de 50 conectores con indexación en tiempo real y programada, listos para usar.
 - 🔍 **Búsqueda unificada, investigación profunda y agentes:** Búsqueda, preguntas y respuestas, investigación profunda, búsqueda web y agentes de IA sobre una única capa de contexto.
 - 📊 **Artefactos y ejecución de código:** Genera informes, gráficos y paneles en un entorno de ejecución aislado y seguro.
 - 🎙️ **Soporte multimodal:** Comprensión de imágenes, diagramas y archivos escaneados, además de interacción por voz.
@@ -229,7 +229,7 @@ PipesHub es totalmente de código abierto (Apache 2.0) y autoalojable: tus datos
 
 ### ¿Qué conectores admite PipesHub?
 
-PipesHub cuenta con más de 30 conectores empresariales con indexación en tiempo real y programada. Consulta la [visión general de conectores](https://docs.pipeshub.com/connectors/overview).
+PipesHub cuenta con más de 50 conectores empresariales con indexación en tiempo real y programada. Consulta la [visión general de conectores](https://docs.pipeshub.com/connectors/overview).
 
 ### ¿Qué formatos de archivo puede indexar PipesHub?
 

@@ -59,7 +59,7 @@
 - 📝 **Câu trả lời có thể giải thích:** PipesHub đưa ra các câu trả lời có căn cứ kèm trích dẫn chính xác đến từng khối trong tài liệu gốc.
 - 🔒 **Tìm kiếm nhận biết quyền truy cập:** Thực thi kiểm soát truy cập ở cấp nguồn để người dùng chỉ thấy những gì họ được phép.
 - 🕸️ **Truy xuất bằng đồ thị tri thức:** Truy xuất dựa trên đồ thị, nắm bắt các mối quan hệ giữa dữ liệu doanh nghiệp.
-- 🔌 **Trình kết nối doanh nghiệp:** Hơn 30 trình kết nối với lập chỉ mục thời gian thực và theo lịch, sẵn sàng dùng ngay.
+- 🔌 **Trình kết nối doanh nghiệp:** Hơn 50 trình kết nối với lập chỉ mục thời gian thực và theo lịch, sẵn sàng dùng ngay.
 - 🔍 **Tìm kiếm hợp nhất, Nghiên cứu sâu và Tác nhân:** Tìm kiếm, hỏi đáp, nghiên cứu sâu, tìm kiếm web và các tác nhân AI trên cùng một lớp ngữ cảnh.
 - 📊 **Tạo tác phẩm và Thực thi mã:** Tạo báo cáo, biểu đồ và bảng điều khiển trong một hộp cát thực thi an toàn.
 - 🎙️ **Hỗ trợ đa phương thức:** Hiểu hình ảnh, sơ đồ và tệp quét, cùng với tương tác bằng giọng nói.
@@ -229,7 +229,7 @@ PipesHub hoàn toàn mã nguồn mở (Apache 2.0) và có thể tự lưu trữ
 
 ### PipesHub hỗ trợ những trình kết nối nào?
 
-PipesHub có hơn 30 trình kết nối doanh nghiệp với lập chỉ mục thời gian thực và theo lịch. Xem [tổng quan trình kết nối](https://docs.pipeshub.com/connectors/overview).
+PipesHub có hơn 50 trình kết nối doanh nghiệp với lập chỉ mục thời gian thực và theo lịch. Xem [tổng quan trình kết nối](https://docs.pipeshub.com/connectors/overview).
 
 ### PipesHub có thể lập chỉ mục những định dạng tệp nào?
 

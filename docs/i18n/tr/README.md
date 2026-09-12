@@ -59,7 +59,7 @@
 - 📝 **Açıklanabilir Yanıtlar:** PipesHub, orijinal belgelere kesin blok alıntıları içeren, dayanağı olan yanıtlar sunar.
 - 🔒 **İzin Farkında Arama:** Kaynak düzeyinde erişim denetimlerini uygular; böylece kullanıcılar yalnızca yetkili oldukları içeriği görür.
 - 🕸️ **Bilgi Grafiği ile Erişim:** Kurumsal veriler arasındaki ilişkileri yakalayan, grafik tabanlı erişim.
-- 🔌 **Kurumsal Bağlayıcılar:** Gerçek zamanlı ve zamanlanmış indeksleme ile kutudan çıkar çıkmaz kullanılabilen 30'dan fazla bağlayıcı.
+- 🔌 **Kurumsal Bağlayıcılar:** Gerçek zamanlı ve zamanlanmış indeksleme ile kutudan çıkar çıkmaz kullanılabilen 50'den fazla bağlayıcı.
 - 🔍 **Birleşik Arama, Derin Araştırma ve Ajanlar:** Tek bir bağlam katmanı üzerinde arama, soru-cevap, derin araştırma, web araması ve yapay zekâ ajanları.
 - 📊 **Yapıtlar ve Kod Yürütme:** Güvenli bir yürütme korumalı alanında raporlar, grafikler ve panolar oluşturun.
 - 🎙️ **Çok Modlu Destek:** Görüntü, diyagram ve taranmış dosya anlama ile birlikte sesli etkileşim.
@@ -229,7 +229,7 @@ PipesHub tamamen açık kaynaklıdır (Apache 2.0) ve kendi sunucunuzda barınd�
 
 ### PipesHub hangi bağlayıcıları destekler?
 
-PipesHub'ın gerçek zamanlı ve zamanlanmış indekslemeli 30'dan fazla kurumsal bağlayıcısı vardır. [Bağlayıcı genel bakışına](https://docs.pipeshub.com/connectors/overview) bakın.
+PipesHub'ın gerçek zamanlı ve zamanlanmış indekslemeli 50'den fazla kurumsal bağlayıcısı vardır. [Bağlayıcı genel bakışına](https://docs.pipeshub.com/connectors/overview) bakın.
 
 ### PipesHub hangi dosya biçimlerini indeksleyebilir?
 
