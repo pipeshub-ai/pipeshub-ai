@@ -3341,7 +3341,16 @@ class SlackConnector(BaseConnector):
                 return 0
 
             rg_id = getattr(existing_base, "record_group_id", None)
-            ctx   = self._make_ctx(channel_id, rg_id)
+            # Pass the root explicitly: for a threaded message rg_id is the
+            # *thread* group, and _root_rg_id's channel_groups_map fallback
+            # would then persist the thread as its own root. A stored wrong
+            # value is worse than none — _derive_group_root only fills a root
+            # in when one is absent, so the backfill could not repair it.
+            ctx   = self._make_ctx(
+                channel_id,
+                rg_id,
+                root_rg_id=await self._reindex_root_rg_id(existing_base, channel_id),
+            )
             text  = self._replace_mentions_in_text(
                 md.get("text", ""), ctx.user_id_to_name, ctx.channel_id_to_name
             )
@@ -3486,11 +3495,15 @@ class SlackConnector(BaseConnector):
         return (await self._channel_group_map([cid])).get(cid)
 
     def _make_ctx(
-        self, channel_id: str, rg_id: Optional[str]
+        self,
+        channel_id: str,
+        rg_id: Optional[str],
+        root_rg_id: Optional[str] = None,
     ) -> ProcessingContext:
         return ProcessingContext(
             channel_id=channel_id,
             channel_groups_map={channel_id: rg_id} if rg_id else {},
+            root_rg_id=root_rg_id,
             user_id_to_email=dict(self.user_id_to_email_cache),
             user_id_to_name=dict(self.user_id_to_name_cache),
             channel_id_to_name=dict(self.channel_id_to_name_cache),
