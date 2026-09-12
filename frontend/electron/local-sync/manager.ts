@@ -681,7 +681,7 @@ export class LocalSyncManager {
       return {
         type: entry.isDirectory ? 'DIR_CREATED' : 'CREATED',
         path: relPath,
-        timestamp: Math.round(entry.mtimeMs) || Date.now(),
+        timestamp: entry.mtimeMs || Date.now(),
         ...(entry.isDirectory ? {} : { size: entry.size, sha256: entry.sha256 }),
         isDirectory: entry.isDirectory,
         mtimeMs: entry.mtimeMs,

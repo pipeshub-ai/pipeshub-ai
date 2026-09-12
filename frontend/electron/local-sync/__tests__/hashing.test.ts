@@ -7,7 +7,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { EventCorrelator } from '../watcher/event-correlator';
 import { expandWatchEventsForReplay, type WatchEvent, type FileStateMap } from '../watcher/replay-event-expander';
-import { WatcherStateStore, scanSyncRoot } from '../persistence/watcher-state-store';
+import { WatcherStateStore, scanSyncRoot, toEpochMs } from '../persistence/watcher-state-store';
 
 function sha256Of(content: string): string {
   return crypto.createHash('sha256').update(content).digest('hex');
@@ -129,7 +129,7 @@ test('reconcile without previousByRelPath emits MODIFIED for a same-size rewrite
       // bookkeeping scan would reuse the stale hash instead of re-reading.
       const cached = store.getSnapshot().files['a.txt'];
       cached.size = after.size;
-      cached.mtimeMs = after.mtimeMs;
+      cached.mtimeMs = toEpochMs(after.mtimeMs)!;
 
       const previous = new Map(Object.entries(store.getSnapshot().files));
       const reused = await scanSyncRoot(dir, { previousByRelPath: previous });

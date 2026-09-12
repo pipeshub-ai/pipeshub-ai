@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { normalizeRelKey, contentFileHash, type FileSnapshotEntry } from '../persistence/watcher-state-store';
+import { normalizeRelKey, contentFileHash, toEpochMs, type FileSnapshotEntry } from '../persistence/watcher-state-store';
 import type { WatchEvent } from './replay-event-expander';
 
 const MAX_PENDING_UNLINK_ENTRIES = 10000;
@@ -102,8 +102,8 @@ export class EventCorrelator {
       timestamp: Date.now(),
       inode: stats ? (typeof stats.ino === 'bigint' ? Number(stats.ino) : stats.ino) : undefined,
       size: stats && typeof stats.isFile === 'function' && stats.isFile() ? stats.size : undefined,
-      mtimeMs: stats && stats.mtimeMs,
-      birthtimeMs: stats && stats.birthtimeMs,
+      mtimeMs: toEpochMs(stats?.mtimeMs),
+      birthtimeMs: toEpochMs(stats?.birthtimeMs),
       isDirectory,
     };
     switch (type) {

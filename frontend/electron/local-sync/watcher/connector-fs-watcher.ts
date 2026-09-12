@@ -9,6 +9,7 @@ import {
   scanSyncRoot,
   contentFileHash,
   normalizeRelKey,
+  toEpochMs,
   type FileSnapshotEntry,
   type FileSnapshotMap,
 } from '../persistence/watcher-state-store';
@@ -397,8 +398,8 @@ export class ConnectorFsWatcher {
     const isDirectory = typeof stats.isDirectory === 'function' ? stats.isDirectory() : eventName === 'addDir';
     const inode = typeof stats.ino === 'bigint' ? Number(stats.ino) : stats.ino;
     const size = !isDirectory && typeof stats.size === 'number' ? stats.size : 0;
-    const mtimeMs = typeof stats.mtimeMs === 'number' ? stats.mtimeMs : Date.now();
-    const birthtimeMs = typeof stats.birthtimeMs === 'number' ? stats.birthtimeMs : undefined;
+    const mtimeMs = toEpochMs(stats.mtimeMs) ?? Date.now();
+    const birthtimeMs = toEpochMs(stats.birthtimeMs);
     const sha256 = isDirectory ? undefined : await contentFileHash(absPath);
 
     this.stateStore.getSnapshot().files[relKey] = {
@@ -439,10 +440,10 @@ export class ConnectorFsWatcher {
         const entry: FileSnapshotEntry = {
           inode,
           size: stats.size,
-          mtimeMs: stats.mtimeMs,
+          mtimeMs: toEpochMs(stats.mtimeMs) ?? Date.now(),
           isDirectory: false,
           sha256,
-          birthtimeMs: stats.birthtimeMs,
+          birthtimeMs: toEpochMs(stats.birthtimeMs),
         };
         this.stateStore.getSnapshot().files[nextPath] = entry;
         touched = true;
@@ -503,7 +504,7 @@ export class ConnectorFsWatcher {
         seedEvents.push({
           type: 'CREATED',
           path: relPath,
-          timestamp: Math.round(entry.mtimeMs),
+          timestamp: entry.mtimeMs,
           size: entry.size,
           isDirectory: false,
           sha256: entry.sha256,
