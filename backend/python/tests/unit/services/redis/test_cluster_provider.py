@@ -56,6 +56,16 @@ class TestCreateClient:
         provider.create_client()
         assert mock_cluster_cls.call_args.kwargs["require_full_coverage"] is True
 
+    @pytest.mark.parametrize("blocking", [False, True])
+    def test_never_forwards_a_per_node_connection_cap(self, mock_cluster_cls, blocking):
+        # RedisCluster's per-node pool raises MaxConnectionsError the instant
+        # the cap is hit instead of queueing like standalone's
+        # BlockingConnectionPool, so a small max_connections turned the
+        # indexing worker's concurrent config reads into hard failures.
+        provider = ClusterRedisProvider(_config())
+        provider.create_client(ClientOptions(blocking=blocking, max_connections=10))
+        assert "max_connections" not in mock_cluster_cls.call_args.kwargs
+
     def test_fresh_instance_each_call(self, mock_cluster_cls):
         provider = ClusterRedisProvider(_config())
         c1 = provider.create_client()
@@ -227,6 +237,38 @@ class TestLoadScriptUsesTheClientsOwnScriptLoad:
         with patch.object(provider, "get_client", return_value=fake_client):
             sha = await provider.load_script("return 1")
         assert sha == "sha1"
+
+
+class TestPublish:
+    """redis-py 5.x's async `RedisCluster` has no `publish()` (the sync one
+    does), and `PUBLISH` is keyless, so `execute_command` has no slot to route
+    by unless told a target. Both facts are what made
+    `RedisDistributedKeyValueStore.publish_cache_invalidation` fail with
+    `'RedisCluster' object has no attribute 'publish'` against MemoryDB."""
+
+    @pytest.mark.asyncio
+    async def test_sends_publish_via_execute_command_pinned_to_the_default_node(self):
+        from redis.asyncio.cluster import RedisCluster
+
+        # No `mock_cluster_cls` here: patching the class would also replace
+        # the `DEFAULT_NODE` constant the provider passes as `target_nodes`.
+        provider = ClusterRedisProvider(_config())
+        fake_client = MagicMock(spec=RedisCluster)
+        fake_client.execute_command = AsyncMock(return_value=2)
+        with patch.object(provider, "get_client", return_value=fake_client):
+            receivers = await provider.publish("chan", "payload")
+
+        assert receivers == 2
+        fake_client.execute_command.assert_awaited_once_with(
+            "PUBLISH", "chan", "payload", target_nodes=RedisCluster.DEFAULT_NODE
+        )
+
+    def test_the_real_async_cluster_client_still_lacks_publish(self):
+        """If this starts failing, redis-py grew `publish()` on the async
+        cluster client and the `execute_command` workaround can be revisited."""
+        from redis.asyncio.cluster import RedisCluster
+
+        assert not hasattr(RedisCluster, "publish")
 
 
 class TestKeySlot:

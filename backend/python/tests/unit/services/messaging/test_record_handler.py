@@ -3805,6 +3805,28 @@ class TestOnMessageAbandoned:
         gp.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_never_fails_a_record_whose_handler_is_still_running(self):
+        """Idle-drain can abandon a sibling PEL entry while the original
+        delivery is still IN_PROGRESS. Rewriting FAILED races the worker."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "r1",
+                "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            }
+        )
+        gp.update_node = AsyncMock(return_value=True)
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
+
+        await handler.on_message_abandoned(
+            self._message(), reason="delivered 10 times", attempts=10
+        )
+
+        gp.compare_and_set_indexing_status.assert_not_awaited()
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_tolerates_a_deleted_record(self):
         """A record can be deleted between the event and the abandonment."""
         handler = _make_handler()

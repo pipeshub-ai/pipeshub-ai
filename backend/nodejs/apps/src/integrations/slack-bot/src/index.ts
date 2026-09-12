@@ -11,6 +11,12 @@ import { marked } from "marked";
 marked.setOptions({ mangle: false } as any);
 import app from "./slackApp";
 import receiver from "./receiver";
+// Side-effect import: registers edition-specific Redis providers for this process.
+import "../../../redisProviders";
+import {
+  RedisConnectionProviderFactory,
+  getPreparedRedisProvider,
+} from "../../../libs/services/redis/connectionProviderFactory";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
 import { markdownToSlackMrkdwn } from "./utils/md_to_mrkdwn";
@@ -1484,6 +1490,12 @@ app.event("app_mention", async ({ event, client, context }) => {
 });
 
 (async () => {
+  // Same Redis bootstrap contract as Application.initialize(): this is its
+  // own process, so without it ConfigService -> KV store resolves REDIS_MODE
+  // against a registry that only knows the OSS modes.
+  await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
+  await getPreparedRedisProvider();
+
   await connect();
 
   // Drop legacy threadId + botId index if it exists

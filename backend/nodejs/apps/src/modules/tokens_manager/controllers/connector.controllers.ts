@@ -501,7 +501,7 @@ export const getConnectorInstances =
       if (isActive !== undefined) queryParams.append('isActive', String(isActive));
       if (connectorType !== undefined) queryParams.append('connectorType', String(connectorType));
 
-      logger.info(`Getting connector instances for user ${userId}`);
+      logger.debug(`Getting connector instances for user ${userId}`);
 
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/?${queryParams.toString()}`,
@@ -809,7 +809,7 @@ export const getConnectorInstanceConfig =
         throw new BadRequestError('Connector ID is required');
       }
 
-      logger.info(`Getting connector instance config for ${connectorId}`);
+      logger.debug(`Getting connector instance config for ${connectorId}`);
 
       const headers = buildProxyHeaders(req);
 
@@ -1781,7 +1781,7 @@ export const getConnectorStats =
         'Connector stats not found',
       );
 
-      logger.info('Connector stats retrieved successfully', {
+      logger.debug('Connector stats retrieved successfully', {
         userId,
         orgId,
         requestId: req.context?.requestId,

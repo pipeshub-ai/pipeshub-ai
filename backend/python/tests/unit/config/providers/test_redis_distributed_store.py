@@ -351,22 +351,28 @@ class TestListKeysInDirectory:
 
 
 class TestPublishCacheInvalidation:
+    """PUBLISH is issued through `IRedisConnectionProvider.publish()`, not the
+    command client -- async RedisCluster has no `.publish()` (R13)."""
+
     @pytest.mark.asyncio
     async def test_publish_success(self):
         store = _make_store()
-        mock = _mock_client(store)
-        mock.publish = AsyncMock(return_value=1)
+        client = _mock_client(store)
+        store._provider.publish = AsyncMock(return_value=1)
         await store.publish_cache_invalidation("mykey")
-        mock.publish.assert_called_once()
+        store._provider.publish.assert_awaited_once_with(
+            store._invalidation_channel(), "mykey"
+        )
+        client.publish.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_publish_retries_on_failure(self):
         store = _make_store()
-        mock = _mock_client(store)
-        mock.publish = AsyncMock(side_effect=Exception("pub fail"))
+        _mock_client(store)
+        store._provider.publish = AsyncMock(side_effect=Exception("pub fail"))
         # Should not raise, logs error after retries
         await store.publish_cache_invalidation("mykey")
-        assert mock.publish.call_count == 3  # max_retries
+        assert store._provider.publish.await_count == 3  # max_retries
 
 
 class TestClose:

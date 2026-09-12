@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 from redis.crc import key_slot
-from redis.exceptions import ClusterCrossSlotError
+from redis.exceptions import ClusterCrossSlotError, RedisClusterException
 
 # `importorskip`, not a plain `import`: `fakeredis` lives in the optional
 # `dev` extra, and every importer of this helper had its own
@@ -94,14 +94,27 @@ class FakeClusterRedis:
         _assert_same_slot(list(keys_and_args[:numkeys]))
         return await self._redis.evalsha(sha, numkeys, *keys_and_args)
 
-    def pipeline(self, transaction: bool = True) -> Any:  # noqa: ANN401
+    def pipeline(self, transaction: bool = False) -> Any:  # noqa: ANN401
         """Non-transactional pipelines legitimately span slots (a real
-        `ClusterPipeline` routes each command to its own node); `transaction=True`
-        (WATCH/MULTI/EXEC) does not survive a cluster hop (R3) but nothing in
-        this codebase uses it anymore, so it is intentionally left unchecked
-        here rather than half-emulated.
+        `ClusterPipeline` routes each command to its own node). `transaction=True`
+        is refused with the real client's exact error: `RetryManager` shipped a
+        MULTI/EXEC pipeline that only failed against a live cluster because this
+        double used to accept it.
         """
-        return self._redis.pipeline(transaction=transaction)
+        if transaction:
+            raise RedisClusterException("transaction is deprecated in cluster mode")
+        return self._redis.pipeline(transaction=False)
+
+    async def execute_command(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        # A real RedisCluster consumes `target_nodes` itself; fakeredis would
+        # choke on the unknown kwarg.
+        kwargs.pop("target_nodes", None)
+        return await self._redis.execute_command(*args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+        # redis-py's async RedisCluster has no publish(); feature code must go
+        # through IRedisConnectionProvider.publish(). Mirroring the gap here is
+        # what makes a unit test fail for `client.publish(...)` before MemoryDB does.
+        if name == "publish":
+            raise AttributeError("'RedisCluster' object has no attribute 'publish'")
         return getattr(self._redis, name)
