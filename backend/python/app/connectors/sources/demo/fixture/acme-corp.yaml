@@ -123,12 +123,12 @@ containers:
     name: Pricing (restricted)
     group: pricing-committee
     web_url: https://drive.google.com/drive/folders/acme-pricing
-  - id: zendesk
-    system: ZENDESK
+  - id: servicenow
+    system: SERVICENOW
     kind: desk
-    name: Acme Support
+    name: Acme Customer Service
     group: support-readers
-    web_url: https://acme-demo.zendesk.com/agent
+    web_url: https://acme-demo.service-now.com/nav_to.do?uri=sn_customerservice_case_list.do
 
 # Slack messages that share a `thread` are indexed as one record per thread,
 # titled here, because that is how the Slack connector groups message bursts.
@@ -340,14 +340,14 @@ records:
   # Story 2 — export timeouts (Support → Engineering)
   # ---------------------------------------------------------------------------
 
-  - id: zd-4471
-    container: zendesk
+  - id: sn-4471
+    container: servicenow
     type: TICKET
-    title: "Zendesk #4471: Export timeout on full-workspace export — Northwind Traders"
+    title: "ServiceNow CS0004471: Export timeout on full-workspace export — Northwind Traders"
     author: sam
     created: 2026-04-02T13:12:00Z
     updated: 2026-04-09T10:00:00Z
-    web_url: https://acme-demo.zendesk.com/agent/tickets/4471
+    web_url: https://acme-demo.service-now.com/sn_customerservice_case.do?number=CS0004471
     body: |
       **Customer:** Northwind Traders (Enterprise) · **Status:** Solved
 
@@ -359,14 +359,14 @@ records:
       Workaround given: export per-project instead of the whole workspace.
       Escalated to engineering as SUP-114 on 2026-04-03.
 
-  - id: zd-4478
-    container: zendesk
+  - id: sn-4478
+    container: servicenow
     type: TICKET
-    title: "Zendesk #4478: Export timeout, twice in one day — Contoso"
+    title: "ServiceNow CS0004478: Export timeout, twice in one day — Contoso"
     author: sam
     created: 2026-04-03T09:40:00Z
     updated: 2026-04-09T10:05:00Z
-    web_url: https://acme-demo.zendesk.com/agent/tickets/4478
+    web_url: https://acme-demo.service-now.com/sn_customerservice_case.do?number=CS0004478
     body: |
       **Customer:** Contoso (Enterprise) · **Status:** Solved
 
@@ -375,14 +375,14 @@ records:
       Linked to SUP-114. Customer accepted the per-project workaround for now and
       asked to be told when full-workspace export works again.
 
-  - id: zd-4480
-    container: zendesk
+  - id: sn-4480
+    container: servicenow
     type: TICKET
-    title: "Zendesk #4480: Export timeout, page hangs then fails — Fabrikam"
+    title: "ServiceNow CS0004480: Export timeout, page hangs then fails — Fabrikam"
     author: sam
     created: 2026-04-03T15:22:00Z
     updated: 2026-04-09T10:06:00Z
-    web_url: https://acme-demo.zendesk.com/agent/tickets/4480
+    web_url: https://acme-demo.service-now.com/sn_customerservice_case.do?number=CS0004480
     body: |
       **Customer:** Fabrikam (Business) · **Status:** Solved
 
@@ -398,13 +398,13 @@ records:
     updated: 2026-04-14T12:00:00Z
     web_url: https://acme-demo.atlassian.net/browse/SUP-114
     relations:
-      - { type: RELATED, to: zd-4471 }
-      - { type: RELATED, to: zd-4478 }
-      - { type: RELATED, to: zd-4480 }
+      - { type: RELATED, to: sn-4471 }
+      - { type: RELATED, to: sn-4478 }
+      - { type: RELATED, to: sn-4480 }
     body: |
       **Priority:** High · **Reporter:** Sam Reyes · **Status:** Done
 
-      Three customers (Zendesk #4471, #4478, #4480) report that full-workspace
+      Three customers (ServiceNow cases CS0004471, CS0004478, CS0004480) report that full-workspace
       export fails with "Request timed out" after 30 seconds. Reproduced internally
       at ~20k records and above.
 
@@ -413,7 +413,7 @@ records:
 
       Engineering tracking: acme/svc-export issue #207. Resolved by PR #211
       (exports moved to a background queue with a download link), released
-      2026-04-14. Customers on all three tickets notified — see the Zendesk tickets
+      2026-04-14. Customers on all three tickets notified — see the ServiceNow cases
       for who was affected.
 
   - id: slack-eng-exports-0404-1
@@ -837,24 +837,24 @@ records:
       Contoso's April invoice shows VAT on a line that should be exempt. Finance is
       reissuing; engineering to check the VAT rule for reverse-charge customers. Open.
 
-  - id: zd-4455
-    container: zendesk
+  - id: sn-4455
+    container: servicenow
     type: TICKET
-    title: "Zendesk #4455: Password reset email not arriving"
+    title: "ServiceNow CS0004455: Password reset email not arriving"
     author: sam
     created: 2026-03-28T10:00:00Z
-    web_url: https://acme-demo.zendesk.com/agent/tickets/4455
+    web_url: https://acme-demo.service-now.com/sn_customerservice_case.do?number=CS0004455
     body: |
       Customer's password reset email was filtered by their spam gateway. Asked
       them to allowlist our sending domain. Solved.
 
-  - id: zd-4462
-    container: zendesk
+  - id: sn-4462
+    container: servicenow
     type: TICKET
-    title: "Zendesk #4462: Update billing address on invoices"
+    title: "ServiceNow CS0004462: Update billing address on invoices"
     author: sam
     created: 2026-03-30T15:45:00Z
-    web_url: https://acme-demo.zendesk.com/agent/tickets/4462
+    web_url: https://acme-demo.service-now.com/sn_customerservice_case.do?number=CS0004462
     body: |
       Customer moved office and needs the new address on future invoices. Updated
       in the admin panel. Solved.
@@ -949,11 +949,11 @@ questions:
 
   - id: q2
     ask: "Which customers reported export timeouts, and what fixed it?"
-    # The answer names the customers from the Zendesk tickets every time, but the
+    # The answer names the customers from the ServiceNow cases every time, but the
     # model doesn't always attach a citation marker to a bulleted list; the fix
-    # citation is the reliable one. Zendesk cited is the stretch, tracked separately.
+    # citation is the reliable one. ServiceNow cited is the stretch, tracked separately.
     must_cite_any_of: [gh-pr-211, gh-issue-207]
-    stretch_cite_any_of: [zd-4471, zd-4478, zd-4480]
+    stretch_cite_any_of: [sn-4471, sn-4478, sn-4480]
     answer_must_mention: ["Northwind", "Contoso", "Fabrikam", "queue"]
     must_not_cite: [gh-pr-482, jira-inc-2031, drive-billing-resilience, drive-pricing-2026]
     personas: { alice: cites, bob: cites }
