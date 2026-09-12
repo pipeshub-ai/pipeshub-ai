@@ -13,6 +13,7 @@ export interface FileStateEntry {
   mtimeMs?: number;
   isDirectory: boolean;
   sha256?: string;
+  birthtimeMs?: number;
 }
 
 export type FileStateMap = Record<string, FileStateEntry>;
@@ -28,6 +29,8 @@ export interface WatchEvent {
   sha256?: string;
   /** modified time of the file */
   mtimeMs?: number;
+  /** Inode birth time. Absent on deletions and when the platform/filesystem doesn't report one. */
+  birthtimeMs?: number;
 }
 
 function listFilesUnderPrefix(files: FileStateMap, prefix: string): string[] {
@@ -92,6 +95,7 @@ export async function expandWatchEventsForReplay(
           timestamp: event.timestamp, isDirectory: false,
           sha256,
           mtimeMs: files[oldRelPath]?.mtimeMs,
+          birthtimeMs: files[oldRelPath]?.birthtimeMs,
         });
       }
     }

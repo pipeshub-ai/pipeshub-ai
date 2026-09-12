@@ -205,16 +205,112 @@ class TestLocalFsConnectorHelpers:
     def test_folder_record_uses_file_record_type_with_folder_flag(
         self, folder_connector: LocalFsConnector, tmp_path: Path
     ):
+        ev = LocalFsFileEvent(
+            type="DIR_CREATED", path="docs", timestamp=1234, isDirectory=True,
+        )
         folder_record, _permissions = folder_connector._build_folder_record(
             "docs",
             tmp_path,
             folder_connector._record_group_external_id(),
-            1234,
+            ev,
         )
 
         assert folder_record.record_type == RecordType.FILE
         assert folder_record.is_file is False
         assert folder_record.mime_type == MimeTypes.FOLDER.value
+
+    def test_folder_record_source_created_at_uses_birthtime(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        ev = LocalFsFileEvent(
+            type="DIR_CREATED",
+            path="docs",
+            timestamp=9_000,
+            mtimeMs=5_000,
+            birthtimeMs=1_000,
+            isDirectory=True,
+        )
+        folder_record, _permissions = folder_connector._build_folder_record(
+            "docs",
+            tmp_path,
+            folder_connector._record_group_external_id(),
+            ev,
+        )
+        assert folder_record.source_created_at == 1_000
+        assert folder_record.source_updated_at == 5_000
+        # created_at/updated_at are PipesHub's own bookkeeping, not source
+        # metadata — those stay on the observed event time.
+        assert folder_record.created_at == 9_000
+        assert folder_record.updated_at == 9_000
+
+    def test_folder_record_source_created_at_falls_back_without_birthtime(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        ev = LocalFsFileEvent(
+            type="DIR_CREATED",
+            path="docs",
+            timestamp=9_000,
+            mtimeMs=5_000,
+            isDirectory=True,
+        )
+        folder_record, _permissions = folder_connector._build_folder_record(
+            "docs",
+            tmp_path,
+            folder_connector._record_group_external_id(),
+            ev,
+        )
+        assert folder_record.source_created_at == 5_000
+
+    def test_folder_record_ancestor_placeholder_leaves_source_times_unset(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        # "docs" is being synthesized as an ancestor of some descendant file's
+        # event — its mtime/birthtime describe that file, not this folder, so
+        # they must not be written as this folder's source timestamps.
+        ev = LocalFsFileEvent(
+            type="CREATED",
+            path="docs/report.pdf",
+            timestamp=9_000,
+            mtimeMs=5_000,
+            birthtimeMs=1_000,
+            isDirectory=False,
+        )
+        folder_record, _permissions = folder_connector._build_folder_record(
+            "docs",
+            tmp_path,
+            folder_connector._record_group_external_id(),
+            ev,
+            is_ancestor_placeholder=True,
+        )
+        assert folder_record.source_created_at is None
+        assert folder_record.source_updated_at is None
+        # Bookkeeping fields still advance on every touch, ancestor or not.
+        assert folder_record.created_at == 9_000
+        assert folder_record.updated_at == 9_000
+
+    def test_build_parent_folder_records_marks_ancestors_as_placeholders(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        ev = LocalFsFileEvent(
+            type="CREATED",
+            path="a/b/report.pdf",
+            timestamp=9_000,
+            mtimeMs=5_000,
+            birthtimeMs=1_000,
+            isDirectory=False,
+        )
+        records = folder_connector._build_parent_folder_records(
+            "a/b/report.pdf",
+            tmp_path,
+            folder_connector._record_group_external_id(),
+            ev,
+            set(),
+        )
+        paths = {r[0].local_fs_relative_path for r in records}
+        assert paths == {"a", "a/b"}
+        for record, _perms in records:
+            assert record.source_created_at is None
+            assert record.source_updated_at is None
 
     def test_decode_storage_buffer_payload_node_buffer_envelope(self):
         body = LocalFsConnector._decode_storage_buffer_payload(
@@ -341,6 +437,61 @@ class TestLocalFsConnectorHelpers:
             "folder/x.txt", ev, "rg-ext", FilterCollection(filters=[]), owner=None
         )
         assert rec.path == "folder/x.txt"
+
+    def test_build_file_record_source_created_at_uses_birthtime(
+        self, folder_connector: LocalFsConnector
+    ):
+        ev = LocalFsFileEvent(
+            type="CREATED",
+            path="x.txt",
+            timestamp=9_000,
+            mtimeMs=5_000,
+            birthtimeMs=1_000,
+            size=4,
+            isDirectory=False,
+        )
+        rec, _perms = folder_connector._build_file_record(
+            "folder/x.txt", ev, "rg-ext", FilterCollection(filters=[]), owner=None
+        )
+        assert rec.source_created_at == 1_000
+        assert rec.source_updated_at == 5_000
+
+    def test_build_file_record_source_created_at_falls_back_to_mtime(
+        self, folder_connector: LocalFsConnector
+    ):
+        # No birthtimeMs at all (pre-upgrade desktop or a replayed journal entry).
+        ev = LocalFsFileEvent(
+            type="CREATED",
+            path="x.txt",
+            timestamp=9_000,
+            mtimeMs=5_000,
+            size=4,
+            isDirectory=False,
+        )
+        rec, _perms = folder_connector._build_file_record(
+            "folder/x.txt", ev, "rg-ext", FilterCollection(filters=[]), owner=None
+        )
+        assert rec.source_created_at == 5_000
+        assert rec.source_updated_at == 5_000
+
+    def test_build_file_record_source_created_at_ignores_unusable_birthtime(
+        self, folder_connector: LocalFsConnector
+    ):
+        # A filesystem with no btime support reports 0 rather than omitting
+        # the field; that must not be read as "created in 1970".
+        ev = LocalFsFileEvent(
+            type="CREATED",
+            path="x.txt",
+            timestamp=9_000,
+            mtimeMs=5_000,
+            birthtimeMs=0,
+            size=4,
+            isDirectory=False,
+        )
+        rec, _perms = folder_connector._build_file_record(
+            "folder/x.txt", ev, "rg-ext", FilterCollection(filters=[]), owner=None
+        )
+        assert rec.source_created_at == 5_000
 
     def test_to_app_user(self, folder_connector: LocalFsConnector):
         u = User(email="u@x.com", id="uid", org_id="org-1", full_name="U")
@@ -2384,8 +2535,11 @@ class TestAppendFolderUpsertRecords:
     def test_empty_rel_path_is_noop(self, folder_connector, tmp_path):
         buf: list = []
         emitted: set[str] = set()
+        ev = LocalFsFileEvent(
+            type="DIR_CREATED", path="  /  ", timestamp=1, isDirectory=True,
+        )
         folder_connector._append_folder_upsert_records(
-            buf, "  /  ", tmp_path, "rg", 1, emitted
+            buf, "  /  ", tmp_path, "rg", ev, emitted
         )
         assert buf == []
         assert emitted == set()
@@ -2393,8 +2547,11 @@ class TestAppendFolderUpsertRecords:
     def test_already_emitted_folder_skips_rebuild(self, folder_connector, tmp_path):
         buf: list = []
         emitted = {"docs"}
+        ev = LocalFsFileEvent(
+            type="DIR_CREATED", path="docs", timestamp=1, isDirectory=True,
+        )
         folder_connector._append_folder_upsert_records(
-            buf, "docs", tmp_path, "rg", 1, emitted
+            buf, "docs", tmp_path, "rg", ev, emitted
         )
         # No parents and already emitted → buffer stays empty.
         assert buf == []
@@ -2406,13 +2563,16 @@ class TestHandleDirectoryEventForBatch:
     async def test_dir_deleted_flushes_at_batch_size(self, folder_connector):
         delete_only: list[str] = []
         flush_delete = AsyncMock()
+        ev = LocalFsFileEvent(
+            type="DIR_DELETED", path="gone", timestamp=1, isDirectory=True,
+        )
         await folder_connector._handle_directory_event_for_batch(
             event_type="DIR_DELETED",
             rel_path="gone",
             old_rel_path="",
             root=Path("/tmp"),
             external_record_group_id="rg",
-            timestamp_ms=1,
+            event=ev,
             owner=User(email="u@x.com", id="u1", org_id="org-1"),
             upsert_buffer=[],
             move_buffer=[],
@@ -2431,13 +2591,16 @@ class TestHandleDirectoryEventForBatch:
     ):
         upsert_buffer: list = []
         flush_upserts = AsyncMock()
+        ev = LocalFsFileEvent(
+            type="DIR_CREATED", path="newdir", timestamp=1, isDirectory=True,
+        )
         await folder_connector._handle_directory_event_for_batch(
             event_type="DIR_CREATED",
             rel_path="newdir",
             old_rel_path="",
             root=tmp_path,
             external_record_group_id="rg",
-            timestamp_ms=1,
+            event=ev,
             owner=User(email="u@x.com", id="u1", org_id="org-1"),
             upsert_buffer=upsert_buffer,
             move_buffer=[],
@@ -2451,19 +2614,56 @@ class TestHandleDirectoryEventForBatch:
         assert upsert_buffer
         flush_upserts.assert_awaited_once()
 
+    async def test_dir_created_own_folder_keeps_real_times_ancestors_dont(
+        self, folder_connector, tmp_path
+    ):
+        upsert_buffer: list = []
+        ev = LocalFsFileEvent(
+            type="DIR_CREATED",
+            path="a/b/newdir",
+            timestamp=9_000,
+            mtimeMs=5_000,
+            birthtimeMs=1_000,
+            isDirectory=True,
+        )
+        await folder_connector._handle_directory_event_for_batch(
+            event_type="DIR_CREATED",
+            rel_path="a/b/newdir",
+            old_rel_path="",
+            root=tmp_path,
+            external_record_group_id="rg",
+            event=ev,
+            owner=User(email="u@x.com", id="u1", org_id="org-1"),
+            upsert_buffer=upsert_buffer,
+            move_buffer=[],
+            delete_only_buffer=[],
+            emitted_folder_paths=set(),
+            flush_upserts=AsyncMock(),
+            flush_moves=AsyncMock(),
+            flush_delete_only=AsyncMock(),
+            batch_size=100,
+        )
+        by_path = {r.local_fs_relative_path: r for r, _perms in upsert_buffer}
+        assert by_path["a/b/newdir"].source_created_at == 1_000
+        assert by_path["a"].source_created_at is None
+        assert by_path["a/b"].source_created_at is None
+
     async def test_dir_renamed_queues_move_and_flushes(
         self, folder_connector, tmp_path
     ):
         upsert_buffer: list = []
         move_buffer: list = []
         flush_moves = AsyncMock()
+        ev = LocalFsFileEvent(
+            type="DIR_RENAMED", path="new", oldPath="old", timestamp=1, isDirectory=True,
+        )
         await folder_connector._handle_directory_event_for_batch(
             event_type="DIR_RENAMED",
             rel_path="new",
             old_rel_path="old",
             root=tmp_path,
             external_record_group_id="rg",
-            timestamp_ms=1,
+            event=ev,
             owner=User(email="u@x.com", id="u1", org_id="org-1"),
             upsert_buffer=upsert_buffer,
             move_buffer=move_buffer,
@@ -2484,13 +2684,16 @@ class TestHandleDirectoryEventForBatch:
         self, folder_connector, tmp_path
     ):
         upsert_buffer: list = []
+        ev = LocalFsFileEvent(
+            type="DIR_WAT", path="x", timestamp=1, isDirectory=True,
+        )
         handled = await folder_connector._handle_directory_event_for_batch(
             event_type="DIR_WAT",
             rel_path="x",
             old_rel_path="",
             root=tmp_path,
             external_record_group_id="rg",
-            timestamp_ms=1,
+            event=ev,
             owner=User(email="u@x.com", id="u1", org_id="org-1"),
             upsert_buffer=upsert_buffer,
             move_buffer=[],

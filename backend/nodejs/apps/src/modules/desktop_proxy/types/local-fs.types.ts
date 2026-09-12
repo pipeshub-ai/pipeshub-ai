@@ -36,6 +36,8 @@ export interface LocalFsFileEvent {
   mimeType?: string | null;
   /** File modification time. Absent on deletions and pre-upgrade desktops. */
   mtimeMs?: number | null;
+  /** Inode birth time. Absent on deletions and when the platform/filesystem doesn't report one. */
+  birthtimeMs?: number | null;
 }
 
 export interface LocalFsPullResult {

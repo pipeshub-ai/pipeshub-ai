@@ -685,6 +685,7 @@ export class LocalSyncManager {
         ...(entry.isDirectory ? {} : { size: entry.size, sha256: entry.sha256 }),
         isDirectory: entry.isDirectory,
         mtimeMs: entry.mtimeMs,
+        birthtimeMs: entry.birthtimeMs,
       } as WatchEvent;
     });
   }

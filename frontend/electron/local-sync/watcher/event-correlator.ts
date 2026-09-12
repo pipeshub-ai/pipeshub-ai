@@ -15,6 +15,7 @@ interface RawEvent {
   inode?: number;
   size?: number;
   mtimeMs?: number;
+  birthtimeMs?: number;
   isDirectory: boolean;
   sha256?: string;
 }
@@ -102,6 +103,7 @@ export class EventCorrelator {
       inode: stats ? (typeof stats.ino === 'bigint' ? Number(stats.ino) : stats.ino) : undefined,
       size: stats && typeof stats.isFile === 'function' && stats.isFile() ? stats.size : undefined,
       mtimeMs: stats && stats.mtimeMs,
+      birthtimeMs: stats && stats.birthtimeMs,
       isDirectory,
     };
     switch (type) {
@@ -117,7 +119,7 @@ export class EventCorrelator {
     if (this.pendingAdds.has(raw.relKey)) {
       const add = this.pendingAdds.get(raw.relKey)!;
       this.pendingAdds.delete(raw.relKey);
-      this.emit([{ type: 'MODIFIED', path: raw.relKey, timestamp: add.timestamp, size: add.size, isDirectory: raw.isDirectory, sha256: add.sha256, mtimeMs: add.mtimeMs }]);
+      this.emit([{ type: 'MODIFIED', path: raw.relKey, timestamp: add.timestamp, size: add.size, isDirectory: raw.isDirectory, sha256: add.sha256, mtimeMs: add.mtimeMs, birthtimeMs: add.birthtimeMs }]);
       return;
     }
     // Chokidar's unlink event typically lacks stats (file is already gone),
@@ -150,7 +152,7 @@ export class EventCorrelator {
       const unlink = this.pendingUnlinks.get(raw.relKey)!;
       this.pendingUnlinks.delete(raw.relKey);
       if (isValidInode(unlink.inode)) this.unlinkInodes.delete(unlink.inode!);
-      this.emit([{ type: 'MODIFIED', path: raw.relKey, timestamp: raw.timestamp, size: raw.size, isDirectory: raw.isDirectory, sha256: hash, mtimeMs: raw.mtimeMs }]);
+      this.emit([{ type: 'MODIFIED', path: raw.relKey, timestamp: raw.timestamp, size: raw.size, isDirectory: raw.isDirectory, sha256: hash, mtimeMs: raw.mtimeMs, birthtimeMs: raw.birthtimeMs }]);
       return;
     }
 
@@ -163,7 +165,7 @@ export class EventCorrelator {
         const evtType = raw.isDirectory
           ? (sameDir ? 'DIR_RENAMED' : 'DIR_MOVED')
           : (sameDir ? 'RENAMED' : 'MOVED');
-        this.emit([{ type: evtType, path: raw.relKey, oldPath: unlink.relKey, timestamp: raw.timestamp, size: raw.size, isDirectory: raw.isDirectory, sha256: hash, mtimeMs: raw.mtimeMs }]);
+        this.emit([{ type: evtType, path: raw.relKey, oldPath: unlink.relKey, timestamp: raw.timestamp, size: raw.size, isDirectory: raw.isDirectory, sha256: hash, mtimeMs: raw.mtimeMs, birthtimeMs: raw.birthtimeMs }]);
         return;
       }
     }
@@ -203,7 +205,7 @@ export class EventCorrelator {
       }
       if (sha256 === undefined) sha256 = await contentFileHash(ev.absPath);
     }
-    this.emit([{ type: 'MODIFIED', path: ev.relKey, timestamp: ev.timestamp, size: ev.size, isDirectory: ev.isDirectory, sha256, mtimeMs: ev.mtimeMs }]);
+    this.emit([{ type: 'MODIFIED', path: ev.relKey, timestamp: ev.timestamp, size: ev.size, isDirectory: ev.isDirectory, sha256, mtimeMs: ev.mtimeMs, birthtimeMs: ev.birthtimeMs }]);
   }
 
   private scheduleFlush(delayMs = this.correlationWindowMs): void {
@@ -245,7 +247,7 @@ export class EventCorrelator {
         const evtType = add.isDirectory
           ? (sameDir ? 'DIR_RENAMED' : 'DIR_MOVED')
           : (sameDir ? 'RENAMED' : 'MOVED');
-        events.push({ type: evtType, path: add.relKey, oldPath: unlink.relKey, timestamp: add.timestamp, size: add.size, isDirectory: add.isDirectory, sha256: add.sha256, mtimeMs: add.mtimeMs });
+        events.push({ type: evtType, path: add.relKey, oldPath: unlink.relKey, timestamp: add.timestamp, size: add.size, isDirectory: add.isDirectory, sha256: add.sha256, mtimeMs: add.mtimeMs, birthtimeMs: add.birthtimeMs });
       }
     }
     const now = Date.now();
@@ -264,7 +266,7 @@ export class EventCorrelator {
       if (isValidInode(u.inode)) this.unlinkInodes.delete(u.inode!);
     }
     for (const [, a] of this.pendingAdds) {
-      events.push({ type: a.isDirectory ? 'DIR_CREATED' : 'CREATED', path: a.relKey, timestamp: a.timestamp, size: a.size, isDirectory: a.isDirectory, sha256: a.sha256, mtimeMs: a.mtimeMs });
+      events.push({ type: a.isDirectory ? 'DIR_CREATED' : 'CREATED', path: a.relKey, timestamp: a.timestamp, size: a.size, isDirectory: a.isDirectory, sha256: a.sha256, mtimeMs: a.mtimeMs, birthtimeMs: a.birthtimeMs });
     }
     this.pendingAdds.clear();
     if (nextUnlinkFlushInMs !== null) this.scheduleFlush(nextUnlinkFlushInMs);
