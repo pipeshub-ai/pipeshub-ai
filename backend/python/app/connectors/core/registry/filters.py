@@ -37,6 +37,7 @@ class FilterType(str, Enum):
     LIST = "list"
     NUMBER = "number"
     MULTISELECT = "multiselect"
+    SELECT = "select"
 
 
 class FilterCategory(str, Enum):
@@ -185,6 +186,11 @@ class MultiselectOperator(str, Enum):
     NOT_IN = FilterOperator.NOT_IN
 
 
+class SelectOperator(str, Enum):
+    """Operators for SELECT type filters (single selection from options)"""
+    IS = FilterOperator.IN
+
+
 class NumberOperator(str, Enum):
     """Operators for NUMBER type filters"""
     IS_BETWEEN = FilterOperator.IS_BETWEEN
@@ -201,6 +207,7 @@ FilterOperatorType = Union[
     DatetimeOperator,
     ListOperator,
     MultiselectOperator,
+    SelectOperator,
     NumberOperator
 ]
 
@@ -320,6 +327,7 @@ TYPE_OPERATORS: dict[FilterType, list[str]] = {
     FilterType.DATETIME: [op.value for op in DatetimeOperator],
     FilterType.LIST: [op.value for op in ListOperator],
     FilterType.MULTISELECT: [op.value for op in MultiselectOperator],
+    FilterType.SELECT: [op.value for op in SelectOperator],
     FilterType.NUMBER: [op.value for op in NumberOperator],
 }
 
@@ -337,6 +345,7 @@ def get_operator_enum_class(filter_type: FilterType) -> type:
         FilterType.DATETIME: DatetimeOperator,
         FilterType.LIST: ListOperator,
         FilterType.MULTISELECT: MultiselectOperator,
+        FilterType.SELECT: SelectOperator,
         FilterType.NUMBER: NumberOperator,
     }
     return operator_map.get(filter_type)
@@ -375,6 +384,7 @@ class FilterField:
         DATETIME    → tuple[int] or tuple[int, int] (epoch timestamps)
         LIST        → List[str] (manual tags or dynamic from API)
         MULTISELECT → List[str] (static or dynamic options)
+        SELECT      → List[str] holding exactly one id (dropdown in the UI)
         NUMBER      → float (supports decimals)
 
     Option Source Types:
@@ -404,9 +414,9 @@ class FilterField:
 
         # Validate option_source_type compatibility
         if self.option_source_type == OptionSourceType.DYNAMIC:
-            if self.filter_type not in [FilterType.MULTISELECT, FilterType.LIST]:
+            if self.filter_type not in [FilterType.MULTISELECT, FilterType.SELECT, FilterType.LIST]:
                 raise ValueError(
-                    f"option_source_type=DYNAMIC only supported for MULTISELECT and LIST, "
+                    f"option_source_type=DYNAMIC only supported for MULTISELECT, SELECT, and LIST, "
                     f"got {self.filter_type}"
                 )
         elif self.option_source_type == OptionSourceType.STATIC:
@@ -440,6 +450,7 @@ class FilterField:
             FilterType.DATETIME: None,  # Tuple will be created from dict/list when parsed
             FilterType.LIST: [],
             FilterType.MULTISELECT: [],
+            FilterType.SELECT: [],
             FilterType.NUMBER: None,
         }
         return defaults.get(self.filter_type)
@@ -452,6 +463,7 @@ class FilterField:
             FilterType.DATETIME: DatetimeOperator.IS_AFTER.value,
             FilterType.LIST: ListOperator.IN.value,
             FilterType.MULTISELECT: MultiselectOperator.IN.value,
+            FilterType.SELECT: SelectOperator.IS.value,
             FilterType.NUMBER: NumberOperator.EQUAL.value,
         }
         return defaults.get(self.filter_type, "")
@@ -514,7 +526,7 @@ class Filter(BaseModel):
             filter_type_str = data['type']
 
             # If operator is already an enum, skip conversion
-            if isinstance(operator_str, (StringOperator, BooleanOperator, DatetimeOperator, ListOperator, MultiselectOperator, NumberOperator)):
+            if isinstance(operator_str, (StringOperator, BooleanOperator, DatetimeOperator, ListOperator, MultiselectOperator, SelectOperator, NumberOperator)):
                 pass  # Continue to datetime value conversion
             else:
                 # Convert type string to enum if needed
@@ -578,7 +590,7 @@ class Filter(BaseModel):
                         data['value'] = (start, end)
                     else:
                         data['value'] = None
-                elif filter_type in (FilterType.LIST, FilterType.MULTISELECT) and data['value'] is not None:
+                elif filter_type in (FilterType.LIST, FilterType.MULTISELECT, FilterType.SELECT) and data['value'] is not None:
                     value = data['value']
                     # Legacy configs may store a single id as a string
                     if isinstance(value, str):
@@ -666,6 +678,7 @@ class Filter(BaseModel):
                     FilterType.BOOLEAN: bool,
                     FilterType.LIST: list,
                     FilterType.MULTISELECT: list,
+                    FilterType.SELECT: list,
                     FilterType.NUMBER: (int, float),
                 }
                 expected = expected_types.get(self.type)
@@ -675,8 +688,8 @@ class Filter(BaseModel):
                         f"expected {expected}, got {type(self.value).__name__}"
                     )
 
-            # For LIST and MULTISELECT types, validate all elements are strings
-            if self.type in (FilterType.LIST, FilterType.MULTISELECT):
+            # For list-valued types, validate all elements are strings
+            if self.type in (FilterType.LIST, FilterType.MULTISELECT, FilterType.SELECT):
                 for i, item in enumerate(self.value):
                     if not isinstance(item, str):
                         raise ValueError(
@@ -973,6 +986,83 @@ class FilterCollection(BaseModel):
                 continue
 
         return cls(filters=filters)
+
+
+def _selected_ids(raw: Any) -> list[str]:
+    """Ids held by a stored list-like value; blanks (``""`` / ``{"id": ""}``) do not count."""
+    if isinstance(raw, str):
+        items: list[Any] = [raw]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        return []
+    ids: list[str] = []
+    for item in items:
+        candidate = item.get("id") if isinstance(item, dict) else item
+        if isinstance(candidate, str) and candidate.strip():
+            ids.append(candidate.strip())
+    return ids
+
+
+def sync_filter_selection_problems(
+    schema_fields: list[dict[str, Any]],
+    sync_values: dict[str, Any],
+    action: str = "enabling this connector",
+) -> list[str]:
+    """Reasons to refuse ``action``: a required sync filter with no value, or a
+    SELECT filter holding more than one value or a non-``in`` operator (both
+    possible in configs written while the field was still a multiselect).
+
+    Called on the enable toggle (a connector can be enabled straight after
+    authentication without ever saving filters) and on the filter save routes.
+    Must agree with ``require_single_value``, the run-time backstop.
+    """
+    problems: list[str] = []
+    for field in schema_fields:
+        name = field.get("name")
+        if not name:
+            continue
+        entry = sync_values.get(name)
+        values = _selected_ids(entry.get("value")) if isinstance(entry, dict) else []
+        display = str(field.get("displayName") or name)
+        is_select = field.get("filterType") == FilterType.SELECT.value
+        if field.get("required") and not values:
+            problems.append(f"Select a {display.lower()} before {action}.")
+        elif is_select and len(values) > 1:
+            problems.append(
+                f"{display} allows only one selection, but {len(values)} are configured."
+            )
+        elif is_select and values:
+            operator = str((entry or {}).get("operator") or "")
+            if operator != FilterOperator.IN:
+                problems.append(f"{display} must use the 'in' operator (got '{operator}').")
+    return problems
+
+
+def require_single_value(
+    filters: "FilterCollection | None",
+    key: str | Enum,
+    display_name: str,
+) -> str:
+    """Return the one value a SELECT sync filter must hold, or raise ValueError.
+
+    Runs at the top of ``run_sync`` so configs the save routes never saw
+    (legacy multi-value, ``not_in`` or empty selections written before the
+    field became single-select) fail loudly instead of syncing the wrong scope.
+    """
+    f = filters.get(key) if filters else None
+    values = _selected_ids(f.as_list()) if f and not f.is_empty() else []
+    if len(values) != 1:
+        raise ValueError(
+            f"{display_name}: exactly one must be selected for this connector "
+            f"instance (found {len(values)}). Open the connector settings and pick one."
+        )
+    if f.operator_value != FilterOperator.IN:
+        raise ValueError(
+            f"{display_name}: operator '{f.operator_value}' is not supported; "
+            "select the single repository to sync."
+        )
+    return values[0]
 
 
 async def load_connector_filters(

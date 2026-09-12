@@ -19,7 +19,7 @@ function isFilterRow(raw: unknown): raw is FilterRow {
 function isListLikeFilterField(field: FilterSchemaField): boolean {
   if (field.fieldType === 'MULTISELECT' || field.fieldType === 'TAGS') return true;
   const ft = String(field.filterType ?? '').toLowerCase();
-  return ft === 'list' || ft === 'multiselect';
+  return ft === 'list' || ft === 'multiselect' || ft === 'select';
 }
 
 /**
@@ -74,6 +74,45 @@ export function hasAnySyncFiltersSelected(
 ): boolean {
   if (!syncFields?.length) return false;
   return syncFields.some((field) => isMeaningfulFilterRow(field, syncFormValues[field.name]));
+}
+
+/**
+ * Save-time rule mirrored from the backend registry (`sync_filter_selection_problems`):
+ * a required sync filter needs a value and a `select` filter takes exactly one.
+ * Wording matches the API's 400 detail so the user sees one message either way.
+ */
+export function syncFilterRowError(field: FilterSchemaField, raw: unknown): string | null {
+  const ft = String(field.filterType ?? '').toLowerCase();
+  const rawValue = isFilterRow(raw) ? raw.value : undefined;
+  const items: unknown[] = Array.isArray(rawValue) ? rawValue : typeof rawValue === 'string' ? [rawValue] : [];
+  const values = items
+    .map((item) => (item && typeof item === 'object' && 'id' in item ? (item as { id: unknown }).id : item))
+    .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+  if (field.required && values.length === 0) {
+    return `Select a ${field.displayName.toLowerCase()} before saving.`;
+  }
+  if (ft === 'select' && values.length > 1) {
+    return `${field.displayName} allows only one selection, but ${values.length} are configured.`;
+  }
+  if (ft === 'select' && values.length === 1) {
+    const operator = isFilterRow(raw) ? String(raw.operator ?? '').trim().toLowerCase() : '';
+    if (operator !== 'in') {
+      return `${field.displayName} must use the 'in' operator (got '${operator}').`;
+    }
+  }
+  return null;
+}
+
+export function collectSyncFilterErrors(
+  syncFields: FilterSchemaField[] | undefined,
+  syncFormValues: Record<string, unknown>
+): Record<string, string> {
+  const errors: Record<string, string> = {};
+  for (const field of syncFields ?? []) {
+    const message = syncFilterRowError(field, syncFormValues[field.name]);
+    if (message) errors[field.name] = message;
+  }
+  return errors;
 }
 
 /** Manual indexing toggle lives under indexing filters as `enable_manual_sync`. */

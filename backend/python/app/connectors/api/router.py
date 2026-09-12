@@ -99,6 +99,7 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
+from app.connectors.core.registry.filters import sync_filter_selection_problems
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.sources.local_fs.connector import LocalFsConnector
@@ -865,6 +866,55 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
             trimmed_config[section] = _trim_config_values(obj=trimmed_config[section], path=section)
 
     return trimmed_config
+
+def _require_filter_sections_are_objects(filters: object) -> None:
+    """400 when ``filters.sync`` / ``filters.indexing`` is present but not an object.
+
+    The merge below stores the section verbatim, and a stored ``null`` later
+    breaks ``load_connector_filters`` (``.get`` on ``None``) at sync time.
+    """
+    if not isinstance(filters, dict):
+        return
+    for key in ("sync", "indexing"):
+        if key in filters and not isinstance(filters[key], dict):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"filters.{key} must be an object",
+            )
+
+
+async def _validate_sync_filter_selections(
+    connector_registry: ConnectorRegistry,
+    connector_type: str,
+    config: dict[str, Any],
+    action: str,
+) -> None:
+    """400 when a required sync filter (e.g. the one repository) is not set in ``config``.
+
+    Save routes pass the *merged* config so a partial PUT cannot clear the field.
+
+    ``connector_type`` must be the instance's ``type`` verbatim: registry lookup is
+    exact-match on the registered name ("GitHub Teams"), so an upper- or lower-cased
+    variant resolves to no metadata and skips validation entirely.
+    """
+    metadata = await connector_registry.get_connector_metadata(connector_type)
+    if not isinstance(metadata, dict):
+        return  # unknown connector type: nothing to validate against
+    schema_fields = (
+        metadata.get("config", {})
+        .get("filters", {})
+        .get("sync", {})
+        .get("schema", {})
+        .get("fields", [])
+    )
+    schema_fields = [f for f in schema_fields if isinstance(f, dict)]
+    sync_values = ((config.get("filters") or {}).get("sync") or {}).get("values") or {}
+    problems = sync_filter_selection_problems(
+        schema_fields, sync_values if isinstance(sync_values, dict) else {}, action
+    )
+    if problems:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
+
 
 def _is_scoped_service_token(user: Any) -> bool:
     """Internal workers mint scoped JWTs (orgId + scopes, often no userId)."""
@@ -4779,6 +4829,7 @@ async def update_connector_instance_filters_sync_config(
 
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
+        _require_filter_sections_are_objects(body.get("filters"))
 
         # Validation: Connector must be disabled
         if instance.get("isActive"):
@@ -4820,6 +4871,11 @@ async def update_connector_instance_filters_sync_config(
             for key in ["sync", "indexing"]:
                 if key in body["filters"]:
                     new_config["filters"][key] = body["filters"][key]
+
+        if isinstance((body.get("filters") or {}).get("sync"), dict):
+            await _validate_sync_filter_selections(
+                connector_registry, instance.get("type", ""), new_config, "saving"
+            )
 
         # Only delete sync points and edges when sync filters change
         new_sync_filters = new_config.get("filters", {}).get("sync", {})
@@ -4920,6 +4976,7 @@ async def update_connector_instance_config(
 
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
+        _require_filter_sections_are_objects(body.get("filters"))
 
         # Prevent saving configuration when connector is active
         # Only allow filter/sync updates when connector is active (these don't require re-initialization)
@@ -4980,6 +5037,10 @@ async def update_connector_instance_config(
                     # Section doesn't exist, add it
                     new_config[section] = body[section]
 
+        if isinstance((body.get("filters") or {}).get("sync"), dict):
+            await _validate_sync_filter_selections(
+                connector_registry, instance.get("type", ""), new_config, "saving"
+            )
 
         # Clear credentials and OAuth state only if auth config is being updated
         # Filters and sync updates don't require re-authentication
@@ -7269,6 +7330,10 @@ async def toggle_connector_instance(
                         status_code=HttpStatusCode.BAD_REQUEST.value,
                         detail="Connector must be configured before enabling"
                     )
+
+            await _validate_sync_filter_selections(
+                connector_registry, instance.get("type", ""), config or {}, "enabling this connector"
+            )
 
             # Initialize connector when enabling (if not already initialized)
             await _ensure_connector_initialized(

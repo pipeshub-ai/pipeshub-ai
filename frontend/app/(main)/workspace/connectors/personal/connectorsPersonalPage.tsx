@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useCallback, useMemo, useState, Suspense, u
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { isElectron } from '@/lib/electron';
 import { isLocalFsConnectorType } from '../utils/local-fs-helpers';
@@ -441,11 +442,13 @@ function PersonalConnectorsPageContent() {
           await refreshConnectorRowQuiet(instance._key);
         }
         await refreshConnectorsListsQuiet();
-      } catch {
-        addToast({
-          variant: 'error',
-          title: 'Could not update connector',
-        });
+      } catch (err: unknown) {
+        // An API failure has already been toasted by the axios interceptor, with the
+        // backend's own reason as the description (lib/api/error-toast.ts). Toasting
+        // again here would stack a vaguer copy on top of it.
+        if (!isProcessedError(err)) {
+          addToast({ variant: 'error', title: 'Could not update connector' });
+        }
       }
     },
     [

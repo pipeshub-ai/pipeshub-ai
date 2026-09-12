@@ -12,8 +12,11 @@ import {
   Switch,
   IconButton,
   Checkbox,
+  Popover,
+  TextField,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 import { HelpTooltip } from '@/app/components/ui/help-tooltip';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { FilterDropdown } from '@/app/components/ui/filter-dropdown';
@@ -228,7 +231,7 @@ function getRow(field: FilterSchemaField, raw: unknown): FilterRowValue {
   return {
     operator: defaultFilterOperator(field),
     value:
-      field.filterType === 'list'
+      field.filterType === 'list' || field.filterType === 'select'
         ? []
         : field.filterType === 'boolean'
           ? booleanDefaultValue(field)
@@ -253,6 +256,10 @@ function summarizeCommittedFilter(
 ): string {
   const op = formatOperatorLabel(row.operator);
   const ft = String(field.filterType ?? '').toLowerCase();
+  if (ft === 'select') {
+    const id = listFilterIds(row.value)[0];
+    return id ? (listFilterLabelsById(row.value)[id] ?? id) : '';
+  }
   if (ft === 'list' || ft === 'multiselect' || isListLikeField(field)) {
     const ids = listFilterIds(row.value);
     if (ids.length === 0) return op;
@@ -277,6 +284,11 @@ function summarizeCommittedFilter(
   const s = row.value === undefined || row.value === null ? '' : String(row.value);
   const short = s.length > 36 ? `${s.slice(0, 34)}…` : s;
   return short ? `${op} · ${short}` : op;
+}
+
+function isSelectField(field: FilterSchemaField): boolean {
+  const ft = String(field.filterType ?? '').toLowerCase();
+  return ft === 'select';
 }
 
 function isListLikeField(field: FilterSchemaField): boolean {
@@ -424,33 +436,19 @@ function dedupeAppend(
 }
 
 // ========================================
-// Multi-select (legacy filters parity)
+// Dynamic option loading shared by the multi-select and single-select pickers
 // ========================================
 
-function ConnectorFilterMultiSelect({
-  field,
-  value,
-  onValueChange,
-  connectorId,
-  portalContainer,
-  optionContextGroupPaths,
-  optionExcludeContextGroupPaths,
-}: {
-  field: FilterSchemaField;
-  value: unknown;
-  onValueChange: (v: unknown) => void;
-  connectorId: string | null;
-  portalContainer: HTMLElement | null;
-  /** Limit repository options to those under these parent containers (GitLab groups / GitHub orgs). */
-  optionContextGroupPaths?: string[];
-  /** Exclude repository options under these parent containers (sync filter, NOT_IN). */
-  optionExcludeContextGroupPaths?: string[];
-}) {
-  const selectedIds = useMemo(() => listFilterIds(value), [value]);
-  const labelsById = useMemo(() => listFilterLabelsById(value), [value]);
-  const isDynamic = field.optionSourceType === 'dynamic';
+type PickerOption = { id: string; label: string };
 
-  const [options, setOptions] = useState<{ id: string; label: string }[]>([]);
+function useDynamicFilterOptions(
+  field: FilterSchemaField,
+  connectorId: string | null,
+  optionContextGroupPaths?: string[],
+  optionExcludeContextGroupPaths?: string[]
+) {
+  const isDynamic = field.optionSourceType === 'dynamic';
+  const [options, setOptions] = useState<PickerOption[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [emptyMessage, setEmptyMessage] = useState<string | undefined>(undefined);
@@ -551,20 +549,18 @@ function ConnectorFilterMultiSelect({
         if (!append && requestSeq === requestSeqRef.current) setInitialLoading(false);
       }
     },
-    // Refs are read inside but omitted from deps so this callback stays stable; adding them would churn consumers (handleSearch, handleLoadMore, handlePopoverOpen).
+    // Refs are read inside but omitted from deps so this callback stays stable; adding them would churn consumers.
     [connectorId, field.name, isDynamic, optionContextGroupPaths, optionExcludeContextGroupPaths]
   );
 
-  const handlePopoverOpen = useCallback(
-    (open: boolean) => {
-      if (!open || !isDynamic || !connectorId) return;
-      searchRef.current = '';
-      void loadOptions(false);
-    },
-    [isDynamic, connectorId, loadOptions]
-  );
+  /** Fresh first page (popover opened). */
+  const reload = useCallback(() => {
+    if (!isDynamic || !connectorId) return;
+    searchRef.current = '';
+    void loadOptions(false);
+  }, [isDynamic, connectorId, loadOptions]);
 
-  const handleSearch = useCallback(
+  const search = useCallback(
     (q: string) => {
       if (!isDynamic || !connectorId) return;
       searchRef.current = q;
@@ -573,20 +569,53 @@ function ConnectorFilterMultiSelect({
     [isDynamic, connectorId, loadOptions]
   );
 
-  const handleLoadMore = useCallback(() => {
+  const loadMore = useCallback(() => {
     if (!isDynamic || !hasMore || loadingMore || !connectorId) return;
     void loadOptions(true);
   }, [isDynamic, hasMore, loadingMore, connectorId, loadOptions]);
 
-  const plural = `${field.displayName} values`;
+  return { isDynamic, options, hasMore, loadingMore, initialLoading, emptyMessage, reload, search, loadMore };
+}
 
-  if (isDynamic && !connectorId) {
-    return (
-      <Text size="1" color="gray">
-        Complete authentication and save the connector to load options for this filter.
-      </Text>
-    );
-  }
+// ========================================
+// Multi-select (legacy filters parity)
+// ========================================
+
+function ConnectorFilterMultiSelect({
+  field,
+  value,
+  onValueChange,
+  connectorId,
+  portalContainer,
+  optionContextGroupPaths,
+  optionExcludeContextGroupPaths,
+}: {
+  field: FilterSchemaField;
+  value: unknown;
+  onValueChange: (v: unknown) => void;
+  connectorId: string | null;
+  portalContainer: HTMLElement | null;
+  /** Limit repository options to those under these parent containers (GitLab groups / GitHub orgs). */
+  optionContextGroupPaths?: string[];
+  /** Exclude repository options under these parent containers (sync filter, NOT_IN). */
+  optionExcludeContextGroupPaths?: string[];
+}) {
+  const selectedIds = useMemo(() => listFilterIds(value), [value]);
+  const labelsById = useMemo(() => listFilterLabelsById(value), [value]);
+  const dyn = useDynamicFilterOptions(
+    field,
+    connectorId,
+    optionContextGroupPaths,
+    optionExcludeContextGroupPaths
+  );
+  const { reload } = dyn;
+
+  const handlePopoverOpen = useCallback(
+    (open: boolean) => {
+      if (open) reload();
+    },
+    [reload]
+  );
 
   const staticOpts = useMemo(
     () => staticOptionsList(field).map((o) => ({ value: o.id, label: o.label })),
@@ -596,10 +625,27 @@ function ConnectorFilterMultiSelect({
     () => mergeOptionsWithSelected(staticOpts, selectedIds, labelsById),
     [staticOpts, selectedIds, labelsById]
   );
+  const dynamicOpts = useMemo(
+    () => dyn.options.map((o) => ({ value: o.id, label: o.label })),
+    [dyn.options]
+  );
+  const mergedDynamicOpts = useMemo(
+    () => mergeOptionsWithSelected(dynamicOpts, selectedIds, labelsById),
+    [dynamicOpts, selectedIds, labelsById]
+  );
 
+  const plural = `${field.displayName} values`;
   const selectLabel = `Select ${field.displayName}`;
 
-  if (!isDynamic) {
+  if (dyn.isDynamic && !connectorId) {
+    return (
+      <Text size="1" color="gray">
+        Complete authentication and save the connector to load options for this filter.
+      </Text>
+    );
+  }
+
+  if (!dyn.isDynamic) {
     return (
       <FilterDropdown
         label={selectLabel}
@@ -618,12 +664,6 @@ function ConnectorFilterMultiSelect({
     );
   }
 
-  const dynamicOpts = useMemo(() => options.map((o) => ({ value: o.id, label: o.label })), [options]);
-  const mergedDynamicOpts = useMemo(
-    () => mergeOptionsWithSelected(dynamicOpts, selectedIds, labelsById),
-    [dynamicOpts, selectedIds, labelsById]
-  );
-
   return (
     <FilterDropdown
       label={selectLabel}
@@ -636,16 +676,235 @@ function ConnectorFilterMultiSelect({
       searchable
       triggerLayout="simple"
       summaryBelowTrigger
-      onSearch={handleSearch}
-      onLoadMore={handleLoadMore}
-      isLoadingMore={loadingMore}
-      hasMore={hasMore}
-      emptyMessage={emptyMessage}
-      isLoadingOptions={initialLoading}
+      onSearch={dyn.search}
+      onLoadMore={dyn.loadMore}
+      isLoadingMore={dyn.loadingMore}
+      hasMore={dyn.hasMore}
+      emptyMessage={dyn.emptyMessage}
+      isLoadingOptions={dyn.initialLoading}
       onPopoverOpenChange={handlePopoverOpen}
       portalContainer={portalContainer}
       popoverContentStyle={{ minWidth: 280, maxWidth: 420, zIndex: 10001 }}
     />
+  );
+}
+
+// ========================================
+// Single-select (SELECT type): dropdown button showing the current choice,
+// searchable list, closes on pick. Persists a one-element list so the backend
+// keeps the same {id,label}[] shape as the multi-select.
+// ========================================
+
+function ConnectorFilterSelect({
+  field,
+  value,
+  onValueChange,
+  connectorId,
+  portalContainer,
+  optionContextGroupPaths,
+  optionExcludeContextGroupPaths,
+}: {
+  field: FilterSchemaField;
+  value: unknown;
+  onValueChange: (v: unknown) => void;
+  connectorId: string | null;
+  portalContainer: HTMLElement | null;
+  optionContextGroupPaths?: string[];
+  optionExcludeContextGroupPaths?: string[];
+}) {
+  const selectedId = useMemo(() => listFilterIds(value)[0] ?? null, [value]);
+  const labelsById = useMemo(() => listFilterLabelsById(value), [value]);
+  const dyn = useDynamicFilterOptions(
+    field,
+    connectorId,
+    optionContextGroupPaths,
+    optionExcludeContextGroupPaths
+  );
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const staticOpts = useMemo(() => staticOptionsList(field), [field]);
+  const visibleOptions = useMemo((): PickerOption[] => {
+    if (dyn.isDynamic) return dyn.options;
+    const q = query.trim().toLowerCase();
+    return q ? staticOpts.filter((o) => o.label.toLowerCase().includes(q)) : staticOpts;
+  }, [dyn.isDynamic, dyn.options, staticOpts, query]);
+
+  const selectedLabel = selectedId
+    ? (labelsById[selectedId] ?? visibleOptions.find((o) => o.id === selectedId)?.label ?? selectedId)
+    : null;
+
+  const clearSearchTimer = () => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+  };
+  useEffect(() => clearSearchTimer, []);
+
+  const handleOpenChange = (next: boolean) => {
+    clearSearchTimer();
+    setOpen(next);
+    if (next) {
+      setQuery('');
+      dyn.reload();
+    }
+  };
+
+  const handleQueryChange = (q: string) => {
+    setQuery(q);
+    if (!dyn.isDynamic) return;
+    clearSearchTimer();
+    searchTimerRef.current = setTimeout(() => dyn.search(q), 300);
+  };
+
+  const handleScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) dyn.loadMore();
+  };
+
+  const pick = (opt: PickerOption) => {
+    clearSearchTimer();
+    onValueChange(buildListPersistedValue([opt.id], value, [{ value: opt.id, label: opt.label }]));
+    setOpen(false);
+  };
+
+  if (dyn.isDynamic && !connectorId) {
+    return (
+      <Text size="1" color="gray">
+        Complete authentication and save the connector to load options for this filter.
+      </Text>
+    );
+  }
+
+  return (
+    <Popover.Root open={open} onOpenChange={handleOpenChange}>
+      <Popover.Trigger>
+        <Button
+          type="button"
+          variant="outline"
+          color="gray"
+          size="2"
+          title={selectedLabel ?? undefined}
+          style={{
+            width: '100%',
+            minHeight: 32,
+            justifyContent: 'space-between',
+            gap: 8,
+            cursor: 'pointer',
+            fontWeight: 400,
+            borderRadius: 'var(--radius-2)',
+          }}
+        >
+          <Text
+            size="2"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              textAlign: 'left',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              color: selectedLabel ? 'var(--gray-12)' : 'var(--gray-10)',
+            }}
+          >
+            {selectedLabel ?? `Select ${field.displayName.toLowerCase()}`}
+          </Text>
+          <MaterialIcon name="expand_more" size={16} color="var(--gray-9)" style={{ flexShrink: 0 }} />
+        </Button>
+      </Popover.Trigger>
+      <Popover.Content
+        side="bottom"
+        align="start"
+        sideOffset={4}
+        style={{ padding: 0, minWidth: 280, maxWidth: 420, zIndex: 10001 }}
+        container={portalContainer ?? undefined}
+      >
+        <Box style={{ padding: 8 }}>
+          <TextField.Root
+            size="2"
+            placeholder="Search…"
+            value={query}
+            onChange={(e) => handleQueryChange(e.target.value)}
+            autoFocus
+          />
+        </Box>
+        <Box
+          ref={listRef}
+          role="listbox"
+          onScroll={handleScroll}
+          style={{ maxHeight: 240, overflowY: 'auto', padding: '0 4px 4px' }}
+        >
+          {dyn.initialLoading ? (
+            <Flex align="center" justify="center" gap="2" style={{ padding: '20px 12px' }}>
+              <Spinner size={14} />
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                Loading options…
+              </Text>
+            </Flex>
+          ) : visibleOptions.length === 0 ? (
+            <Text size="2" style={{ color: 'var(--slate-9)', display: 'block', padding: '8px 12px' }}>
+              {dyn.emptyMessage ?? 'No results found'}
+            </Text>
+          ) : (
+            visibleOptions.map((opt) => {
+              const isSelected = opt.id === selectedId;
+              return (
+                <Box
+                  key={opt.id}
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={() => pick(opt)}
+                  onMouseEnter={(e) => {
+                    if (!isSelected) e.currentTarget.style.backgroundColor = 'var(--gray-3)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = isSelected ? 'var(--accent-3)' : 'transparent';
+                  }}
+                  style={{
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    borderRadius: 'var(--radius-1)',
+                    backgroundColor: isSelected ? 'var(--accent-3)' : 'transparent',
+                  }}
+                >
+                  <Flex align="center" gap="2">
+                    <MaterialIcon
+                      name="check"
+                      size={14}
+                      color="var(--accent-11)"
+                      style={{ flexShrink: 0, visibility: isSelected ? 'visible' : 'hidden' }}
+                    />
+                    <Text
+                      size="2"
+                      style={{
+                        color: isSelected ? 'var(--accent-11)' : 'var(--gray-12)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {opt.label}
+                    </Text>
+                  </Flex>
+                </Box>
+              );
+            })
+          )}
+          {dyn.loadingMore ? (
+            <Flex align="center" justify="center" gap="2" style={{ padding: 8 }}>
+              <Spinner size={12} />
+              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                Loading more…
+              </Text>
+            </Flex>
+          ) : null}
+        </Box>
+      </Popover.Content>
+    </Popover.Root>
   );
 }
 
@@ -1190,6 +1449,7 @@ function FilterFieldRow({
     return [] as string[];
   }, [field.operators, field.defaultOperator, row.operator]);
 
+  const selectField = isSelectField(field);
   const listLike = isListLikeField(field);
   const freeTextList = isFreeTextListField(field);
   const isBooleanField = field.filterType === 'boolean';
@@ -1223,6 +1483,43 @@ function FilterFieldRow({
     width: '100%',
     boxSizing: 'border-box',
   };
+
+  if (selectField) {
+    return (
+      <Box style={cardShell}>
+        <Flex direction="column" gap="3">
+          <Flex align="center" justify="between" gap="2" wrap="wrap">
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {field.displayName}
+              {field.required && <Text color="red" size="2"> *</Text>}
+            </Text>
+            {allowClear ? (
+              <Button type="button" size="1" variant="ghost" color="gray" onClick={onClear} style={{ cursor: 'pointer' }}>
+                <MaterialIcon name="close" size={14} color="var(--gray-11)" />
+                Clear
+              </Button>
+            ) : null}
+          </Flex>
+          {field.description ? (
+            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+              {field.description}
+            </Text>
+          ) : null}
+          <ConnectorFilterSelect
+            field={field}
+            value={row.value}
+            onValueChange={(v) =>
+              commit({ ...row, operator: defaultFilterOperator(field), value: v })
+            }
+            connectorId={connectorId}
+            portalContainer={panelBodyPortal}
+            optionContextGroupPaths={projectOptionsScope?.include}
+            optionExcludeContextGroupPaths={projectOptionsScope?.exclude}
+          />
+        </Flex>
+      </Box>
+    );
+  }
 
   if (isBooleanField) {
     const checked = row.value === true || row.value === 'true';

@@ -181,13 +181,13 @@ class ProjectsSync:
         if repo_in:
             for full_name in repo_in:
                 if "/" not in full_name:
-                    self.logger.error("Skipping malformed repo filter value (expected owner/repo): %s", full_name)
-                    continue
+                    raise ValueError(f"Selected repository is malformed (expected owner/repo): {full_name}")
                 owner, name = full_name.split("/", 1)
                 res = await c.runtime.ds_call(c.data_source.get_repo, owner, name)
                 if not res.success or not res.data:
-                    self.logger.error("Repository not found or inaccessible: %s (%s)", full_name, res.error)
-                    continue
+                    raise RuntimeError(
+                        f"Selected repository {full_name} not found or inaccessible: {res.error}"
+                    )
                 by_id[int(res.data.id)] = res.data
         else:
             if org_in:
