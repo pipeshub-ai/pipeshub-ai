@@ -19,6 +19,7 @@ describe('OAuthProviderController', () => {
   let mockOAuthTokenService: any
   let mockAuthCodeService: any
   let mockScopeValidatorService: any
+  let mockOAuthDeviceService: any
   let mockRes: any
   let mockNext: any
 
@@ -45,12 +46,20 @@ describe('OAuthProviderController', () => {
       validateScopesForApp: sinon.stub(),
       getScopeDefinitions: sinon.stub().returns([{ name: 'org:read', description: 'Read org', category: 'Organization' }]),
     }
+    mockOAuthDeviceService = {
+      poll: sinon.stub(),
+      createAuthorization: sinon.stub(),
+      getConsentData: sinon.stub(),
+      approve: sinon.stub(),
+    }
     controller = new OAuthProviderController(
       mockLogger,
       mockOAuthAppService,
       mockOAuthTokenService,
       mockAuthCodeService,
       mockScopeValidatorService,
+      { register: sinon.stub() } as any,
+      mockOAuthDeviceService,
     )
     mockRes = {
       json: sinon.stub(),
@@ -754,6 +763,124 @@ describe('OAuthProviderController', () => {
 
       await controller.introspect(req, mockRes, mockNext)
       expect(mockRes.status.calledWith(401)).to.be.true
+    })
+  })
+
+  describe('deviceAuthorization', () => {
+    it('should return 200 with the device payload', async () => {
+      const payload = {
+        device_code: 'dc',
+        user_code: 'ABCD-EFGH',
+        verification_uri: 'http://localhost:3000/oauth/device',
+        verification_uri_complete:
+          'http://localhost:3000/oauth/device?user_code=ABCD-EFGH',
+        expires_in: 600,
+        interval: 5,
+      }
+      mockOAuthDeviceService.createAuthorization.resolves(payload)
+      const req = {
+        body: { client_id: 'pipeshub-agent', scope: 'user:read' },
+        oauthFrontendUrl: 'http://localhost:3000',
+      } as any
+
+      await controller.deviceAuthorization(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(200)).to.be.true
+      expect(mockRes.json.firstCall.args[0]).to.deep.equal(payload)
+      expect(
+        mockOAuthDeviceService.createAuthorization.calledWith(
+          'pipeshub-agent',
+          'user:read',
+          'http://localhost:3000',
+        ),
+      ).to.be.true
+    })
+
+    it('should return 400 when frontendUrl is not configured', async () => {
+      const req = { body: { client_id: 'cid' } } as any
+      await controller.deviceAuthorization(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(400)).to.be.true
+      expect(mockRes.json.firstCall.args[0].error).to.equal('server_error')
+      expect(mockOAuthDeviceService.createAuthorization.called).to.be.false
+    })
+  })
+
+  describe('deviceConsent', () => {
+    it('should reject consent values other than granted or denied', async () => {
+      const req = {
+        body: { user_code: 'ABCD-EFGH', consent: 'maybe' },
+        user: { userId: 'u1', orgId: 'o1' },
+      } as any
+      await controller.deviceConsent(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(400)).to.be.true
+      expect(mockOAuthDeviceService.approve.called).to.be.false
+    })
+
+    it('should approve with the authenticated user identity', async () => {
+      mockOAuthDeviceService.approve.resolves()
+      const req = {
+        body: { user_code: 'ABCD-EFGH', consent: 'granted' },
+        user: { userId: 'u1', orgId: 'o1', email: 'u@e.com' },
+      } as any
+      await controller.deviceConsent(req, mockRes, mockNext)
+      expect(
+        mockOAuthDeviceService.approve.calledWith(
+          'ABCD-EFGH',
+          'u1',
+          'o1',
+          'granted',
+        ),
+      ).to.be.true
+      expect(mockRes.json.firstCall.args[0]).to.deep.equal({
+        ok: true,
+        consent: 'granted',
+      })
+    })
+  })
+
+  describe('deviceVerify', () => {
+    it('should attach the signed-in user onto consent data', async () => {
+      mockOAuthDeviceService.getConsentData.resolves({
+        app: { name: 'CLI', isDynamic: false },
+        scopes: [{ name: 'user:read' }],
+        user: { email: '', name: undefined },
+        redirectUri: '',
+        state: '',
+      })
+      const req = {
+        body: { user_code: 'ABCD-EFGH' },
+        user: { userId: 'u1', orgId: 'o1', email: 'u@e.com', fullName: 'Test' },
+      } as any
+      await controller.deviceVerify(req, mockRes, mockNext)
+      const body = mockRes.json.firstCall.args[0]
+      expect(body.requiresConsent).to.equal(true)
+      expect(body.consentData.user).to.deep.equal({
+        email: 'u@e.com',
+        name: 'Test',
+      })
+    })
+  })
+
+  describe('token - device_code grant', () => {
+    it('should poll the device service', async () => {
+      mockOAuthDeviceService.poll.resolves({
+        access_token: 'at',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        refresh_token: 'rt',
+        scope: 'user:read',
+      })
+      const req = {
+        body: {
+          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+          client_id: 'cid',
+          device_code: 'dc',
+        },
+        headers: {},
+      } as any
+      await controller.token(req, mockRes, mockNext)
+      expect(mockOAuthDeviceService.poll.calledWith('cid', undefined, 'dc')).to
+        .be.true
+      expect(mockRes.json.firstCall.args[0].access_token).to.equal('at')
     })
   })
 })

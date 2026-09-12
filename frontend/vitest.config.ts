@@ -45,6 +45,7 @@ export default defineConfig({
       'app/(main)/workspace/ai-models/__tests__/resolve-model-config-save-error.test.ts',
       'app/(main)/onboarding/utils/__tests__/s3-credentials.test.ts',
       'app/(main)/workspace/connectors/components/__tests__/vector-store-actions.test.tsx',
+      'app/(public)/oauth/device/__tests__/oauth-device-view.test.tsx',
       'lib/store/__tests__/auth-store.test.ts',
     ],
     passWithNoTests: false,

@@ -362,7 +362,11 @@ trap cleanup SIGTERM SIGINT SIGQUIT
 
 log "=== Process Monitor Starting ==="
 start_nodejs
-start_slackbot
+if [ "${PIPESHUB_SKIP_SLACKBOT:-false}" = "true" ]; then
+    log "PIPESHUB_SKIP_SLACKBOT=true — skipping Slack Bot"
+else
+    start_slackbot
+fi
 start_embedding
 start_connector
 start_query

@@ -11,6 +11,7 @@ export enum OAuthGrantType {
   AUTHORIZATION_CODE = 'authorization_code',
   CLIENT_CREDENTIALS = 'client_credentials',
   REFRESH_TOKEN = 'refresh_token',
+  DEVICE_CODE = 'urn:ietf:params:oauth:grant-type:device_code',
 }
 
 export interface IOAuthApp extends Document {
@@ -30,6 +31,8 @@ export interface IOAuthApp extends Document {
   privacyPolicyUrl?: string
   termsOfServiceUrl?: string
   isConfidential: boolean
+  /** RFC 7591 Dynamic Client Registration. Hidden from the developer-apps UI. */
+  isDynamic?: boolean
   accessTokenLifetime: number
   refreshTokenLifetime: number
   isDeleted: boolean
@@ -106,6 +109,7 @@ const OAuthAppSchema = new Schema<IOAuthApp>(
     privacyPolicyUrl: { type: String },
     termsOfServiceUrl: { type: String },
     isConfidential: { type: Boolean, default: true },
+    isDynamic: { type: Boolean, default: false, index: true },
     accessTokenLifetime: { type: Number, default: 3600 },
     refreshTokenLifetime: { type: Number, default: 2592000 },
     isDeleted: { type: Boolean, default: false },

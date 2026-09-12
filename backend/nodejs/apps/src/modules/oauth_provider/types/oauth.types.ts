@@ -60,7 +60,11 @@ export interface AuthorizeRequest {
 
 // Token Request Parameters
 export interface TokenRequest {
-  grant_type: 'authorization_code' | 'client_credentials' | 'refresh_token'
+  grant_type:
+    | 'authorization_code'
+    | 'client_credentials'
+    | 'refresh_token'
+    | 'urn:ietf:params:oauth:grant-type:device_code'
   code?: string
   redirect_uri?: string
   client_id: string
@@ -68,6 +72,7 @@ export interface TokenRequest {
   refresh_token?: string
   scope?: string
   code_verifier?: string
+  device_code?: string
 }
 
 // Revoke Request
@@ -177,6 +182,7 @@ export interface ConsentData {
     logoUrl?: string
     homepageUrl?: string
     privacyPolicyUrl?: string
+    isDynamic?: boolean
   }
   scopes: Array<{
     name: string
@@ -213,6 +219,8 @@ export interface OAuthProtectedResourceMetadata {
   scopes_supported: string[]
   bearer_methods_supported: string[]
   resource_documentation?: string
+  /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
+  pipeshub_device_client_id?: string
 }
 
 // OIDC Discovery Response
@@ -224,6 +232,10 @@ export interface OpenIDConfiguration {
   revocation_endpoint: string
   introspection_endpoint: string
   jwks_uri: string
+  registration_endpoint?: string
+  device_authorization_endpoint?: string
+  /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
+  pipeshub_device_client_id?: string
   scopes_supported: string[]
   response_types_supported: string[]
   grant_types_supported: string[]
