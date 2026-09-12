@@ -1862,9 +1862,11 @@ const fetchConnectorInstanceSummary = async (
   const data = response.data as
     | { connector?: ConnectorInstanceSummary }
     | undefined;
-  if (response.statusCode !== 200 || !data?.connector) {
-    return null;
-  }
+    if (response.statusCode !== 200 || !data?.connector) {
+      throw new InternalServerError(
+          `Failed to fetch connector ${connectorId} state`,
+        );
+      }
   return data.connector;
 };
 

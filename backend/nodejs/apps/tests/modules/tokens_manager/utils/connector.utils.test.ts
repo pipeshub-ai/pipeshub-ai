@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { Response } from 'express'
 import {
   handleBackendError,
   handleConnectorResponse,
@@ -273,10 +274,32 @@ describe('tokens_manager/utils/connector.utils - Local FS desktop presence', () 
   })
 
   describe('respondLocalFsDesktopRefusal', () => {
-    it('writes a 409 whose details.code the frontend can match', () => {
-      const res = { status: sinon.stub().returnsThis(), json: sinon.stub().returnsThis() }
+    type LocalFsRefusalBody = {
+      success: boolean
+      code: string
+      message: string
+      details: { code: string; connectorId: string }
+    }
 
-      respondLocalFsDesktopRefusal(res as any, 'c1')
+    type LocalFsRefusalResponse = {
+      status: sinon.SinonStub<[409], LocalFsRefusalResponse>
+      json: sinon.SinonStub<[LocalFsRefusalBody], LocalFsRefusalResponse>
+    }
+
+    function createLocalFsRefusalRes(): LocalFsRefusalResponse {
+      const res = {
+        status: sinon.stub<[409], LocalFsRefusalResponse>(),
+        json: sinon.stub<[LocalFsRefusalBody], LocalFsRefusalResponse>(),
+      }
+      res.status.returns(res)
+      res.json.returns(res)
+      return res
+    }
+
+    it('writes a 409 whose details.code the frontend can match', () => {
+      const res = createLocalFsRefusalRes()
+
+      respondLocalFsDesktopRefusal(res as unknown as Response, 'c1')
 
       expect(res.status.calledOnceWith(409)).to.be.true
       const body = res.json.firstCall.args[0]
@@ -287,9 +310,9 @@ describe('tokens_manager/utils/connector.utils - Local FS desktop presence', () 
     })
 
     it('uses the unclaimed code and first-enable wording for that reason', () => {
-      const res = { status: sinon.stub().returnsThis(), json: sinon.stub().returnsThis() }
+      const res = createLocalFsRefusalRes()
 
-      respondLocalFsDesktopRefusal(res as any, 'c1', 'unclaimed')
+      respondLocalFsDesktopRefusal(res as unknown as Response, 'c1', 'unclaimed')
 
       expect(res.status.calledOnceWith(409)).to.be.true
       const body = res.json.firstCall.args[0]

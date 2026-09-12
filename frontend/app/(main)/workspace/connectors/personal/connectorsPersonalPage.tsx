@@ -493,6 +493,10 @@ function PersonalConnectorsPageContent() {
         _key: instanceId,
         type: connectorTypeInfo?.type,
       });
+      if (outcome?.kind === 'requires-desktop') {
+        addToast(localFsDesktopToast(outcome));
+        return;
+      }
       if (isLocalFsConnectorType(connectorTypeInfo?.type ?? '')) {
         const fresh = await refreshConnectorRowQuiet(instanceId);
         let config = instanceConfigs[instanceId];
@@ -503,10 +507,6 @@ function PersonalConnectorsPageContent() {
         await ensureLocalWatcherForInstance(fresh, config);
       } else {
         await refreshConnectorRowQuiet(instanceId);
-      }
-      if (outcome?.kind === 'requires-desktop') {
-        addToast(localFsDesktopToast(outcome));
-        return;
       }
       addToast({
         variant: 'success',

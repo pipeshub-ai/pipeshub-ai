@@ -1,8 +1,12 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { Response } from 'express'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import { registerDesktopPresence } from '../../../../src/libs/services/desktop-presence.provider'
+import { AuthenticatedUserRequest } from '../../../../src/libs/middlewares/types'
+import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
+import { CrawlingSchedulerService } from '../../../../src/modules/crawling_manager/services/crawling_service'
 const makePresence = (online: boolean | null, connected: boolean | null = null) => ({
   isLocalFsDesktopOnline: sinon.stub().returns(online),
   isDesktopConnected: sinon.stub().returns(connected),
@@ -1947,26 +1951,86 @@ describe('tokens_manager/controllers/connector.controllers', () => {
 
 })
 
+type StubbedResponse = Response & {
+  status: sinon.SinonStub
+  json: sinon.SinonStub
+  send: sinon.SinonStub
+}
+
+function createToggleRequest(): AuthenticatedUserRequest {
+  return {
+    user: { userId: 'caller-1', orgId: 'org-1', role: 'admin' },
+    params: { connectorId: 'conn-1' },
+    query: {},
+    body: { type: 'sync' },
+    headers: {},
+  } as unknown as AuthenticatedUserRequest
+}
+
+function createToggleResponse(): StubbedResponse {
+  return {
+    status: sinon.stub().returnsThis(),
+    json: sinon.stub().returnsThis(),
+    send: sinon.stub().returnsThis(),
+  } as unknown as StubbedResponse
+}
+
+function createToggleAppConfig(): AppConfig {
+  return {
+    jwtSecret: 'test',
+    scopedJwtSecret: 'test',
+    cookieSecret: 'test',
+    rsAvailable: 'false',
+    communicationBackend: '',
+    frontendUrl: '',
+    iamBackend: '',
+    authBackend: '',
+    cmBackend: '',
+    kbBackend: '',
+    esBackend: '',
+    storageBackend: '',
+    tokenBackend: '',
+    aiBackend: '',
+    connectorBackend: 'http://connector-backend:8088',
+    connectorPublicUrl: '',
+    indexingBackend: '',
+    kafka: { brokers: [] },
+    redis: { host: 'localhost', port: 6379 },
+    mongo: { uri: '', db: '' },
+    qdrant: { port: 0, apiKey: '', host: '', grpcPort: 0 },
+    arango: { url: '', db: '', username: '', password: '' },
+    etcd: { host: '', port: 0, dialTimeout: 0 },
+    smtp: null,
+    storage: { storageType: 'local', endpoint: '' },
+    oauthIssuer: '',
+    oauthBackendUrl: '',
+    mcpScopes: [],
+    samlIssuer: 'pipeshub',
+    skipDomainCheck: true,
+    maxRequestsPerMinute: 100,
+    maxOAuthClientRequestsPerMinute: 50,
+    deployment: {
+      dataStoreType: 'neo4j',
+      messageBrokerType: 'kafka',
+      kvStoreType: 'redis',
+      vectorDbType: 'qdrant',
+    },
+  }
+}
+
 describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
-  let req: any
-  let res: any
+  let req: AuthenticatedUserRequest
+  let res: StubbedResponse
   let next: sinon.SinonStub
-  const mockAppConfig = { connectorBackend: 'http://connector-backend:8088' }
+  let mockAppConfig: AppConfig
+  let mockScheduler: CrawlingSchedulerService
 
   beforeEach(() => {
-    req = {
-      user: { userId: 'caller-1', orgId: 'org-1', role: 'admin' },
-      params: { connectorId: 'conn-1' },
-      query: {},
-      body: { type: 'sync' },
-      headers: {},
-    }
-    res = {
-      status: sinon.stub().returnsThis(),
-      json: sinon.stub().returnsThis(),
-      send: sinon.stub().returnsThis(),
-    }
+    req = createToggleRequest()
+    res = createToggleResponse()
     next = sinon.stub()
+    mockAppConfig = createToggleAppConfig()
+    mockScheduler = sinon.createStubInstance(CrawlingSchedulerService)
   })
 
   afterEach(() => {
@@ -1989,7 +2053,7 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
     registerDesktopPresence(presence)
     const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
 
-    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
 
     expect(next.called).to.be.false
     expect(res.status.calledWith(409)).to.be.true
@@ -2003,7 +2067,7 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
     registerDesktopPresence(presence)
     const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
 
-    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
 
     expect(res.status.calledWith(409)).to.be.true
     expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_UNCLAIMED')
@@ -2015,7 +2079,7 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
     registerDesktopPresence(makePresence(false, false))
     stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
 
-    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
 
     expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_OFFLINE')
   })
@@ -2024,7 +2088,7 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
     registerDesktopPresence(makePresence(false))
     const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: true })
 
-    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
 
     expect(execStub.calledTwice).to.be.true
     expect(execStub.secondCall.args[1]).to.equal('POST')
@@ -2039,7 +2103,7 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
       data: { active: true },
     })
 
-    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
 
     expect(execStub.calledOnce).to.be.true
     expect(execStub.firstCall.args[1]).to.equal('POST')
@@ -2049,7 +2113,7 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
     registerDesktopPresence(makePresence(null))
     const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
 
-    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
 
     expect(execStub.calledTwice).to.be.true
     expect(res.status.calledWith(200)).to.be.true
@@ -2060,7 +2124,7 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
     registerDesktopPresence(presence)
     const execStub = stubInstanceThenToggle({ type: 'Slack', createdBy: 'owner-1', isActive: false })
 
-    await toggleConnectorInstance(mockAppConfig as any, {} as any)(req, res, next)
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
 
     expect(execStub.calledTwice).to.be.true
     expect(presence.isLocalFsDesktopOnline.called).to.be.false
