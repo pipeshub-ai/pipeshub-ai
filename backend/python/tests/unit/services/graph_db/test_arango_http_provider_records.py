@@ -2809,7 +2809,9 @@ class TestCollectConnectorEntities:
             ["role1"],
             ["grp1"],
         ]
-        result = await connected_provider._collect_connector_entities("c1")
+        result = await connected_provider._collect_connector_entities(
+            "c1", include_virtual_record_ids=True
+        )
         assert result["record_keys"] == ["r1", "r2"]
         assert result["record_ids"] == ["records/r1", "records/r2"]
         assert result["virtual_record_ids"] == ["vr1"]
@@ -2822,6 +2824,43 @@ class TestCollectConnectorEntities:
         assert "recordGroups/rg2" in result["all_node_ids"]
         assert "roles/role1" in result["all_node_ids"]
         assert "groups/grp1" in result["all_node_ids"]
+
+    async def test_virtual_record_ids_are_not_collected_by_default(
+        self, connected_provider
+    ):
+        """Only the legacy id-shipping cleanup reads that list. Collecting it
+        for a membership-based purge is one entry per distinct VRID of pure
+        cost on a connector with millions of records."""
+        connected_provider.http_client.execute_aql.side_effect = [
+            [{"_key": "r1", "virtualRecordId": "vr1"}],
+            [],
+            [],
+            [],
+        ]
+        result = await connected_provider._collect_connector_entities("c1")
+        assert result["virtual_record_ids"] == []
+        assert result["record_keys"] == ["r1"]
+
+    async def test_collected_virtual_record_ids_are_deduplicated(
+        self, connected_provider
+    ):
+        """Records sharing content share a VRID; the consumer needs the set."""
+        connected_provider.http_client.execute_aql.side_effect = [
+            [
+                {"_key": "r1", "virtualRecordId": "vr-shared"},
+                {"_key": "r2", "virtualRecordId": "vr-shared"},
+                {"_key": "r3", "virtualRecordId": "vr-other"},
+                {"_key": "r4"},
+            ],
+            [],
+            [],
+            [],
+        ]
+        result = await connected_provider._collect_connector_entities(
+            "c1", include_virtual_record_ids=True
+        )
+        assert result["virtual_record_ids"] == ["vr-shared", "vr-other"]
+        assert len(result["record_keys"]) == 4
         assert "apps/c1" in result["all_node_ids"]
 
     async def test_empty_results(self, connected_provider):

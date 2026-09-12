@@ -157,7 +157,7 @@ class CollectionRegistry:
     # ------------------------------------------------------------------
 
     async def list_managed_collections(
-        self, *, fresh: bool = False
+        self, *, fresh: bool = False, strict: bool = False
     ) -> list[ManagedCollection]:
         """Every collection this registry manages.
 
@@ -168,6 +168,11 @@ class CollectionRegistry:
 
         Pass ``fresh=True`` from anything that drops or recreates collections:
         acting on a stale view there destroys data.
+
+        Pass ``strict=True`` from a delete path. Adoption failing and the
+        deployment genuinely having no collections both end in an empty list,
+        and a delete has to tell them apart: one is a no-op to be acked, the
+        other must be retried. ``strict`` re-raises instead of degrading.
         """
         managed = await self._manifest_store.list(fresh=fresh)
         if managed:
@@ -175,6 +180,8 @@ class CollectionRegistry:
         try:
             await self._adopt_untracked_collections()
         except Exception as e:
+            if strict:
+                raise
             # Enumeration must not become a hard dependency on vector DB
             # reachability; callers degrade to "nothing managed".
             self._logger.warning("Could not probe for untracked collections: %s", e)

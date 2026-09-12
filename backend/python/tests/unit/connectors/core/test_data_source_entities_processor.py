@@ -5143,6 +5143,70 @@ class TestOnRecordsMovedKbUpload:
         await proc.on_records_moved([("old-ext", new_record, [])])
         proc.messaging_producer.send_messages.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_auto_index_off_move_with_changed_content_still_refreshes(self):
+        """A record can change content *and* move at once.
+
+        Changed content routes it to the reindex batch, but AUTO_INDEX_OFF is
+        filtered out of the publish — so without this nothing emits
+        ``updateRecord`` and nothing emits ``syncVectorMembership`` either, and
+        the chunks keep pointing at the group the record just left.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        old = MagicMock(
+            id="r1",
+            external_revision_id="old-rev",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            virtual_record_id="vr-1",
+        )
+        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        new_record = _make_kb_upload_record()
+        new_record.external_revision_id = "new-rev"
+        new_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        events = _membership_events(proc)
+        assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
+        assert events[0]["payload"]["connectorId"] == new_record.connector_id
+        # The reindex publish really is suppressed — otherwise the refresh
+        # above would be redundant rather than the only thing that runs.
+        published = [
+            message["eventType"]
+            for call in proc.messaging_producer.send_messages.await_args_list
+            for _key, message in (call.args[1] or [])
+        ]
+        assert "updateRecord" not in published
+
+    @pytest.mark.asyncio
+    async def test_a_reindexed_move_does_not_also_refresh_membership(self):
+        """Reindexing recomputes membership on its own; a second event would
+        be pure duplication on the common path."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        old = MagicMock(
+            id="r1",
+            external_revision_id="old-rev",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            virtual_record_id="vr-1",
+        )
+        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        new_record = _make_kb_upload_record()
+        new_record.external_revision_id = "new-rev"
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        assert _membership_events(proc) == []
+        published = [
+            message["eventType"]
+            for call in proc.messaging_producer.send_messages.await_args_list
+            for _key, message in (call.args[1] or [])
+        ]
+        assert "updateRecord" in published
+
 
 class TestPublishDeleteEvents:
     @pytest.mark.asyncio
@@ -5382,3 +5446,202 @@ class TestPlaceholderFlag:
         assert kwargs["record_group_id"] == "rg-1"
         assert kwargs["is_placeholder"] is True
         assert kwargs["status_filters"] is None
+
+
+# ===========================================================================
+# Record-group moves must reach the vector chunks
+# ===========================================================================
+
+
+def _membership_events(proc):
+    """Every syncVectorMembership message the processor published."""
+    from app.config.constants.arangodb import EventTypes
+
+    events = []
+    for call in proc.messaging_producer.send_messages.await_args_list:
+        topic = call.args[0] if call.args else call.kwargs.get("topic")
+        messages = call.args[1] if len(call.args) > 1 else call.kwargs.get("messages")
+        if topic != "record-events":
+            continue
+        for _key, message in messages or []:
+            if message.get("eventType") == EventTypes.SYNC_VECTOR_MEMBERSHIP.value:
+                events.append(message)
+    return events
+
+
+def _stored(record_group_id, virtual_record_id="vr-1", revision="rev-1"):
+    """A record already in the graph, sitting in ``record_group_id``."""
+    stored = _make_record(record_group_id=record_group_id)
+    stored.id = "rec-1"
+    stored.virtual_record_id = virtual_record_id
+    stored.external_revision_id = revision
+    stored.indexing_status = ProgressStatus.COMPLETED.value
+    return stored
+
+
+class TestRecordGroupMoveRefreshesVectorMembership:
+    """A record that changes record group must have its chunks re-stamped.
+
+    The chunks carry ``recordGroupIds``, and until this hook existed the
+    ordinary re-sync path re-pointed the graph's belongsTo edge and published
+    nothing, so the arrays stayed pointing at the old group indefinitely.
+    """
+
+    def _proc_for_move(self, stored, new_group_id="rg-new"):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
+        group = MagicMock()
+        group.id = new_group_id
+        tx_store.get_record_group_by_external_id = AsyncMock(return_value=group)
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_completed_unchanged_record_that_moved_still_refreshes(self):
+        """The headline case. on_new_records skips the *indexing* publish for a
+        COMPLETED, unchanged record — which is exactly a move with no content
+        change, so the membership refresh must not sit behind that filter."""
+        stored = _stored("rg-old")
+        proc, _ = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-1"
+        incoming.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.on_new_records([(incoming, [])])
+
+        events = _membership_events(proc)
+        assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_the_event_carries_the_connector_id(self):
+        """Fair scheduling lanes on connectorId.
+
+        Without it the producer drops every membership refresh into the shared
+        default lane, so one connector re-syncing a large corpus queues ahead of
+        and behind every other connector's records -- the exact contention the
+        lane split exists to prevent.
+        """
+        stored = _stored("rg-old")
+        proc, _ = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-1"
+        incoming.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.on_new_records([(incoming, [])])
+
+        events = _membership_events(proc)
+        assert len(events) == 1
+        assert events[0]["payload"]["connectorId"] == incoming.connector_id
+        assert events[0]["payload"]["orgId"] == proc.org_id
+
+    @pytest.mark.asyncio
+    async def test_a_resync_that_moved_nothing_publishes_nothing(self):
+        """Storm guard: the publish is driven by the same predicate as the edge
+        rewrite, so a re-sync where the group is unchanged is silent."""
+        stored = _stored("rg-same")
+        proc, _ = self._proc_for_move(stored, new_group_id="rg-same")
+
+        incoming = _make_record(external_record_group_id="ext-rg-same")
+        incoming.external_revision_id = "rev-1"
+        incoming.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.on_new_records([(incoming, [])])
+
+        assert _membership_events(proc) == []
+
+    @pytest.mark.asyncio
+    async def test_a_move_refreshes_even_when_the_content_also_changed(self):
+        """Gating this on "revision unchanged" looked like a way to skip work a
+        reindex would redo, but the paths that drop the indexing publish
+        (AUTO_INDEX_OFF, metadata-only) also change the revision — so the guard
+        removed the refresh exactly where nothing else recomputes membership.
+        A duplicate refresh is idempotent; a missing one is silent."""
+        stored = _stored("rg-old", revision="rev-1")
+        proc, _ = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-2"
+
+        await proc.on_new_records([(incoming, [])])
+
+        assert [e["payload"]["virtualRecordId"] for e in _membership_events(proc)] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_auto_index_off_content_update_still_refreshes_after_commit(self):
+        """This branch returns without publishing updateRecord, so it is the
+        one path where a missed membership refresh is never repaired. The
+        publish must also land *outside* the transaction."""
+        stored = _stored("rg-old", revision="rev-1")
+        stored.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        proc, tx_store = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-2"
+        incoming.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+        await proc.on_record_content_update(incoming)
+
+        events = _membership_events(proc)
+        assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
+        # No updateRecord: the AUTO_INDEX_OFF branch still returns early.
+        sent = [c.args[1] for c in proc.messaging_producer.send_message.await_args_list]
+        assert not any(m.get("eventType") == "updateRecord" for m in sent)
+
+    @pytest.mark.asyncio
+    async def test_a_brand_new_record_publishes_nothing(self):
+        """No existing record means no points to refresh."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        group = MagicMock()
+        group.id = "rg-new"
+        tx_store.get_record_group_by_external_id = AsyncMock(return_value=group)
+
+        await proc.on_new_records([(_make_record(external_record_group_id="ext-rg"), [])])
+
+        assert _membership_events(proc) == []
+
+    @pytest.mark.asyncio
+    async def test_a_moved_record_with_no_vrid_publishes_nothing(self):
+        """Membership is written per VRID; without one there is nothing to key."""
+        stored = _stored("rg-old", virtual_record_id=None)
+        proc, _ = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-1"
+        incoming.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.on_new_records([(incoming, [])])
+
+        assert _membership_events(proc) == []
+
+    @pytest.mark.asyncio
+    async def test_metadata_update_that_moved_the_group_refreshes(self):
+        """This path preserves the indexing lifecycle and publishes no indexing
+        event, so nothing downstream would ever recompute membership for it."""
+        stored = _stored("rg-old")
+        proc, _ = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-1"
+
+        await proc.on_record_metadata_update(incoming)
+
+        events = _membership_events(proc)
+        assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_published_when_the_transaction_fails(self):
+        """An event published for a rolled-back move would recompute the *old*
+        membership and write it back, which looks like a successful refresh."""
+        stored = _stored("rg-old")
+        proc, tx_store = self._proc_for_move(stored)
+        tx_store.batch_upsert_records = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with pytest.raises(RuntimeError):
+            await proc.on_new_records([(_make_record(external_record_group_id="ext-rg-new"), [])])
+
+        assert _membership_events(proc) == []

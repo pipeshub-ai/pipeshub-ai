@@ -268,7 +268,7 @@ class TestDeleteIsOrgScoped:
         graph = _graph({"vr-a": [_record("rec-a", ORG_A)]})
         pipeline = _pipeline(vdb, registry, graph)
 
-        result = await pipeline.purge_connector(
+        result = await pipeline.purge_connector_by_virtual_record_ids(
             DeleteContext(org_id=ORG_A, connector_id="conn-1"), ["vr-a"]
         )
 

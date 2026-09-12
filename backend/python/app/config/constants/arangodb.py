@@ -647,6 +647,7 @@ class EventTypes(Enum):
     REINDEX_RECORD = "reindexRecord"
     REINDEX_FAILED = "reindexFailed"
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
+    DELETE_CONNECTOR_EMBEDDINGS = "deleteConnectorEmbeddings"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
 

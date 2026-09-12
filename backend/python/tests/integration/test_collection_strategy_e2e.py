@@ -326,7 +326,7 @@ class TestConnectorDeletionPreservesOtherConnectors:
         original_delay = run_mod.EMPTY_CONFIRM_DELAY_SECONDS
         run_mod.EMPTY_CONFIRM_DELAY_SECONDS = 0
         try:
-            result = await pipeline.purge_connector(ctx, ["vr-drive-1"])
+            result = await pipeline.purge_connector_by_virtual_record_ids(ctx, ["vr-drive-1"])
         finally:
             run_mod.EMPTY_CONFIRM_DELAY_SECONDS = original_delay
 
@@ -374,7 +374,7 @@ class TestConnectorDeletionPreservesOtherConnectors:
         )
 
         ctx = DeleteContext(org_id="org-1", connector_id="conn-drive")
-        result = await pipeline.purge_connector(ctx, ["vr-shared"])
+        result = await pipeline.purge_connector_by_virtual_record_ids(ctx, ["vr-shared"])
 
         assert result["action"] == "filtered_delete"
         assert result["virtual_record_ids_deleted"] == 0

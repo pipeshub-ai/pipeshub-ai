@@ -629,6 +629,7 @@ class QdrantService(IVectorDBService):
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
+        max_values: Optional[Dict[str, int]] = None,
         **kwargs: FilterValue,
     ) -> FilterExpression:
         from app.services.vector_db.filters import build_filter_expression
@@ -639,6 +640,7 @@ class QdrantService(IVectorDBService):
             should=should,
             must_not=must_not,
             min_should_match=min_should_match,
+            max_values=max_values,
             extra_kwargs=kwargs or None,
             build_conditions=QdrantUtils.build_conditions_generic,
         )
@@ -653,6 +655,7 @@ class QdrantService(IVectorDBService):
         scroll_filter: FilterExpression,
         limit: int,
         offset: Optional[str] = None,
+        with_payload: Optional[List[str]] = None,
     ) -> ScrollResult:
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(scroll_filter)
@@ -660,7 +663,7 @@ class QdrantService(IVectorDBService):
             collection_name=collection_name,
             scroll_filter=qdrant_filter,
             limit=limit,
-            with_payload=True,
+            with_payload=list(with_payload) if with_payload else True,
             offset=offset,
         )
         points = [
@@ -732,17 +735,29 @@ class QdrantService(IVectorDBService):
         self,
         collection_name: str,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
                 "delete_points called with an empty filter — this would wipe the entire "
                 "collection. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        if not filter.has_positive_match():
+            raise ValueError(
+                "delete_points called with only array-length conditions — a point "
+                "whose field is absent satisfies those too, so this would delete "
+                "most of the collection. Pair it with a value match "
+                "(e.g. connectorIds)."
+            )
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
+        # wait=True: callers sequence work after a delete (the connector cleanup
+        # re-reads what survived, and mapping rows are dropped next), so an
+        # unacknowledged delete would let them act on points still present.
         await self.client.delete(  # type: ignore
             collection_name=collection_name,
             points_selector=FilterSelector(filter=qdrant_filter),
+            wait=True,
         )
         logger.debug(f"Deleted points from Qdrant collection '{collection_name}'")
 
@@ -751,6 +766,7 @@ class QdrantService(IVectorDBService):
         collection_name: str,
         payload: dict,
         points: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if points.is_empty():
             raise ValueError(
@@ -772,6 +788,7 @@ class QdrantService(IVectorDBService):
         collection_name: str,
         payload: dict,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
@@ -780,10 +797,13 @@ class QdrantService(IVectorDBService):
             )
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
+        # wait=True for the same reason as delete_points: the connector cleanup
+        # re-reads the matched set after each write to decide when it is done.
         await self.client.set_payload(  # type: ignore
             collection_name=collection_name,
             payload=payload,
             points=FilterSelector(filter=qdrant_filter),
+            wait=True,
         )
 
     # ------------------------------------------------------------------

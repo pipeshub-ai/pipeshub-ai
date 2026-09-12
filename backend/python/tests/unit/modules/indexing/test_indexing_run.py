@@ -285,8 +285,376 @@ class TestBulkDeleteConfirmation:
         vdb.delete_points.assert_not_awaited()
 
 
+def _point(virtual_record_id, connector_ids, record_group_ids=()):
+    """A scrolled point carrying only the projected membership fields."""
+    from app.services.vector_db.models import VectorPoint
+
+    return VectorPoint(
+        id=f"p-{virtual_record_id}",
+        payload={
+            "metadata": {"virtualRecordId": virtual_record_id},
+            "connectorIds": list(connector_ids),
+            "recordGroupIds": list(record_group_ids),
+        },
+    )
+
+
+def _scroll_pages(pipeline, pages, scan_points=None):
+    """Feed pages to the two scan phases, then empty ones forever.
+
+    The purge scrolls twice for different reasons — once to learn which VRIDs
+    this connector solely owns (before they are deleted), once to rewrite what
+    survives — so a single shared queue would let the first phase eat the
+    second's page. They are told apart by the projection: only the rewrite
+    needs recordGroupIds.
+    """
+    from app.services.vector_db.const.const import RECORD_GROUP_IDS_FIELD
+    from app.services.vector_db.models import ScrollResult
+
+    strip_queue = list(pages)
+    scan_queue = [list(scan_points)] if scan_points else []
+
+    async def _scroll(**kwargs):
+        with_payload = kwargs.get("with_payload") or []
+        queue = strip_queue if RECORD_GROUP_IDS_FIELD in with_payload else scan_queue
+        if queue:
+            return ScrollResult(points=queue.pop(0), next_offset=None)
+        return ScrollResult(points=[], next_offset=None)
+
+    pipeline.vector_db_service.scroll = AsyncMock(side_effect=_scroll)
+
+
+class TestPurgeConnectorByMembership:
+    """The membership-based purge: no graph reads, ids never shipped.
+
+    Pass 1 deletes points whose ``connectorIds`` holds nothing but this
+    connector — "contains me and has at most one value" means that value IS me.
+    Pass 2 strips the connector (and its now-deleted record groups) from what
+    survives, which is shared with a live connector by construction.
+    """
+
+    def _ctx(self):
+        from app.services.vector_db.strategy import DeleteContext
+
+        return DeleteContext(org_id="org-1", connector_id="conn-1")
+
+    def _filtered_scope(self):
+        from app.services.vector_db.strategy import DeleteAction, DeleteScope
+
+        return DeleteScope(
+            action=DeleteAction.FILTERED_DELETE,
+            collection_names=["records"],
+            filter_field="connectorIds",
+            filter_values=["conn-1"],
+        )
+
+    def _pipeline(self, collections=("records",)):
+        pipeline = _make_indexing_pipeline()
+        pipeline.collection_registry.resolve_delete_scope = AsyncMock(
+            return_value=self._filtered_scope()
+        )
+        pipeline.collection_locator.all_collections = AsyncMock(
+            return_value=list(collections)
+        )
+        pipeline.vector_db_service.delete_points = AsyncMock()
+        pipeline.vector_db_service.set_payload = AsyncMock()
+        pipeline.vector_db_service.filter_collection = AsyncMock(
+            side_effect=lambda **kw: kw
+        )
+        pipeline._forget_virtual_record_mappings = AsyncMock()
+        return pipeline
+
+    @pytest.mark.asyncio
+    async def test_exclusive_delete_uses_an_array_length_bound(self):
+        """The predicate that makes this safe at all: without the length bound
+        a connectorIds filter-delete would take a live connector's shared
+        points with it."""
+        pipeline = self._pipeline()
+        _scroll_pages(pipeline, [[]])
+
+        await pipeline.purge_connector(self._ctx())
+
+        delete_filters = [
+            c.kwargs["filter"] for c in pipeline.vector_db_service.delete_points.await_args_list
+        ]
+        assert any(
+            f.get("must") == {"connectorIds": "conn-1"}
+            and f.get("max_values") == {"connectorIds": 1}
+            for f in delete_filters
+        ), delete_filters
+
+    @pytest.mark.asyncio
+    async def test_makes_no_graph_calls(self):
+        """The whole reason the event no longer ships ids."""
+        pipeline = self._pipeline()
+        _scroll_pages(pipeline, [[]])
+
+        await pipeline.purge_connector(self._ctx())
+
+        assert pipeline.graph_provider.get_records_by_virtual_record_id.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_shared_point_keeps_the_other_connector(self):
+        pipeline = self._pipeline()
+        _scroll_pages(pipeline, [[_point("vr-shared", ["conn-1", "conn-2"])]])
+
+        with patch(
+            "app.modules.indexing.run.write_membership_batch", new=AsyncMock()
+        ) as write:
+            result = await pipeline.purge_connector(self._ctx())
+
+        write.assert_awaited_once()
+        assert write.await_args.args[2] == ["vr-shared"]
+        assert write.await_args.args[3] == ["conn-2"]
+        assert result["virtual_record_ids_rewritten"] == 1
+
+    @pytest.mark.asyncio
+    async def test_dead_record_groups_are_stripped_in_the_same_write(self):
+        """The connector's groups went with it, so a surviving shared point
+        would otherwise keep pointing at groups that no longer exist."""
+        pipeline = self._pipeline()
+        _scroll_pages(
+            pipeline,
+            [[_point("vr-shared", ["conn-1", "conn-2"], ["rg-dead", "rg-live"])]],
+        )
+
+        with patch(
+            "app.modules.indexing.run.write_membership_batch", new=AsyncMock()
+        ) as write:
+            await pipeline.purge_connector(self._ctx(), ["rg-dead"])
+
+        assert write.await_args.args[3] == ["conn-2"]
+        assert write.await_args.args[4] == ["rg-live"]
+
+    @pytest.mark.asyncio
+    async def test_groups_untouched_when_the_producer_sent_none(self):
+        """Blanking the array would be worse than leaving it stale."""
+        pipeline = self._pipeline()
+        _scroll_pages(pipeline, [[_point("vr-shared", ["conn-1", "conn-2"], ["rg-1"])]])
+
+        with patch(
+            "app.modules.indexing.run.write_membership_batch", new=AsyncMock()
+        ) as write:
+            await pipeline.purge_connector(self._ctx())
+
+        assert write.await_args.args[4] is None
+
+    @pytest.mark.asyncio
+    async def test_vrids_reducing_to_the_same_arrays_share_one_write(self):
+        pipeline = self._pipeline()
+        _scroll_pages(
+            pipeline,
+            [[
+                _point("vr-a", ["conn-1", "conn-2"]),
+                _point("vr-b", ["conn-1", "conn-2"]),
+                _point("vr-c", ["conn-1", "conn-3"]),
+            ]],
+        )
+
+        with patch(
+            "app.modules.indexing.run.write_membership_batch", new=AsyncMock()
+        ) as write:
+            await pipeline.purge_connector(self._ctx())
+
+        assert write.await_count == 2
+        grouped = {
+            tuple(c.args[3]): sorted(c.args[2]) for c in write.await_args_list
+        }
+        assert grouped == {("conn-2",): ["vr-a", "vr-b"], ("conn-3",): ["vr-c"]}
+
+    @pytest.mark.asyncio
+    async def test_both_passes_span_every_managed_collection(self):
+        """Not just the scope's. A point can sit in a collection the strategy
+        would not name today — membership only ever writes to the collections a
+        VRID's records resolve to, and the stale-point drop fails closed."""
+        pipeline = self._pipeline(collections=["records", "slack_records"])
+        _scroll_pages(pipeline, [[]])
+
+        await pipeline.purge_connector(self._ctx())
+
+        targeted = {
+            c.kwargs["collection_name"]
+            for c in pipeline.vector_db_service.delete_points.await_args_list
+        }
+        assert targeted == {"records", "slack_records"}
+
+    @pytest.mark.asyncio
+    async def test_mapping_rows_are_forgotten_only_after_the_delete(self):
+        """They are the only handle the orphan sweeper has on a point set, so
+        they must outlive the points they describe."""
+        pipeline = self._pipeline()
+        order = []
+        pipeline.vector_db_service.delete_points = AsyncMock(
+            side_effect=lambda **kw: order.append("delete")
+        )
+        pipeline._forget_virtual_record_mappings = AsyncMock(
+            side_effect=lambda ids: order.append("forget")
+        )
+        _scroll_pages(pipeline, [[]], scan_points=[_point("vr-only", ["conn-1"])])
+
+        await pipeline.purge_connector(self._ctx())
+
+        assert order.index("delete") < order.index("forget")
+        assert pipeline._forget_virtual_record_mappings.await_args.args[0] == ["vr-only"]
+
+    @pytest.mark.asyncio
+    async def test_survivors_beyond_the_first_confirm_page_keep_their_rows(self):
+        """The confirming re-read has to walk every page of the matched set.
+
+        It filters on virtualRecordId, and the filter matches *points* — a
+        record holds many chunks, so one page can be filled by a single VRID
+        while another's points sit on the next. Treating one page as the whole
+        answer reads those as "no points left" and forgets the mapping row of a
+        record that is still searchable, which is the one mistake here that
+        cannot be undone.
+        """
+        from app.services.vector_db.const.const import (
+            CONNECTOR_IDS_FIELD,
+            RECORD_GROUP_IDS_FIELD,
+        )
+        from app.services.vector_db.models import ScrollResult
+
+        pipeline = self._pipeline()
+
+        scan_queue = [[_point("vr-a", ["conn-1"]), _point("vr-b", ["conn-1"])]]
+        # vr-a fills the first page; vr-b only shows up on the second.
+        confirm_queue = [[_point("vr-a", ["conn-1"])], [_point("vr-b", ["conn-1"])]]
+        strip_queue = [[]]
+
+        async def _scroll(**kwargs):
+            with_payload = kwargs.get("with_payload") or []
+            if RECORD_GROUP_IDS_FIELD in with_payload:
+                queue = strip_queue
+            elif CONNECTOR_IDS_FIELD in with_payload:
+                queue = scan_queue
+            else:
+                queue = confirm_queue
+            if not queue:
+                return ScrollResult(points=[], next_offset=None)
+            page = queue.pop(0)
+            return ScrollResult(
+                points=page, next_offset=f"off-{len(queue)}" if queue else None
+            )
+
+        pipeline.vector_db_service.scroll = AsyncMock(side_effect=_scroll)
+
+        await pipeline.purge_connector(self._ctx())
+
+        forgotten = pipeline._forget_virtual_record_mappings.await_args.args[0]
+        assert "vr-b" not in forgotten, (
+            f"vr-b still has a point on the second page; forgetting its mapping "
+            f"row strands it. forgot={forgotten}"
+        )
+        assert forgotten == []
+
+    @pytest.mark.asyncio
+    async def test_an_unconfirmable_batch_keeps_every_row(self):
+        """A walk that never reaches the end proves nothing, so nothing is
+        reclaimed. Here the cursor stops advancing, which is the shape a
+        provider bug takes: it looks exactly like more pages forever."""
+        from app.services.vector_db.const.const import (
+            CONNECTOR_IDS_FIELD,
+            RECORD_GROUP_IDS_FIELD,
+        )
+        from app.services.vector_db.models import ScrollResult
+        from app.modules.indexing import run as run_mod
+
+        pipeline = self._pipeline()
+        scan_queue = [[_point("vr-a", ["conn-1"])]]
+
+        async def _scroll(**kwargs):
+            with_payload = kwargs.get("with_payload") or []
+            if RECORD_GROUP_IDS_FIELD in with_payload:
+                return ScrollResult(points=[], next_offset=None)
+            if CONNECTOR_IDS_FIELD in with_payload:
+                if scan_queue:
+                    return ScrollResult(points=scan_queue.pop(0), next_offset=None)
+                return ScrollResult(points=[], next_offset=None)
+            # Confirm phase: endless pages that never mention vr-a.
+            return ScrollResult(points=[_point("vr-other", ["conn-9"])], next_offset="n")
+
+        pipeline.vector_db_service.scroll = AsyncMock(side_effect=_scroll)
+
+        original = run_mod.PURGE_SCAN_MAX_POINTS
+        run_mod.PURGE_SCAN_MAX_POINTS = 3
+        try:
+            await pipeline.purge_connector(self._ctx())
+        finally:
+            run_mod.PURGE_SCAN_MAX_POINTS = original
+
+        assert pipeline._forget_virtual_record_mappings.await_args.args[0] == []
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_rewrite_raises_instead_of_reporting_success(self):
+        """Acking would retire the only event that can finish the job."""
+        from app.exceptions.indexing_exceptions import EmbeddingDeletionError
+        from app.services.vector_db.models import ScrollResult
+
+        pipeline = self._pipeline()
+        stuck = [_point("vr-shared", ["conn-1", "conn-2"])]
+        pipeline.vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=stuck, next_offset=None)
+        )
+        with patch("app.modules.indexing.run.write_membership_batch", new=AsyncMock()):
+            with pytest.raises(EmbeddingDeletionError):
+                await pipeline.purge_connector(self._ctx())
+
+    @pytest.mark.asyncio
+    async def test_untagged_points_do_not_retry_forever(self):
+        """No retry can give a point a virtualRecordId, so failing the event
+        for ever is worse than surfacing it and finishing."""
+        from app.services.vector_db.models import ScrollResult, VectorPoint
+
+        pipeline = self._pipeline()
+        pipeline.vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(
+                points=[VectorPoint(id="p1", payload={"connectorIds": ["conn-1"]})],
+                next_offset=None,
+            )
+        )
+
+        result = await pipeline.purge_connector(self._ctx())
+
+        assert result["success"] is True
+        pipeline.logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_no_managed_collections_is_a_noop_ack(self):
+        """A connector created and deleted without ever indexing. strict=True
+        means the empty list is a real answer, not a failed read."""
+        pipeline = self._pipeline(collections=[])
+
+        result = await pipeline.purge_connector(self._ctx())
+
+        assert result == {"action": "noop", "collections": [], "success": True}
+        pipeline.vector_db_service.delete_points.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_enumeration_propagates(self):
+        """strict=True turns a failed read into a raise, so the message is
+        redelivered rather than acked as a completed purge."""
+        pipeline = self._pipeline()
+        pipeline.collection_locator.all_collections = AsyncMock(
+            side_effect=RuntimeError("vector db unreachable")
+        )
+
+        with pytest.raises(RuntimeError, match="unreachable"):
+            await pipeline.purge_connector(self._ctx())
+
+    @pytest.mark.asyncio
+    async def test_rerunning_after_completion_is_harmless(self):
+        pipeline = self._pipeline()
+        _scroll_pages(pipeline, [[]])
+
+        first = await pipeline.purge_connector(self._ctx())
+        second = await pipeline.purge_connector(self._ctx())
+
+        assert first["success"] is True
+        assert second["success"] is True
+
+
 class TestPurgeConnector:
-    """Tests for IndexingPipeline.purge_connector."""
+    """Tests for IndexingPipeline.purge_connector_by_virtual_record_ids."""
 
     @pytest.mark.asyncio
     async def test_drop_collection_action_drops_and_skips_bulk_delete(self):
@@ -307,7 +675,7 @@ class TestPurgeConnector:
         pipeline.bulk_delete_embeddings = AsyncMock()
 
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
-        result = await pipeline.purge_connector(ctx, ["vr-1", "vr-2"])
+        result = await pipeline.purge_connector_by_virtual_record_ids(ctx, ["vr-1", "vr-2"])
 
         pipeline.collection_registry.delete_collection.assert_awaited_once_with(
             "google_drive_records"
@@ -348,7 +716,7 @@ class TestPurgeConnector:
         )
 
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
-        await pipeline.purge_connector(ctx, [])
+        await pipeline.purge_connector_by_virtual_record_ids(ctx, [])
 
         assert order == ["scan", "drop:google_drive_records", "forget"]
         assert pipeline.graph_provider.delete_nodes.await_args.kwargs["keys"] == [
@@ -379,7 +747,7 @@ class TestPurgeConnector:
         pipeline._scan_virtual_record_ids = AsyncMock(return_value=ScanResult([], True))
 
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
-        await pipeline.purge_connector(ctx, None)
+        await pipeline.purge_connector_by_virtual_record_ids(ctx, None)
 
         scanned = pipeline._scan_virtual_record_ids.await_args.args[0]
         assert scanned.filter_field == CONNECTOR_IDS_FIELD
@@ -410,7 +778,7 @@ class TestPurgeConnector:
         pipeline.graph_provider.delete_nodes = AsyncMock()
 
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
-        await pipeline.purge_connector(ctx, ["vr-1"])
+        await pipeline.purge_connector_by_virtual_record_ids(ctx, ["vr-1"])
 
         pipeline._scan_virtual_record_ids.assert_not_awaited()
         assert pipeline.graph_provider.delete_nodes.await_args.kwargs["keys"] == ["vr-1"]
@@ -440,7 +808,7 @@ class TestPurgeConnector:
         )
 
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1")
-        result = await pipeline.purge_connector(ctx, ["vr-1", "vr-2"])
+        result = await pipeline.purge_connector_by_virtual_record_ids(ctx, ["vr-1", "vr-2"])
 
         pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1", "vr-2"])
         pipeline.vector_db_service.delete_points.assert_not_awaited()
@@ -468,7 +836,7 @@ class TestPurgeConnector:
         )
         pipeline.vector_db_service.delete_points = AsyncMock()
 
-        result = await pipeline.purge_connector(
+        result = await pipeline.purge_connector_by_virtual_record_ids(
             DeleteContext(org_id="org-1", connector_id="conn-1"), []
         )
 
@@ -517,7 +885,7 @@ class TestPurgeConnector:
         )
 
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1")
-        result = await pipeline.purge_connector(ctx, [])
+        result = await pipeline.purge_connector_by_virtual_record_ids(ctx, [])
 
         pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1"])
         pipeline.vector_db_service.delete_points.assert_not_awaited()
@@ -631,7 +999,7 @@ class TestPurgeConnector:
         pipeline.graph_provider.delete_nodes = AsyncMock()
 
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1", connector_name="GOOGLE_DRIVE")
-        await pipeline.purge_connector(ctx, [])
+        await pipeline.purge_connector_by_virtual_record_ids(ctx, [])
 
         pipeline.collection_registry.delete_collection.assert_awaited_once()
         assert pipeline.graph_provider.delete_nodes.await_args.kwargs["keys"] == ["vr-a"]
@@ -736,7 +1104,11 @@ class TestConnectorPurgeDoesNotOrphanPoints:
     @pytest.mark.asyncio
     async def test_the_delete_reads_a_fresh_manifest(self):
         """A 30s-stale enumeration resolves fewer collections than exist, and
-        points left in the missed ones are unreachable afterwards."""
+        points left in the missed ones are unreachable afterwards.
+
+        ``strict`` matters for the same reason: without it a failed enumeration
+        is indistinguishable from an empty one, and the delete would ack a
+        purge it never performed."""
         pipeline = _make_indexing_pipeline()
         pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
         pipeline.graph_provider.delete_nodes = AsyncMock()
@@ -746,7 +1118,9 @@ class TestConnectorPurgeDoesNotOrphanPoints:
 
         await pipeline.bulk_delete_embeddings(["vr-1"])
 
-        pipeline.collection_locator.all_collections.assert_awaited_with(fresh=True)
+        kwargs = pipeline.collection_locator.all_collections.await_args.kwargs
+        assert kwargs["fresh"] is True
+        assert kwargs["strict"] is True
 
 
 class TestConnectorPurgeSweepsTheCollectionsAVridLeft:

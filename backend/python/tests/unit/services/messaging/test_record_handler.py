@@ -177,13 +177,13 @@ class TestBulkDeleteEvent:
 
     @pytest.mark.asyncio
     async def test_a_refused_purge_through_the_connector_path_is_not_acked(self):
-        """purge_connector forwards the same flag, so the connector-scoped
+        """The VRID purge forwards the same flag, so the connector-scoped
         route must refuse identically."""
         from app.exceptions.indexing_exceptions import IndexingError
 
         handler = _make_handler()
         pipeline = handler.event_processor.processor.indexing_pipeline
-        pipeline.purge_connector = AsyncMock(
+        pipeline.purge_connector_by_virtual_record_ids = AsyncMock(
             return_value={"action": "filtered_delete", "success": False}
         )
 
@@ -196,11 +196,11 @@ class TestBulkDeleteEvent:
 
     @pytest.mark.asyncio
     async def test_a_drop_result_still_completes(self):
-        """purge_connector's drop and noop results carry no success key at all;
+        """The purge's drop and noop results carry no success key at all;
         `.get("success") is False` must not read that absence as failure."""
         handler = _make_handler()
         pipeline = handler.event_processor.processor.indexing_pipeline
-        pipeline.purge_connector = AsyncMock(
+        pipeline.purge_connector_by_virtual_record_ids = AsyncMock(
             return_value={"action": "drop_collection", "collections": ["drive_records"]}
         )
 
@@ -229,14 +229,18 @@ class TestBulkDeleteEvent:
         assert len(events) == 2
 
     @pytest.mark.asyncio
-    async def test_bulk_delete_with_connector_id_routes_through_purge_connector(self):
+    async def test_bulk_delete_with_connector_id_routes_through_the_vrid_purge(self):
         """A connector-scoped payload builds a DeleteContext and goes through
-        purge_connector (registry-driven), not the bare bulk_delete_embeddings call."""
+        the registry-driven VRID purge, not the bare bulk_delete_embeddings call.
+
+        This is the *fallback* event: bulkDeleteRecords still means "delete
+        exactly these VRIDs", and only deleteConnectorEmbeddings purges by
+        membership."""
         from app.services.vector_db.strategy import DeleteContext
 
         handler = _make_handler()
         pipeline = handler.event_processor.processor.indexing_pipeline
-        pipeline.purge_connector = AsyncMock(
+        pipeline.purge_connector_by_virtual_record_ids = AsyncMock(
             return_value={"action": "filtered_delete", "virtual_record_ids_processed": 2}
         )
         pipeline.bulk_delete_embeddings = AsyncMock()
@@ -251,14 +255,110 @@ class TestBulkDeleteEvent:
 
         assert len(events) == 2
         pipeline.bulk_delete_embeddings.assert_not_awaited()
-        pipeline.purge_connector.assert_awaited_once()
-        call_args = pipeline.purge_connector.call_args
+        pipeline.purge_connector_by_virtual_record_ids.assert_awaited_once()
+        call_args = pipeline.purge_connector_by_virtual_record_ids.call_args
         ctx = call_args.args[0]
         assert isinstance(ctx, DeleteContext)
         assert ctx.org_id == "org-1"
         assert ctx.connector_id == "conn-1"
         assert ctx.connector_name == "GOOGLE_DRIVE"
         assert call_args.args[1] == ["vr1", "vr2"]
+
+
+class TestDeleteConnectorEmbeddingsEvent:
+    """Routing for the membership-based connector purge.
+
+    The two cleanup events are told apart by eventType alone. Discriminating on
+    a payload key instead would make an old consumer read the connector-scoped
+    shape as an empty id list and *ack* it, silently leaving a deleted
+    connector's embeddings in place.
+    """
+
+    @pytest.mark.asyncio
+    async def test_routes_to_the_membership_purge_with_dead_group_ids(self):
+        from app.services.vector_db.strategy import DeleteContext
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(
+            return_value={"action": "membership_delete", "success": True}
+        )
+        pipeline.purge_connector_by_virtual_record_ids = AsyncMock()
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        events = await _collect_events(
+            handler,
+            EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value,
+            {
+                "orgId": "org-1",
+                "connectorId": "conn-1",
+                "connectorName": "GOOGLE_DRIVE",
+                "recordGroupIds": ["rg-1", "rg-2"],
+            },
+        )
+
+        assert len(events) == 2
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+        pipeline.purge_connector_by_virtual_record_ids.assert_not_awaited()
+        pipeline.purge_connector.assert_awaited_once()
+        ctx = pipeline.purge_connector.call_args.args[0]
+        assert isinstance(ctx, DeleteContext)
+        assert ctx.org_id == "org-1"
+        assert ctx.connector_id == "conn-1"
+        assert ctx.connector_name == "GOOGLE_DRIVE"
+        # The connector's own groups went with it; without them a surviving
+        # shared point keeps pointing at groups that no longer exist.
+        assert pipeline.purge_connector.call_args.args[1] == ["rg-1", "rg-2"]
+
+    @pytest.mark.asyncio
+    async def test_a_payload_carrying_vrids_still_takes_the_membership_path(self):
+        """eventType decides, not the keys. A stray virtualRecordIds must not
+        silently switch the event back to the id-shipping route."""
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(return_value={"success": True})
+        pipeline.purge_connector_by_virtual_record_ids = AsyncMock()
+
+        await _collect_events(
+            handler,
+            EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value,
+            {"connectorId": "conn-1", "virtualRecordIds": ["vr1"]},
+        )
+
+        pipeline.purge_connector.assert_awaited_once()
+        pipeline.purge_connector_by_virtual_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_connector_id_dead_letters_rather_than_retrying(self):
+        """A producer bug no retry can fix, so it must classify TERMINAL."""
+        from app.exceptions.indexing_exceptions import ProcessingError
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock()
+
+        with pytest.raises(ProcessingError, match="connectorId"):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value,
+                {"orgId": "org-1"},
+            )
+        pipeline.purge_connector.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_purge_is_not_acked(self):
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(return_value={"success": False})
+
+        with pytest.raises(IndexingError, match="did not complete"):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value,
+                {"connectorId": "conn-1"},
+            )
 
 
 class TestSyncVectorMembershipEvent:

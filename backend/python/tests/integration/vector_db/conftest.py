@@ -2,7 +2,7 @@
 Shared fixtures for vector DB integration tests.
 
 These tests require running Docker services:
-  docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml up -d
+  docker compose -f tests/integration/compose/vector-db.yml up -d
 
 Run integration tests explicitly:
   pytest tests/integration/vector_db/ -m integration --timeout=120
