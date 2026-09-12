@@ -22,9 +22,12 @@ export interface WatchEvent {
   path: string;
   oldPath?: string;
   timestamp: number;
+  // When the event was observed. Not a file time.
   size?: number;
   isDirectory: boolean;
   sha256?: string;
+  /** modified time of the file */
+  mtimeMs?: number;
 }
 
 function listFilesUnderPrefix(files: FileStateMap, prefix: string): string[] {
@@ -88,6 +91,7 @@ export async function expandWatchEventsForReplay(
           path: newRelPath, oldPath: oldRelPath,
           timestamp: event.timestamp, isDirectory: false,
           sha256,
+          mtimeMs: files[oldRelPath]?.mtimeMs,
         });
       }
     }

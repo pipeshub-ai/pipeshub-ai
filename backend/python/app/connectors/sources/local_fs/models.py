@@ -9,11 +9,15 @@ class LocalFsFileEvent(BaseModel):
     type: str
     path: str
     oldPath: str | None = None
+    # When the desktop observed the event, which for live and reconcile events
+    # is wall-clock rather than a file time. Prefer ``mtimeMs`` for anything
+    # that means "when was this file last changed".
     timestamp: int
     size: int | None = None
     isDirectory: bool
     sha256: str | None = None
     mimeType: str | None = None
+    mtimeMs: int | None = None
 
 
 class LocalFsPullRequest(BaseModel):

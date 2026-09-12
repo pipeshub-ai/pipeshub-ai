@@ -34,6 +34,8 @@ export interface LocalFsFileEvent {
   isDirectory: boolean;
   sha256?: string | null;
   mimeType?: string | null;
+  /** File modification time. Absent on deletions and pre-upgrade desktops. */
+  mtimeMs?: number | null;
 }
 
 export interface LocalFsPullResult {

@@ -422,7 +422,16 @@ function TeamConnectorsPageContent() {
           title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
           duration: 2500,
         });
-        await refreshConnectorsListsQuiet();
+        // The toggle has already committed by this point, so a failed catalog
+        // re-sync must not be reported as a failed toggle.
+        try {
+          await refreshConnectorsListsQuiet();
+        } catch {
+          addToast({
+            variant: 'error',
+            title: t('workspace.connectors.toasts.refreshInstancesError'),
+          });
+        }
       } catch {
         addToast({
           variant: 'error',
@@ -430,7 +439,7 @@ function TeamConnectorsPageContent() {
         });
       }
     },
-    [addToast, refreshConnectorRowQuiet, refreshConnectorsListsQuiet]
+    [addToast, refreshConnectorRowQuiet, refreshConnectorsListsQuiet, t]
   );
 
   const handleInstanceChevron = useCallback(

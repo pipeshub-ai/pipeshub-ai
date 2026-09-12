@@ -256,7 +256,7 @@ class TestLocalFsConnectorHelpers:
         coll = FilterCollection(filters=[])
         assert folder_connector._extension_allowed(Path("a.PDF"), coll) is True
 
-    def test_extension_allowed_restricted(self, folder_connector: LocalFsConnector):
+    def test_extension_allowed_in(self, folder_connector: LocalFsConnector):
         coll = FilterCollection(
             filters=[
                 Filter(
@@ -268,12 +268,29 @@ class TestLocalFsConnectorHelpers:
             ]
         )
         assert folder_connector._extension_allowed(Path("x.pdf"), coll) is True
+        assert folder_connector._extension_allowed(Path("x.PDF"), coll) is True
         assert folder_connector._extension_allowed(Path("x.md"), coll) is False
+        assert folder_connector._extension_allowed(Path("README"), coll) is False
+
+    def test_extension_allowed_not_in(self, folder_connector: LocalFsConnector):
+        coll = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.FILE_EXTENSIONS.value,
+                    type=FilterType.MULTISELECT,
+                    operator=MultiselectOperator.NOT_IN,
+                    value=["pdf", "txt"],
+                )
+            ]
+        )
+        assert folder_connector._extension_allowed(Path("x.pdf"), coll) is False
+        assert folder_connector._extension_allowed(Path("x.md"), coll) is True
+        assert folder_connector._extension_allowed(Path("README"), coll) is True
 
     def test_build_file_record_indexing_off_and_no_owner_perms(
         self, folder_connector: LocalFsConnector
     ):
-        """FILES filter off and no owner ⇒ no permissions rows."""
+        """Manual indexing on and no owner ⇒ auto-index off, no permissions rows."""
         ev = LocalFsFileEvent(
             type="CREATED",
             path="x.txt",
@@ -288,10 +305,10 @@ class TestLocalFsConnectorHelpers:
         indexing = FilterCollection(
             filters=[
                 Filter(
-                    key=IndexingFilterKey.FILES.value,
+                    key=IndexingFilterKey.ENABLE_MANUAL_SYNC.value,
                     type=FilterType.BOOLEAN,
                     operator=BooleanOperator.IS,
-                    value=False,
+                    value=True,
                 )
             ]
         )
@@ -1944,7 +1961,7 @@ class TestMisc:
 
 
 class TestEventDateFilters:
-    """Cover the static event-timestamp variant of the date filter."""
+    """Cover the modified-date filter and its mtime-vs-event-time precedence."""
 
     def _filter(self, key, start, end):
         from app.connectors.core.registry.filters import (
@@ -2013,9 +2030,11 @@ class TestEventDateFilters:
             is False
         )
 
-    def test_created_filter_uses_event_timestamp(self):
+    def test_created_filter_is_ignored(self):
         from app.connectors.core.registry.filters import SyncFilterKey
 
+        # No created filter is registered any more, and a value left over in a
+        # stored config must not silently exclude everything.
         ev = LocalFsFileEvent(
             type="CREATED", path="x", timestamp=1000, isDirectory=False,
         )
@@ -2024,7 +2043,54 @@ class TestEventDateFilters:
             LocalFsConnector._event_matches_date_filters(
                 ev, FilterCollection(filters=[flt])
             )
+            is True
+        )
+
+    def test_modified_filter_uses_mtime_not_event_time(self):
+        from app.connectors.core.registry.filters import SyncFilterKey
+
+        # Live events stamp `timestamp` with wall-clock, so a full walk and an
+        # incremental run only agree if the filter reads mtimeMs.
+        ev = LocalFsFileEvent(
+            type="MODIFIED", path="x", timestamp=9000, isDirectory=False,
+            mtimeMs=3000,
+        )
+        flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
+        assert (
+            LocalFsConnector._event_matches_date_filters(
+                ev, FilterCollection(filters=[flt])
+            )
+            is True
+        )
+
+    def test_modified_filter_excludes_when_mtime_out_of_range(self):
+        from app.connectors.core.registry.filters import SyncFilterKey
+
+        ev = LocalFsFileEvent(
+            type="MODIFIED", path="x", timestamp=3000, isDirectory=False,
+            mtimeMs=9000,
+        )
+        flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
+        assert (
+            LocalFsConnector._event_matches_date_filters(
+                ev, FilterCollection(filters=[flt])
+            )
             is False
+        )
+
+    def test_modified_filter_falls_back_when_mtime_unusable(self):
+        from app.connectors.core.registry.filters import SyncFilterKey
+
+        ev = LocalFsFileEvent(
+            type="MODIFIED", path="x", timestamp=3000, isDirectory=False,
+            mtimeMs=0,
+        )
+        flt = self._filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
+        assert (
+            LocalFsConnector._event_matches_date_filters(
+                ev, FilterCollection(filters=[flt])
+            )
+            is True
         )
 
 
