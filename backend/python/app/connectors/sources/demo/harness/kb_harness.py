@@ -10,15 +10,22 @@ Permissions are approximated with two knowledge bases: "shared" (everything
 readable by engineering or support) and "restricted" (pricing committee only).
 Run with --skip-restricted to model Alice, without it to model Bob.
 
+Once the Demo connector is synced on the instance, the same questions can be
+asked through the real permission path instead: --persona alice|bob logs in as
+that fixture person (password from $DEMO_PERSONA_PASSWORD), --persona installer
+uses the account in --env, and nothing is uploaded.
+
 Usage:
   python kb_harness.py --env bootstrap.env --fixture ../fixture/acme-corp.yaml --runs 3
   python kb_harness.py ... --skip-upload    # KBs already loaded; just ask
+  python kb_harness.py ... --persona alice  # connector mode, real permissions
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -166,25 +173,36 @@ def main() -> None:
     ap.add_argument("--skip-restricted", action="store_true", help="model Alice: don't load the pricing-committee KB")
     ap.add_argument("--skip-shared", action="store_true", help="shared KB already uploaded in an earlier run")
     ap.add_argument("--only", help="comma-separated question ids")
+    ap.add_argument("--persona", choices=["alice", "bob", "installer"],
+                    help="connector mode: ask as this person through the synced Demo connector; no uploads")
     args = ap.parse_args()
 
     env = load_env(args.env)
     origin = env["PIPESHUB_ORIGIN"].rstrip("/")
     fx = yaml.safe_load(open(args.fixture))
-    jwt = login(origin, env["PIPESHUB_ACCOUNT_EMAIL"], env["PIPESHUB_ACCOUNT_PASSWORD"])
+    if args.persona in ("alice", "bob"):
+        person = next(p for p in fx["people"] if p["id"] == args.persona)
+        password = os.environ.get("DEMO_PERSONA_PASSWORD")
+        if not password:
+            sys.exit("set DEMO_PERSONA_PASSWORD to the password given to the invited persona accounts")
+        jwt = login(origin, person["email"], password)
+    else:
+        jwt = login(origin, env["PIPESHUB_ACCOUNT_EMAIL"], env["PIPESHUB_ACCOUNT_PASSWORD"])
 
-    # name -> fixture id (and thread id), for scoring citations
+    # name -> fixture id (and thread id), for scoring citations. KB uploads
+    # carry the sanitised filename; connector records carry the exact title.
     name_to_id: dict[str, str] = {}
     thread_of: dict[str, str] = {}
     for r in fx["records"]:
-        n = safe_name(r["title"])
-        name_to_id[n] = r["id"]
+        name_to_id[safe_name(r["title"])] = r["id"]
+        name_to_id[r["title"]] = r["id"]
         if r.get("thread"): thread_of[r["id"]] = r["thread"]
     for t in fx.get("threads", []):
         name_to_id[safe_name(t["title"])] = t["id"]
+        name_to_id[t["title"]] = t["id"]
 
     with Pipeshub(server_url=f"{origin}/api/v1", security=models.Security(bearer_auth=jwt)) as ph:
-        if not args.skip_upload:
+        if not args.skip_upload and not args.persona:
             shared, restricted = [], []
             threads = {t["id"]: t for t in fx.get("threads", [])}
             by_thread: dict[str, list[dict]] = defaultdict(list)
@@ -210,12 +228,13 @@ def main() -> None:
             if not args.skip_restricted:
                 wait_indexed(ph, "enterprise pricing strategy platform fee", "pricing")
 
-        persona = "alice" if args.skip_restricted else "bob"
+        persona = args.persona or ("alice" if args.skip_restricted else "bob")
         only = set(args.only.split(",")) if args.only else None
         summary = []
         for q in fx["questions"]:
             if only and q["id"] not in only: continue
-            expect = q["personas"][persona]
+            # The installer joins the shared groups only, so they see what Alice sees.
+            expect = q["personas"]["alice" if persona == "installer" else persona]
             passes = 0
             print(f"\n== {q['id']} [{persona}] {q['ask']}")
             for i in range(args.runs):

@@ -160,7 +160,7 @@ class DemoConnector(BaseConnector):
         )
         self.connector_id = connector_id
         self._fixture: dict[str, Any] | None = None
-        self._bodies: dict[str, tuple[str, str]] = {}  # external id -> (filename, markdown)
+        self._bodies: dict[str, str] = {}  # external id -> markdown
 
     # ------------------------------------------------------------------ fixture
 
@@ -172,13 +172,13 @@ class DemoConnector(BaseConnector):
         return self._fixture
 
     @staticmethod
-    def _render_bodies(fx: dict[str, Any]) -> dict[str, tuple[str, str]]:
+    def _render_bodies(fx: dict[str, Any]) -> dict[str, str]:
         """Markdown for every record the connector will emit, keyed by external id."""
         people = {p["id"]: p for p in fx["people"]}
         containers = {c["id"]: c for c in fx["containers"]}
         threads = {t["id"]: t for t in fx.get("threads", [])}
         by_thread: dict[str, list[dict]] = defaultdict(list)
-        out: dict[str, tuple[str, str]] = {}
+        out: dict[str, str] = {}
 
         for rec in fx["records"]:
             if rec.get("thread") in threads:
@@ -193,7 +193,7 @@ class DemoConnector(BaseConnector):
                 + (f" · **Link:** {rec['web_url']}" if rec.get("web_url") else ""),
                 "",
             ]
-            out[rec["id"]] = (f"{rec['title']}.md", "\n".join(head) + rec["body"].rstrip() + "\n")
+            out[rec["id"]] = "\n".join(head) + rec["body"].rstrip() + "\n"
 
         for tid, msgs in by_thread.items():
             t = threads[tid]
@@ -204,8 +204,32 @@ class DemoConnector(BaseConnector):
                 lines.append(f"**{people[m['author']]['name']}** · {str(m['created'])[:16].replace('T', ' ')}")
                 lines.append(m["body"].rstrip())
                 lines.append("")
-            out[tid] = (f"{t['title']}.md", "\n".join(lines))
+            out[tid] = "\n".join(lines)
         return out
+
+    async def _installer_app_user(self) -> AppUser | None:
+        """The org user who created this connector, as a demo app user.
+
+        Added to the groups the fixture marks `installer_joins`, so the person
+        who set the demo up sees the shared data without being an Acme persona.
+        """
+        if not self.created_by:
+            return None
+        try:
+            user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+        except Exception as exc:  # noqa: BLE001 - a missing installer only costs them visibility
+            self.logger.warning("Could not resolve the connector creator %s: %s", self.created_by, exc)
+            return None
+        if user is None or not user.email:
+            return None
+        return AppUser(
+            app_name=Connectors.DEMO,
+            connector_id=self.connector_id,
+            source_user_id="installer",
+            email=user.email,
+            full_name=user.full_name or user.email,
+            is_active=True,
+        )
 
     # ------------------------------------------------------------- lifecycle
 
@@ -234,21 +258,21 @@ class DemoConnector(BaseConnector):
         convertTo: Optional[str] = None,
     ) -> StreamingResponse:
         self._load_fixture()
-        entry = self._bodies.get(record.external_record_id)
-        if entry is None:
+        body = self._bodies.get(record.external_record_id)
+        if body is None:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Demo record {record.external_record_id!r} is not in the fixture",
             )
-        filename, body = entry
-
         async def _gen() -> AsyncGenerator[bytes, None]:
             yield body.encode("utf-8")
 
+        # HTTP headers are latin-1 and titles carry dashes and quotes, so name
+        # the download after the ASCII external id instead.
         return StreamingResponse(
             _gen(),
             media_type=_MARKDOWN,
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            headers={"Content-Disposition": f'inline; filename="{record.external_record_id}.md"'},
         )
 
     # ------------------------------------------------------------------ sync
@@ -273,6 +297,9 @@ class DemoConnector(BaseConnector):
                 title=p.get("title"),
                 is_active=bool(p.get("login")),
             )
+        installer = await self._installer_app_user()
+        if installer is not None:
+            app_users["installer"] = installer
         await self.data_entities_processor.on_new_app_users(list(app_users.values()))
 
         # 2. Groups and their members — the only mechanism permissions use here.
@@ -287,6 +314,8 @@ class DemoConnector(BaseConnector):
             )
             groups[g["id"]] = group
             members = [app_users[p["id"]] for p in fx["people"] if g["id"] in p.get("groups", [])]
+            if installer is not None and g.get("installer_joins"):
+                members.append(installer)
             memberships.append((group, members))
         await self.data_entities_processor.on_new_user_groups(memberships)
 

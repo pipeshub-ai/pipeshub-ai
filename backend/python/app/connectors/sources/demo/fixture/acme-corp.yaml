@@ -9,11 +9,17 @@
 
 company: Acme Corp
 
+# installer_joins: whoever creates the connector is added to the group, so the
+# person who installs the demo sees the shared data straight away. The pricing
+# committee stays closed so the permission demo ("Bob can see it, you can't")
+# still works for the installer.
 groups:
   - id: engineering-readers
     name: Engineering readers
+    installer_joins: true
   - id: support-readers
     name: Support readers
+    installer_joins: true
   - id: pricing-committee
     name: Pricing committee
 
