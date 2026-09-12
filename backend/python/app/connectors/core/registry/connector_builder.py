@@ -119,9 +119,18 @@ class ConnectorConfigBuilder:
         creator-USER permission per record). Leaving the ``RECORD_LEVEL``
         default is always safe; declaring ``APP_LEVEL`` wrongly would widen
         who can see the connector's records.
+
+        ``RECORD_GROUP_LEVEL`` is rejected: it describes a RecordGroup, and the
+        registry would persist it onto the app document where the query path
+        would read it as "not APP_LEVEL" and silently mean RECORD_LEVEL.
         """
         if not isinstance(model, PermissionModel):
             raise ValueError(f"permission model must be a PermissionModel, got {type(model).__name__}")
+        if model is PermissionModel.RECORD_GROUP_LEVEL:
+            raise ValueError(
+                "RECORD_GROUP_LEVEL applies to a RecordGroup, not a connector; "
+                "use APP_LEVEL or leave the RECORD_LEVEL default"
+            )
         self.config["permissionModel"] = model.value
         return self
 
@@ -380,6 +389,11 @@ class ConnectorBuilder:
         """
         if not isinstance(model, PermissionModel):
             raise ValueError(f"permission model must be a PermissionModel, got {type(model).__name__}")
+        if model is PermissionModel.RECORD_GROUP_LEVEL:
+            raise ValueError(
+                "RECORD_GROUP_LEVEL applies to a RecordGroup, not a connector; "
+                "use APP_LEVEL or leave the RECORD_LEVEL default"
+            )
         self.permission_model = model
         return self
 

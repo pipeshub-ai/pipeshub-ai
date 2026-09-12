@@ -52,7 +52,12 @@ import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    PermissionModel,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -200,6 +205,8 @@ class ProcessingContext:
     user_id_to_name:    dict[str, str]   # Slack user_id → name  (snapshot)
     channel_id_to_name: dict[str, str]   # Slack channel_id → name  (snapshot)
     rate_limiter:       "RateLimiter"
+    # Set when channel_groups_map is keyed on a thread instead of a channel.
+    root_rg_id:         Optional[str] = None
 
 
 @dataclass
@@ -278,6 +285,7 @@ class RateLimiter:
     .with_description("Sync messages and channels from Slack")\
     .with_categories(["Messaging"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Slack",
@@ -1248,6 +1256,9 @@ class SlackIndividualConnector(BaseConnector):
                 connector_name=Connectors.SLACK,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.SLACK_CHANNEL,
+                # Slack has no per-message ACL, so channel membership is the
+                # whole permission story and search can trust the group.
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 web_url=web_url,
                 created_at=current_ts,
                 updated_at=current_ts,
@@ -1750,6 +1761,7 @@ class SlackIndividualConnector(BaseConnector):
                 connector_name=Connectors.SLACK,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.SLACK_THREAD,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 web_url=url,
                 created_at=now,
                 updated_at=now,
@@ -1877,6 +1889,7 @@ class SlackIndividualConnector(BaseConnector):
                 external_record_id=burst_id,
                 external_record_group_id=f"thread_{ctx.channel_id}_{thread_ts}",
                 record_group_id=thread_rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 version=1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK,
@@ -1971,6 +1984,7 @@ class SlackIndividualConnector(BaseConnector):
                 fr = await self._process_file_raw(fd, ctx)
                 if fr:
                     fr.record_group_id = thread_rg_id
+                    fr.root_record_group_id       = self._root_rg_id(ctx)
                     fr.external_record_group_id = thread_ext_group_id
                     fr.record_group_type = RecordGroupType.SLACK_THREAD
                     file_recs_by_ts.setdefault(mts, []).append(fr)
@@ -2089,6 +2103,7 @@ class SlackIndividualConnector(BaseConnector):
                 fr = await self._process_file_raw(fd, ctx)
                 if fr:
                     fr.record_group_id = thread_rg_id
+                    fr.root_record_group_id       = self._root_rg_id(ctx)
                     fr.external_record_group_id = thread_ext_group_id
                     fr.record_group_type = RecordGroupType.SLACK_THREAD
                     file_recs_by_ts.setdefault(mts, []).append(fr)
@@ -2236,6 +2251,7 @@ class SlackIndividualConnector(BaseConnector):
                 external_record_id=burst_id,
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 version=1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK,
@@ -2365,6 +2381,7 @@ class SlackIndividualConnector(BaseConnector):
                 external_record_id=ts,
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 version=1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK,
@@ -2523,6 +2540,7 @@ class SlackIndividualConnector(BaseConnector):
                 external_record_id=fid,
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 version=1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK,
@@ -2586,6 +2604,7 @@ class SlackIndividualConnector(BaseConnector):
                 external_record_id=hashlib.md5(url.encode()).hexdigest(),
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 parent_external_record_id=parent.external_record_id,
                 parent_record_type=RecordType.MESSAGE,
                 version=1,
@@ -2673,6 +2692,7 @@ class SlackIndividualConnector(BaseConnector):
                 external_record_id=ts,
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=(
                     RecordType.MESSAGE if parent_external_record_id else None
@@ -3273,6 +3293,7 @@ class SlackIndividualConnector(BaseConnector):
                 external_record_id=ts,
                 external_record_group_id=channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 version=existing_base.version + 1,
                 external_revision_id=str(get_epoch_timestamp_in_ms()),
                 origin=OriginTypes.CONNECTOR,
@@ -3358,6 +3379,40 @@ class SlackIndividualConnector(BaseConnector):
 
         await self.data_entities_processor.on_record_content_update(burst_rec)
         return 1
+
+
+    def _root_rg_id(self, ctx: ProcessingContext) -> Optional[str]:
+        """Channel record group id: the root of a Slack record's group chain."""
+        return ctx.root_rg_id or ctx.channel_groups_map.get(ctx.channel_id)
+
+    @staticmethod
+    def _channel_ext_id(external_group_id: str) -> str:
+        """The Slack channel id behind a record's external group id.
+
+        Threaded records carry the thread group's id, ``thread_{channel}_{ts}``.
+        """
+        if external_group_id.startswith("thread_"):
+            parts = external_group_id.split("_", 2)  # ["thread", channel_id, thread_ts]
+            if len(parts) >= 2:
+                return parts[1]
+        return external_group_id
+
+    async def _reindex_root_rg_id(
+        self, rec: Record, external_group_id: str
+    ) -> Optional[str]:
+        """Root (channel) group for a record being reindexed.
+
+        A threaded record's ``record_group_id`` is its thread group, so the
+        ``channel_groups_map`` fallback in :meth:`_root_rg_id` would publish the
+        thread as its own root; container filtering drops a root-scoped
+        connector's descendants, so the record would then vanish from search.
+        Records written before ``rootRecordGroupId`` existed have none stored.
+        """
+        stored = getattr(rec, "root_record_group_id", None)
+        if stored:
+            return stored
+        cid = self._channel_ext_id(external_group_id)
+        return (await self._channel_group_map([cid])).get(cid)
 
     def _make_ctx(
         self, channel_id: str, rg_id: Optional[str]
@@ -3788,12 +3843,7 @@ class SlackIndividualConnector(BaseConnector):
         if not ext_id or not ch:
             raise HTTPException(400, f"Missing id/channel for record {record.id}")
 
-        # Thread records have external_record_group_id = "thread_{channel_id}_{ts}",
-        # extract the real Slack channel ID for API calls.
-        if ch.startswith("thread_"):
-            parts = ch.split("_", 2)  # ["thread", channel_id, thread_ts]
-            if len(parts) >= 2:
-                ch = parts[1]
+        ch = self._channel_ext_id(ch)
 
         rg_id = getattr(record, "record_group_id", None)
         ctx   = self._make_ctx(ch, rg_id)
@@ -4090,6 +4140,7 @@ class SlackIndividualConnector(BaseConnector):
         ctx   = ProcessingContext(
             channel_id=ch,
             channel_groups_map={ch: rg_id} if rg_id else {},
+            root_rg_id=await self._reindex_root_rg_id(rec, ch),
             user_id_to_email=dict(self.user_id_to_email_cache),
             user_id_to_name=dict(self.user_id_to_name_cache),
             channel_id_to_name=dict(self.channel_id_to_name_cache),
@@ -4145,6 +4196,7 @@ class SlackIndividualConnector(BaseConnector):
         ctx   = ProcessingContext(
             channel_id=ch,
             channel_groups_map={ch: rg_id} if rg_id else {},
+            root_rg_id=await self._reindex_root_rg_id(rec, ch),
             user_id_to_email=dict(self.user_id_to_email_cache),
             user_id_to_name=dict(self.user_id_to_name_cache),
             channel_id_to_name=dict(self.channel_id_to_name_cache),

@@ -412,6 +412,7 @@ class TestAbstractMethodInventory:
         "validate_folder_for_upload",
         # Record location / permission-aware trails
         "filter_nodes_with_permission_role",
+        "filter_accessible_virtual_record_ids",
         "get_record_parent_adjacency",
     ]
 

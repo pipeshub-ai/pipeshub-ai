@@ -12,9 +12,11 @@ from app.config.constants.arangodb import (
 )
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
+from app.services.graph_db.common.utils import ROOT_SCOPED_CONNECTOR_TYPES
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -540,6 +542,11 @@ class ConnectorRegistry:
                 'isConfigured': True,
                 'isAuthenticated': False,
                 'vectorMembershipBackfilled': True,
+                **(
+                    {ConnectorStateKeys.ROOT_MEMBERSHIP_REQUESTED: True}
+                    if str(connector_type).upper() in ROOT_SCOPED_CONNECTOR_TYPES
+                    else {}
+                ),
                 'createdBy': created_by,
                 'updatedBy': created_by,
                 'createdAtTimestamp': current_timestamp,
@@ -657,6 +664,7 @@ class ConnectorRegistry:
             # Collect keys of instances that need to be deactivated
             keys_to_deactivate = []
             stale_permission_models: list[tuple[str, str]] = []
+            needs_root_membership: list[str] = []
             for document in all_documents:
                 connector_type = document.get('type')
                 is_active = document.get('isActive', False)
@@ -672,6 +680,19 @@ class ConnectorRegistry:
                     expected = self._permission_model_for(registered)
                     if document.get('permissionModel') != expected:
                         stale_permission_models.append((doc_key, expected))
+
+                    # Instances synced before rootRecordGroupId existed have no
+                    # roots on their vector points, and search scopes these
+                    # connectors by root — so ask the membership backfill to
+                    # rewrite them once. Until it finishes the instance counts as
+                    # un-backfilled and search falls back to record ids.
+                    if (
+                        str(connector_type).upper() in ROOT_SCOPED_CONNECTOR_TYPES
+                        and not document.get(
+                            ConnectorStateKeys.ROOT_MEMBERSHIP_REQUESTED
+                        )
+                    ):
+                        needs_root_membership.append(doc_key)
 
             # Batch deactivate all instances using graph provider
             if keys_to_deactivate:
@@ -695,6 +716,26 @@ class ConnectorRegistry:
                     self.logger.warning(
                         f"Could not set permissionModel on connector instance {doc_key}: {e}"
                     )
+            for doc_key in needs_root_membership:
+                try:
+                    await graph_provider.update_node(
+                        doc_key,
+                        self._collection_name,
+                        {
+                            ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILLED: False,
+                            ConnectorStateKeys.ROOT_MEMBERSHIP_REQUESTED: True,
+                        },
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not request root membership backfill for {doc_key}: {e}"
+                    )
+            if needs_root_membership:
+                self.logger.info(
+                    f"Requested root membership backfill for {len(needs_root_membership)} "
+                    "connector instances"
+                )
+
             if stale_permission_models:
                 self.logger.info(
                     f"Backfilled permissionModel on {len(stale_permission_models)} connector instances"

@@ -9,6 +9,7 @@ from app.services.vector_db.collection_locator import StaticCollectionLocator
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
 )
 from app.services.vector_db.filters import canonical_filter_key
 from app.services.vector_db.membership import (
@@ -465,9 +466,102 @@ class TestSyncAndRewriteMembership:
 
         vdb.set_payload.assert_awaited_once_with(
             "records",
-            {CONNECTOR_IDS_FIELD: ["c1"], RECORD_GROUP_IDS_FIELD: ["g1"]},
+            {
+                CONNECTOR_IDS_FIELD: ["c1"],
+                RECORD_GROUP_IDS_FIELD: ["g1"],
+                # empty: this connector is not root-scoped, so nothing filters on it
+                ROOT_RECORD_GROUP_IDS_FIELD: [],
+            },
             filt,
         )
+
+    @pytest.mark.asyncio
+    async def test_sync_derives_the_root_for_a_root_scoped_connector(self):
+        """A Slack record synced before rootRecordGroupId existed has none
+        stored, so the root is walked from the group edges instead. Without
+        this, scoping Slack by root would drop everything already indexed."""
+        gp = _graph(
+            keys=["rec-1"],
+            records={
+                "rec-1": {
+                    "connectorId": "c1",
+                    "recordGroupId": "thread-1",
+                    "connectorName": "SLACK",
+                }
+            },
+            edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
+        )
+        # thread-1 belongs to channel-1, which has no parent of its own
+        async def edges_from(node_id, _collection):
+            if node_id.endswith("/thread-1"):
+                return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/channel-1"}]
+            if node_id.endswith("/channel-1"):
+                return []
+            return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
+
+        gp.get_edges_from_node = AsyncMock(side_effect=edges_from)
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+
+        payload = vdb.set_payload.await_args.args[1]
+        assert payload[ROOT_RECORD_GROUP_IDS_FIELD] == ["channel-1"]
+
+    @pytest.mark.asyncio
+    async def test_sync_leaves_the_stored_root_alone_when_the_walk_fails(self):
+        """set_payload merges, so writing the array we resolved would replace a
+        good root with an empty one on a transient graph error, and the record
+        would then match no container filter for a root-scoped connector."""
+        gp = _graph(
+            keys=["rec-1"],
+            records={
+                "rec-1": {
+                    "connectorId": "c1",
+                    "recordGroupId": "thread-1",
+                    "connectorName": "SLACK",
+                }
+            },
+            edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
+        )
+
+        async def edges_from(node_id, _collection):
+            if node_id.endswith("/thread-1"):
+                raise RuntimeError("graph unavailable")
+            return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
+
+        gp.get_edges_from_node = AsyncMock(side_effect=edges_from)
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+
+        payload = vdb.set_payload.await_args.args[1]
+        assert ROOT_RECORD_GROUP_IDS_FIELD not in payload
+        # the rest of the membership is still current and must still be written
+        assert payload[CONNECTOR_IDS_FIELD] == ["c1"]
+        assert payload[RECORD_GROUP_IDS_FIELD] == ["thread-1"]
+
+    @pytest.mark.asyncio
+    async def test_sync_does_not_walk_edges_for_other_connectors(self):
+        """The walk is one graph call per group; only root-scoped connectors
+        can use the result, so everyone else must not pay for it."""
+        gp = _graph(
+            keys=["rec-1"],
+            records={"rec-1": {"connectorId": "c1", "recordGroupId": "g1",
+                               "connectorName": "DRIVE"}},
+            edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/g1"}],
+        )
+        before = gp.get_edges_from_node.await_count if hasattr(
+            gp.get_edges_from_node, "await_count") else 0
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+
+        # one call per record for its belongsTo edges, none for the root walk
+        assert gp.get_edges_from_node.await_count - before == 1
+        assert vdb.set_payload.await_args.args[1][ROOT_RECORD_GROUP_IDS_FIELD] == []
 
     @pytest.mark.asyncio
     async def test_sync_skips_empty_vrid(self):

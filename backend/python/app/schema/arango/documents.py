@@ -162,6 +162,7 @@ app_schema = {
             "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},
             "vectorMembershipBackfillVrids": {"type": ["integer", "null"]},
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
+            "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
             "lastSyncedBy": {"type": ["string", "null"]},
@@ -171,7 +172,11 @@ app_schema = {
             "isLocked": {"type": ["boolean", "null"]},
             "permissionModel": {
                 "type": ["string", "null"],
-                "enum": [m.value for m in PermissionModel] + [None],
+                "enum": [
+                    PermissionModel.APP_LEVEL.value,
+                    PermissionModel.RECORD_LEVEL.value,
+                    None,
+                ],
             },
             # KB-specific optional fields
             "orgId": {"type": ["string", "null"]},
@@ -207,6 +212,7 @@ record_schema = {
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "externalRootGroupId": {"type": ["string", "null"]},
             "recordGroupId": {"type": ["string", "null"]},
+            "rootRecordGroupId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
                 "enum": [record_type.value for record_type in RecordType],
@@ -729,6 +735,18 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            # Whether container-filtered search may trust this group's grant
+            # instead of checking each record. Null means "verify" — the safe
+            # state, and the only one until a connector proves otherwise.
+            # APP_LEVEL is excluded: it describes a connector, not a group.
+            "permissionModel": {
+                "type": ["string", "null"],
+                "enum": [
+                    PermissionModel.RECORD_GROUP_LEVEL.value,
+                    PermissionModel.RECORD_LEVEL.value,
+                    None,
+                ],
+            },
             "connectorId": {"type": ["string", "null"]},
             "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},

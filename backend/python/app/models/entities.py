@@ -15,6 +15,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     ProgressStatus,
     RecordRelations,
 )
@@ -218,6 +219,7 @@ class Record(BaseModel):
     external_revision_id: str | None = Field(default=None, description="Unique identifier for the revision of the record in the external system")
     external_record_group_id: str | None = Field(default=None, description="Unique identifier for the record group in the external system")
     record_group_id: str | None = Field(default=None, description="Internal identifier for the record group (UUID)")
+    root_record_group_id: str | None = Field(default=None, description="Internal identifier of the top-most record group in this record's chain (UUID)")
     parent_external_record_id: str | None = Field(default=None, description="Unique identifier for the parent record in the external system")
     version: int = Field(description="Version of the record")
     origin: OriginTypes = Field(description="Origin of the record")
@@ -336,6 +338,7 @@ class Record(BaseModel):
             "externalGroupId": self.external_record_group_id,
             "externalParentId": self.parent_external_record_id,
             "recordGroupId": self.record_group_id,
+            "rootRecordGroupId": self.root_record_group_id,
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
@@ -390,6 +393,7 @@ class Record(BaseModel):
             external_record_id=arango_base_record["externalRecordId"],
             external_record_group_id=arango_base_record.get("externalGroupId"),
             record_group_id=arango_base_record.get("recordGroupId"),
+            root_record_group_id=arango_base_record.get("rootRecordGroupId"),
             parent_external_record_id=arango_base_record.get("externalParentId"),
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
@@ -634,6 +638,7 @@ class FileRecord(Record):
             weburl=arango_base_record.get("webUrl"),
             external_record_group_id=arango_base_record.get("externalGroupId"),
             record_group_id=arango_base_record.get("recordGroupId"),
+            root_record_group_id=arango_base_record.get("rootRecordGroupId"),
             parent_external_record_id=arango_base_record.get("externalParentId"),
             created_at=arango_base_record["createdAtTimestamp"],
             updated_at=arango_base_record["updatedAtTimestamp"],
@@ -783,6 +788,7 @@ class MessageRecord(Record):
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
             record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -913,6 +919,7 @@ class MailRecord(Record):
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
             record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -979,6 +986,7 @@ class WebpageRecord(Record):
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
             record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -1172,6 +1180,7 @@ class CommentRecord(Record):
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
             record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -1337,6 +1346,7 @@ class TicketRecord(Record):
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
             record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -1527,6 +1537,7 @@ class ProductRecord(Record):
             external_revision_id=record_doc.get("externalRevisionId"),#optional
             external_record_group_id=record_doc.get("externalGroupId"),#optional
             record_group_id=record_doc.get("recordGroupId"),#optional
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"), #optional
             version=record_doc["version"], #required
             origin=OriginTypes(record_doc["origin"]), #required
@@ -1843,6 +1854,7 @@ class DealRecord(Record):
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
             record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -2040,6 +2052,7 @@ class SQLViewRecord(Record):
             external_record_group_id=record_doc.get("externalGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
             connector_name=connector_name,
@@ -2135,6 +2148,7 @@ class SQLTableRecord(Record):
             external_record_group_id=record_doc.get("externalGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
             connector_name=connector_name,
@@ -2249,6 +2263,7 @@ class PullRequestRecord(Record):
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
             record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -2443,6 +2458,7 @@ class ArtifactRecord(Record):
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
             record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -2496,6 +2512,15 @@ class RecordGroup(BaseModel):
         default=False,
         description="When true, child records are hidden in the knowledge-base tree UI",
     )
+    permission_model: PermissionModel | None = Field(
+        default=None,
+        description=(
+            "RECORD_GROUP_LEVEL when the source guarantees every record under this "
+            "group carries the group's permissions, so search may trust the "
+            "group without re-checking each record. Left unset the record is "
+            "verified individually, which is always correct and never over-shares "
+        ),
+    )
 
     def to_arango_base_record_group(self) -> dict:
         return {
@@ -2511,6 +2536,7 @@ class RecordGroup(BaseModel):
             "groupType": self.group_type.value,
             "isInternal": self.is_internal,
             "hideChildren": self.hide_children,
+            "permissionModel": (self.permission_model.value if self.permission_model else None),
             "webUrl": self.web_url,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -2538,6 +2564,7 @@ class RecordGroup(BaseModel):
             updated_at=arango_base_record_group.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),
             source_created_at=arango_base_record_group.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp"),
+            permission_model=arango_base_record_group.get("permissionModel"),
         )
 
 class ArtifactsRecordGroup(RecordGroup):
@@ -2616,6 +2643,7 @@ class CodeFileRecord(Record):
             external_revision_id=arango_base_record.get("externalRevisionId"),
             external_record_group_id=arango_base_record.get("externalGroupId"),
             record_group_id=arango_base_record.get("recordGroupId"),
+            root_record_group_id=arango_base_record.get("rootRecordGroupId"),
             parent_external_record_id=arango_base_record.get("externalParentId"),
             record_group_type=arango_base_record.get("recordGroupType"),
             version=arango_base_record.get("version", 0),
@@ -3136,6 +3164,7 @@ class MeetingRecord(Record):
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
             record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),

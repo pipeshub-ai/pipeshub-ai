@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.arangodb import PermissionModel
 from app.sources.external.github.github_async import GhObject
 
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
@@ -429,6 +430,7 @@ class ProjectsSync:
             org_id=c.data_entities_processor.org_id,
             name="Issues",
             group_type=RecordGroupType.PROJECT.value,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=f"{repo.id}-work-items",
@@ -439,6 +441,7 @@ class ProjectsSync:
             org_id=c.data_entities_processor.org_id,
             name="Pull requests",
             group_type=RecordGroupType.PROJECT.value,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=f"{repo.id}-pull-requests",
@@ -449,6 +452,7 @@ class ProjectsSync:
             org_id=c.data_entities_processor.org_id,
             name="Code repository",
             group_type=RecordGroupType.PROJECT.value,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=f"{repo.id}-code-repository",
