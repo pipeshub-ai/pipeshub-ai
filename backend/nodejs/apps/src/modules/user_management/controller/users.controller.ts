@@ -69,6 +69,34 @@ import {
 } from '../../oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 
+/**
+ * Only the account's owner may change its email address.
+ *
+ * Connector permissions attach to the address, so an admin who could move a
+ * colleague's account to an address they control could reset its password,
+ * sign in, and read everything the colleague is allowed to see — then move
+ * it back. Verifying the new address does not help, because the admin
+ * chooses it. An invitation sent to the wrong address is fixed by deleting
+ * it and inviting again, which never carries a credential.
+ */
+function assertEmailChangeIsSelf(
+  actorUserId: unknown,
+  targetUserId: unknown,
+): void {
+  const actor = typeof actorUserId === 'string' ? actorUserId : '';
+  const target = typeof targetUserId === 'string' ? targetUserId : '';
+  const isSelf =
+    actor !== '' &&
+    target !== '' &&
+    mongoose.Types.ObjectId.isValid(actor) &&
+    new mongoose.Types.ObjectId(actor).equals(target);
+  if (!isSelf) {
+    throw new ForbiddenError(
+      'Only the account owner can change its email address. To fix an invitation sent to the wrong address, delete it and invite again.',
+    );
+  }
+}
+
 export const MAX_BULK_INVITE = 1000;
 
 // Linear-time email check: each segment excludes its following separator
@@ -873,6 +901,7 @@ export class UserController {
         const newEmail = email?.toLowerCase().trim();
 
         if (currentEmail !== newEmail) {
+          assertEmailChangeIsSelf(req.user.userId, id);
           // Email is being changed - validate uniqueness
           const existingUser = await Users.findOne({
             email: email,
@@ -1192,27 +1221,40 @@ export class UserController {
         throw new NotFoundError('User not found');
       }
 
-      user.email = req.body.email;
-      await user.save();
-
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId.toString(),
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
-      res.json(user.toObject());
+      // Same rules as the email branch of updateUser: owner only, and the
+      // address is applied by /validateEmailChange once the link sent to
+      // the new address is opened — never written here.
+      assertEmailChangeIsSelf(req.user.userId, id);
+      const body = req.body as { email?: unknown };
+      const requested = typeof body.email === 'string' ? body.email : '';
+      const newEmail = requested.toLowerCase().trim();
+      if (newEmail === '') {
+        throw new BadRequestError('email is required');
+      }
+      if (newEmail === user.email.toLowerCase().trim()) {
+        res.json({ email: user.email, emailChangeMailStatus: 'notNeeded' });
+        return;
+      }
+      const existingUser = await Users.findOne({
+        email: requested,
+        _id: { $ne: id },
+        orgId: req.user.orgId,
+        isDeleted: false,
+      });
+      if (existingUser) {
+        throw new BadRequestError('Email already exists for another user');
+      }
+      const emailSentResponse = await this.emailChange(
+        requested,
+        newEmail,
+        user,
+      );
+      if (emailSentResponse.statusCode !== 200) {
+        throw new InternalServerError(
+          'Could not send the verification email to the new address',
+        );
+      }
+      res.json({ email: user.email, emailChangeMailStatus: 'sent' });
     } catch (error) {
       next(error);
     }

@@ -1280,9 +1280,9 @@ describe('UserController', () => {
   });
 
   describe('updateEmail', () => {
-    it('should update email and publish event', async () => {
-      req.params.id = '507f1f77bcf86cd799439011';
-      req.body = { email: 'new@test.com' };
+    it('sends a verification link to the new address and does not write the email', async () => {
+      req.params.id = '507f1f77bcf86cd799439011'; // same as req.user.userId: the owner
+      req.body = { email: 'New@Test.com' };
 
       const mockUser = {
         _id: '507f1f77bcf86cd799439011',
@@ -1290,15 +1290,53 @@ describe('UserController', () => {
         fullName: 'Test User',
         email: 'old@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ email: 'new@test.com' }),
       };
-
-      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().resolves(mockUser as any);
+      findOneStub.onSecondCall().resolves(null); // no duplicate
+      const emailChangeStub = sinon
+        .stub(controller as any, 'emailChange')
+        .resolves({ statusCode: 200, data: {} });
 
       await controller.updateEmail(req, res, next);
 
-      expect(mockUser.email).to.equal('new@test.com');
-      expect(mockUser.save.calledOnce).to.be.true;
+      expect(next.called).to.be.false;
+      expect(emailChangeStub.calledOnce).to.be.true;
+      expect(emailChangeStub.firstCall.args[1]).to.equal('new@test.com');
+      expect(mockUser.email).to.equal('old@test.com');
+      expect(mockUser.save.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.json.firstCall.args[0]).to.deep.equal({ email: 'old@test.com', emailChangeMailStatus: 'sent' });
+    });
+
+    it('refuses an admin changing another user\'s email address', async () => {
+      // Permissions attach to the address; moving a colleague's account to an
+      // address the admin controls would let the admin sign in as them.
+      req.params.id = '507f1f77bcf86cd799439099';
+      req.body = { email: 'attacker@evil.example' };
+      const mockUser = { _id: '507f1f77bcf86cd799439099', orgId: req.user.orgId, email: 'alice@company.example', save: sinon.stub().resolves() };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateEmail(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('Only the account owner');
+      expect(emailChangeStub.called).to.be.false;
+      expect(mockUser.email).to.equal('alice@company.example');
+      expect(mockUser.save.called).to.be.false;
+    });
+
+    it('reports notNeeded when the address is unchanged', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      req.body = { email: 'OLD@test.com' };
+      sinon.stub(Users, 'findOne').resolves({ _id: '507f1f77bcf86cd799439011', orgId: req.user.orgId, email: 'old@test.com', save: sinon.stub() } as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateEmail(req, res, next);
+
+      expect(emailChangeStub.called).to.be.false;
+      expect(res.json.firstCall.args[0]).to.deep.equal({ email: 'old@test.com', emailChangeMailStatus: 'notNeeded' });
     });
   });
 
@@ -2129,6 +2167,28 @@ describe('UserController', () => {
           },
         });
       }
+    });
+
+    it('refuses an admin changing another user\'s email through updateUser', async () => {
+      req.params.id = '507f1f77bcf86cd799439099'; // not req.user.userId
+      req.body = { email: 'attacker@evil.example' };
+
+      const mockUser = {
+        _id: '507f1f77bcf86cd799439099',
+        orgId: req.user.orgId,
+        email: 'alice@company.example',
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({}),
+      };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('Only the account owner');
+      expect(emailChangeStub.called).to.be.false;
+      expect(mockUser.save.called).to.be.false;
     });
 
     it('should reject email update when email already exists for another user', async () => {
@@ -3878,67 +3938,39 @@ describe('UserController', () => {
     });
   });
 
-  describe('updateEmail - conditional spread branches', () => {
-    it('should include all optional fields when truthy', async () => {
+  describe('updateEmail - verification failures', () => {
+    it('surfaces a failure to send the verification mail without touching the account', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
       req.body = { email: 'new@test.com' };
-
-      const mockUser = {
-        _id: '507f1f77bcf86cd799439011',
-        orgId: new mongoose.Types.ObjectId(req.user.orgId),
-        fullName: 'Test',
-        firstName: 'F',
-        lastName: 'L',
-        designation: 'Dev',
-        email: 'old@test.com',
-        save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ email: 'new@test.com' }),
-      };
-
-      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      const mockUser = { _id: '507f1f77bcf86cd799439011', orgId: req.user.orgId, email: 'old@test.com', save: sinon.stub() };
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().resolves(mockUser as any);
+      findOneStub.onSecondCall().resolves(null);
+      sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 400, data: 'Failed to send email' });
 
       await controller.updateEmail(req, res, next);
 
-      if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
-        expect(event.payload).to.have.property('firstName', 'F');
-        expect(event.payload).to.have.property('lastName', 'L');
-        expect(event.payload).to.have.property('designation', 'Dev');
-      }
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('verification email');
+      expect(mockUser.email).to.equal('old@test.com');
+      expect(mockUser.save.called).to.be.false;
     });
 
-    it('should omit optional fields when falsy', async () => {
+    it('rejects an address another user already has', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
-      req.body = { email: 'new@test.com' };
-
-      const mockUser = {
-        _id: '507f1f77bcf86cd799439011',
-        orgId: new mongoose.Types.ObjectId(req.user.orgId),
-        fullName: 'Test',
-        firstName: '',
-        lastName: '',
-        designation: '',
-        email: 'old@test.com',
-        save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ email: 'new@test.com' }),
-      };
-
-      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      req.body = { email: 'taken@test.com' };
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().resolves({ _id: '507f1f77bcf86cd799439011', orgId: req.user.orgId, email: 'old@test.com', save: sinon.stub() } as any);
+      findOneStub.onSecondCall().resolves({ _id: 'other' } as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
 
       await controller.updateEmail(req, res, next);
 
-      if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
-        expect(event.payload).to.not.have.property('firstName');
-        expect(event.payload).to.not.have.property('lastName');
-        expect(event.payload).to.not.have.property('designation');
-      }
+      expect(next.firstCall.args[0].message).to.include('already exists');
+      expect(emailChangeStub.called).to.be.false;
     });
   });
 
-  // -----------------------------------------------------------------------
-  // Branch coverage: updateUser - conditional spread in event payload
-  // -----------------------------------------------------------------------
   describe('updateUser - conditional spread in event payload', () => {
     it('should include firstName, lastName, designation when truthy', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
