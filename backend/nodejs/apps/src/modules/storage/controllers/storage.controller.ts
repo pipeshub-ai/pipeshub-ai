@@ -314,6 +314,18 @@ export class StorageController {
         throw new NotFoundError('Document does not exist');
       }
 
+      // Remove the bytes before marking the row deleted.
+      //
+      // `isDeleted` is written here and read nowhere: there is no reaper, no
+      // GC and no scheduled job that acts on it, so the flag alone left every
+      // object in storage forever.
+      //
+      // Blob first, deliberately. If storage fails, the request surfaces a 5xx
+      // and the row still says the document exists — which is true. The other
+      // order produces a row recording a deletion that did not happen.
+      const adapter = await this.initializeStorageAdapter(req);
+      await adapter.deleteDocumentFromStorageService(document);
+
       document.isDeleted = true;
       document.deletedByUserId = userId
         ? (new mongoose.Types.ObjectId(
