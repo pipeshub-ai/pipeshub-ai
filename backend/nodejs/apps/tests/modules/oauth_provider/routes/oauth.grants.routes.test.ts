@@ -1,7 +1,15 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { Container } from 'inversify'
 import { createOAuthGrantsRouter } from '../../../../src/modules/oauth_provider/routes/oauth.grants.routes'
+
+interface RouteLayer {
+  route?: {
+    path?: string
+    stack: Array<{ name: string; handle: Function }>
+  }
+}
 
 describe('OAuth Grants Routes', () => {
   afterEach(() => {
@@ -14,7 +22,7 @@ describe('OAuth Grants Routes', () => {
     })
 
     it('should create a router when given a valid container', () => {
-      const mockContainer = {
+      const mockContainer: Pick<Container, 'get'> = {
         get: sinon.stub().callsFake((key: string) => {
           if (key === 'Logger')
             return {
@@ -31,14 +39,16 @@ describe('OAuth Grants Routes', () => {
         }),
       }
 
-      const router = createOAuthGrantsRouter(mockContainer as any)
+      const router = createOAuthGrantsRouter(
+        mockContainer as unknown as Container,
+      )
       expect(router).to.exist
       expect(router.stack).to.be.an('array')
       expect(router.stack.length).to.be.greaterThan(0)
     })
 
     it('should register the admin routes behind userAdminCheck', () => {
-      const mockContainer = {
+      const mockContainer: Pick<Container, 'get'> = {
         get: sinon.stub().callsFake((key: string) => {
           if (key === 'Logger')
             return {
@@ -55,16 +65,18 @@ describe('OAuth Grants Routes', () => {
         }),
       }
 
-      const router = createOAuthGrantsRouter(mockContainer as any)
-      const adminLayers = router.stack.filter(
-        (layer: any) =>
+      const router = createOAuthGrantsRouter(
+        mockContainer as unknown as Container,
+      )
+      const adminLayers = (router.stack as RouteLayer[]).filter(
+        (layer) =>
           layer.route?.path === '/admin' ||
           layer.route?.path === '/admin/:grantId',
       )
       expect(adminLayers).to.have.lengthOf(2)
 
       for (const layer of adminLayers) {
-        const handlerNames = layer.route.stack.map((s: any) => s.name)
+        const handlerNames = layer.route?.stack.map((s) => s.name) ?? []
         expect(handlerNames).to.include('userAdminCheck')
       }
     })

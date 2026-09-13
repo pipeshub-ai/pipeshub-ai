@@ -1,5 +1,6 @@
 import { injectable, inject } from 'inversify';
 import { Response, NextFunction } from 'express';
+import { Types } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import { OAuthGrantService } from '../services/oauth.grant.service';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
@@ -23,7 +24,15 @@ export class OAuthGrantController {
 
   private extractUser(req: AuthenticatedUserRequest): UserContext {
     const user = req.user as unknown as UserContext | undefined;
-    if (user === undefined || user.orgId === '' || user.userId === '') {
+    if (
+      user === undefined ||
+      typeof user.orgId !== 'string' ||
+      user.orgId.trim() === '' ||
+      !Types.ObjectId.isValid(user.orgId) ||
+      typeof user.userId !== 'string' ||
+      user.userId.trim() === '' ||
+      !Types.ObjectId.isValid(user.userId)
+    ) {
       throw new UnauthorizedError('User not authenticated');
     }
     return {

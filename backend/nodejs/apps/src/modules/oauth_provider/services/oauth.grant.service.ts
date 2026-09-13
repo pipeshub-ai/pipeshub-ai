@@ -175,12 +175,13 @@ export class OAuthGrantService {
       refreshToken.revokedReason = reason ?? 'Revoked by owner';
       await refreshToken.save();
 
-      // Revoke any active access tokens for this user & client
+      // Revoke any active access tokens for this user & client issued under this grant
       await OAuthAccessToken.updateMany(
         {
           userId: { $eq: userObjId },
           orgId: { $eq: orgObjId },
           clientId: { $eq: refreshToken.clientId },
+          parentRefreshTokenId: { $eq: grantObjId },
           isRevoked: { $eq: false },
         },
         {
@@ -230,7 +231,8 @@ export class OAuthGrantService {
 
   /**
    * List every active OAuth grant in the organization across all users.
-   * Admin-only incident response endpoint.
+   * Admin-only incident response endpoint. Includes both active refresh token
+   * grants and active standalone access token grants (excluding PATs).
    */
   async listAllGrants(
     orgId: string,
@@ -240,25 +242,82 @@ export class OAuthGrantService {
     const orgObjId = new Types.ObjectId(orgId);
     const now = new Date();
 
-    const filter = {
-      orgId: { $eq: orgObjId },
-      isRevoked: { $eq: false },
-      expiresAt: { $gt: now },
-    };
-
-    const [refreshTokens, total] = await Promise.all([
-      OAuthRefreshToken.find(filter)
+    const [allRefreshTokens, allAccessTokens] = await Promise.all([
+      OAuthRefreshToken.find({
+        orgId: { $eq: orgObjId },
+        isRevoked: { $eq: false },
+        expiresAt: { $gt: now },
+      })
         .sort({ createdAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit)
         .exec(),
-      OAuthRefreshToken.countDocuments(filter),
+      OAuthAccessToken.find({
+        orgId: { $eq: orgObjId },
+        isRevoked: { $eq: false },
+        expiresAt: { $gt: now },
+        clientId: { $not: new RegExp(`^${PAT_APP_CLIENT_ID_PREFIX}`) },
+      })
+        .sort({ createdAt: -1 })
+        .exec(),
     ]);
 
+    // Track active refresh token identifiers
+    const activeRefreshKeys = new Set<string>();
+    const activeRefreshTokenIds = new Set<string>();
+    for (const rt of allRefreshTokens) {
+      activeRefreshKeys.add(`${rt.clientId}:${rt.userId.toString()}`);
+      activeRefreshTokenIds.add((rt._id as Types.ObjectId).toString());
+    }
+
+    // Suppress access tokens with a corresponding active refresh token
+    const seenStandaloneKeys = new Set<string>();
+    const standaloneAccessTokens: typeof allAccessTokens = [];
+
+    for (const at of allAccessTokens) {
+      if (!at.userId) continue;
+      const userStr = at.userId.toString();
+      const key = `${at.clientId}:${userStr}`;
+      const parentIdStr = at.parentRefreshTokenId
+        ? at.parentRefreshTokenId.toString()
+        : undefined;
+
+      const hasActiveRefreshToken =
+        (parentIdStr !== undefined && activeRefreshTokenIds.has(parentIdStr)) ||
+        activeRefreshKeys.has(key);
+
+      if (!hasActiveRefreshToken && !seenStandaloneKeys.has(key)) {
+        seenStandaloneKeys.add(key);
+        standaloneAccessTokens.push(at);
+      }
+    }
+
+    type CombinedGrantItem =
+      | { type: 'refresh'; token: (typeof allRefreshTokens)[0] }
+      | { type: 'access'; token: (typeof allAccessTokens)[0] };
+
+    const combined: CombinedGrantItem[] = [
+      ...allRefreshTokens.map((rt) => ({
+        type: 'refresh' as const,
+        token: rt,
+      })),
+      ...standaloneAccessTokens.map((at) => ({
+        type: 'access' as const,
+        token: at,
+      })),
+    ].sort((a, b) => b.token.createdAt.getTime() - a.token.createdAt.getTime());
+
+    const total = combined.length;
+    const paginatedItems = combined.slice((page - 1) * limit, page * limit);
+
     const userIds = Array.from(
-      new Set(refreshTokens.map((t) => t.userId.toString())),
+      new Set(
+        paginatedItems
+          .map((item) => item.token.userId?.toString())
+          .filter((id): id is string => typeof id === 'string'),
+      ),
     );
-    const clientIds = Array.from(new Set(refreshTokens.map((t) => t.clientId)));
+    const clientIds = Array.from(
+      new Set(paginatedItems.map((item) => item.token.clientId)),
+    );
 
     const [owners, apps] = await Promise.all([
       Users.find({
@@ -279,7 +338,7 @@ export class OAuthGrantService {
     );
     const appsByClientId = new Map(apps.map((a) => [a.clientId, a]));
 
-    // Find latest lastUsedAt per client/user pair
+    // Find latest lastUsedAt per client/user pair for paginated items
     const latestAccessTokens =
       await OAuthAccessToken.aggregate<AdminLatestTokenGroup>([
         {
@@ -304,23 +363,31 @@ export class OAuthGrantService {
       ]),
     );
 
-    const data: AdminOAuthGrantListItem[] = refreshTokens.map((rt) => {
-      const owner = ownersById.get(rt.userId.toString());
-      const app = appsByClientId.get(rt.clientId);
-      const lastUsedKey = `${rt.clientId}:${rt.userId.toString()}`;
+    const data: AdminOAuthGrantListItem[] = paginatedItems.map((item) => {
+      const token = item.token;
+      const userStr = token.userId ? token.userId.toString() : '';
+      const owner = ownersById.get(userStr);
+      const app = appsByClientId.get(token.clientId);
+      const lastUsedKey = `${token.clientId}:${userStr}`;
+
+      const lastUsedAt =
+        item.type === 'access'
+          ? ((token as (typeof allAccessTokens)[0]).lastUsedAt ??
+            lastUsedMap.get(lastUsedKey))
+          : lastUsedMap.get(lastUsedKey);
 
       return {
-        id: (rt._id as Types.ObjectId).toString(),
-        clientId: rt.clientId,
-        appName: app?.name ?? rt.clientId,
+        id: (token._id as Types.ObjectId).toString(),
+        clientId: token.clientId,
+        appName: app?.name ?? token.clientId,
         appDescription: app?.description,
         appLogoUrl: app?.logoUrl,
         isConfidential: app?.isConfidential ?? false,
-        scopes: rt.scopes,
-        createdAt: rt.createdAt,
-        expiresAt: rt.expiresAt,
-        lastUsedAt: lastUsedMap.get(lastUsedKey),
-        userId: rt.userId.toString(),
+        scopes: token.scopes,
+        createdAt: token.createdAt,
+        expiresAt: token.expiresAt,
+        lastUsedAt,
+        userId: userStr,
         ownerEmail: owner?.email,
         ownerFullName: owner?.fullName,
         ownerDeleted: !owner || owner.isDeleted === true,
@@ -374,6 +441,7 @@ export class OAuthGrantService {
           userId: { $eq: refreshToken.userId },
           orgId: { $eq: orgObjId },
           clientId: { $eq: refreshToken.clientId },
+          parentRefreshTokenId: { $eq: grantObjId },
           isRevoked: { $eq: false },
         },
         {

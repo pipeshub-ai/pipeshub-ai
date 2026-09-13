@@ -138,7 +138,7 @@ export class OAuthTokenService {
 
       // Store refresh token
       const refreshTokenHash = this.hashToken(refreshToken)
-      await OAuthRefreshToken.create({
+      const storedRefreshToken = await OAuthRefreshToken.create({
         tokenHash: refreshTokenHash,
         clientId: app.clientId,
         userId: new Types.ObjectId(userId),
@@ -146,6 +146,20 @@ export class OAuthTokenService {
         scopes,
         expiresAt: new Date((now + app.refreshTokenLifetime) * 1000),
       })
+
+      if (
+        storedRefreshToken &&
+        storedRefreshToken._id &&
+        storedAccessToken &&
+        storedAccessToken._id
+      ) {
+        storedAccessToken.parentRefreshTokenId =
+          storedRefreshToken._id as Types.ObjectId
+        await OAuthAccessToken.updateOne(
+          { _id: storedAccessToken._id },
+          { parentRefreshTokenId: storedRefreshToken._id },
+        )
+      }
 
       result.refreshToken = refreshToken
     }

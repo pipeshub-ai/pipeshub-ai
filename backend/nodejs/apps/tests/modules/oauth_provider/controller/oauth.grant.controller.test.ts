@@ -1,42 +1,110 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { Types } from 'mongoose'
+import { Response, NextFunction } from 'express'
 import { OAuthGrantController } from '../../../../src/modules/oauth_provider/controller/oauth.grant.controller'
+import { OAuthGrantService } from '../../../../src/modules/oauth_provider/services/oauth.grant.service'
+import { AuthenticatedUserRequest } from '../../../../src/libs/middlewares/types'
+import { UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import { createMockLogger, MockLogger } from '../../../helpers/mock-logger'
+import { Logger } from '../../../../src/libs/services/logger.service'
+
+interface MockOAuthGrantService {
+  listUserGrants: sinon.SinonStub
+  revokeUserGrant: sinon.SinonStub
+  listAllGrants: sinon.SinonStub
+  adminRevokeGrant: sinon.SinonStub
+}
+
+interface MockResponse {
+  json: sinon.SinonStub
+  status: sinon.SinonStub
+}
 
 describe('OAuthGrantController', () => {
   let controller: OAuthGrantController
-  let mockLogger: any
-  let mockOAuthGrantService: any
-  let mockReq: any
-  let mockRes: any
-  let mockNext: any
+  let mockLogger: MockLogger
+  let mockOAuthGrantService: MockOAuthGrantService
+  let mockReq: AuthenticatedUserRequest
+  let mockRes: MockResponse
+  let mockNext: sinon.SinonStub
+
+  const orgId = new Types.ObjectId().toString()
+  const userId = new Types.ObjectId().toString()
 
   beforeEach(() => {
-    mockLogger = {
-      info: sinon.stub(),
-      warn: sinon.stub(),
-      error: sinon.stub(),
-      debug: sinon.stub(),
-    }
+    mockLogger = createMockLogger()
     mockOAuthGrantService = {
       listUserGrants: sinon.stub(),
       revokeUserGrant: sinon.stub(),
       listAllGrants: sinon.stub(),
       adminRevokeGrant: sinon.stub(),
     }
-    controller = new OAuthGrantController(mockLogger, mockOAuthGrantService)
+    controller = new OAuthGrantController(
+      mockLogger as unknown as Logger,
+      mockOAuthGrantService as unknown as OAuthGrantService,
+    )
     mockReq = {
-      user: { orgId: 'org-123', userId: 'user-456' },
+      user: { orgId, userId },
       query: {},
       params: {},
       body: {},
+    } as unknown as AuthenticatedUserRequest
+    mockRes = {
+      json: sinon.stub(),
+      status: sinon.stub().returnsThis(),
     }
-    mockRes = { json: sinon.stub(), status: sinon.stub().returnsThis() }
     mockNext = sinon.stub()
   })
 
   afterEach(() => {
     sinon.restore()
+  })
+
+  describe('extractUser validation', () => {
+    it('throws UnauthorizedError if user is missing', async () => {
+      mockReq.user = undefined as unknown as typeof mockReq.user
+
+      await controller.listGrants(
+        mockReq,
+        mockRes as unknown as Response,
+        mockNext as unknown as NextFunction,
+      )
+
+      expect(mockNext.calledOnce).to.be.true
+      const err = mockNext.firstCall.args[0]
+      expect(err).to.be.instanceOf(UnauthorizedError)
+      expect(err.message).to.equal('User not authenticated')
+    })
+
+    it('throws UnauthorizedError if orgId is not a valid ObjectId', async () => {
+      mockReq.user = { orgId: 'not-valid-id', userId }
+
+      await controller.listGrants(
+        mockReq,
+        mockRes as unknown as Response,
+        mockNext as unknown as NextFunction,
+      )
+
+      expect(mockNext.calledOnce).to.be.true
+      const err = mockNext.firstCall.args[0]
+      expect(err).to.be.instanceOf(UnauthorizedError)
+    })
+
+    it('throws UnauthorizedError if userId is not a valid ObjectId', async () => {
+      mockReq.user = { orgId, userId: 'invalid-user' }
+
+      await controller.listGrants(
+        mockReq,
+        mockRes as unknown as Response,
+        mockNext as unknown as NextFunction,
+      )
+
+      expect(mockNext.calledOnce).to.be.true
+      const err = mockNext.firstCall.args[0]
+      expect(err).to.be.instanceOf(UnauthorizedError)
+    })
   })
 
   describe('listGrants', () => {
@@ -46,9 +114,13 @@ describe('OAuthGrantController', () => {
       ]
       mockOAuthGrantService.listUserGrants.resolves(mockGrants)
 
-      await controller.listGrants(mockReq, mockRes, mockNext)
+      await controller.listGrants(
+        mockReq,
+        mockRes as unknown as Response,
+        mockNext as unknown as NextFunction,
+      )
 
-      expect(mockOAuthGrantService.listUserGrants.calledWith('org-123', 'user-456')).to.be.true
+      expect(mockOAuthGrantService.listUserGrants.calledWith(orgId, userId)).to.be.true
       expect(mockRes.json.calledWith({ grants: mockGrants })).to.be.true
     })
 
@@ -56,7 +128,11 @@ describe('OAuthGrantController', () => {
       const err = new Error('database failed')
       mockOAuthGrantService.listUserGrants.rejects(err)
 
-      await controller.listGrants(mockReq, mockRes, mockNext)
+      await controller.listGrants(
+        mockReq,
+        mockRes as unknown as Response,
+        mockNext as unknown as NextFunction,
+      )
 
       expect(mockNext.calledWith(err)).to.be.true
     })
@@ -68,12 +144,16 @@ describe('OAuthGrantController', () => {
       mockReq.body = { reason: 'suspicious activity' }
       mockOAuthGrantService.revokeUserGrant.resolves()
 
-      await controller.revokeGrant(mockReq, mockRes, mockNext)
+      await controller.revokeGrant(
+        mockReq,
+        mockRes as unknown as Response,
+        mockNext as unknown as NextFunction,
+      )
 
       expect(
         mockOAuthGrantService.revokeUserGrant.calledWith(
-          'org-123',
-          'user-456',
+          orgId,
+          userId,
           'g-1',
           'suspicious activity',
         ),
@@ -90,7 +170,11 @@ describe('OAuthGrantController', () => {
       const err = new Error('not found')
       mockOAuthGrantService.revokeUserGrant.rejects(err)
 
-      await controller.revokeGrant(mockReq, mockRes, mockNext)
+      await controller.revokeGrant(
+        mockReq,
+        mockRes as unknown as Response,
+        mockNext as unknown as NextFunction,
+      )
 
       expect(mockNext.calledWith(err)).to.be.true
     })
@@ -105,9 +189,13 @@ describe('OAuthGrantController', () => {
       }
       mockOAuthGrantService.listAllGrants.resolves(mockResult)
 
-      await controller.adminListGrants(mockReq, mockRes, mockNext)
+      await controller.adminListGrants(
+        mockReq,
+        mockRes as unknown as Response,
+        mockNext as unknown as NextFunction,
+      )
 
-      expect(mockOAuthGrantService.listAllGrants.calledWith('org-123', 2, 25)).to.be.true
+      expect(mockOAuthGrantService.listAllGrants.calledWith(orgId, 2, 25)).to.be.true
       expect(mockRes.json.calledWith(mockResult)).to.be.true
     })
 
@@ -115,7 +203,11 @@ describe('OAuthGrantController', () => {
       const err = new Error('fail')
       mockOAuthGrantService.listAllGrants.rejects(err)
 
-      await controller.adminListGrants(mockReq, mockRes, mockNext)
+      await controller.adminListGrants(
+        mockReq,
+        mockRes as unknown as Response,
+        mockNext as unknown as NextFunction,
+      )
 
       expect(mockNext.calledWith(err)).to.be.true
     })
@@ -127,12 +219,16 @@ describe('OAuthGrantController', () => {
       mockReq.body = { reason: 'incident response' }
       mockOAuthGrantService.adminRevokeGrant.resolves()
 
-      await controller.adminRevokeGrant(mockReq, mockRes, mockNext)
+      await controller.adminRevokeGrant(
+        mockReq,
+        mockRes as unknown as Response,
+        mockNext as unknown as NextFunction,
+      )
 
       expect(
         mockOAuthGrantService.adminRevokeGrant.calledWith(
-          'org-123',
-          'user-456',
+          orgId,
+          userId,
           'g-1',
           'incident response',
         ),
@@ -149,7 +245,11 @@ describe('OAuthGrantController', () => {
       const err = new Error('fail')
       mockOAuthGrantService.adminRevokeGrant.rejects(err)
 
-      await controller.adminRevokeGrant(mockReq, mockRes, mockNext)
+      await controller.adminRevokeGrant(
+        mockReq,
+        mockRes as unknown as Response,
+        mockNext as unknown as NextFunction,
+      )
 
       expect(mockNext.calledWith(err)).to.be.true
     })
