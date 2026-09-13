@@ -65,6 +65,9 @@ const OAuthAccessTokenSchema = new Schema<IOAuthAccessToken>(
 
 OAuthAccessTokenSchema.index({ clientId: 1, userId: 1, isRevoked: 1 })
 OAuthAccessTokenSchema.index({ clientId: 1, isRevoked: 1 })
+OAuthAccessTokenSchema.index({ orgId: 1, isRevoked: 1, expiresAt: 1, createdAt: -1 })
+OAuthAccessTokenSchema.index({ userId: 1, orgId: 1, isRevoked: 1, expiresAt: 1, createdAt: -1 })
+
 
 export const OAuthAccessToken: Model<IOAuthAccessToken> =
   mongoose.model<IOAuthAccessToken>(

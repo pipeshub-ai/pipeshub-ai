@@ -227,6 +227,41 @@ describe('OAuthGrantService', () => {
       expect(ids).to.include(atStandaloneId.toString())
       expect(ids).to.not.include(atChildId.toString())
     })
+
+    it('aggregates lastUsedAt matching active access tokens grouped by parentRefreshTokenId', async () => {
+      const rtId1 = new Types.ObjectId()
+      const rtId2 = new Types.ObjectId()
+
+      sinon.stub(OAuthRefreshToken, 'find').returns(
+        createRefreshTokenQueryFixture([
+          { _id: rtId1, clientId, userId: new Types.ObjectId(userId), orgId: new Types.ObjectId(orgId), isRevoked: false, createdAt: new Date(), expiresAt: new Date() } as any,
+          { _id: rtId2, clientId, userId: new Types.ObjectId(userId), orgId: new Types.ObjectId(orgId), isRevoked: false, createdAt: new Date(), expiresAt: new Date() } as any,
+        ])
+      )
+      sinon.stub(OAuthAccessToken, 'find').returns(createAccessTokenQueryFixture([]))
+      sinon.stub(OAuthApp, 'find').returns(createOAuthAppQueryFixture([]))
+
+      const aggregateStub = sinon.stub(OAuthAccessToken, 'aggregate').resolves([
+        { _id: rtId1, lastUsedAt: new Date('2026-09-10T11:00:00Z') },
+        { _id: rtId2, lastUsedAt: new Date('2026-09-11T11:00:00Z') },
+      ])
+
+      const result = await service.listUserGrants(orgId, userId)
+
+      expect(result).to.have.length(2)
+      expect(result.find((r) => r.id === rtId1.toString())?.lastUsedAt).to.deep.equal(new Date('2026-09-10T11:00:00Z'))
+      expect(result.find((r) => r.id === rtId2.toString())?.lastUsedAt).to.deep.equal(new Date('2026-09-11T11:00:00Z'))
+
+      const pipeline = aggregateStub.firstCall.args[0]
+      const matchStage = pipeline[0].$match
+      expect(matchStage).to.have.property('isRevoked', false)
+      expect(matchStage).to.have.property('expiresAt')
+      expect(matchStage.expiresAt).to.have.property('$gt')
+      expect(matchStage.parentRefreshTokenId.$in.map(String)).to.include.members([rtId1.toString(), rtId2.toString()])
+
+      const groupStage = pipeline[1].$group
+      expect(groupStage._id).to.equal('$parentRefreshTokenId')
+    })
   })
 
   describe('revokeUserGrant', () => {

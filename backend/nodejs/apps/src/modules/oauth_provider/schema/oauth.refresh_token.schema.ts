@@ -57,6 +57,8 @@ const OAuthRefreshTokenSchema = new Schema<IOAuthRefreshToken>(
 
 OAuthRefreshTokenSchema.index({ clientId: 1, userId: 1, isRevoked: 1 })
 OAuthRefreshTokenSchema.index({ clientId: 1, isRevoked: 1 })
+OAuthRefreshTokenSchema.index({ orgId: 1, isRevoked: 1, expiresAt: 1, createdAt: -1 })
+OAuthRefreshTokenSchema.index({ userId: 1, orgId: 1, isRevoked: 1, expiresAt: 1, createdAt: -1 })
 
 export const OAuthRefreshToken: Model<IOAuthRefreshToken> =
   mongoose.model<IOAuthRefreshToken>(

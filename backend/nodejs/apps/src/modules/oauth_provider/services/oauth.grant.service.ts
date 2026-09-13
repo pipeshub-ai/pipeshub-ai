@@ -14,13 +14,8 @@ import {
   PaginatedResponse,
 } from '../types/oauth.types';
 
-interface UserLatestTokenGroup {
-  _id: string;
-  lastUsedAt?: Date;
-}
-
-interface AdminLatestTokenGroup {
-  _id: { clientId: string; userId: Types.ObjectId };
+interface LatestTokenGroup {
+  _id: Types.ObjectId;
   lastUsedAt?: Date;
 }
 
@@ -84,29 +79,35 @@ export class OAuthGrantService {
       .exec();
     const appsByClientId = new Map(apps.map((a) => [a.clientId, a]));
 
-    // Find latest lastUsedAt for each client
+    const activeRefreshTokenIds = refreshTokens.map(
+      (rt) => rt._id as Types.ObjectId,
+    );
+
+    // Find latest lastUsedAt for each active grant
     const latestAccessTokens =
-      await OAuthAccessToken.aggregate<UserLatestTokenGroup>([
+      await OAuthAccessToken.aggregate<LatestTokenGroup>([
         {
           $match: {
             userId: userObjId,
             orgId: orgObjId,
-            clientId: { $in: clientIds },
+            parentRefreshTokenId: { $in: activeRefreshTokenIds },
+            isRevoked: false,
+            expiresAt: { $gt: new Date() },
           },
         },
         {
           $group: {
-            _id: '$clientId',
+            _id: '$parentRefreshTokenId',
             lastUsedAt: { $max: '$lastUsedAt' },
           },
         },
       ]);
-    const lastUsedByClientId = new Map<string, Date | undefined>(
-      latestAccessTokens.map((t) => [t._id, t.lastUsedAt]),
+    const lastUsedByTokenId = new Map<string, Date | undefined>(
+      latestAccessTokens.map((t) => [t._id.toString(), t.lastUsedAt]),
     );
 
     const grants: OAuthGrantListItem[] = [];
-    const activeRefreshTokenIds = new Set(
+    const activeRefreshTokenIdsSet = new Set(
       refreshTokens.map((rt) => (rt._id as Types.ObjectId).toString()),
     );
 
@@ -122,7 +123,7 @@ export class OAuthGrantService {
         scopes: rt.scopes,
         createdAt: rt.createdAt,
         expiresAt: rt.expiresAt,
-        lastUsedAt: lastUsedByClientId.get(rt.clientId),
+        lastUsedAt: lastUsedByTokenId.get((rt._id as Types.ObjectId).toString()),
       });
     }
 
@@ -131,7 +132,7 @@ export class OAuthGrantService {
       const parentId = at.parentRefreshTokenId
         ? at.parentRefreshTokenId.toString()
         : undefined;
-      if (parentId === undefined || !activeRefreshTokenIds.has(parentId)) {
+      if (parentId === undefined || !activeRefreshTokenIdsSet.has(parentId)) {
         const app = appsByClientId.get(at.clientId);
         grants.push({
           id: (at._id as Types.ObjectId).toString(),
@@ -383,25 +384,28 @@ export class OAuthGrantService {
     const refreshItems = paginatedItems.filter((item) => item.type === 'refresh');
     let lastUsedMap = new Map<string, Date | undefined>();
     if (refreshItems.length > 0) {
+      const refreshItemIds = refreshItems.map((r) => r._id as Types.ObjectId);
       const latestAccessTokens =
-        await OAuthAccessToken.aggregate<AdminLatestTokenGroup>([
+        await OAuthAccessToken.aggregate<LatestTokenGroup>([
           {
             $match: {
               orgId: orgObjId,
               userId: { $in: userIds.map((id) => new Types.ObjectId(id)) },
-              clientId: { $in: refreshItems.map((r) => r.clientId) },
+              parentRefreshTokenId: { $in: refreshItemIds },
+              isRevoked: false,
+              expiresAt: { $gt: new Date() },
             },
           },
           {
             $group: {
-              _id: { clientId: '$clientId', userId: '$userId' },
+              _id: '$parentRefreshTokenId',
               lastUsedAt: { $max: '$lastUsedAt' },
             },
           },
         ]);
       lastUsedMap = new Map(
         latestAccessTokens.map((t) => [
-          `${t._id.clientId}:${t._id.userId.toString()}`,
+          t._id.toString(),
           t.lastUsedAt,
         ]),
       );
@@ -411,12 +415,12 @@ export class OAuthGrantService {
       const userStr = item.userId ? item.userId.toString() : '';
       const owner = item.userId ? ownersById.get(userStr) : undefined;
       const app = appsByClientId.get(item.clientId);
-      const lastUsedKey = `${item.clientId}:${userStr}`;
+
 
       const lastUsedAt =
         item.type === 'access'
           ? item.lastUsedAt
-          : lastUsedMap.get(lastUsedKey);
+          : lastUsedMap.get(item._id.toString());
 
       return {
         id: item._id.toString(),
