@@ -128,6 +128,21 @@ case "$method $path" in
     printf '{"status":"configured"}' >"$body_out"
     printf '200'
     ;;
+  "POST /api/v1/connectors/")
+    write_hdr 200
+    printf '{"success":true,"connector":{"connectorId":"demo-conn-1","connectorType":"Demo"}}' >"$body_out"
+    printf '200'
+    ;;
+  "PUT /api/v1/connectors/demo-conn-1/config")
+    write_hdr 200
+    printf '{"success":true}' >"$body_out"
+    printf '200'
+    ;;
+  "POST /api/v1/connectors/demo-conn-1/toggle")
+    write_hdr 200
+    printf '{"success":true}' >"$body_out"
+    printf '200'
+    ;;
   *)
     write_hdr 500
     printf '{"error":"unexpected %s %s"}' "$method" "$path" >"$body_out"
@@ -292,6 +307,55 @@ if grep -q '"provider":"ollama"' "$CURL_LOG"; then
   pass "LLM provider ollama"
 else
   fail "LLM provider ollama"
+fi
+
+echo "== demo data is opt-in =="
+if grep -q "PATH=/api/v1/connectors" "$CURL_LOG"; then
+  fail "no connector calls without PIPESHUB_DEMO_DATA"
+else
+  pass "no connector calls without PIPESHUB_DEMO_DATA"
+fi
+
+echo "== PIPESHUB_DEMO_DATA=1 creates and syncs the Demo connector =="
+bindir="$TMP_ROOT/bin-demo"
+CURL_LOG="$TMP_ROOT/demo.log"; export CURL_LOG
+: >"$CURL_LOG"
+make_fake_curl "$bindir"
+envf="$TMP_ROOT/demo.env"; make_env "$envf"
+printf '\nPIPESHUB_DEMO_DATA=1\n' >>"$envf"
+out="$TMP_ROOT/demo.out"
+if PATH="$bindir:$PATH" \
+  "$BOOTSTRAP" --env-file "$envf" --token-file "$TMP_ROOT/token-demo" >"$out" 2>&1; then
+  pass "demo path exit 0"
+else
+  fail "demo path exit 0"
+  cat "$out"
+fi
+for needle in \
+  "METHOD=POST PATH=/api/v1/connectors/" \
+  "METHOD=PUT PATH=/api/v1/connectors/demo-conn-1/config" \
+  "METHOD=POST PATH=/api/v1/connectors/demo-conn-1/toggle"
+ do
+  if grep -q "$needle" "$CURL_LOG"; then
+    pass "called $needle"
+  else
+    fail "called $needle"
+  fi
+done
+if grep -q '"connectorType":"Demo"' "$CURL_LOG" && grep -q '"scope":"team"' "$CURL_LOG"; then
+  pass "Demo connector created as a team connector"
+else
+  fail "Demo connector created as a team connector"
+fi
+if grep -q '"type":"sync"' "$CURL_LOG"; then
+  pass "sync toggled on"
+else
+  fail "sync toggled on"
+fi
+if grep -q 'Demo data' "$out"; then
+  pass "success copy mentions the demo data"
+else
+  fail "success copy mentions the demo data"
 fi
 
 echo "== secrets stay off curl argv =="

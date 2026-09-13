@@ -25,6 +25,7 @@ export * from './message-area/response-tabs/citations';
 
 // Standalone components
 export { SuggestionChip } from './suggestion-chip';
+export { DemoSuggestions } from './demo-suggestions';
 
 // Search overlay
 export { ChatSearch } from './search';
