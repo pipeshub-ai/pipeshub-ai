@@ -12,6 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.modules.transformers.graphdb import taxonomy_node_key
+
+ORG = "org-1"
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +80,24 @@ def _setup_transformer_with_tx(tx_store=None):
     ctx_mgr.__aenter__ = AsyncMock(return_value=tx_store)
     ctx_mgr.__aexit__ = AsyncMock(return_value=False)
     transformer.graph_data_store.transaction.return_value = ctx_mgr
+    # The record (for its orgId) is read outside the transaction; taxonomy nodes
+    # are created there too, through ensure_nodes, before edges are reconciled.
+    transformer.graph_provider.get_document = AsyncMock(return_value={"_key": "rec-1", "orgId": ORG})
+    transformer.graph_provider.ensure_nodes = AsyncMock()
     return transformer, tx_store
+
+
+def _ensured_collections(transformer) -> set[str]:
+    return {c.args[1] for c in transformer.graph_provider.ensure_nodes.await_args_list}
+
+
+def _ensured_ids(transformer, collection: str) -> list[str]:
+    return [
+        node["id"]
+        for c in transformer.graph_provider.ensure_nodes.await_args_list
+        if c.args[1] == collection
+        for node in c.args[0]
+    ]
 
 
 # ===================================================================
@@ -104,12 +124,12 @@ class TestSubcategoryChainThreeLevels:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Verify batch_upsert_nodes was called for taxonomy nodes:
-        # 1. category node (MainCategory)
-        # 2. subcategory1 node (SubLevel1)
-        # 3. subcategory2 node (SubLevel2)
-        # 4. subcategory3 node (SubLevel3)
-        assert tx_store.batch_upsert_nodes.await_count >= 4
+        assert _ensured_collections(transformer) == {
+            CollectionNames.CATEGORIES.value,
+            CollectionNames.SUBCATEGORIES1.value,
+            CollectionNames.SUBCATEGORIES2.value,
+            CollectionNames.SUBCATEGORIES3.value,
+        }
         tx_store.batch_update_nodes.assert_awaited_once()
 
         # Verify batch_create_edges was called for:
@@ -136,9 +156,8 @@ class TestSubcategoryChainThreeLevels:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Only category node should be upserted; status uses batch_update_nodes
-        upsert_calls = tx_store.batch_upsert_nodes.call_args_list
-        assert len(upsert_calls) == 1
+        # The chain stops at the first missing level: only the category exists.
+        assert _ensured_collections(transformer) == {CollectionNames.CATEGORIES.value}
         tx_store.batch_update_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -156,27 +175,16 @@ class TestSubcategoryChainThreeLevels:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # category + sub1 upserts; status uses batch_update_nodes
-        upsert_calls = tx_store.batch_upsert_nodes.call_args_list
-        assert len(upsert_calls) == 2
+        assert _ensured_collections(transformer) == {
+            CollectionNames.CATEGORIES.value,
+            CollectionNames.SUBCATEGORIES1.value,
+        }
         tx_store.batch_update_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_existing_subcategory_reuses_key(self):
-        """When subcategory already exists, its existing key is reused."""
-        tx_store = _make_tx_store()
-
-        call_count = [0]
-
-        async def nodes_side_effect(collection, filters):
-            nonlocal call_count
-            call_count[0] += 1
-            if "SUBCATEGORIES1" in collection.upper() or collection == CollectionNames.SUBCATEGORIES1.value:
-                return [{"_key": "existing-sub1-key", "name": "Sub1"}]
-            return []
-
-        tx_store.get_nodes_by_filters = AsyncMock(side_effect=nodes_side_effect)
-        transformer, _ = _setup_transformer_with_tx(tx_store)
+    async def test_subcategory_key_is_derived_so_every_record_shares_it(self) -> None:
+        """Two records naming the same subcategory link to one node, with no lookup."""
+        transformer, tx_store = _setup_transformer_with_tx()
 
         metadata = _make_semantic_metadata(
             categories=["Main"],
@@ -184,11 +192,15 @@ class TestSubcategoryChainThreeLevels:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # The subcategory1 node should NOT be created (it already exists)
-        # So we should have only category creation upserted
-        upsert_calls = tx_store.batch_upsert_nodes.call_args_list
-        assert len(upsert_calls) == 1
-        tx_store.batch_update_nodes.assert_awaited_once()
+        sub1_key = taxonomy_node_key(ORG, CollectionNames.SUBCATEGORIES1.value, "Sub1")
+        assert _ensured_ids(transformer, CollectionNames.SUBCATEGORIES1.value) == [sub1_key]
+        hierarchy = [
+            c.args[0][0] for c in tx_store.batch_create_edges.call_args_list
+            if c.args[1] == CollectionNames.INTER_CATEGORY_RELATIONS.value
+        ]
+        assert hierarchy[0]["from_id"] == sub1_key
+        assert hierarchy[0]["to_id"] == taxonomy_node_key(ORG, CollectionNames.CATEGORIES.value, "Main")
+        tx_store.get_nodes_by_filters.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_hierarchy_edge_idempotent_when_already_exists(self):
@@ -443,13 +455,12 @@ class TestTransactionErrorPropagation:
     """Test that errors within the transaction are properly propagated."""
 
     @pytest.mark.asyncio
-    async def test_get_record_by_key_error_propagates(self):
-        """Error in get_record_by_key propagates."""
-        tx_store = _make_tx_store()
-        tx_store.get_record_by_key = AsyncMock(
+    async def test_record_read_error_propagates(self) -> None:
+        """An error reading the record propagates."""
+        transformer, _ = _setup_transformer_with_tx()
+        transformer.graph_provider.get_document = AsyncMock(
             side_effect=Exception("Connection lost")
         )
-        transformer, _ = _setup_transformer_with_tx(tx_store)
 
         metadata = _make_semantic_metadata()
         with pytest.raises(Exception, match="Connection lost"):
@@ -486,10 +497,8 @@ class TestTransactionErrorPropagation:
     async def test_existing_category_edge_not_recreated(self):
         """When category edge already exists, reconciliation skips creation."""
         tx_store = _make_tx_store()
-        tx_store.get_nodes_by_filters.return_value = [
-            {"_key": "cat-1", "name": "Tech"}
-        ]
-        cat_to = f"{CollectionNames.CATEGORIES.value}/cat-1"
+        cat_key = taxonomy_node_key(ORG, CollectionNames.CATEGORIES.value, "Tech")
+        cat_to = f"{CollectionNames.CATEGORIES.value}/{cat_key}"
 
         async def edges_side_effect(record_from, edge_collection):
             if edge_collection == CollectionNames.BELONGS_TO_CATEGORY.value:
@@ -531,8 +540,9 @@ class TestTransactionErrorPropagation:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Should upsert: category, language
-        assert tx_store.batch_upsert_nodes.await_count >= 2
+        assert _ensured_ids(transformer, CollectionNames.LANGUAGES.value) == [
+            taxonomy_node_key(ORG, CollectionNames.LANGUAGES.value, "Klingon")
+        ]
         tx_store.batch_update_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -555,8 +565,9 @@ class TestTransactionErrorPropagation:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Should upsert: category, topic
-        assert tx_store.batch_upsert_nodes.await_count >= 2
+        assert _ensured_ids(transformer, CollectionNames.TOPICS.value) == [
+            taxonomy_node_key(ORG, CollectionNames.TOPICS.value, "Quantum Computing")
+        ]
         tx_store.batch_update_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -571,7 +582,8 @@ class TestTransactionErrorPropagation:
 
         tx_store.get_nodes_by_filters = AsyncMock(side_effect=nodes_side_effect)
 
-        lang_to = f"{CollectionNames.LANGUAGES.value}/lang-en"
+        lang_key = taxonomy_node_key(ORG, CollectionNames.LANGUAGES.value, "English")
+        lang_to = f"{CollectionNames.LANGUAGES.value}/{lang_key}"
 
         async def edges_side_effect(record_from, edge_collection):
             if edge_collection == CollectionNames.BELONGS_TO_LANGUAGE.value:

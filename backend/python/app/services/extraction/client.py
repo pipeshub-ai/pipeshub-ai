@@ -16,8 +16,9 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from app.models.blocks import BlocksContainer, SemanticMetadata
-from app.services.base_client import BaseServiceClient, ServiceCallError
+from app.services.base_client import BaseServiceClient, parse_retry_after
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
@@ -82,6 +83,12 @@ class ExtractionClient(BaseServiceClient):
 
         if not body.get("success"):
             error_msg = body.get("error") or "Classification failed"
+            if body.get("error_code") == LLMNotConfiguredError.code:
+                raise LLMNotConfiguredError(error_msg)
+            if body.get("error_code") == LLMUnavailableError.code:
+                # Set while the provider's circuit is open behind that service.
+                retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                raise LLMUnavailableError(error_msg, retry_after=retry_after)
             raise ExtractionClientError(message=error_msg)
 
         classification_dict = body.get("classification")

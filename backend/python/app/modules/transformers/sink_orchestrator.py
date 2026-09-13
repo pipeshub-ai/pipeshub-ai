@@ -84,6 +84,29 @@ class SinkOrchestrator(Transformer):
         )
         return BlocksContainer(blocks=limited_blocks, block_groups=limited_block_groups)
 
+    async def write_blob(self, ctx: TransformContext) -> None:
+        """Write the record blob with the SQL row limit applied for the duration of the write.
+
+        Every blob write must go through here; a direct ``blob_storage.apply`` (e.g. the
+        rewrite after enrichment) would store every row the limit exists to drop.
+        """
+        record = ctx.record
+        full_block_containers = None
+        is_sql = any(
+            bg.sub_type in (GroupSubType.SQL_TABLE, GroupSubType.SQL_VIEW)
+            for bg in record.block_containers.block_groups
+        ) if record.block_containers and record.block_containers.block_groups else False
+
+        if is_sql and self.LIMIT_SQL_ROW_BLOCKS_TO is not None:
+            full_block_containers = record.block_containers
+            record.block_containers = self._build_limited_sql_block_container(
+                full_block_containers, self.LIMIT_SQL_ROW_BLOCKS_TO
+            )
+        try:
+            await self.blob_storage.apply(ctx)
+        finally:
+            if full_block_containers is not None:
+                record.block_containers = full_block_containers
 
     @staticmethod
     def _activity_labels(record: Record) -> tuple[str, str, str]:
@@ -106,13 +129,8 @@ class SinkOrchestrator(Transformer):
         return connector, org, kb
 
     async def apply(self, ctx: TransformContext) -> None:
-        """Legacy entry-point: runs both phases (index + enrich) sequentially.
-
-        Preserved for backward compatibility with code that has not been
-        migrated to the split ``index()`` / ``enrich()`` API.
-        """
+        """``Transformer`` entry point: index the record. Classification is a pipeline stage."""
         await self.index(ctx)
-        await self.enrich(ctx)
 
     # ------------------------------------------------------------------
     # Phase 1: INDEX — vector store + blob.  Document becomes searchable.
@@ -126,31 +144,14 @@ class SinkOrchestrator(Transformer):
         enrichment (``extractionStatus``) is left unchanged here.
         """
         record = ctx.record
-        full_block_containers = None
         skip_blob = bool(ctx.settings.get("skip_blob"))
         skip_vector_store = bool(ctx.settings.get("skip_vector_store")) or bool(
             ctx.settings.get("sink_only")
         )
 
         if not skip_blob:
-            is_sql = any(
-                bg.sub_type in (GroupSubType.SQL_TABLE, GroupSubType.SQL_VIEW)
-                for bg in record.block_containers.block_groups
-            ) if record.block_containers and record.block_containers.block_groups else False
-
-            if is_sql and self.LIMIT_SQL_ROW_BLOCKS_TO is not None:
-                full_block_containers = record.block_containers
-                record.block_containers = self._build_limited_sql_block_container(
-                    full_block_containers, self.LIMIT_SQL_ROW_BLOCKS_TO
-                )
-
             await self._describe_images(ctx)
-
-            try:
-                await self.blob_storage.apply(ctx)
-            finally:
-                if full_block_containers is not None:
-                    record.block_containers = full_block_containers
+            await self.write_blob(ctx)
 
         record_id = record.id
         record_doc = await self.graph_provider.get_document(
@@ -268,23 +269,6 @@ class SinkOrchestrator(Transformer):
             connector_id=record.connector_id,
             external_record_group_id=record.external_record_group_id,
             org_id=record.org_id,
-        )
-
-    # ------------------------------------------------------------------
-    # Phase 2: ENRICH — graph DB taxonomy.  Can run later (deferred).
-    # ------------------------------------------------------------------
-
-    async def enrich(self, ctx: TransformContext) -> None:
-        """Phase 2: write classification metadata to the graph database.
-
-        Calls ``graphdb.apply()`` which already sets
-        ``extractionStatus=COMPLETED`` once it finishes.  Callers should
-        ensure ``ctx.record.semantic_metadata`` is populated before calling
-        this method.
-        """
-        await self.graphdb.apply(ctx)
-        self.logger.debug(
-            "✅ Graph enrichment completed for record %s", ctx.record.id
         )
 
     async def _save_reconciliation_metadata(self, ctx: TransformContext) -> None:

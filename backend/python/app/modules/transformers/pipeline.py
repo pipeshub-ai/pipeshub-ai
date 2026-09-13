@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
 from app.exceptions.indexing_exceptions import DocumentProcessingError
@@ -10,17 +10,20 @@ from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
 from app.utils.logger import create_logger
 
+if TYPE_CHECKING:
+    from app.modules.pipeline.ingress import StageIngress
+
 
 class IndexingPipeline:
     def __init__(
         self,
         document_extraction: DocumentExtraction,
         sink_orchestrator: SinkOrchestrator,
-        defer_extraction: bool = False,
+        stage_ingress: "StageIngress | None" = None,
     ) -> None:
         self.document_extraction = document_extraction
         self.sink_orchestrator = sink_orchestrator
-        self.defer_extraction = defer_extraction
+        self.stage_ingress = stage_ingress
         self.logger = create_logger("indexing_pipeline")
 
     @staticmethod
@@ -94,14 +97,7 @@ class IndexingPipeline:
         return ReconciliationContext(new_metadata=new_metadata.to_dict())
 
     async def apply(self, ctx: TransformContext) -> None:
-        """Full pipeline: validate → index (searchable) → enrich (graph taxonomy).
-
-        When ``ctx.settings["defer_extraction"]`` is truthy *or* the instance
-        was constructed with ``defer_extraction=True``, the enrich phase is
-        skipped here and callers are expected to trigger it later (e.g. via a
-        Kafka event).  The index phase always runs synchronously so the
-        document is immediately searchable.
-        """
+        """Validate, index (the record becomes searchable), then hand it to the stage runtime."""
         try:
             record = ctx.record
             block_containers = record.block_containers
@@ -173,13 +169,9 @@ class IndexingPipeline:
             # Document becomes searchable after this call.
             await self._index(ctx)
 
-            # Phase 2: Enrich (DocumentExtraction + GraphDB)
-            # May be deferred to a background process.
-            should_defer = self.defer_extraction or bool(ctx.settings.get("defer_extraction"))
-            if should_defer:
-                await self._publish_enrichment_event(ctx)
-            else:
-                await self._enrich(ctx)
+            # Classification and later stages run on their own permits, so this
+            # record's index permit is released as soon as it is searchable.
+            await self._dispatch_stages(ctx)
 
         except Exception as e:
             raise e
@@ -188,34 +180,7 @@ class IndexingPipeline:
         """Phase 1: VectorStore + BlobStorage.  Sets indexingStatus=COMPLETED."""
         await self.sink_orchestrator.index(ctx)
 
-    async def _enrich(self, ctx: TransformContext) -> None:
-        """Phase 2: DocumentExtraction + GraphDB.  Sets extractionStatus=COMPLETED."""
-        await self.document_extraction.apply(ctx)
-
-        record = ctx.record
-        if record.semantic_metadata:
-            await self.sink_orchestrator.blob_storage.apply(ctx)
-            if (record.semantic_metadata.summary or "").strip():
-                await self.sink_orchestrator.vector_store.index_record_summary(
-                    record.id,
-                    record.virtual_record_id,
-                    record.org_id,
-                    record.semantic_metadata,
-                    record,
-                )
-
-        await self.sink_orchestrator.enrich(ctx)
-
-    async def _publish_enrichment_event(self, ctx: TransformContext) -> None:
-        """Stub: publish an event for deferred enrichment via Kafka.
-
-        Future implementation should produce a message containing at minimum:
-        ``{record_id, virtual_record_id, org_id}`` to a dedicated enrichment
-        topic so a separate consumer can call ``_enrich()`` asynchronously.
-        """
-        self.logger.info(
-            "📨 Deferred enrichment requested for record %s — "
-            "Kafka publish not yet implemented, falling back to inline enrichment",
-            ctx.record.id,
-        )
-        await self._enrich(ctx)
+    async def _dispatch_stages(self, ctx: TransformContext) -> None:
+        if self.stage_ingress is None:
+            raise RuntimeError("the pipeline stage runtime is not wired into this IndexingPipeline")
+        _ = await self.stage_ingress.on_indexed(ctx.record, trigger=ctx.event_type)

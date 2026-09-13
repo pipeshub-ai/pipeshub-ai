@@ -969,16 +969,13 @@ class TestGetTableSummary:
         assert result == "Summary text"
 
     @pytest.mark.asyncio
-    async def test_exception_propagates(self, parser):
-        """When LLM raises exception, it propagates (wrapped by tenacity retry)."""
-        import tenacity
-
+    async def test_a_failed_summary_falls_back_to_a_plain_one(self, parser: CSVParser) -> None:
+        """A model failure never costs the record: the summary is written without the model."""
         mock_llm = AsyncMock()
         mock_llm.ainvoke.side_effect = RuntimeError("LLM failure")
 
-        rows = [{"Name": "Alice"}]
-        with pytest.raises((RuntimeError, tenacity.RetryError)):
-            await parser.get_table_summary(mock_llm, rows)
+        rows = [{"Name": "Alice"}, {"Name": "Bob"}]
+        assert await parser.get_table_summary(mock_llm, rows) == "A table with 2 rows and columns: Name."
 
     @pytest.mark.asyncio
     async def test_fallback_for_dict_response(self, parser):
@@ -1187,24 +1184,28 @@ class TestCallLlm:
         mock_llm.ainvoke.assert_awaited_once_with(["prompt"])
 
     @pytest.mark.asyncio
-    async def test_retry_on_failure(self, parser):
-        """_call_llm is decorated with @retry; it retries on exception."""
-        import tenacity
-
+    async def test_a_request_error_is_not_retried(self, parser: CSVParser) -> None:
+        """Retrying a request the model rejected only repeats the rejection."""
         mock_llm = AsyncMock()
-        mock_llm.ainvoke.side_effect = RuntimeError("transient error")
+        mock_llm.ainvoke.side_effect = RuntimeError("bad request")
 
-        with pytest.raises((RuntimeError, tenacity.RetryError)):
+        with pytest.raises(RuntimeError):
             await parser._call_llm(mock_llm, ["prompt"])
 
-        # Should have been called multiple times due to retry (3 attempts)
-        assert mock_llm.ainvoke.await_count == 3
+        assert mock_llm.ainvoke.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_retry_succeeds_on_second_attempt(self, parser):
-        """Fails once, then succeeds on retry."""
+    async def test_a_rate_limit_is_retried_by_the_gateway(self, parser: CSVParser, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 429 is retried (jittered, outside the cap) by the LLM gateway."""
+        from app.services.llm_gateway import gateway as gateway_module
+
+        async def no_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr(gateway_module.asyncio, "sleep", no_sleep)
+        rate_limited = RuntimeError("429 Too Many Requests")
         mock_llm = AsyncMock()
-        mock_llm.ainvoke.side_effect = [RuntimeError("fail"), "success"]
+        mock_llm.ainvoke.side_effect = [rate_limited, "success"]
 
         result = await parser._call_llm(mock_llm, ["prompt"])
         assert result == "success"

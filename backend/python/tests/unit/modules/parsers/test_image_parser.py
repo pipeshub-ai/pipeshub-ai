@@ -7,6 +7,7 @@ import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from tests.unit.modules.parsers.http_fakes import with_body
 
 
 @pytest.fixture
@@ -191,13 +192,13 @@ class TestFetchSingleUrl:
 
         mock_response = AsyncMock()
         mock_response.headers = {"content-type": "image/png"}
-        mock_response.read = AsyncMock(return_value=b"fake-image-data")
+        with_body(mock_response, b"fake-image-data")
         mock_response.raise_for_status = MagicMock()
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         with patch("app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype", return_value="png"):
             result = await parser._fetch_single_url(session, "https://example.com/image.png")
@@ -215,7 +216,7 @@ class TestFetchSingleUrl:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(session, "https://example.com/not-image")
         assert result is None
@@ -225,13 +226,13 @@ class TestFetchSingleUrl:
         """URL returning empty content returns None."""
         mock_response = AsyncMock()
         mock_response.headers = {"content-type": "image/png"}
-        mock_response.read = AsyncMock(return_value=b"")
+        with_body(mock_response, b"")
         mock_response.raise_for_status = MagicMock()
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         with patch("app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype", return_value="png"):
             result = await parser._fetch_single_url(session, "https://example.com/empty.png")
@@ -248,7 +249,7 @@ class TestFetchSingleUrl:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         with patch("app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype", return_value=None):
             result = await parser._fetch_single_url(session, "https://example.com/img")
@@ -260,13 +261,13 @@ class TestFetchSingleUrl:
         """SVG content fetched from URL is converted to PNG."""
         mock_response = AsyncMock()
         mock_response.headers = {"content-type": "image/svg+xml"}
-        mock_response.read = AsyncMock(return_value=b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>')
+        with_body(mock_response, b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>')
         mock_response.raise_for_status = MagicMock()
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         fake_png_b64 = base64.b64encode(b"fake-png").decode("utf-8")
 
@@ -291,7 +292,7 @@ class TestFetchSingleUrl:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(session, "https://example.com/protected.png")
         assert result is None
@@ -311,7 +312,7 @@ class TestFetchSingleUrl:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(session, "https://example.com/missing.png")
         assert result is None

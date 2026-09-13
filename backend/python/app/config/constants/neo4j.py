@@ -14,6 +14,7 @@ class Neo4jLabel(Enum):
     """Neo4j node labels mapped from ArangoDB collections"""
     # Records and Record relations
     RECORDS = "Record"
+    STAGE_STATES = "StageState"
     RECORD_GROUPS = "RecordGroup"
     SYNC_POINTS = "SyncPoint"
 
@@ -126,6 +127,7 @@ class Neo4jRelationshipType(Enum):
 # Mapping from ArangoDB CollectionNames to Neo4j Labels
 COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.RECORDS.value: Neo4jLabel.RECORDS.value,
+    CollectionNames.STAGE_STATES.value: Neo4jLabel.STAGE_STATES.value,
     CollectionNames.RECORD_GROUPS.value: Neo4jLabel.RECORD_GROUPS.value,
     CollectionNames.SYNC_POINTS.value: Neo4jLabel.SYNC_POINTS.value,
     CollectionNames.FILES.value: Neo4jLabel.FILES.value,

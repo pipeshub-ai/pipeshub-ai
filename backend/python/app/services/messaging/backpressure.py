@@ -12,13 +12,14 @@ that gap: any client signals it on a 429, and the consumer's read loop
 checks it before every poll, pausing new reads for the signalled duration
 instead of admitting more work it can't yet process.
 
-Single-event-loop use only (like ``CircuitBreaker`` in ``base_client.py``):
-one coordinator per indexing worker process/loop, shared by every service
-client and the consumer that loop drives.
+One coordinator per process, shared by every service client and consumer:
+clients signal it from the worker loop and consumers read it on the main
+loop, so every access takes a thread lock.
 """
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,7 @@ class BackpressureCoordinator:
     def __init__(self, *, clock: "Callable[[], float]" = time.monotonic) -> None:
         self._clock = clock
         self._pause_until: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def signal(self, service_name: str, retry_after: float) -> None:
         """Record that *service_name* asked us to back off for
@@ -53,9 +55,11 @@ class BackpressureCoordinator:
         # resume they resume at a width the service just said it can take.
         get_default_downstream_feedback().report_throttle(service_name)
         until = self._clock() + retry_after
-        previous = self._pause_until.get(service_name, 0.0)
-        if until > previous:
-            self._pause_until[service_name] = until
+        with self._lock:
+            extended = until > self._pause_until.get(service_name, 0.0)
+            if extended:
+                self._pause_until[service_name] = until
+        if extended:
             logger.info(
                 "Backpressure signalled by %s: pausing consumption for %.1fs",
                 service_name, retry_after,
@@ -69,18 +73,18 @@ class BackpressureCoordinator:
         none are currently paused). Expired entries are pruned as a side
         effect so ``paused_services`` never reports a stale name."""
         now = self._clock()
-        expired = [name for name, until in self._pause_until.items() if until <= now]
-        for name in expired:
-            del self._pause_until[name]
-        if not self._pause_until:
-            return 0.0
-        return max(0.0, max(self._pause_until.values()) - now)
+        with self._lock:
+            for name in [name for name, until in self._pause_until.items() if until <= now]:
+                del self._pause_until[name]
+            latest = max(self._pause_until.values(), default=now)
+        return max(0.0, latest - now)
 
     @property
     def paused_services(self) -> frozenset[str]:
         """Which services currently have an unexpired pause signalled."""
         self.pause_remaining()  # prune as a side effect
-        return frozenset(self._pause_until)
+        with self._lock:
+            return frozenset(self._pause_until)
 
 
 # Process-wide default instance. Service clients (ParsingClient,
@@ -93,15 +97,17 @@ class BackpressureCoordinator:
 # indexing service's consumer and its downstream clients agree on one
 # instance without every constructor needing a new parameter threaded in.
 _default_coordinator: BackpressureCoordinator | None = None
+_default_lock = threading.Lock()
 
 
 def get_default_backpressure_coordinator() -> BackpressureCoordinator:
     """Return the process-wide :class:`BackpressureCoordinator`, creating it
     on first use."""
     global _default_coordinator
-    if _default_coordinator is None:
-        _default_coordinator = BackpressureCoordinator()
-    return _default_coordinator
+    with _default_lock:
+        if _default_coordinator is None:
+            _default_coordinator = BackpressureCoordinator()
+        return _default_coordinator
 
 
 def set_default_backpressure_coordinator(coordinator: BackpressureCoordinator | None) -> None:

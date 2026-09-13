@@ -11,7 +11,7 @@ import tempfile
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import jwt
@@ -60,6 +60,54 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
+from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.token_service.oauth_service import (
+    OAuthProvider,
+    OAuthToken,
+)
+from app.connectors.core.constants import (
+    AuthFieldKeys,
+    ConnectorRegistryAuthMetadataKeys,
+    ConnectorRequestKeys,
+    ConnectorStateKeys,
+    OAuthConfigKeys,
+)
+from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.registry.auth_builder import AuthType
+from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
+from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.connectors.core.registry.connector_registry import ConnectorRegistry
+from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.vector_store_rebuild import (
+    VectorStoreRebuildBusyError,
+    VectorStoreRebuildConflictError,
+    acquire_rebuild_lock,
+    assert_no_indexing_in_flight,
+    list_rebuild_apps,
+    release_rebuild_lock,
+    schedule_vector_store_job_async,
+    start_vector_store_cleanup,
+    start_vector_store_reindex,
+)
+from app.connectors.sources.local_fs.connector import LocalFsConnector
+from app.connectors.sources.local_fs.file_events import (
+    _normalize_connector_type_value,
+    _parse_local_fs_file_event_batch_request,
+    _parse_local_fs_uploaded_file_event_batch_request,
+    _update_connector_status,
+)
+from app.connectors.sources.local_fs.models import (
+    LocalFsFileEventBatchStats,
+    LocalFsFileEventSubmissionResponse,
+)
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    FOLDER_MIME_TYPES,
+)
+from app.core.signed_url import SignedUrlHandler
 from app.edition_config import (
     allowed_connector_list_scopes,
     annotate_oauth_inheritance,
@@ -81,52 +129,11 @@ from app.edition_config import (
     strip_redacted_fields,
     vector_store_rebuild_available,
 )
-from app.edition_services import get_data_entities_processor_cls
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
-from app.connectors.core.base.connector.instance_lock import connector_init_lock
-from app.connectors.core.base.token_service.oauth_service import (
-    OAuthProvider,
-    OAuthToken,
-)
-from app.connectors.core.constants import (
-    AuthFieldKeys,
-    ConnectorRegistryAuthMetadataKeys,
-    ConnectorRequestKeys,
-    ConnectorStateKeys,
-    OAuthConfigKeys,
-)
-from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.registry.auth_builder import AuthType
-from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.core.registry.connector_registry import ConnectorRegistry
-from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
-from app.connectors.sources.local_fs.connector import LocalFsConnector
-from app.connectors.sources.local_fs.file_events import (
-    _normalize_connector_type_value,
-    _parse_local_fs_file_event_batch_request,
-    _parse_local_fs_uploaded_file_event_batch_request,
-    _update_connector_status,
-)
-from app.connectors.sources.local_fs.models import (
-    LocalFsFileEventBatchStats,
-    LocalFsFileEventSubmissionResponse,
-)
-from app.connectors.services.kafka_service import KafkaService
-from app.connectors.services.vector_store_rebuild import (
-    VectorStoreRebuildBusyError,
-    VectorStoreRebuildConflictError,
-    acquire_rebuild_lock,
-    assert_no_indexing_in_flight,
-    list_rebuild_apps,
-    release_rebuild_lock,
-    schedule_vector_store_job_async,
-    start_vector_store_cleanup,
-    start_vector_store_reindex,
-)
 from app.edition_containers import ConnectorAppContainer
-from app.core.signed_url import SignedUrlHandler
+from app.edition_services import get_data_entities_processor_cls
 from app.models.entities import Record, RecordType
+from app.modules.pipeline.models import RETRYABLE_STAGES
+from app.modules.pipeline.state import stage_summaries
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.platform_settings import read_platform_feature_flag
@@ -137,7 +144,11 @@ from app.utils.chat_helpers import record_to_text
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
-from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
+from app.utils.oauth_config import (
+    extract_oauth_error_message,
+    fetch_oauth_config_by_id,
+    get_oauth_config,
+)
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1674,6 +1685,23 @@ async def get_records(
             detail="Failed to retrieve records",
         ) from e
 
+async def _stage_states_of(graph_provider: IGraphDBProvider, record: object) -> list[dict[str, Any]]:
+    """Pipeline stage states for the record's current revision; empty when it has none yet."""
+    if not isinstance(record, dict):
+        return []
+    doc = cast("dict[str, object]", record)
+    vrid, rev = doc.get("virtualRecordId"), doc.get("contentRev")
+    if not (isinstance(vrid, str) and vrid and isinstance(rev, str) and rev):
+        return []
+    try:
+        summaries = await stage_summaries(graph_provider, vrid, rev)
+    except Exception:
+        # Stage detail is diagnostics; the record itself is still worth returning.
+        logging.getLogger(__name__).warning("Could not read stage states for revision %s:%s", vrid, rev, exc_info=True)
+        return []
+    return [s.model_dump(mode="json", by_alias=True) for s in summaries]
+
+
 @router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def get_record_by_id(
@@ -1697,6 +1725,8 @@ async def get_record_by_id(
         )
         logger.debug(f"🚀 has_access: {has_access}")
         if has_access:
+            record: object = cast("dict[str, object]", has_access).get("record")
+            has_access["stageStates"] = await _stage_states_of(graph_provider, record)
             return has_access
         else:
             raise HTTPException(
@@ -2117,6 +2147,26 @@ def _parse_status_filters(request_body: dict | None) -> list[str] | None:
     return raw_filters if raw_filters else None
 
 
+def _parse_stages(request_body: dict[str, Any] | None) -> list[str] | None:
+    """Parse optional ``stages``: only these stages re-run, on records selected by their own status."""
+    body = cast("dict[str, object]", request_body or {})
+    raw = body.get("stages")
+    if raw is None:
+        return None
+    items = cast("list[object]", raw) if isinstance(raw, list) else []
+    names = [s for s in items if isinstance(s, str)]
+    if not names or len(names) != len(items):
+        raise HTTPException(status_code=400, detail="stages must be a non-empty array of stage names")
+    unknown = sorted(set(names) - RETRYABLE_STAGES.keys())
+    if unknown:
+        raise HTTPException(
+            status_code=400, detail=f"unknown stages {unknown}; stages that can be re-run: {sorted(RETRYABLE_STAGES)}"
+        )
+    if len({RETRYABLE_STAGES[s] for s in names}) > 1:
+        raise HTTPException(status_code=400, detail="stages re-run together must report the same status field")
+    return list(dict.fromkeys(names))
+
+
 def _build_reindex_event(
     *,
     event_type: str,
@@ -2128,6 +2178,7 @@ def _build_reindex_event(
     depth: int | None = None,
     user_key: str | None = None,
     status_filters: list[str] | None = None,
+    stages: list[str] | None = None,
 ) -> dict:
     """Build the {eventType, topic, payload} envelope for a '*.reindex' sync-event.
 
@@ -2149,6 +2200,8 @@ def _build_reindex_event(
         payload["userKey"] = user_key
     if status_filters:
         payload["statusFilters"] = status_filters
+    if stages:
+        payload["stages"] = stages
     return {"eventType": event_type, "topic": "sync-events", "payload": payload}
 
 
@@ -2542,6 +2595,9 @@ async def reindex_connector(
     Request Body (optional):
         statusFilters: list[str] - indexing statuses to reindex (e.g. ["FAILED"]).
                        Omit to reindex everything.
+        stages: list[str] - re-run only these pipeline stages (e.g. ["classify"]) on
+                records whose stage status matches statusFilters (default FAILED);
+                nothing is re-parsed or re-embedded.
     """
     try:
         container = request.app.container
@@ -2560,6 +2616,7 @@ async def reindex_connector(
         except (json.JSONDecodeError, TypeError):
             request_body = None
         status_filters = _parse_status_filters(request_body)
+        stages = _parse_stages(request_body)
 
         instance = await connector_registry.get_connector_instance(
             connector_id=connector_id,
@@ -2624,6 +2681,7 @@ async def reindex_connector(
             connector_id=connector_id,
             connector_name=connector_normalized,
             status_filters=status_filters,
+            stages=stages,
         )
 
         try:

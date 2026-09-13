@@ -93,6 +93,7 @@ class TestDocumentSchemaInventory:
             "pull_request_record_schema",
             "sql_table_record_schema",
             "sql_view_record_schema",
+            "stage_state_schema",
             "product_record_schema",
             "deal_record_schema",
             "record_group_schema",

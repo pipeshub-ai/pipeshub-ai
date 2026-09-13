@@ -38,6 +38,7 @@ from app.services.resource_governor.policy import (
     LIGHT_PARSE_SLOTS_PER_CPU,
     SAMPLE_INTERVAL_SECONDS,
     SAMPLE_JITTER_SECONDS,
+    ceiling_for,
     floor_for,
     next_limits,
     resolve_ceilings,
@@ -258,6 +259,10 @@ class ResourceGovernor:
     def limit(self, pool: Pool) -> int:
         """Current adaptive limit for *pool*. Safe from any thread."""
         return self._registry.get(pool)
+
+    def ceiling(self, pool: Pool) -> int:
+        """*pool*'s fixed upper bound, resolved at startup; its adaptive limit never exceeds it."""
+        return ceiling_for(pool, self._ceilings)
 
     # -- sampling loop -----------------------------------------------------
 

@@ -1,4 +1,10 @@
 {
+  "collections": {
+    "stats": {
+      "retryClassificationStart": "Reintento de clasificación en cola",
+      "retryClassificationError": "No se pudo reintentar la clasificación"
+    }
+  },
   "resetPassword": {
     "failure": {
       "missingTokenMessage": "Esta página solo es accesible desde un enlace de correo electrónico para restablecer la contraseña. Por favor, utilice la opción Olvidé mi contraseña en la página de inicio de sesión.",
@@ -1859,7 +1865,12 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "VIGILANTE LOCAL",
-        "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos"
+        "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos",
+        "classification": "Clasificación",
+        "classificationSkipped": "Omitidos",
+        "retryFailedClassification": "Reintentar clasificación fallida",
+        "retryClassificationSuccess": "Reintento de clasificación en cola",
+        "retryClassificationError": "No se pudo reintentar la clasificación"
       },
       "settingsTab": {
         "instanceName": "Nombre de la instancia",
@@ -2970,6 +2981,12 @@
       "noRecordMetadata": "No hay metadatos adicionales para este elemento."
     },
     "indexingReasonAria": "Detalles del error de indexación",
+    "stageTrackLabel": "Canalización",
+    "stageParsed": "Analizado",
+    "stageSearchable": "Buscable",
+    "stageClassified": "Clasificado",
+    "stageAttempt": "Intento {{n}}",
+    "stageDetailsAria": "Detalles de la etapa",
     "tabRecordInformation": "Información del registro",
     "tabDocumentDetails": "Detalles del documento",
     "chat": "Chat",

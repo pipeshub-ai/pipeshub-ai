@@ -154,6 +154,9 @@ def _make_event_processor(
         doc["indexingStatus"] = "COMPLETED"
 
     sink_orchestrator.index = AsyncMock(side_effect=_index)
+    # Classification is a pipeline stage; this test is about parsing backpressure.
+    stage_ingress = MagicMock()
+    stage_ingress.on_indexed = AsyncMock(return_value=[])
     return EventProcessor(
         logger=logging.getLogger("test.integration.indexing_backpressure"),
         processor=MagicMock(),
@@ -162,6 +165,7 @@ def _make_event_processor(
         parsing_client=parsing_client,
         extraction_client=MagicMock(),
         sink_orchestrator=sink_orchestrator,
+        stage_ingress=stage_ingress,
     )
 
 
@@ -172,7 +176,7 @@ def _assert_breaker_untouched(parsing_client: ParsingClient) -> None:
 
 
 @pytest.mark.asyncio
-@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true", "DEFER_EXTRACTION": "true"})
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
 class TestIndexingBackpressureE2E:
     async def test_recovers_within_backpressure_budget_single_call_reaches_completed(self) -> None:
         """429s that clear before ParsingClient's own backpressure budget is

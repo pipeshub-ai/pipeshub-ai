@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 from dependency_injector import providers
 
@@ -14,15 +14,19 @@ from app.config.constants.arangodb import (
     EventTypes,
     ProgressStatus,
 )
-from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.sync.task_manager import (
+    reindex_task_manager,
+    sync_task_manager,
+)
 from app.containers.connector import ConnectorAppContainer
-from app.services.cache.invalidation_hooks import notify_connector_sync_completed
 from app.edition_services import get_data_entities_processor_cls
+from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField
+from app.services.cache.invalidation_hooks import notify_connector_sync_completed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -518,6 +522,7 @@ class EventService:
         depth: int,
         user_key: str | None,
         status_filters: list[str] | None,
+        stages: list[str] | None = None,
     ) -> str:
         """Identify a reindex request by everything that changes its result set.
 
@@ -527,7 +532,8 @@ class EventService:
         """
         target = record_id or record_group_id or "*"
         filters = ",".join(sorted(status_filters or []))
-        return f"reindex:{connector_id}:{target}:{depth}:{user_key or '*'}:{filters}"
+        key = f"reindex:{connector_id}:{target}:{depth}:{user_key or '*'}:{filters}"
+        return f"{key}:stages={','.join(sorted(stages))}" if stages else key
 
     async def _handle_reindex(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Validate a reindex event and hand the work to a background task.
@@ -561,6 +567,23 @@ class EventService:
             else:
                 status_filters = raw_status_filters if raw_status_filters else ["FAILED"]
 
+            raw_stages = payload.get("stages")
+            stages: list[str] | None = None
+            if raw_stages is not None:
+                stages = (
+                    [s for s in cast("list[object]", raw_stages) if isinstance(s, str) and s in RETRYABLE_STAGES]
+                    if isinstance(raw_stages, list)
+                    else []
+                )
+                if not stages:
+                    self.logger.error(f"Reindex event names no stage that can be re-run: {raw_stages!r}")
+                    return False
+                if record_id is not None or record_group_id is not None:
+                    self.logger.error("Re-running pipeline stages is connector-wide only; ignoring this event")
+                    return False
+                # Records are selected by the stages' own status, and a retry is for what failed.
+                status_filters = raw_status_filters if raw_status_filters else [ProgressStatus.FAILED.value]
+
             if not org_id:
                 raise ValueError("orgId is required")
 
@@ -581,7 +604,7 @@ class EventService:
                 return False
 
             task_key = self._reindex_task_key(
-                connector_id, record_id, record_group_id, depth, user_key, status_filters
+                connector_id, record_id, record_group_id, depth, user_key, status_filters, stages
             )
             task = await reindex_task_manager.start_if_idle(
                 task_key,
@@ -595,6 +618,7 @@ class EventService:
                     depth=depth,
                     user_key=user_key,
                     status_filters=status_filters,
+                    stages=stages,
                 ),
             )
             if task is None:
@@ -618,6 +642,7 @@ class EventService:
         depth: int,
         user_key: str | None,
         status_filters: list[str] | None,
+        stages: list[str] | None = None,
     ) -> None:
         """Walk every matching record once and hand each batch to the connector.
 
@@ -681,6 +706,7 @@ class EventService:
                     after_key=after_key,
                     exclude_statuses=exclude_statuses,
                     is_placeholder=False,
+                    status_field=(RETRYABLE_STAGES[stages[0]] if stages else HeadlineField.INDEXING).value,
                 )
 
             fetched_count = len(records)
@@ -706,6 +732,15 @@ class EventService:
                 )
                 break
             after_key = last_id
+
+            if stages:
+                # Only the stages re-run: the record stays searchable and its indexing
+                # status is untouched, and the connector is not asked to re-fetch it.
+                await connector.data_entities_processor.reindex_existing_records(records, stages=stages)
+                total_processed += len(records)
+                if fetched_count < batch_size:
+                    break
+                continue
 
             record_ids_to_update = [r.id for r in records if r.id]
             if record_ids_to_update:

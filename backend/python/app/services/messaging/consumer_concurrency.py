@@ -32,7 +32,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from app.services.messaging.config import messaging_env
 from app.services.messaging.distributed_concurrency import (
@@ -43,22 +43,25 @@ from app.services.messaging.distributed_concurrency import (
 from app.services.messaging.redis_errors import report_redis_error
 from app.services.resource_governor import classify, gate_pool, index_pool, parse_cost
 from app.services.resource_governor.models import ParseTier, Pool
+from app.services.resource_governor.probe import memory_domain_id
+from app.utils.request_context import reset_admitted_in, set_admitted_in
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
     from logging import Logger
 
-    from app.services.messaging.config import StreamMessage
-    from app.services.messaging.distributed_concurrency import (
-        DistributedConcurrencyManager,
+    from app.services.distributed.interface import (
+        IDistributedLeaseManager,
+        IRetryTracker,
     )
+    from app.services.messaging.config import StreamMessage
     from app.services.messaging.lease import LeaseHandle, LeaseRenewer
-    from app.services.messaging.retry_manager import RetryManager
     from app.services.resource_governor import ResourceGovernor
 
 logger = logging.getLogger(__name__)
 
 _MAIN_LOOP_OP_TIMEOUT = 5.0
+_T = TypeVar("_T")
 
 # Read-ahead depth, as a multiple of the total in-flight index budget and
 # clamped at both ends. Two, not four: with the index ceilings now derived per
@@ -80,20 +83,48 @@ _MIN_PENDING_PER_TIER = 8
 _READ_AHEAD_BOUNDED_TIERS: frozenset[ParseTier] = frozenset({ParseTier.HEAVY})
 
 
+@dataclass(frozen=True)
+class StageAdmission:
+    """Admission for a pipeline-stage consumer: its own permits and its own cluster lease pool.
+
+    Stage work is bounded by its downstream (an LLM provider's rate limit, say), not by this
+    node's CPU or memory, so it is sized by a fixed limit instead of a governor pool, and it
+    never shares a permit or a lease with record indexing.
+    """
+
+    stage: str
+    limit: int
+
+    def __post_init__(self) -> None:
+        if self.limit < 1:
+            raise ValueError(f"stage {self.stage!r} admission limit must be >= 1")
+
+    @property
+    def lease_pool(self) -> str:
+        return f"stage:{self.stage}"
+
+
 class ConcurrencyHost(Protocol):
     """Structural type for the attributes these helpers rely on."""
 
     logger: "Logger"
     running: bool
     main_loop: asyncio.AbstractEventLoop | None
-    concurrency_manager: "DistributedConcurrencyManager | None"
-    retry_manager: "RetryManager | None"
+    # Read-only so a host may hold the interface or a concrete manager.
+    @property
+    def concurrency_manager(self) -> "IDistributedLeaseManager | None": ...
+
+    @property
+    def retry_manager(self) -> "IRetryTracker | None": ...
+
     _distributed_log_times: dict[str, float]
     # Present on both indexing consumers; None unless a ResourceGovernor was
     # injected at construction time (see Phase 1 of the adaptive-concurrency
     # plan). When None, consumers fall back to the legacy per-worker-loop
     # ``asyncio.Semaphore`` pair created alongside it.
     governor: "ResourceGovernor | None"
+    # Set only on pipeline-stage consumers, which never have a governor.
+    stage_admission: "StageAdmission | None"
     parsing_semaphore: Any
     indexing_semaphore: Any
     # Created inside the consumer's worker thread and dropped with its loop,
@@ -106,12 +137,12 @@ class ConcurrencyHost(Protocol):
     _futures_lock: Any
 
 
-async def bridge_to_main_loop(
-    host: ConcurrencyHost, coro: Any, timeout: float = _MAIN_LOOP_OP_TIMEOUT
-) -> Any:
-    """Run ``coro`` on ``host.main_loop`` (safe when called from a worker loop)."""
+async def run_on_loop(
+    loop: asyncio.AbstractEventLoop | None, coro: "Coroutine[Any, Any, _T]", timeout: float = _MAIN_LOOP_OP_TIMEOUT
+) -> _T:
+    """Run ``coro`` on ``loop`` (safe from another loop's thread); inline when ``loop`` is this one or None."""
     current_loop = asyncio.get_running_loop()
-    main_loop = host.main_loop
+    main_loop = loop
     if main_loop is not None and current_loop is not main_loop:
         if not main_loop.is_running():
             close = getattr(coro, "close", None)
@@ -143,6 +174,13 @@ async def bridge_to_main_loop(
             raise
     return await coro
 
+
+
+async def bridge_to_main_loop(
+    host: ConcurrencyHost, coro: Any, timeout: float = _MAIN_LOOP_OP_TIMEOUT
+) -> Any:
+    """Run ``coro`` on ``host.main_loop`` (safe when called from a worker loop)."""
+    return await run_on_loop(host.main_loop, coro, timeout)
 
 def _consume_orphaned_result(fut: "asyncio.Future[Any]") -> None:
     """Retrieve the outcome of a main-loop operation its caller stopped
@@ -392,6 +430,16 @@ async def record_delivery(host: ConcurrencyHost, message_id: str) -> tuple[int, 
     return deliveries, deliveries >= messaging_env.redis_max_deliveries
 
 
+async def clear_delivery_count(host: ConcurrencyHost, message_id: str) -> None:
+    """Start the delivery count of ``message_id`` over; its failure count is kept."""
+    if not host.retry_manager:
+        return
+    try:
+        await host.retry_manager.clear_deliveries(message_id)
+    except Exception as exc:
+        log_distributed_error(host, "clear_deliveries", exc)
+
+
 # ---------------------------------------------------------------------------
 # ResourceGovernor-backed node-local gates (Phase 1 of the adaptive-concurrency
 # plan). The distributed Redis lease stays sized to the *resolved ceiling*
@@ -461,6 +509,8 @@ def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     every permit with records waiting on the handful of heavy-parse slots,
     and light records that would turn over in seconds never get admitted.
     """
+    if host.stage_admission is not None:
+        return host.stage_admission.limit
     governor = host.governor
     if governor is not None:
         tier = effective_index_tier(host, tier)
@@ -498,6 +548,29 @@ def index_lease_pool(tier: ParseTier | None) -> str:
     if tier is ParseTier.LIGHT and messaging_env.split_index_lease_pools:
         return "indexing:light"
     return "indexing"
+
+
+def admission_lease_pool(host: ConcurrencyHost, tier: ParseTier | None) -> str:
+    """The cluster-wide lease pool this host's index permit counts against."""
+    if host.stage_admission is not None:
+        return host.stage_admission.lease_pool
+    return index_lease_pool(tier)
+
+
+def work_key(payload: "Mapping[str, object]", fallback: str) -> str:
+    """The unit of work a delivery serialises on, in-process and cluster-wide.
+
+    A record event serialises on its record, a pipeline-stage job on its job id (two
+    entries can carry one job: the original and a sweeper re-publish), anything else on
+    its own message.
+    """
+    record_id = payload.get("recordId")
+    if record_id:
+        return str(record_id)
+    job_id = payload.get("jobId")
+    if job_id:
+        return f"job:{job_id}"
+    return fallback
 
 
 def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
@@ -906,7 +979,24 @@ def release_admission(admission: "Admission | None") -> bool:
     return True
 
 
-class ParseAdmissionTimeout(Exception):
+class RequeueWithoutAttempt(Exception):
+    """Hand the message back to the broker without counting a delivery attempt.
+
+    For queue time rather than failure: a record that waited out its parse-slot budget,
+    or a stage job whose dependency is paused.
+    """
+
+    # Whether hand-backs count toward the delivery backstop, which stops a message from
+    # being handed back forever.
+    counts_toward_backstop = True
+
+    def __init__(self, message: str = "", *, delay_s: float | None = None) -> None:
+        super().__init__(message)
+        # How long the broker holds it before redelivery; None for the first retry backoff.
+        self.delay_s = delay_s
+
+
+class ParseAdmissionTimeout(RequeueWithoutAttempt):
     """The wait for a parse slot ran out before the record was admitted.
 
     Not a processing failure: nothing was sent anywhere. The consumers
@@ -999,7 +1089,15 @@ async def acquire_parsing_slot(
         gate = governor.gate(pool)
         if not await gate.acquire(cost=cost, timeout=timeout):
             raise ParseAdmissionTimeout(pool.value, timeout or 0.0)
-        return Admission(tier=resolved_tier, cost=cost, _release=lambda: gate.release(cost))
+        # Braked here: the parsing and Docling services, when they share this memory,
+        # admit the parse without braking it again.
+        stamp = set_admitted_in(memory_domain_id())
+
+        def release() -> None:
+            gate.release(cost)
+            reset_admitted_in(stamp)
+
+        return Admission(tier=resolved_tier, cost=cost, _release=release)
 
     legacy_semaphore = host.parsing_semaphore
     if legacy_semaphore is None:

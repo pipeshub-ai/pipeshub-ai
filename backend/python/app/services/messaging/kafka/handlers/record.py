@@ -524,6 +524,8 @@ class RecordEventHandler(BaseEventService):
         last_exception: Exception | None = None
         cancelled = False
         record = None
+        # A retry of named stages never writes the record's own statuses, even when it fails.
+        stage_redrive = False
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -658,6 +660,21 @@ class RecordEventHandler(BaseEventService):
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
+
+            stages = payload.get("stages")
+            stage_ingress = self.event_processor.stage_ingress
+            if event_type == EventTypes.REINDEX_RECORD.value and isinstance(stages, list) and stages and stage_ingress is not None:
+                stage_redrive = True
+                dispatched = await stage_ingress.redrive(
+                    virtual_record_id, record.get("contentRev"), [str(s) for s in stages]
+                )
+                if dispatched is not None:
+                    self.logger.info(f"🔁 Re-running stages {stages} for record {record_id}: {dispatched}")
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
+                # The runtime never saw this revision: a full reindex dispatches every stage.
+                stage_redrive = False
 
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
@@ -1098,7 +1115,11 @@ class RecordEventHandler(BaseEventService):
                 f"Success: {not error_occurred}"
             )
 
-            if error_occurred and record_id:
+            if stage_redrive:
+                # A stage re-run owns none of the record's bookkeeping (statuses, queued
+                # duplicates, index notifications); its stage state records the outcome.
+                pass
+            elif error_occurred and record_id:
                 # Only update DB status to FAILED if this is the final failure
                 # (terminal error or dead-letter after max retries)
                 is_final = payload.get("is_final_failure")

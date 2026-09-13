@@ -99,6 +99,30 @@ class IndexingAppContainer(BaseAppContainer):
 
 
 
+    # HTTP clients for the standalone Parsing and Extraction services.
+    # These are only used when USE_PARSING_SERVICE=true is set in the environment.
+    parsing_client = providers.Resource(
+        container_utils.create_parsing_client,
+        config_service=config_service,
+    )
+
+    extraction_client = providers.Resource(
+        container_utils.create_extraction_client,
+    )
+
+    # Pipeline stages (classification runs after a record is searchable, on its own permits).
+    pipeline_runtime = providers.Resource(
+        container_utils.create_pipeline_runtime,
+        logger=logger,
+        config_service=config_service,
+        graph_provider=graph_provider,
+        blob_storage=blob_storage,
+        vector_store=vector_store,
+        graphdb=graphdb,
+        document_extractor=document_extractor,
+        extraction_client=extraction_client,
+    )
+
     # Parsers
     parsers = providers.Resource(
         container_utils.create_parsers,
@@ -116,17 +140,7 @@ class IndexingAppContainer(BaseAppContainer):
         parsers=parsers,
         document_extractor=document_extractor,
         sink_orchestrator=sink_orchestrator,
-    )
-
-    # HTTP clients for the standalone Parsing and Extraction services.
-    # These are only used when USE_PARSING_SERVICE=true is set in the environment.
-    parsing_client = providers.Resource(
-        container_utils.create_parsing_client,
-        config_service=config_service,
-    )
-
-    extraction_client = providers.Resource(
-        container_utils.create_extraction_client,
+        pipeline_runtime=pipeline_runtime,
     )
 
     event_processor = providers.Resource(
@@ -139,6 +153,7 @@ class IndexingAppContainer(BaseAppContainer):
         parsing_client=parsing_client,
         extraction_client=extraction_client,
         sink_orchestrator=sink_orchestrator,
+        pipeline_runtime=pipeline_runtime,
     )
 
     # Indexing-specific wiring configuration

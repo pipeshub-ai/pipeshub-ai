@@ -15,6 +15,8 @@ class TransformContext(BaseModel):
     event_type: Optional[str] = None
     reconciliation_context: Optional[ReconciliationContext] = None
     prev_virtual_record_id: Optional[str] = None
+    # Set when extraction was skipped by configuration (not failed), e.g. no LLM configured.
+    extraction_skip_reason: str | None = None
 
 class Transformer(ABC):
     @abstractmethod

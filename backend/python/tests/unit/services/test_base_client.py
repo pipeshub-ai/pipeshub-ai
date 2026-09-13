@@ -1,12 +1,14 @@
+
 """Tests for BaseServiceClient shared retry / timeout logic."""
 from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+import threading
+from unittest.mock import AsyncMock, patch
 
-import pytest
 import httpx
+import pytest
 
 from app.services.base_client import (
     BaseServiceClient,
@@ -15,7 +17,6 @@ from app.services.base_client import (
     ServiceCallError,
     ServiceUnavailableError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -351,3 +352,22 @@ async def test_health_check_returns_false_for_connection_error() -> None:
         result = await client.health_check()
 
     assert result is False
+
+
+def test_only_one_thread_claims_the_half_open_probe() -> None:
+    """The indexing worker loop and the server loop call the breaker from different threads."""
+    breaker = CircuitBreaker("svc", failure_threshold=1, cooldown_seconds=0.0)
+    breaker.record_failure()
+    barrier = threading.Barrier(16)
+    claims: list[bool] = []
+
+    def claim() -> None:
+        barrier.wait()
+        claims.append(breaker.should_attempt_probe())
+
+    threads = [threading.Thread(target=claim) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert claims.count(True) == 1

@@ -20,9 +20,10 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.api.routes.extraction import router as extraction_router
 from app.containers.extraction import ExtractionAppContainer, initialize_container
 from app.modules.transformers.document_extraction import DocumentExtraction
-from app.api.routes.extraction import router as extraction_router
+from app.services.llm_gateway.gateway import get_llm_gateway
 
 logger = logging.getLogger("extraction_main")
 
@@ -100,7 +101,13 @@ app.include_router(extraction_router)
 
 @app.get("/health")
 async def health_check() -> JSONResponse:
-    return JSONResponse(content={"status": "healthy", "service": "extraction"})
+    content: dict[str, object] = {"status": "healthy", "service": "extraction"}
+    try:
+        # Classification calls the model through this process's gateway: its cap and breakers.
+        content["llm_gateway"] = get_llm_gateway().stats()
+    except Exception as stats_error:
+        content["llm_gateway"] = {"error": str(stats_error)}
+    return JSONResponse(content=content)
 
 
 if __name__ == "__main__":

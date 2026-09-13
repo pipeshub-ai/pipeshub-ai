@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.utils.llm import (
+    LLMNotConfiguredError,
     get_embedding_model_config,
     get_image_generation_config,
     get_llm,
@@ -81,7 +82,7 @@ class TestGetLlm:
             "llm": []
         }
 
-        with pytest.raises(ValueError, match="No LLM configurations found"):
+        with pytest.raises(LLMNotConfiguredError):
             await get_llm(mock_config_service)
 
     @pytest.mark.asyncio
@@ -91,7 +92,14 @@ class TestGetLlm:
             "llm": None
         }
 
-        with pytest.raises(ValueError, match="No LLM configurations found"):
+        with pytest.raises(LLMNotConfiguredError):
+            await get_llm(mock_config_service)
+
+    @pytest.mark.asyncio
+    async def test_raises_when_ai_settings_never_saved(self, mock_config_service) -> None:
+        mock_config_service.get_config.return_value = None
+
+        with pytest.raises(LLMNotConfiguredError):
             await get_llm(mock_config_service)
 
     @pytest.mark.asyncio
@@ -186,13 +194,18 @@ class TestGetEmbeddingModelConfig:
             await get_embedding_model_config(mock_config_service)
 
     @pytest.mark.asyncio
-    async def test_raises_on_missing_embedding_key(self, mock_config_service):
+    async def test_returns_none_when_embedding_key_missing(self, mock_config_service) -> None:
         mock_config_service.get_config.return_value = {
             "llm": [{"provider": "openAI"}]
         }
 
-        with pytest.raises(KeyError):
-            await get_embedding_model_config(mock_config_service)
+        assert await get_embedding_model_config(mock_config_service) is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_ai_settings_never_saved(self, mock_config_service) -> None:
+        mock_config_service.get_config.return_value = None
+
+        assert await get_embedding_model_config(mock_config_service) is None
 
 
 class TestIsLocalCpuEmbeddingConfigured:

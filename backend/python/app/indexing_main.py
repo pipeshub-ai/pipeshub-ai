@@ -1,17 +1,17 @@
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
-
 import asyncio
 import inspect
+import logging
 import os
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 from uuid import uuid4
-from collections.abc import AsyncGenerator, Awaitable
-from contextlib import asynccontextmanager
-from typing import Any, Protocol, TypeVar
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -19,23 +19,10 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.modules.indexing.vector_membership_backfill import (
-    run_vector_membership_backfill_loop,
-)
 from app.containers.indexing import initialize_container
 from app.edition_containers import IndexingAppContainer
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.messaging.config import (
-    ConsumerType,
-    Topic,
-    get_message_broker_type,
-    messaging_env,
-)
-from app.services.messaging.backpressure import (
-    get_default_backpressure_coordinator,
-)
-from app.services.messaging.distributed_concurrency import (
-    DistributedConcurrencyManager,
+from app.modules.indexing.vector_membership_backfill import (
+    run_vector_membership_backfill_loop,
 )
 from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
@@ -43,13 +30,34 @@ from app.modules.parsers.pdf.docling_processor import (
 from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
+from app.services.distributed.interface import IDistributedLeaseManager
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.llm_gateway.gateway import get_llm_gateway
+from app.services.messaging.backpressure import (
+    get_default_backpressure_coordinator,
+)
+from app.services.messaging.config import (
+    ConsumerType,
+    Topic,
+    get_message_broker_type,
+    messaging_env,
+)
+from app.services.messaging.consumer_concurrency import StageAdmission
+from app.services.messaging.distributed_concurrency import (
+    DistributedConcurrencyManager,
+)
+from app.services.messaging.interface.admin import IMessageAdmin
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.services.messaging.worker_loop import WorkerLoop
 from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.modules.pipeline.runtime import PipelineRuntime
 
 _T = TypeVar("_T")
 
@@ -510,6 +518,7 @@ async def recover_in_progress_records(
             run_coordination=run_coordination,
             concurrency_manager=concurrency_manager,
             page_size=page_size,
+            is_backlogged=lambda: _record_consumer_backlogged(app_container),
         )
 
         # Vectors whose last referencing record was repointed elsewhere are
@@ -530,6 +539,8 @@ async def recover_in_progress_records(
                 logger=logger,
                 page_size=page_size,
             )
+
+        total_records += await _sweep_pipeline_stages(app_container, concurrency_manager, logger)
 
         if total_records == 0:
             logger.debug("No stale in-progress records to recover")
@@ -568,6 +579,62 @@ async def recover_in_progress_records(
 ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
 _orphan_sweep_cursor = 0
 
+
+
+# Stage sweep thresholds: a claim unpublished this long is re-sent; a running job this far
+# past the longest stage budget is reclaimed once its lease is found free.
+_STAGE_QUEUED_SWEEP_MS = 120_000
+_STAGE_IN_PROGRESS_SWEEP_MS = 1_800_000
+_STAGE_SWEEP_LIMIT = 200
+_STAGE_SWEEP_OWNER = "pipeline-stage-sweeper"
+
+
+async def _resolve_pipeline_runtime(app_container: IndexingAppContainer) -> "PipelineRuntime":
+    runtime = app_container.pipeline_runtime()
+    if inspect.isawaitable(runtime):
+        runtime = await runtime
+    return runtime
+
+
+async def _sweep_pipeline_stages(
+    app_container: IndexingAppContainer,
+    concurrency_manager: IDistributedLeaseManager | None,
+    logger: logging.Logger,
+) -> int:
+    """Re-publish stage jobs whose claim never reached the broker; reclaim ones whose worker is gone."""
+    try:
+        runtime = await _resolve_pipeline_runtime(app_container)
+    except Exception as exc:
+        logger.warning("Pipeline runtime unavailable for the stage sweep: %s", exc)
+        return 0
+
+    is_job_active: Callable[[str], Awaitable[bool]] | None = None
+    if concurrency_manager is not None:
+        manager = concurrency_manager
+
+        async def job_lease_held(job_id: str) -> bool:
+            # The stage consumer holds this lease while a job runs; if the sweeper can
+            # take it, nobody is running the job.
+            pool = f"record:job:{job_id}"
+            if await manager.try_acquire(pool, _STAGE_SWEEP_OWNER, 1, 5.0):
+                await manager.release(pool, _STAGE_SWEEP_OWNER)
+                return False
+            return True
+
+        is_job_active = job_lease_held
+
+    report = await runtime.coordinator.sweep(
+        queued_older_than_ms=_STAGE_QUEUED_SWEEP_MS,
+        limit=_STAGE_SWEEP_LIMIT,
+        in_progress_older_than_ms=_STAGE_IN_PROGRESS_SWEEP_MS if is_job_active is not None else None,
+        is_job_active=is_job_active,
+    )
+    if report.republished or report.reclaimed:
+        logger.info(
+            "Pipeline stage sweep: %d re-published, %d reclaimed of %d scanned",
+            report.republished, report.reclaimed, report.scanned,
+        )
+    return report.republished + report.reclaimed
 
 async def _sweep_orphaned_virtual_record_mappings(
     *,
@@ -778,14 +845,53 @@ async def _sweep_queued_records_for_inactive_connectors(
     return swept
 
 
+def _as_epoch_ms(value: object) -> float | None:
+    """A stored epoch-ms stamp as a number; None when absent or unreadable."""
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+# While the record consumer has a backlog, a stranded row waits up to this many intervals
+# before it is re-sent anyway: late events are not re-sent, lost ones still are.
+_STRANDED_BACKLOG_PATIENCE = 6
+
+
+def _record_consumer_backlogged(app_container: object) -> bool:
+    """Whether this process's record consumer holds more work than it can start.
+
+    Read from its dispatch stats: tasks waiting for an index permit, or reads
+    blocked by the dispatch budget. Only this process's consumer is visible;
+    the sweep runs on one node, under the cluster-wide recovery lease.
+    """
+    consumers = cast("list[tuple[object, ...]]", getattr(app_container, "kafka_consumers", None) or [])
+    for entry in consumers:
+        consumer = entry[1] if len(entry) > 1 else None
+        # Stage consumers admit per stage; the sweep re-sends record events.
+        if consumer is None or getattr(consumer, "stage_admission", None) is not None:
+            continue
+        stats = getattr(consumer, "dispatch_stats", None)
+        if not callable(stats):
+            continue
+        snapshot = cast("dict[str, Any]", stats())
+        total = cast("dict[str, Any]", snapshot.get("total") or {})
+        if snapshot.get("blocked") or (total.get("waiters") or 0) > 0:
+            return True
+    return False
+
+
 async def _republish_stranded_records(
     *,
-    graph_provider,
-    logger,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
     producer,
     run_coordination,
     concurrency_manager,
     page_size: int,
+    is_backlogged: Callable[[], bool] | None = None,
 ) -> int:
     """Re-publish records that have been waiting on an event that never came.
 
@@ -795,16 +901,21 @@ async def _republish_stranded_records(
     published because the send failed after the transaction committed — is
     reachable by neither, so it waits for ever.
 
-    Keyed on age rather than on what QUEUED is supposed to mean. That status is
-    written both by the upsert that precedes publishing and by the publish
-    itself, so it cannot distinguish "the event is on the broker" from "the
-    event was never sent"; age can, and it recovers the row either way.
+    Keyed on how long the row has waited since this sweep first saw it, on a
+    clock the sweep owns (``awaitingEventSince``). QUEUED is written both by the
+    upsert that precedes publishing and by the publish itself, so the status
+    cannot tell "the event is on the broker" from "it was never sent", and the
+    row's own timestamps cannot either: connectors fill ``updatedAtTimestamp``
+    with the source system's time, so a Jira issue last edited a year ago looks
+    a year old the moment it is queued. The first sighting only starts the
+    clock, a consumer picking the row up clears it, and a row still waiting a
+    full interval later is re-sent and its clock restarted. While this
+    process's record consumer has a backlog, re-sends wait (up to
+    ``_STRANDED_BACKLOG_PATIENCE`` intervals): an event behind a backlog is
+    late, not lost.
 
     On by default (one hour); STRANDED_RECORD_REPUBLISH_AFTER_SECONDS=0
-    disables it. Keep the threshold comfortably longer than the worst backlog
-    the broker is expected to carry, or healthy records still queued behind it
-    will be re-sent -- harmlessly, since re-publishing is idempotent, but
-    wastefully.
+    disables it.
 
     Re-publishing is safe to repeat: the handler skips a record that is already
     COMPLETED, and the per-record exclusivity lease stops a republished event
@@ -814,9 +925,17 @@ async def _republish_stranded_records(
     if after_seconds <= 0:
         return 0
 
-    cutoff_ms = get_epoch_timestamp_in_ms() - int(after_seconds * 1000)
+    now_ms = get_epoch_timestamp_in_ms()
+    cutoff_ms = now_ms - int(after_seconds * 1000)
+    patience_cutoff_ms = now_ms - int(after_seconds * 1000 * _STRANDED_BACKLOG_PATIENCE)
     connector_active: dict[str, bool] = {}
     republished = 0
+    deferred = 0
+    try:
+        backlogged = bool(is_backlogged is not None and is_backlogged())
+    except Exception as exc:
+        logger.debug("Could not read the record consumer's backlog: %s", exc)
+        backlogged = False
 
     async def _is_active(connector_id: str) -> bool:
         if connector_id not in connector_active:
@@ -855,27 +974,23 @@ async def _republish_stranded_records(
                 ):
                     continue
 
-                # Two clocks, both of which must be older than the cutoff.
-                # updatedAt moves on every write to the row, so a record still
-                # being touched by a sync is never old enough to qualify.
-                # lastRepublishedAt is our own: publishing changes nothing about
-                # the row, so without it a record stays eligible and every tick
-                # sends another copy of the same event -- worst precisely when
-                # the consumer is backlogged, which is the case this sweep
-                # exists for.
-                updated_at = record.get("updatedAtTimestamp") or record.get(
-                    "createdAtTimestamp"
-                )
-                last_republished_at = record.get("lastRepublishedAt")
-                try:
-                    if updated_at is None or float(updated_at) > cutoff_ms:
-                        continue
-                    if (
-                        last_republished_at is not None
-                        and float(last_republished_at) > cutoff_ms
-                    ):
-                        continue
-                except (TypeError, ValueError):
+                waiting_since = _as_epoch_ms(record.get("awaitingEventSince"))
+                if waiting_since is None:
+                    # First sighting: start the clock. Nothing is sent until the row
+                    # has waited a full interval with no consumer picking it up.
+                    try:
+                        await graph_provider.update_node(
+                            record_key,
+                            CollectionNames.RECORDS.value,
+                            {"awaitingEventSince": get_epoch_timestamp_in_ms()},
+                        )
+                    except Exception as exc:
+                        logger.debug("Could not start the stranded clock for %s: %s", record_key, exc)
+                    continue
+                if waiting_since > cutoff_ms:
+                    continue
+                if backlogged and waiting_since > patience_cutoff_ms:
+                    deferred += 1
                     continue
 
                 if not await _is_active(connector_id):
@@ -923,22 +1038,16 @@ async def _republish_stranded_records(
                         else EventTypes.NEW_RECORD.value
                     )
 
-                    # The marker is a durable claim written BEFORE the send, not
-                    # a receipt written after it. Written after, a Neo4j failure
-                    # following a successful Redis send left the record eligible
-                    # again next tick -- one duplicate event per minute, per
-                    # record, for as long as the consumer had not yet moved it
-                    # out of QUEUED/NOT_STARTED. Under a backlog that is a
-                    # feedback loop: every tick inflates the very backlog that
-                    # is delaying the consumer. Claiming first bounds it: if the
-                    # claim cannot be persisted, nothing is sent this tick.
-                    # Deliberately not updatedAtTimestamp: that field means
-                    # "when the record last changed" and connectors write it, so
-                    # a recovery sweep must not move it.
+                    # The claim restarts the row's clock and is written BEFORE the
+                    # send, not after it. Written after, a graph failure following
+                    # a successful send left the row eligible again next tick: one
+                    # duplicate per tick, per record, inflating the very backlog
+                    # that delays the consumer. If the claim cannot be persisted,
+                    # nothing is sent this tick.
                     claimed = await graph_provider.update_node(
                         record_key,
                         CollectionNames.RECORDS.value,
-                        {"lastRepublishedAt": get_epoch_timestamp_in_ms()},
+                        {"awaitingEventSince": get_epoch_timestamp_in_ms()},
                     )
                     if not claimed:
                         logger.error(
@@ -959,16 +1068,16 @@ async def _republish_stranded_records(
                             )
                         )
                     except Exception:
-                        # The claim is already persisted, so without this the
+                        # The claim restarted the clock, so without this the
                         # record would wait a full interval before its next
-                        # attempt. Clearing it (best effort) lets the next tick
-                        # retry; if even that fails the record still only
-                        # waits one interval -- bounded either way.
+                        # attempt. Putting the old stamp back (best effort) lets
+                        # the next tick retry; if even that fails the record
+                        # still only waits one interval -- bounded either way.
                         try:
                             await graph_provider.update_node(
                                 record_key,
                                 CollectionNames.RECORDS.value,
-                                {"lastRepublishedAt": None},
+                                {"awaitingEventSince": int(waiting_since)},
                             )
                         except Exception as clear_exc:
                             logger.warning(
@@ -981,11 +1090,11 @@ async def _republish_stranded_records(
                     republished += 1
                     logger.warning(
                         "Re-published stranded record %s (%s, status %s, "
-                        "untouched for %.0fs)",
+                        "no consumer picked it up for %.0fs)",
                         record_key,
                         record.get("recordName"),
                         status_value,
-                        (get_epoch_timestamp_in_ms() - float(updated_at)) / 1000,
+                        (get_epoch_timestamp_in_ms() - waiting_since) / 1000,
                     )
                 except Exception as exc:
                     logger.error(
@@ -1017,6 +1126,12 @@ async def _republish_stranded_records(
             "Re-published %d stranded record(s) whose events never arrived",
             republished,
         )
+    if deferred:
+        logger.info(
+            "Deferred re-sending %d stranded record(s): the record consumer has a "
+            "backlog, so their events may only be late",
+            deferred,
+        )
     return republished
 
 
@@ -1044,17 +1159,117 @@ async def run_stale_recovery_loop(
         )
 
 
+class _Closable(Protocol):
+    async def cleanup(self) -> None: ...
+
+
+async def _stop_consumers_then_shared_resources(
+    consumers: list[tuple[Any, ...]],
+    logger: logging.Logger,
+    *,
+    also_close: tuple[_Closable | None, ...] = (),
+    during: str = "",
+) -> None:
+    """Stop every consumer, then close each resource they use, once.
+
+    The record consumer and every stage consumer share one lease manager, retry
+    tracker and retry producer. A consumer that is still stopping renews leases,
+    counts deliveries and re-queues through them, so none may close before the
+    last consumer has stopped.
+    """
+    for item in consumers:
+        name, consumer = item[0], item[1]
+        try:
+            await consumer.stop()
+            logger.info("✅ %s message consumer stopped%s", str(name).title(), during)
+        except Exception as exc:
+            logger.error("❌ Error stopping %s consumer%s: %s", name, during, exc)
+
+    # Injected into the consumers but owned by start_kafka_consumers: consumer.stop()
+    # does not close them (that broke restart).
+    resources: list[tuple[str, _Closable | None]] = []
+    for item in consumers:
+        name, consumer = item[0], item[1]
+        resources.extend(
+            (f"{name} {attr}", cast("_Closable | None", getattr(consumer, attr, None)))
+            for attr in ("concurrency_manager", "retry_manager")
+        )
+        if len(item) > 2:
+            resources.append((f"{name} retry producer", cast("_Closable | None", item[2])))
+    resources.extend(("shared consumer resource", resource) for resource in also_close)
+    closed: set[int] = set()
+    for label, resource in resources:
+        if resource is None or id(resource) in closed:
+            continue
+        closed.add(id(resource))
+        try:
+            await resource.cleanup()
+        except Exception as exc:
+            logger.error("Error closing %s%s: %s", label, during, exc)
+
+
+# The connector service creates the collections on a first start; indexing waits for it.
+_SCHEMA_RETRY_FIRST_S = 2.0
+_SCHEMA_RETRY_MAX_S = 60.0
+# Missing stage topics usually wait on an operator (topic ACLs, or creating them by hand).
+_TOPIC_RETRY_FIRST_S = 30.0
+_TOPIC_RETRY_MAX_S = 300.0
+
+
+async def _ensure_pipeline_schema(graph_provider: IGraphDBProvider, logger: logging.Logger) -> None:
+    """Wait until the graph holds the schema indexing writes against.
+
+    Retries instead of failing the startup: where nothing restarts the process, exiting would
+    stop indexing for good, and where something does it would only repeat the wait.
+    """
+    delay = _SCHEMA_RETRY_FIRST_S
+    while True:
+        try:
+            await graph_provider.ensure_pipeline_schema()
+            logger.info("✅ Graph schema for the indexing pipeline is in place")
+            return
+        except Exception as e:
+            logger.error("❌ Graph schema for the indexing pipeline is not ready (%s); retrying in %.0fs", e, delay)
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _SCHEMA_RETRY_MAX_S)
+
+
+async def _start_stages_when_topics_exist(
+    admin: IMessageAdmin,
+    topics: list[str],
+    start_stages: Callable[[], Awaitable[None]],
+    logger: logging.Logger,
+) -> None:
+    delay = _TOPIC_RETRY_FIRST_S
+    while True:
+        await asyncio.sleep(delay)
+        try:
+            await admin.ensure_topics_exist(topics)
+            break
+        except Exception as e:
+            delay = min(delay * 2, _TOPIC_RETRY_MAX_S)
+            logger.error("❌ Pipeline stage topics %s are still not available (%s); retrying in %.0fs", topics, e, delay)
+    try:
+        await start_stages()
+        logger.info("✅ Pipeline stage topics %s are available; stage consumers started", topics)
+    except Exception:
+        logger.exception("❌ Starting the pipeline stage consumers failed")
+
+
 async def start_kafka_consumers(
     app_container: IndexingAppContainer,
     governor: ResourceGovernor | None = None,
 ) -> list[Any]:
     """Start all message consumers at application level"""
     logger = app_container.logger()
-    consumers = []
+    consumers: list[tuple[str, Any, Any]] = []
     broker_type = get_message_broker_type()
     retry_manager = None
     retry_producer = None
     concurrency_manager = None
+    # Every consumer below runs its handlers on this one loop (see WorkerLoop).
+    worker = WorkerLoop(logger)
+    setattr(app_container, "worker_loop", worker)
 
     try:
         logger.info(f"🚀 Starting Record Consumer (broker: {broker_type})...")
@@ -1127,6 +1342,7 @@ async def start_kafka_consumers(
             governor=governor,
             backpressure_coordinator=get_default_backpressure_coordinator(),
             disposition_sink=record_event_handler,
+            worker=worker,
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
 
@@ -1138,93 +1354,109 @@ async def start_kafka_consumers(
         await record_kafka_consumer.start(record_message_handler)  # type: ignore[arg-type]
         logger.info("✅ Record message consumer started")
 
+        # Pipeline stages: one consumer per stage topic, each on its own permits and
+        # cluster lease pool, so stage work (classification) never holds an indexing permit.
+        pipeline_runtime = await _resolve_pipeline_runtime(app_container)
+        # A stage writes the stored record under the record's exclusivity lease, as its re-index does.
+        pipeline_runtime.record_leases.bind(concurrency_manager)
+        registry = pipeline_runtime.registry
+        stage_topics = [registry.topic_for(name) for name in registry.names()]
+        stage_producer = retry_producer
+        main_loop = asyncio.get_running_loop()
+
+        async def start_stage_consumers() -> None:
+            # Bound only once the topics exist: Kafka holds a send to a missing topic for its
+            # metadata timeout, and the record handler's hand-off would wait with it.
+            pipeline_runtime.publisher.bind(stage_producer, main_loop)
+            for stage_name in registry.names():
+                topic = registry.topic_for(stage_name)
+                stage_config = await MessagingUtils.create_consumer_config(
+                    app_container,
+                    f"pipeline_{stage_name}_client",
+                    f"pipeline_{stage_name}_group",
+                    [topic],
+                    is_indexing=True,
+                )
+                stage_consumer = MessagingFactory.create_consumer(
+                    broker_type=broker_type,
+                    logger=logger,
+                    config=stage_config,
+                    consumer_type=ConsumerType.INDEXING,
+                    retry_manager=retry_manager,
+                    producer=stage_producer,
+                    concurrency_manager=concurrency_manager,
+                    backpressure_coordinator=get_default_backpressure_coordinator(),
+                    disposition_sink=pipeline_runtime.handler,
+                    stage_admission=StageAdmission(stage=stage_name, limit=pipeline_runtime.stage_limits[stage_name]),
+                    worker=worker,
+                )
+                # The retry producer is owned by the record consumer's entry, so it is closed once.
+                consumers.append((topic, stage_consumer, None))
+                await stage_consumer.start(pipeline_runtime.handler)  # type: ignore[arg-type]
+                logger.info("✅ Pipeline stage consumer started: %s", topic)
+
+        admin = MessagingFactory.create_admin(logger, producer_config, broker_type)
+        try:
+            await admin.ensure_topics_exist(stage_topics)
+        except Exception as e:
+            # Records stay indexable without the stage topics; only classification waits.
+            logger.error(
+                "❌ Pipeline stage topics %s are not available (%s). Records are still indexed and "
+                "searchable; classification waits until the topics exist. Create them, or allow this "
+                "client to create topics. Retrying in the background.",
+                stage_topics,
+                e,
+            )
+            setattr(
+                app_container,
+                "stage_startup_task",
+                asyncio.create_task(
+                    _start_stages_when_topics_exist(admin, stage_topics, start_stage_consumers, logger)
+                ),
+            )
+            return consumers
+        await start_stage_consumers()
+
         return consumers
     except Exception as e:
         logger.error(f"❌ Error starting message consumers: {str(e)}")
-        # Cleanup any started consumers and producers
-        consumer_cleanup_failed = False
-        for item in consumers:
-            name = item[0]
-            consumer = item[1]
-            producer = item[2] if len(item) > 2 else None
-            try:
-                await consumer.stop()
-                logger.info(f"Stopped {name} consumer during cleanup")
-            except Exception as cleanup_error:
-                consumer_cleanup_failed = True
-                logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
-            if producer:
-                try:
-                    await producer.cleanup()
-                    logger.info(f"Stopped {name} retry producer during cleanup")
-                except Exception as cleanup_error:
-                    logger.error(f"Error stopping {name} retry producer during cleanup: {cleanup_error}")
-        if not consumers or consumer_cleanup_failed:
-            if concurrency_manager:
-                try:
-                    await concurrency_manager.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing distributed concurrency during cleanup: %s",
-                        cleanup_error,
-                    )
-            if retry_manager:
-                try:
-                    await retry_manager.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing retry manager during cleanup: %s",
-                        cleanup_error,
-                    )
-            if retry_producer:
-                try:
-                    await retry_producer.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing retry producer during cleanup: %s",
-                        cleanup_error,
-                    )
+        # The started consumers first, then what they share (owned here, whether or
+        # not any consumer had started).
+        await _stop_consumers_then_shared_resources(
+            consumers,
+            logger,
+            also_close=(concurrency_manager, retry_manager, retry_producer),
+            during=" during cleanup",
+        )
+        # After every consumer that ran on it.
+        await worker.aclose()
         raise
 
-async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
+async def _close_worker_loop(container: IndexingAppContainer) -> None:
+    """Close the shared worker loop, once every consumer and loop-bound client on it is done."""
+    worker = getattr(container, "worker_loop", None)
+    if isinstance(worker, WorkerLoop):
+        await worker.aclose()
+        setattr(container, "worker_loop", None)
+
+
+async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_loop: bool = True) -> None:
     """Stop all Kafka consumers and their associated producers"""
 
     logger = container.logger()
+    # A stage start still waiting for its topics must not start consumers once these stop.
+    stage_startup = getattr(container, "stage_startup_task", None)
+    if isinstance(stage_startup, asyncio.Task) and not stage_startup.done():
+        _ = stage_startup.cancel()
+        with suppress(asyncio.CancelledError):
+            await stage_startup
     consumers = getattr(container, 'kafka_consumers', [])
-    for item in consumers:
-        name = item[0]
-        consumer = item[1]
-        producer = item[2] if len(item) > 2 else None
+    await _stop_consumers_then_shared_resources(consumers, logger)
 
-        try:
-            await consumer.stop()
-            logger.info(f"✅ {name.title()} message consumer stopped")
-        except Exception as e:
-            logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
-
-        # concurrency_manager/retry_manager are injected into the consumer but
-        # owned here (created in start_kafka_consumers) — consumer.stop() no
-        # longer closes them (that broke restart), so close them unconditionally,
-        # regardless of whether consumer.stop() above succeeded.
-        for resource_name in ("concurrency_manager", "retry_manager"):
-            resource = getattr(consumer, resource_name, None)
-            if resource is not None:
-                try:
-                    await resource.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing %s for %s consumer: %s",
-                        resource_name,
-                        name,
-                        cleanup_error,
-                    )
-
-        if producer:
-            try:
-                await producer.cleanup()
-                logger.info(f"✅ {name.title()} retry producer stopped")
-            except Exception as e:
-                logger.error(f"❌ Error stopping {name} retry producer: {str(e)}")
+    # Closed only once every consumer running on it has stopped; the lifespan closes it later,
+    # after the clients bound to it.
+    if close_worker_loop:
+        await _close_worker_loop(container)
 
     # Clear the consumers list
     if hasattr(container, 'kafka_consumers'):
@@ -1249,6 +1481,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Fallback: if not set during initialization, resolve it now
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
+
+    # Indexing writes stage states and record fields declared by the connector service's schema
+    # bootstrap, which may not have run yet (a first start, or an older connector image).
+    await _ensure_pipeline_schema(cast(IGraphDBProvider, graph_provider), logger)
 
     # One governor per process: derives parse/index ceilings from cgroup/CPU
     # limits (falling back to the operator's MAX_CONCURRENT_* when set) and
@@ -1291,6 +1527,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         consumers = await start_kafka_consumers(app_container, governor)
         app_container.kafka_consumers = consumers
+        app.state.pipeline_runtime = await _resolve_pipeline_runtime(app_container)
         logger.info("✅ All message consumers started successfully")
     except Exception as e:
         logger.error(f"❌ Failed to start message consumers: {str(e)}")
@@ -1384,9 +1621,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"❌ Error during vector membership backfill future shutdown: {str(e)}")
 
-    # Stop message consumers
+    # Stop message consumers; the worker loop stays up for the clients bound to it, closed below.
     try:
-        await stop_kafka_consumers(app_container)
+        await stop_kafka_consumers(app_container, close_worker_loop=False)
     except Exception as e:
         logger.error(f"❌ Error during application shutdown: {str(e)}")
 
@@ -1416,6 +1653,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await config_service.close()
     except Exception as e:
         logger.error(f"❌ Error closing configuration service: {e}")
+
+    # After the clients bound to it (the accessible-records cache's, above): LoopLocal can
+    # close a resource only on a loop that is still running.
+    try:
+        await _close_worker_loop(app_container)
+    except Exception as e:
+        logger.error(f"❌ Error closing the shared worker loop: {e}")
 
     # Shut down the PDF OCR process-pool (no-op if it was never initialised).
     # atexit registered inside the pool factory is the safety net for unclean
@@ -1486,6 +1730,16 @@ async def health_check(request: Request) -> JSONResponse:
                 dispatch[str(entry[0])] = {"error": str(stats_error)}
         if dispatch:
             content["dispatch"] = dispatch
+        runtime: PipelineRuntime | None = getattr(request.app.state, "pipeline_runtime", None)
+        if runtime is not None:
+            try:
+                content["stages"] = runtime.stats()
+            except Exception as stats_error:
+                content["stages"] = {"error": str(stats_error)}
+        try:
+            content["llm_gateway"] = get_llm_gateway().stats()
+        except Exception as stats_error:
+            content["llm_gateway"] = {"error": str(stats_error)}
         return JSONResponse(
             status_code=200,
             content=content,

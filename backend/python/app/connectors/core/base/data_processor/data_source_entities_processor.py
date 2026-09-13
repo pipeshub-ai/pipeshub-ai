@@ -1608,17 +1608,21 @@ class DataSourceEntitiesProcessor:
 
 
     @staticmethod
-    def _reindex_event_payload(record: Record, *, vector_db_only: bool) -> dict:
+    def _reindex_event_payload(
+        record: Record, *, vector_db_only: bool, stages: list[str] | None = None
+    ) -> dict:
         payload = {**record.to_kafka_record(), "forceReindex": True}
         if record.virtual_record_id:
             payload.setdefault("virtualRecordId", record.virtual_record_id)
         if vector_db_only:
             payload["vectorDbOnly"] = True
+        if stages:
+            payload["stages"] = list(stages)
         return payload
 
     @retry_on_deadlock()
     async def reindex_existing_records(
-        self, records: list[Record], *, vector_db_only: bool = False
+        self, records: list[Record], *, vector_db_only: bool = False, stages: list[str] | None = None
     ) -> None:
         """
         Publish reindex events for existing records without DB operations.
@@ -1629,6 +1633,8 @@ class DataSourceEntitiesProcessor:
             records: List of properly typed Record instances (FileRecord, MailRecord, etc.)
             vector_db_only: When True, indexing reloads blob content and re-embeds
                 without re-parsing the source.
+            stages: When given, indexing re-runs only these pipeline stages for each
+                record's current revision; the record stays searchable.
         """
         try:
             if not records:
@@ -1676,7 +1682,7 @@ class DataSourceEntitiesProcessor:
                             # already-indexed guard skips it and reindex silently
                             # does nothing for a healthy corpus.
                             "payload": self._reindex_event_payload(
-                                record, vector_db_only=vector_db_only
+                                record, vector_db_only=vector_db_only, stages=stages
                             ),
                         },
                     )
@@ -1688,7 +1694,9 @@ class DataSourceEntitiesProcessor:
             # QUEUED; marking a failed publish would strand the record, since nothing
             # consumes QUEUED.
             published_ids = [r.id for r, ok in zip(to_publish, acked) if ok]
-            await self._mark_queued_after_publish(published_ids)
+            if not stages:
+                # A stage re-run leaves the record searchable; only its stages are queued.
+                await self._mark_queued_after_publish(published_ids)
 
             self.logger.debug(
                 f"Published reindex events for {len(published_ids)} records; "

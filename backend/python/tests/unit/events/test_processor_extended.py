@@ -1430,6 +1430,7 @@ class TestCreateTransformContextCalledByProcessMethods:
     async def test_process_excel_calls_create_transform_context(self):
         """process_excel_document uses _create_transform_context with event_type."""
         excel_parser = MagicMock()
+        excel_parser.new_document_parser.return_value = excel_parser
         excel_parser.load_workbook_from_binary = MagicMock()
         excel_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc = _make_processor(parsers={"xlsx": excel_parser})

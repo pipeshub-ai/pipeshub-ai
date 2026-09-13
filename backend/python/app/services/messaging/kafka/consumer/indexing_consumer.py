@@ -1,6 +1,5 @@
 import asyncio
 import json
-import ssl
 import threading
 import time
 import uuid
@@ -37,7 +36,10 @@ from app.services.messaging.error_classifier import (
     format_exception_chain,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
-from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+from app.services.messaging.kafka.config.kafka_config import (
+    KafkaConsumerConfig,
+    kafka_security_kwargs,
+)
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
@@ -68,6 +70,7 @@ if TYPE_CHECKING:
     )
     from app.services.messaging.interface.producer import IMessagingProducer
     from app.services.messaging.retry_manager import RetryManager
+    from app.services.messaging.worker_loop import WorkerLoop
     from app.services.resource_governor import ResourceGovernor
 
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
@@ -172,6 +175,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         key_extractor: FairnessKeyExtractor | None = None,
         weight_provider: WeightProvider | None = None,
         disposition_sink: Optional[AbandonedMessageSink] = None,
+        stage_admission: "concurrency.StageAdmission | None" = None,
+        worker: "WorkerLoop | None" = None,
     ) -> None:
         self.logger = logger
         self.consumer: AIOKafkaConsumer | None = None
@@ -188,6 +193,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # ResourceGovernor's adaptive gates instead of the static semaphores
         # below (see consumer_concurrency.acquire_parsing_slot/index_ceiling).
         self.governor = governor
+        if stage_admission is not None and governor is not None:
+            raise ValueError("a pipeline-stage consumer admits through its own limit, not a governor")
+        self.stage_admission = stage_admission
+        # Shared by every indexing consumer in the process (see WorkerLoop); None runs a loop of
+        # this consumer's own.
+        self._shared_worker = worker
         # Shared with the ParsingClient/DoclingClient/EmbeddingServerEmbeddings
         # instances that this consumer's records flow through — see
         # app.services.messaging.backpressure. __apply_backpressure() also
@@ -282,61 +293,68 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             'rebalance_timeout_ms': kafka_config.rebalance_timeout_ms,
         }
 
-        # Add SSL/SASL configuration for AWS MSK
-        if kafka_config.ssl:
-            config["ssl_context"] = ssl.create_default_context()
-            sasl_config = kafka_config.sasl or {}
-            if sasl_config.get("username"):
-                config["security_protocol"] = "SASL_SSL"
-                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
-                config["sasl_plain_username"] = sasl_config["username"]
-                config["sasl_plain_password"] = sasl_config["password"]
-            else:
-                config["security_protocol"] = "SSL"
+        config.update(kafka_security_kwargs(ssl_enabled=kafka_config.ssl, sasl=kafka_config.sasl))
 
         return config
 
+    def _on_worker_loop_started(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Set up this consumer's admission and lease renewal on its worker loop."""
+        if self.governor is not None:
+            # One gate per pool, process-wide (ResourceGovernor.gate
+            # memoises by pool, and raises if a second loop uses one), and
+            # resolved per-message from the record's tier — index gates
+            # from the event payload before admission, parse gates from
+            # PipelineEventData.tier on START_PARSING. Binding them here
+            # is what claims them for this loop.
+            for pool in Pool:
+                self.governor.gate(pool)
+            self.logger.info(
+                "Worker thread event loop started; using ResourceGovernor "
+                "gates (index_heavy_ceiling=%d index_light_ceiling=%d "
+                "heavy_parse_ceiling=%d light_parse_ceiling=%d)",
+                self.governor.ceilings.index_heavy,
+                self.governor.ceilings.index_light,
+                self.governor.ceilings.heavy,
+                self.governor.ceilings.light,
+            )
+
+        else:
+            # Legacy static semaphores, created in the worker thread's event loop.
+            self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
+            self.indexing_semaphore = asyncio.Semaphore(
+                self.stage_admission.limit if self.stage_admission else messaging_env.max_concurrent_indexing
+            )
+            self.logger.info("Worker thread event loop started with semaphores initialized")
+
+        if self.concurrency_manager is not None:
+            self.lease_renewer = LeaseRenewer(
+                self.logger,
+                self.concurrency_manager,
+                lease_seconds=messaging_env.concurrency_lease_seconds,
+                interval_seconds=messaging_env.concurrency_renew_interval_seconds,
+            )
+            loop.call_soon(self.lease_renewer.start)
+
+    def _take_lease_renewer(self) -> LeaseRenewer | None:
+        """Detach the renewer this consumer started on the shared loop; runs on that loop."""
+        renewer, self.lease_renewer = self.lease_renewer, None
+        return renewer
+
     def __start_worker_thread(self) -> None:
-        """Start the worker thread with its own event loop"""
+        """Start the worker thread with its own event loop, or join the shared worker loop."""
+        if self._shared_worker is not None:
+            self.worker_loop_ready.clear()
+            loop = self._shared_worker.start()
+            self.worker_loop = loop
+            self._shared_worker.call(lambda: self._on_worker_loop_started(loop))
+            self.worker_loop_ready.set()
+            return
+
         def run_worker_loop() -> None:
             """Run the event loop in the worker thread"""
             self.worker_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.worker_loop)
-
-            if self.governor is not None:
-                # One gate per pool, process-wide (ResourceGovernor.gate
-                # memoises by pool, and raises if a second loop uses one), and
-                # resolved per-message from the record's tier — index gates
-                # from the event payload before admission, parse gates from
-                # PipelineEventData.tier on START_PARSING. Binding them here
-                # is what claims them for this loop.
-                for pool in Pool:
-                    self.governor.gate(pool)
-                self.logger.info(
-                    "Worker thread event loop started; using ResourceGovernor "
-                    "gates (index_heavy_ceiling=%d index_light_ceiling=%d "
-                    "heavy_parse_ceiling=%d light_parse_ceiling=%d)",
-                    self.governor.ceilings.index_heavy,
-                    self.governor.ceilings.index_light,
-                    self.governor.ceilings.heavy,
-                    self.governor.ceilings.light,
-                )
-
-            else:
-                # Legacy static semaphores, created in the worker thread's event loop.
-                self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
-                self.indexing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_indexing)
-                self.logger.info("Worker thread event loop started with semaphores initialized")
-
-            # Signal that the worker loop is ready
-            if self.concurrency_manager is not None:
-                self.lease_renewer = LeaseRenewer(
-                    self.logger,
-                    self.concurrency_manager,
-                    lease_seconds=messaging_env.concurrency_lease_seconds,
-                    interval_seconds=messaging_env.concurrency_renew_interval_seconds,
-                )
-                self.worker_loop.call_soon(self.lease_renewer.start)
+            self._on_worker_loop_started(self.worker_loop)
             self.worker_loop_ready.set()
 
             # Run the event loop until stopped
@@ -422,6 +440,20 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Stop the worker thread and its event loop, waiting for active tasks"""
         # First, wait for all active futures to complete with a timeout
         self._wait_for_active_futures()
+        if self._shared_worker is not None:
+            # The loop is shared: release only what this consumer started on it.
+            if self.worker_loop is not None and self.worker_loop.is_running():
+                renewer = self._shared_worker.call(self._take_lease_renewer)
+                if renewer is not None:
+                    # Awaited, not scheduled: the resources it renews through close, and a restart
+                    # starts a new renewer, only once this one has stopped.
+                    try:
+                        self._shared_worker.run(renewer.stop(), timeout=LeaseRenewer.STOP_TIMEOUT_S)
+                    except TimeoutError:
+                        self.logger.warning(
+                            "Lease renewer did not stop within %.0fs", LeaseRenewer.STOP_TIMEOUT_S
+                        )
+            self.worker_loop = None
 
         if self.worker_loop and self.worker_loop.is_running():
             # Stop the event loop (the finally block in run_worker_loop will handle cleanup)
@@ -764,10 +796,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         stable message id, which is unique per message -- they are not
         per-record work and nothing needs serialising.
         """
-        return str(
-            parsed.payload.get("recordId")
-            or self._get_stable_message_id(message, parsed)
-        )
+        return concurrency.work_key(parsed.payload, str(self._get_stable_message_id(message, parsed)))
 
     def __reserve_record(self, record_key: str) -> bool:
         """Claim a record for dispatch, so no second event for the same
@@ -1702,7 +1731,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         return f"{message.topic}-{message.partition}-{message.offset}"
 
     async def _requeue_message(
-        self, topic: str, message: StreamMessage, stable_message_id: str, retry_count: int = 1
+        self,
+        topic: str,
+        message: StreamMessage,
+        stable_message_id: str,
+        retry_count: int = 1,
+        delay_s: float | None = None,
     ) -> None:
         """Re-publish a failed message to the same topic for retry.
         
@@ -1722,6 +1756,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             message: The message to re-queue
             stable_message_id: Stable ID for retry tracking (preserved across re-queues)
             retry_count: Current delivery attempt count, used to size the backoff
+            delay_s: Hold it this long instead (a paused dependency's wait)
         """
         if not self.producer:
             raise RuntimeError("No producer available for re-queue")
@@ -1729,7 +1764,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         try:
             payload = dict(message.payload)
             payload["_retry_tracking_id"] = stable_message_id
-            backoff_seconds = _compute_retry_backoff_seconds(retry_count)
+            backoff_seconds = delay_s if delay_s is not None else _compute_retry_backoff_seconds(retry_count)
             payload["_retry_not_before"] = time.time() + backoff_seconds
 
             await self._run_on_main_loop(
@@ -2016,9 +2051,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             await self.__settle_done(message, in_flight)
             return False
 
-        record_lock_id = (
-            parsed_message.payload.get("recordId") or stable_message_id
-        )
+        record_lock_id = concurrency.work_key(parsed_message.payload, stable_message_id)
         record_pool = f"record:{record_lock_id}"
 
         # Route the active-pipeline permit by tier, from the record event's own
@@ -2031,7 +2064,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # record routes to heavy (see effective_index_tier). The gate, the
         # lease limit and the lease pool name all have to agree on that.
         index_tier = concurrency.dispatch_tier(self, parsed_message)
-        index_lease_pool = concurrency.index_lease_pool(index_tier)
+        index_lease_pool = concurrency.admission_lease_pool(self, index_tier)
 
         try:
             # The active-pipeline bound. Without this outer permit, parsed
@@ -2270,18 +2303,21 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 describe_message(parsed_message),
             )
             raise
-        except concurrency.ParseAdmissionTimeout as e:
-            # Queue time, not a failure: hand the record back with no attempt
-            # counted, so a queue behind long parses cannot dead-letter it.
+        except concurrency.RequeueWithoutAttempt as e:
+            # Queue time, not a failure (a parse-slot wait that ran out, or a stage
+            # whose dependency is paused): hand the message back with no attempt
+            # counted, so it cannot be dead-lettered for waiting.
             self.logger.warning(
-                "%s waited %.0fs for a %s parse slot without being admitted; "
-                "re-queuing without counting an attempt",
-                message_id, e.waited, e.pool,
+                "%s handed back without counting an attempt: %s", message_id, e,
             )
             if parsed_message is not None:
+                if not e.counts_toward_backstop:
+                    # A clean run that found a dependency down, not a crash loop: its
+                    # growing delay bounds how often it returns while the outage lasts.
+                    await concurrency.clear_delivery_count(self, stable_message_id)
                 try:
                     await self._requeue_message(
-                        topic, parsed_message, stable_message_id, retry_count=0
+                        topic, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s
                     )
                 except Exception as requeue_error:
                     self.logger.error(

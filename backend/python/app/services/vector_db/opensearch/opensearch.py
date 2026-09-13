@@ -77,6 +77,7 @@ from app.services.vector_db.models import (
 from app.services.vector_db.opensearch.config import OpenSearchConfig
 from app.services.vector_db.opensearch.utils import OpenSearchUtils
 from app.utils.logger import create_logger
+from app.utils.loop_local import LoopLocal, running_loop
 
 logger = create_logger("opensearch_service")
 
@@ -107,6 +108,17 @@ _DEFAULT_CONFIDENCE_INTERVAL = 0.99
 _DEFAULT_RRF_RANK_CONSTANT = 60
 
 
+class _LoopClient:
+    """One event loop's client, and whether it has been checked against the server yet."""
+
+    def __init__(self, client: AsyncOpenSearch) -> None:
+        super().__init__()
+        self.client = client
+        self.checked = False
+        # One caller probes the server; the others on this loop wait for it.
+        self.checking = asyncio.Lock()
+
+
 class OpenSearchService(IVectorDBService):
     """Fully-async OpenSearch provider implementing IVectorDBService."""
 
@@ -115,9 +127,30 @@ class OpenSearchService(IVectorDBService):
         config_service: ConfigurationService | OpenSearchConfig,
     ) -> None:
         self.config_service = config_service
-        self.client: Optional[AsyncOpenSearch] = None
         self._cfg: Optional[OpenSearchConfig] = None
-        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
+        # The aiohttp session inside AsyncOpenSearch binds to the loop that first uses it, and
+        # this service is shared by the server loop and every consumer's worker loop.
+        self._clients: LoopLocal[_LoopClient] = LoopLocal(self._new_loop_client)
+        # Assigned through `client` (tests); served to every loop as-is.
+        self._client_override: AsyncOpenSearch | None = None
+
+    @property
+    def client(self) -> AsyncOpenSearch | None:
+        """The running loop's client; ``_ensure_client`` is what checks it against the server."""
+        if self._client_override is not None:
+            return self._client_override
+        if self._cfg is None:
+            return None
+        return self._clients.get().client
+
+    @client.setter
+    def client(self, value: AsyncOpenSearch | None) -> None:
+        self._client_override = value
+
+    def _new_loop_client(self) -> _LoopClient:
+        if self._cfg is None:
+            raise RuntimeError("OpenSearch config not loaded. Call connect() first.")
+        return _LoopClient(self._build_client(self._cfg))
 
     # ------------------------------------------------------------------
     # Factory
@@ -200,58 +233,61 @@ class OpenSearchService(IVectorDBService):
         )
 
     async def _ensure_client(self) -> AsyncOpenSearch:
-        """Return the live client, creating it on the current event loop if needed.
+        """Return the running loop's client, checking it against the server on first use.
 
-        The ``aiohttp.ClientSession`` inside ``AsyncOpenSearch`` is bound to the
-        event loop where it was created.  The indexing consumer runs a dedicated
-        worker thread with its own ``asyncio.new_event_loop()``, so a client
-        created on the main loop cannot be reused there.
-
-        This method detects a loop mismatch and transparently recreates the
-        client on the current loop — no caller changes required.
+        Each loop keeps its own client, so a loop never swaps out a client another loop
+        has requests in flight on.
         """
-        current_loop = asyncio.get_running_loop()
-        if self.client is not None:
-            if self._client_loop is None or self._client_loop is current_loop:
-                return self.client
-            # Loop mismatch — the old aiohttp session cannot be used here.
-            self.client = None
-            self._client_loop = None
-
+        if self._client_override is not None:
+            return self._client_override
         if self._cfg is None:
             raise RuntimeError(
                 "OpenSearch config not loaded. Call connect() first."
             )
 
-        self.client = self._build_client(self._cfg)
-        self._client_loop = current_loop
-        try:
-            info = await self.client.info()
-            version = info.get("version", {}).get("number", "unknown")
-            logger.info(
-                f"Connected to OpenSearch {version} at "
-                f"{self._cfg.host}:{self._cfg.port} "
-                f"(loop id={id(current_loop)})"
-            )
-        except Exception:
-            try:
-                await self.client.close()
-            except Exception:
-                pass
-            self.client = None
-            self._client_loop = None
-            raise
-        return self.client
+        while True:
+            entry = self._clients.get()
+            if entry.checked:
+                return entry.client
+            async with entry.checking:
+                if entry.checked:
+                    return entry.client
+                if entry is not self._clients.get():
+                    # A failed probe replaced it while this caller waited: check the new one.
+                    continue
+                try:
+                    info = await entry.client.info()
+                except Exception:
+                    # Nobody was served this client: close it; the next call builds a fresh one.
+                    self._clients.replace_current()
+                    try:
+                        await entry.client.close()
+                    except Exception:
+                        pass
+                    raise
+                version = info.get("version", {}).get("number", "unknown")
+                logger.info(
+                    f"Connected to OpenSearch {version} at "
+                    f"{self._cfg.host}:{self._cfg.port} "
+                    f"(loop id={id(running_loop())})"
+                )
+                entry.checked = True
+                return entry.client
 
     async def disconnect(self) -> None:
-        if self.client is not None:
+        """Close every loop's client, each on the loop that owns it."""
+        override, self._client_override = self._client_override, None
+        had_clients = override is not None or len(self._clients) > 0
+        errors = await self._clients.aclose_all(lambda entry: entry.client.close())
+        if override is not None:
             try:
-                await self.client.close()
-                logger.info("Disconnected from OpenSearch")
+                await override.close()
             except Exception as e:
-                logger.warning(f"Error during OpenSearch disconnect: {e}")
-            finally:
-                self.client = None
+                errors.append(e)
+        for error in errors:
+            logger.warning(f"Error during OpenSearch disconnect: {error}")
+        if had_clients:
+            logger.info("Disconnected from OpenSearch")
 
     # ------------------------------------------------------------------
     # Identity

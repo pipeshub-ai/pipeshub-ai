@@ -6,6 +6,7 @@ process_image, process_delimited_document.
 """
 
 import logging
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -255,6 +256,7 @@ class TestProcessExcelDocument:
     async def test_success(self):
         """Excel workbook is loaded and blocks are created."""
         excel_parser = MagicMock()
+        excel_parser.new_document_parser.return_value = excel_parser
         excel_parser.load_workbook_from_binary = MagicMock()
         excel_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc = _make_processor(parsers={"xlsx": excel_parser})
@@ -297,6 +299,7 @@ class TestProcessExcelDocument:
     async def test_record_not_found(self):
         """Missing record yields indexing_complete without crashing."""
         excel_parser = MagicMock()
+        excel_parser.new_document_parser.return_value = excel_parser
         excel_parser.load_workbook_from_binary = MagicMock()
         excel_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc = _make_processor(parsers={"xlsx": excel_parser})
@@ -2038,6 +2041,26 @@ class TestProcessTxtDocumentAdditional:
         assert any(e.event == "indexing_complete" for e in events)
 
 
+    @pytest.mark.asyncio
+    async def test_windows_1252_text_keeps_its_quotes_and_euro_sign(self) -> None:
+        """latin-1 decodes every byte, so cp1252 has to be tried before it."""
+        proc = _make_processor()
+        seen: list[str] = []
+
+        async def _fake_md(*args: object, **kwargs: object) -> AsyncIterator[PipelineEvent]:
+            seen.append(str(kwargs["md_binary"]))
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        proc.process_md_document = _fake_md
+
+        text = "\u201cquoted\u201d costs \u20ac5"
+        await _collect_events(
+            proc.process_txt_document(
+                "test.txt", "r1", "1", "src", "o1", text.encode("cp1252"), "vr1", "FILE", "UPLOAD", "UPLOAD"
+            )
+        )
+        assert seen == [text]
+
 # ============================================================================
 # process_excel_document — additional
 # ============================================================================
@@ -2047,6 +2070,7 @@ class TestProcessExcelDocumentAdditional:
     async def test_parser_exception(self):
         """Exception during workbook load propagates wrapped in DocumentProcessingError."""
         excel_parser = MagicMock()
+        excel_parser.new_document_parser.return_value = excel_parser
         excel_parser.load_workbook_from_binary = MagicMock(side_effect=RuntimeError("corrupt excel"))
         proc = _make_processor(parsers={"xlsx": excel_parser})
 

@@ -146,7 +146,7 @@ class TestCreateProcessor:
             MockProc.return_value = mock_instance
             result = await cu.create_processor(
                 MagicMock(), MagicMock(), MagicMock(),
-                MagicMock(), {}, MagicMock(), MagicMock()
+                MagicMock(), {}, MagicMock(), MagicMock(), MagicMock()
             )
             assert result is mock_instance
 

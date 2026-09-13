@@ -2074,15 +2074,21 @@ export const reindexConnector =
     try {
       const { connectorId } = req.params as { connectorId: string };
       const { userId, orgId } = req.user || {};
-      const { statusFilters } = req.body || {};
+      const { statusFilters, stages } = (req.body ?? {}) as {
+        statusFilters?: string[];
+        stages?: string[];
+      };
 
       if (!userId || !orgId) {
         throw new UnauthorizedError('User not authenticated or missing organization ID');
       }
 
-      const reindexBody: { statusFilters?: string[] } = {};
+      const reindexBody: { statusFilters?: string[]; stages?: string[] } = {};
       if (statusFilters?.length) {
         reindexBody.statusFilters = statusFilters;
+      }
+      if (stages?.length) {
+        reindexBody.stages = stages;
       }
 
       const headers = buildProxyHeaders(req);

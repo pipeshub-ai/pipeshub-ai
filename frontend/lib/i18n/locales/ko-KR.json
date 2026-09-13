@@ -9,7 +9,9 @@
       "reindexFailedStart": "실패한 레코드를 다시 인덱싱하는 중…",
       "reindexFailedError": "실패한 레코드의 다시 인덱싱에 실패했습니다",
       "manualIndexStart": "수동 인덱싱 레코드를 인덱싱하는 중…",
-      "manualIndexError": "수동 인덱싱 시작에 실패했습니다"
+      "manualIndexError": "수동 인덱싱 시작에 실패했습니다",
+      "retryClassificationStart": "분류 재시도가 대기열에 추가되었습니다",
+      "retryClassificationError": "분류 재시도에 실패했습니다"
     }
   },
   "resetPassword": {
@@ -1953,7 +1955,12 @@
         "recordsByType": "유형별 레코드",
         "noRecordTypes": "사용 가능한 레코드 유형이 없습니다",
         "localWatcherLabel": "로컬 워처",
-        "localWatcherStatus": "{{state}} · 대기 {{pending}}건 · 실패 {{failed}}건"
+        "localWatcherStatus": "{{state}} · 대기 {{pending}}건 · 실패 {{failed}}건",
+        "classification": "분류",
+        "classificationSkipped": "건너뜀",
+        "retryFailedClassification": "실패한 분류 재시도",
+        "retryClassificationSuccess": "분류 재시도가 대기열에 추가되었습니다",
+        "retryClassificationError": "분류 재시도에 실패했습니다"
       },
       "settingsTab": {
         "instanceName": "인스턴스 이름",
@@ -3202,6 +3209,12 @@
       "noRecordMetadata": "이 항목에 대한 추가 레코드 메타데이터가 없습니다."
     },
     "indexingReasonAria": "인덱싱 실패 상세 정보",
+    "stageTrackLabel": "파이프라인",
+    "stageParsed": "파싱됨",
+    "stageSearchable": "검색 가능",
+    "stageClassified": "분류됨",
+    "stageAttempt": "시도 {{n}}회",
+    "stageDetailsAria": "단계 세부 정보",
     "tabRecordInformation": "레코드 정보",
     "tabDocumentDetails": "문서 상세 정보",
     "chat": "채팅",

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -285,10 +286,10 @@ class TestSingleFlight:
     async def test_lock_table_never_grows(self) -> None:
         """The stripe array is fixed at construction, so no key count grows it."""
         cache = _cache(FakeRedis())
-        before = len(cache._locks)
+        before = len(cache._lock_stripes.get())
         for i in range(400):
             await cache.get_or_compute_kb(ORG, f"kb-{i}", _loader({}))
-        assert len(cache._locks) == before == cache.LOCK_STRIPES
+        assert len(cache._lock_stripes.get()) == before == cache.LOCK_STRIPES
 
     async def test_lock_table_bounded_while_every_lock_is_held(self) -> None:
         """The case the old per-key table failed.
@@ -298,15 +299,15 @@ class TestSingleFlight:
         bound. Striping cannot: the array is allocated once.
         """
         cache = _cache(FakeRedis())
-        held = list(cache._locks)
+        held = list(cache._lock_stripes.get())
         for lock in held:
             await lock.acquire()
         try:
-            assert len(cache._locks) == cache.LOCK_STRIPES
+            assert len(cache._lock_stripes.get()) == cache.LOCK_STRIPES
             # Distinct keys that would each have wanted their own lock.
             for i in range(50):
                 cache._lock_for(f"brand-new-key-{i}")
-            assert len(cache._locks) == cache.LOCK_STRIPES
+            assert len(cache._lock_stripes.get()) == cache.LOCK_STRIPES
         finally:
             for lock in held:
                 lock.release()
@@ -316,8 +317,8 @@ class TestSingleFlight:
         assert cache._lock_for("kb:x") is cache._lock_for("kb:x")
         # Stable across instances: crc32, not the per-process hash seed.
         other = _cache(FakeRedis())
-        assert cache._locks.index(cache._lock_for("kb:x")) == other._locks.index(
-            other._lock_for("kb:x")
+        assert cache._lock_stripes.get().index(cache._lock_for("kb:x")) == (
+            other._lock_stripes.get().index(other._lock_for("kb:x"))
         )
 
 
@@ -596,3 +597,116 @@ class TestClose:
         cache = _cache(FakeRedis())
         await cache.close()
         await cache.close()
+
+
+class _LoopRecordingRedis(FakeRedis):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed_on: asyncio.AbstractEventLoop | None = None
+
+    async def aclose(self) -> None:
+        self.closed_on = asyncio.get_running_loop()
+
+
+def _per_loop_cache() -> tuple[AccessibleRecordsCache, list[_LoopRecordingRedis]]:
+    built: list[_LoopRecordingRedis] = []
+
+    def factory() -> _LoopRecordingRedis:
+        built.append(_LoopRecordingRedis())
+        return built[-1]
+
+    return AccessibleRecordsCache(MagicMock(), None, 300, True, client_factory=factory), built
+
+
+class TestPerLoopState:
+    """One cache is shared by the server loop and every consumer's worker loop."""
+
+    def test_each_loop_gets_its_own_client_and_lock_stripes(self) -> None:
+        cache, built = _per_loop_cache()
+
+        async def use() -> tuple[object, asyncio.Lock]:
+            await cache.get_or_compute_kb(ORG, KB, _loader({"a": "b"}))
+            return cache._client(), cache._lock_for("kb:x")
+
+        a, b = asyncio.new_event_loop(), asyncio.new_event_loop()
+        try:
+            client_a, stripe_a = a.run_until_complete(use())
+            client_b, stripe_b = b.run_until_complete(use())
+        finally:
+            a.close()
+            b.close()
+
+        assert client_a is not client_b
+        assert stripe_a is not stripe_b
+        assert built == [client_a, client_b]
+        assert all(client.calls for client in built)
+        assert all(client.closed_on is None for client in built)
+
+    def test_a_stripe_contended_on_one_loop_still_works_on_another(self) -> None:
+        """A Lock binds to its first waiter's loop; with one stripe array shared by every loop,
+        the second loop's contended miss raised "bound to a different event loop"."""
+        cache = _cache(FakeRedis())
+        calls: list = []
+
+        async def slow_loader() -> dict[str, str]:
+            calls.append(1)
+            await asyncio.sleep(0.01)
+            return {"vr-1": "rec-1"}
+
+        async def contended_miss() -> None:
+            await cache.invalidate_kb(ORG, KB)
+            await asyncio.gather(*[cache.get_or_compute_kb(ORG, KB, slow_loader) for _ in range(3)])
+
+        a, b = asyncio.new_event_loop(), asyncio.new_event_loop()
+        try:
+            a.run_until_complete(contended_miss())
+            b.run_until_complete(contended_miss())
+        finally:
+            a.close()
+            b.close()
+
+        # Single-flight holds within each loop.
+        assert len(calls) == 2
+
+    def test_close_closes_each_loop_client_on_its_owning_loop(self) -> None:
+        cache, _ = _per_loop_cache()
+
+        async def current() -> _LoopRecordingRedis:
+            return cache._client()
+
+        owner = asyncio.new_event_loop()
+        thread = threading.Thread(target=owner.run_forever, daemon=True)
+        thread.start()
+        here = asyncio.new_event_loop()
+        try:
+            remote = asyncio.run_coroutine_threadsafe(current(), owner).result(timeout=5)
+            mine = here.run_until_complete(current())
+
+            here.run_until_complete(cache.close())
+
+            assert (remote.closed_on, mine.closed_on) == (owner, here)
+            assert cache.enabled is False
+        finally:
+            owner.call_soon_threadsafe(owner.stop)
+            thread.join(timeout=5)
+            owner.close()
+            here.close()
+
+    async def test_create_keeps_the_pinged_client_for_its_loop(self, monkeypatch) -> None:
+        monkeypatch.delenv(AccessibleRecordsCache.ENV_ENABLED, raising=False)
+        config = MagicMock()
+        config.get_redis_config = AsyncMock(
+            return_value=MagicMock(host="localhost", port=6379, password=None, db=0)
+        )
+        built: list[FakeRedis] = []
+
+        def create_client(self, *a, **k) -> FakeRedis:
+            built.append(FakeRedis())
+            return built[-1]
+
+        with patch.object(StandaloneRedisProvider, "create_client", create_client):
+            cache = await AccessibleRecordsCache.create(MagicMock(), config)
+            await cache.get_or_compute_kb(ORG, KB, _loader({"a": "b"}))
+
+        assert len(built) == 1
+        assert ("get", cache._kb_key(ORG, KB)) in built[0].calls

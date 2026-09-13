@@ -14,6 +14,7 @@ import types
 from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -24,6 +25,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import OCRProvider
 from app.containers.parsing import ParsingAppContainer, initialize_container
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
+from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
 from app.modules.parsers.epub.epub_parser import EPUBParser
@@ -51,8 +53,8 @@ from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.sql.sql_table_parser import SQLTableParser
 from app.modules.parsers.sql.sql_view_parser import SQLViewParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
-from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.services.docling.client import DoclingClient
+from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParserProvider
 from app.services.parsing.providers.docling_service_parser import DoclingServiceParser
@@ -338,6 +340,11 @@ async def health_check() -> JSONResponse:
             # Observability failure must not fail the liveness probe — the
             # service itself is still healthy.
             content["resource_governor"] = {"error": str(stats_error)}
+    try:
+        # Table summaries, image descriptions and VLM OCR call models through this process's gateway.
+        content["llm_gateway"] = get_llm_gateway().stats()
+    except Exception as stats_error:
+        content["llm_gateway"] = {"error": str(stats_error)}
     return JSONResponse(content=content)
 
 

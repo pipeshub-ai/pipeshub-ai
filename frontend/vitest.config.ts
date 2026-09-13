@@ -22,6 +22,7 @@ export default defineConfig({
       'app/(main)/notifications/__tests__/store.test.ts',
       'app/(main)/notifications/__tests__/useNotificationSocket.test.tsx',
       'app/components/ui/__tests__/help-tooltip.test.ts',
+      'app/components/indexing-stats/__tests__/derive-records-status.test.ts',
       'app/(main)/workspace/connectors/utils/__tests__/manual-indexing-tooltip.test.ts',
       'app/(main)/workspace/connectors/utils/__tests__/admin-access-helpers.test.ts',
       'lib/socket/__tests__/notification-socket.test.ts',

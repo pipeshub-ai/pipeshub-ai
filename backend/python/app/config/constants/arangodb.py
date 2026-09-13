@@ -248,6 +248,7 @@ class CollectionNames(Enum):
 
     # Storage mappings
     VIRTUAL_RECORD_TO_DOC_ID_MAPPING = "virtualRecordToDocIdMapping"
+    STAGE_STATES = "stageStates"
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
@@ -573,6 +574,8 @@ class ProgressStatus(Enum):
     EMPTY = "EMPTY"
     ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
     QUEUED = "QUEUED"
+    # A stage that does not apply to this record (policy off, nothing to process).
+    SKIPPED = "SKIPPED"
 
 
 class RecordTypes(Enum):

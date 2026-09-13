@@ -27,8 +27,8 @@ import aiohttp
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from tests.unit.modules.parsers.http_fakes import with_body
 
 
 @pytest.fixture
@@ -81,7 +81,7 @@ class TestFetchSingleUrlExtensionFilter:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         with patch(
             "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
@@ -101,7 +101,7 @@ class TestFetchSingleUrlExtensionFilter:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         with patch(
             "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
@@ -132,7 +132,7 @@ class TestFetchSingleUrlHttpErrors:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
             session, "https://s3.amazonaws.com/bucket/key?X-Amz-Expires=3600",
@@ -160,7 +160,7 @@ class TestFetchSingleUrlHttpErrors:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
             session, "https://example.com/protected.png", logger=parser.logger
@@ -185,7 +185,7 @@ class TestFetchSingleUrlHttpErrors:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
             session, "https://example.com/server-error.png", logger=parser.logger
@@ -210,7 +210,7 @@ class TestFetchSingleUrlHttpErrors:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
             session, "https://example.com/gateway.png"
@@ -233,7 +233,7 @@ class TestFetchSingleUrlHttpErrors:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
             session, "https://example.com/rate-limited.png", logger=parser.logger
@@ -252,7 +252,7 @@ class TestFetchSingleUrlHttpErrors:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
             session, "https://example.com/unreachable.png", logger=parser.logger
@@ -271,7 +271,7 @@ class TestFetchSingleUrlHttpErrors:
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
             session, "https://example.com/slow.png"
@@ -662,15 +662,13 @@ class TestFetchSingleUrlAdditional:
         """SVG detected via content-type with svg+xml extension."""
         mock_response = AsyncMock()
         mock_response.headers = {"content-type": "image/svg+xml; charset=utf-8"}
-        mock_response.read = AsyncMock(
-            return_value=b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
-        )
+        with_body(mock_response, b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>')
         mock_response.raise_for_status = MagicMock()
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         fake_png_b64 = base64.b64encode(b"fake-png").decode("utf-8")
 
@@ -689,13 +687,13 @@ class TestFetchSingleUrlAdditional:
         """Content-type with charset parameter is parsed correctly."""
         mock_response = AsyncMock()
         mock_response.headers = {"content-type": "image/png; charset=binary"}
-        mock_response.read = AsyncMock(return_value=b"png-data")
+        with_body(mock_response, b"png-data")
         mock_response.raise_for_status = MagicMock()
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock()
-        session.get = MagicMock(return_value=mock_response)
+        session.get = AsyncMock(return_value=mock_response)
 
         with patch(
             "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",

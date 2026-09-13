@@ -18,6 +18,8 @@ Tests cover:
 - overwrite_payload: success, client not connected
 """
 
+import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -146,7 +148,7 @@ class TestCreate:
         svc = await OpenSearchService.create(os_config)
         # connect() only parses config; client created lazily on first use
         assert svc._cfg is not None
-        assert svc.client is None
+        mock_client_cls.assert_not_called()
         # Trigger lazy init
         await svc._ensure_client()
         assert svc.client is mock_client
@@ -181,7 +183,7 @@ class TestConnect:
         await svc.connect()
         # connect() parses config only; client created on first use
         assert svc._cfg is not None
-        assert svc.client is None
+        mock_client_cls.assert_not_called()
         # Trigger lazy init and verify client construction args
         await svc._ensure_client()
         assert svc.client is mock_client
@@ -215,14 +217,18 @@ class TestConnect:
     @pytest.mark.asyncio
     @patch("app.services.vector_db.opensearch.opensearch.AsyncOpenSearch")
     async def test_connect_exception(self, mock_client_cls, os_config):
-        mock_client = AsyncMock()
-        mock_client.info = AsyncMock(side_effect=Exception("connection refused"))
-        mock_client_cls.return_value = mock_client
+        bad = AsyncMock()
+        bad.info = AsyncMock(side_effect=Exception("connection refused"))
+        good = AsyncMock()
+        good.info = AsyncMock(return_value={"version": {"number": "3.0.0"}})
+        mock_client_cls.side_effect = [bad, good]
         svc = OpenSearchService(os_config)
         await svc.connect()
         with pytest.raises(Exception, match="connection refused"):
             await svc._ensure_client()
-        assert svc.client is None
+        # The failed client is closed and never served again; the next call gets a fresh one.
+        bad.close.assert_awaited_once()
+        assert await svc._ensure_client() is good
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +261,67 @@ class TestDisconnect:
         await service.disconnect()
         mock_client.close.assert_awaited_once()
         assert service.client is None
+
+
+def _recording_os_client() -> MagicMock:
+    """A client whose close() records the event loop it ran on."""
+    client = MagicMock()
+    client.info = AsyncMock(return_value={"version": {"number": "3.0.0"}})
+    client.closed_on = None
+
+    async def close() -> None:
+        client.closed_on = asyncio.get_running_loop()
+
+    client.close = close
+    return client
+
+
+class TestPerLoopClients:
+    """One service is shared by the server loop and each consumer's worker loop."""
+
+    @patch("app.services.vector_db.opensearch.opensearch.AsyncOpenSearch")
+    def test_each_loop_gets_its_own_client_checked_once(self, mock_client_cls, os_config) -> None:
+        mock_client_cls.side_effect = lambda **_: _recording_os_client()
+        svc = OpenSearchService(os_config)
+        a, b = asyncio.new_event_loop(), asyncio.new_event_loop()
+        try:
+            a.run_until_complete(svc.connect())
+            client_a = a.run_until_complete(svc._ensure_client())
+            client_b = b.run_until_complete(svc._ensure_client())
+
+            assert client_b is not client_a
+            # Alternating loops no longer swap one slot: each keeps its client.
+            assert a.run_until_complete(svc._ensure_client()) is client_a
+            assert b.run_until_complete(svc._ensure_client()) is client_b
+            client_a.info.assert_awaited_once()
+            client_b.info.assert_awaited_once()
+            assert (client_a.closed_on, client_b.closed_on) == (None, None)
+        finally:
+            a.close()
+            b.close()
+
+    @patch("app.services.vector_db.opensearch.opensearch.AsyncOpenSearch")
+    def test_disconnect_closes_each_client_on_its_owning_loop(self, mock_client_cls, os_config) -> None:
+        mock_client_cls.side_effect = lambda **_: _recording_os_client()
+        svc = OpenSearchService(os_config)
+        owner = asyncio.new_event_loop()
+        thread = threading.Thread(target=owner.run_forever, daemon=True)
+        thread.start()
+        here = asyncio.new_event_loop()
+        try:
+            here.run_until_complete(svc.connect())
+            remote = asyncio.run_coroutine_threadsafe(svc._ensure_client(), owner).result(timeout=5)
+            mine = here.run_until_complete(svc._ensure_client())
+
+            here.run_until_complete(svc.disconnect())
+
+            assert (remote.closed_on, mine.closed_on) == (owner, here)
+            assert len(svc._clients) == 0
+        finally:
+            owner.call_soon_threadsafe(owner.stop)
+            thread.join(timeout=5)
+            owner.close()
+            here.close()
 
 
 # ---------------------------------------------------------------------------
@@ -969,9 +1036,6 @@ class TestOpenSearchFilterBuilder:
 # Phase 3 regression: OpenSearch correctness + auth seam
 # ===========================================================================
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
-
 def _make_os_service():
     """Create an OpenSearchService with a mocked async client."""
     from app.services.vector_db.opensearch.opensearch import OpenSearchService
@@ -980,7 +1044,6 @@ def _make_os_service():
     svc = OpenSearchService.__new__(OpenSearchService)
     svc.config_service = MagicMock()
     svc._cfg = None
-    svc._client_loop = None
     client = MagicMock()
     # Make transport.perform_request awaitable for pipeline tests
     client.transport = MagicMock()
@@ -1492,3 +1555,51 @@ class TestScrollMigrationGuard:
         )
         result = await connected_service.scroll("my-idx", FilterExpression(), limit=5)
         assert result.next_offset == '["p4"]'
+
+
+class TestFirstClientCheck:
+    """The first calls on a loop share one probe, and none is served an unchecked client."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.vector_db.opensearch.opensearch.AsyncOpenSearch")
+    async def test_concurrent_first_calls_probe_once_and_share_the_checked_client(
+        self, mock_client_cls: MagicMock, os_config: OpenSearchConfig
+    ) -> None:
+        client = AsyncMock()
+
+        async def slow_info() -> dict[str, dict[str, str]]:
+            await asyncio.sleep(0.05)
+            return {"version": {"number": "3.0.0"}}
+
+        client.info = AsyncMock(side_effect=slow_info)
+        mock_client_cls.return_value = client
+        svc = OpenSearchService(os_config)
+        await svc.connect()
+
+        first, second = await asyncio.gather(svc._ensure_client(), svc._ensure_client())
+
+        assert first is client and second is client
+        client.info.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("app.services.vector_db.opensearch.opensearch.AsyncOpenSearch")
+    async def test_a_caller_waiting_on_a_failed_probe_never_gets_the_closed_client(
+        self, mock_client_cls: MagicMock, os_config: OpenSearchConfig
+    ) -> None:
+        bad, good = AsyncMock(), AsyncMock()
+
+        async def refused() -> None:
+            await asyncio.sleep(0.05)
+            raise ConnectionError("connection refused")
+
+        bad.info = AsyncMock(side_effect=refused)
+        good.info = AsyncMock(return_value={"version": {"number": "3.0.0"}})
+        mock_client_cls.side_effect = [bad, good]
+        svc = OpenSearchService(os_config)
+        await svc.connect()
+
+        results = await asyncio.gather(svc._ensure_client(), svc._ensure_client(), return_exceptions=True)
+
+        assert isinstance(results[0], ConnectionError)
+        assert results[1] is good
+        bad.close.assert_awaited_once()

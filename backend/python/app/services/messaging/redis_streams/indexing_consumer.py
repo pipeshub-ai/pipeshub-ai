@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Optional, override
 
 from pydantic import ValidationError
 
+from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
     IndexingEvent,
@@ -36,10 +37,8 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
-from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.redis_streams.stream_read_planner import StreamReadPlanner
-from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
     EnqueueResult,
@@ -65,10 +64,9 @@ from app.utils.request_context import (
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
-    from app.services.messaging.distributed_concurrency import (
-        DistributedConcurrencyManager,
-    )
-    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient as Redis
+    from app.services.messaging.worker_loop import WorkerLoop
+    from app.services.redis.connection_provider import IRedisConnectionProvider
+    from app.services.redis.connection_provider import RedisClient as Redis
     from app.services.resource_governor import ResourceGovernor
 
 _BUSYGROUP_ERROR = "BUSYGROUP"
@@ -129,6 +127,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         weight_provider: WeightProvider | None = None,
         disposition_sink: Optional[AbandonedMessageSink] = None,
         provider: "IRedisConnectionProvider | None" = None,
+        stage_admission: "concurrency.StageAdmission | None" = None,
+        worker: "WorkerLoop | None" = None,
     ) -> None:
         self.logger = logger
         self.config = config
@@ -149,6 +149,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # ResourceGovernor's adaptive gates instead of the static semaphores
         # below (see consumer_concurrency.acquire_parsing_slot/index_ceiling).
         self.governor = governor
+        if stage_admission is not None and governor is not None:
+            raise ValueError("a pipeline-stage consumer admits through its own limit, not a governor")
+        self.stage_admission = stage_admission
+        # Shared by every indexing consumer in the process (see WorkerLoop); None runs a loop of
+        # this consumer's own.
+        self._shared_worker = worker
         # Shared with the ParsingClient/DoclingClient/EmbeddingServerEmbeddings
         # instances that this consumer's records flow through — see
         # app.services.messaging.backpressure. Reading is paused whenever any
@@ -338,42 +344,61 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 ", ".join(sorted(discovered)),
             )
 
+    def _on_worker_loop_started(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Set up this consumer's admission and lease renewal on its worker loop."""
+        if self.governor is not None:
+            # One gate per pool, process-wide (ResourceGovernor.gate
+            # memoises by pool, and raises if a second loop uses one), and
+            # resolved per-message from the record's tier — index gates
+            # from the event payload before admission, parse gates from
+            # PipelineEventData.tier on START_PARSING. Binding them here
+            # is what claims them for this loop.
+            for pool in Pool:
+                self.governor.gate(pool)
+            self.logger.info(
+                "Worker thread event loop started; using ResourceGovernor "
+                "gates (index_heavy_ceiling=%d index_light_ceiling=%d "
+                "heavy_parse_ceiling=%d light_parse_ceiling=%d)",
+                self.governor.ceilings.index_heavy,
+                self.governor.ceilings.index_light,
+                self.governor.ceilings.heavy,
+                self.governor.ceilings.light,
+            )
+        else:
+            self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
+            self.indexing_semaphore = asyncio.Semaphore(
+                self.stage_admission.limit if self.stage_admission else messaging_env.max_concurrent_indexing
+            )
+            self.logger.info(
+                "Worker thread event loop started with semaphores initialized"
+            )
+        if self.concurrency_manager is not None:
+            self.lease_renewer = LeaseRenewer(
+                self.logger,
+                self.concurrency_manager,
+                lease_seconds=messaging_env.concurrency_lease_seconds,
+                interval_seconds=messaging_env.concurrency_renew_interval_seconds,
+            )
+            loop.call_soon(self.lease_renewer.start)
+
+    def _take_lease_renewer(self) -> LeaseRenewer | None:
+        """Detach the renewer this consumer started on the shared loop; runs on that loop."""
+        renewer, self.lease_renewer = self.lease_renewer, None
+        return renewer
+
     def _start_worker_thread(self) -> None:
+        if self._shared_worker is not None:
+            self.worker_loop_ready.clear()
+            loop = self._shared_worker.start()
+            self.worker_loop = loop
+            self._shared_worker.call(lambda: self._on_worker_loop_started(loop))
+            self.worker_loop_ready.set()
+            return
+
         def run_worker_loop() -> None:
             self.worker_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.worker_loop)
-            if self.governor is not None:
-                # One gate per pool, process-wide (ResourceGovernor.gate
-                # memoises by pool, and raises if a second loop uses one), and
-                # resolved per-message from the record's tier — index gates
-                # from the event payload before admission, parse gates from
-                # PipelineEventData.tier on START_PARSING. Binding them here
-                # is what claims them for this loop.
-                for pool in Pool:
-                    self.governor.gate(pool)
-                self.logger.info(
-                    "Worker thread event loop started; using ResourceGovernor "
-                    "gates (index_heavy_ceiling=%d index_light_ceiling=%d "
-                    "heavy_parse_ceiling=%d light_parse_ceiling=%d)",
-                    self.governor.ceilings.index_heavy,
-                    self.governor.ceilings.index_light,
-                    self.governor.ceilings.heavy,
-                    self.governor.ceilings.light,
-                )
-            else:
-                self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
-                self.indexing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_indexing)
-                self.logger.info(
-                    "Worker thread event loop started with semaphores initialized"
-                )
-            if self.concurrency_manager is not None:
-                self.lease_renewer = LeaseRenewer(
-                    self.logger,
-                    self.concurrency_manager,
-                    lease_seconds=messaging_env.concurrency_lease_seconds,
-                    interval_seconds=messaging_env.concurrency_renew_interval_seconds,
-                )
-                self.worker_loop.call_soon(self.lease_renewer.start)
+            self._on_worker_loop_started(self.worker_loop)
             self.worker_loop_ready.set()
             try:
                 self.worker_loop.run_forever()
@@ -487,6 +512,20 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
     def _stop_worker_thread(self) -> None:
         self._wait_for_active_futures()
+        if self._shared_worker is not None:
+            # The loop is shared: release only what this consumer started on it.
+            if self.worker_loop is not None and self.worker_loop.is_running():
+                renewer = self._shared_worker.call(self._take_lease_renewer)
+                if renewer is not None:
+                    # Awaited, not scheduled: the resources it renews through close, and a restart
+                    # starts a new renewer, only once this one has stopped.
+                    try:
+                        self._shared_worker.run(renewer.stop(), timeout=LeaseRenewer.STOP_TIMEOUT_S)
+                    except TimeoutError:
+                        self.logger.warning(
+                            "Lease renewer did not stop within %.0fs", LeaseRenewer.STOP_TIMEOUT_S
+                        )
+            self.worker_loop = None
         if self.worker_loop and self.worker_loop.is_running():
             self.worker_loop.call_soon_threadsafe(self.worker_loop.stop)
         if self.worker_executor:
@@ -729,7 +768,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         if times_delivered >= delivery_backstop:
             record_id = (
-                parsed_message.payload.get("recordId") if parsed_message else None
+                concurrency.work_key(parsed_message.payload, "") if parsed_message else None
             )
             # A sibling delivery of the same record is still running in this
             # process. times_delivered here is often an own-PEL re-read, not
@@ -2033,6 +2072,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         message: StreamMessage,
         stable_message_id: str,
         retry_count: int = 1,
+        delay_s: float | None = None,
     ) -> None:
         """Re-publish a failed message to the same stream for retry.
         
@@ -2049,6 +2089,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             message: The message to re-queue
             stable_message_id: Stable ID for retry tracking (preserved across re-queues)
             retry_count: Number of prior failures, used to compute backoff delay
+            delay_s: Hold it this long instead (a paused dependency's wait)
         """
         if not self.producer:
             raise RuntimeError("No producer available for re-queue")
@@ -2056,7 +2097,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         try:
             payload = dict(message.payload)
             payload["_retry_tracking_id"] = stable_message_id
-            payload["_retry_not_before"] = time.time() + compute_retry_backoff_seconds(retry_count)
+            backoff = delay_s if delay_s is not None else compute_retry_backoff_seconds(retry_count)
+            payload["_retry_not_before"] = time.time() + backoff
 
             await self._run_on_main_loop(
                 self.producer.send_event(
@@ -2194,9 +2236,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return False
 
         stable_message_id = self._get_stable_message_id(message_id, parsed_message)
-        record_lock_id = (
-            parsed_message.payload.get("recordId") or stable_message_id
-        )
+        record_lock_id = concurrency.work_key(parsed_message.payload, stable_message_id)
         record_pool = f"record:{record_lock_id}"
 
         if not await self._delay_if_retry_not_ready(parsed_message, message_id):
@@ -2237,7 +2277,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # record routes to heavy (see effective_index_tier). The gate, the
         # lease limit and the lease pool name all have to agree on that.
         index_tier = concurrency.dispatch_tier(self, parsed_message)
-        index_lease_pool = concurrency.index_lease_pool(index_tier)
+        index_lease_pool = concurrency.admission_lease_pool(self, index_tier)
 
         try:
             # The active-pipeline bound. Without this outer permit, parsed
@@ -2458,32 +2498,36 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         except RedisAcknowledgementError as e:
             self.logger.warning("%s", e)
             return False
-        except concurrency.ParseAdmissionTimeout as e:
-            # Queue time, not a failure: hand the record back with no attempt
-            # counted, so a queue behind long parses cannot dead-letter it.
+        except concurrency.RequeueWithoutAttempt as e:
+            # Queue time, not a failure (a parse-slot wait that ran out, or a stage
+            # whose dependency is paused): hand the message back with no attempt
+            # counted, so it cannot be dead-lettered for waiting.
             self.logger.warning(
-                "%s waited %.0fs for a %s parse slot without being admitted; "
-                "re-queuing without counting an attempt",
-                message_id, e.waited, e.pool,
+                "%s handed back without counting an attempt: %s", message_id, e,
             )
             if parsed_message is not None:
-                # Each re-queue is a fresh stream entry, so times_delivered
-                # starts over and cannot bound this on its own; the delivery
-                # counter can. Past the backstop the entry stays in the PEL,
-                # where the idle drain's times_delivered check takes over.
-                cycles, backstop_tripped = await concurrency.record_delivery(
-                    self, stable_message_id
-                )
-                if backstop_tripped:
-                    self.logger.error(
-                        "%s has been handed back %d times without a parse slot; "
-                        "leaving it in the PEL rather than re-queuing again",
-                        message_id, cycles,
+                if not e.counts_toward_backstop:
+                    # A clean run that found a dependency down, not a crash loop: its
+                    # growing delay bounds how often it returns while the outage lasts.
+                    await concurrency.clear_delivery_count(self, stable_message_id)
+                else:
+                    # Each re-queue is a fresh stream entry, so times_delivered
+                    # starts over and cannot bound this on its own; the delivery
+                    # counter can. Past the backstop the entry stays in the PEL,
+                    # where the idle drain's times_delivered check takes over.
+                    cycles, backstop_tripped = await concurrency.record_delivery(
+                        self, stable_message_id
                     )
-                    return False
+                    if backstop_tripped:
+                        self.logger.error(
+                            "%s has been handed back %d times without being admitted; "
+                            "leaving it in the PEL rather than re-queuing again",
+                            message_id, cycles,
+                        )
+                        return False
                 try:
                     await self._requeue_message(
-                        stream_name, parsed_message, stable_message_id, retry_count=0
+                        stream_name, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s
                     )
                     await self._ack_message(stream_name, message_id)
                     acked = True

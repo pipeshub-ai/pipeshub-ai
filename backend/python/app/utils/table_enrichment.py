@@ -24,17 +24,18 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt_for_csv,
     table_enrichment_prompt,
 )
-from app.utils.concurrency import (
-    MAX_CONCURRENT_ROW_BATCHES,
-    MAX_CONCURRENT_TABLES,
-    TABLE_ROW_BATCH_SIZE,
-    gather_with_concurrency,
-)
 
 # Imported as a module, not by name: ~30 tests patch
 # module-level `from ... import name` here would bind its own reference and silently
 # bypass those patches.
 from app.utils import indexing_helpers
+from app.utils.concurrency import (
+    MAX_CONCURRENT_ROW_BATCHES,
+    MAX_CONCURRENT_TABLES,
+    TABLE_ROW_BATCH_SIZE,
+    gather_with_concurrency,
+    max_table_rows_for_llm,
+)
 from app.utils.indexing_metrics import note_table_result, track_indexing_enrichment
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import (
@@ -173,7 +174,7 @@ async def enrich_table_grid(
         headers = known_headers or []
         data_rows = rows[header_rows:]
         result = TableEnrichmentResult(
-            summary="",
+            summary=fallback_table_summary(headers, len(data_rows)),
             headers=headers,
             header_row_count=header_rows,
             descriptions=_simple_texts(data_rows, headers),
@@ -240,6 +241,21 @@ async def enrich_table_grid(
     return result
 
 
+def describe_rows_within_budget(row_counts: Sequence[int]) -> list[bool]:
+    """Per table, in document order: whether its rows get LLM descriptions.
+
+    A table qualifies while the record's running row total, including it, stays
+    within ``max_table_rows_for_llm()`` - the rule the Excel and CSV parsers apply.
+    """
+    budget = max_table_rows_for_llm()
+    flags: list[bool] = []
+    total = 0
+    for count in row_counts:
+        total += count
+        flags.append(total <= budget)
+    return flags
+
+
 async def enrich_tables(
     llm: BaseChatModel,
     grids: Sequence[Sequence[Sequence[Any]]],
@@ -249,9 +265,14 @@ async def enrich_tables(
     describe_rows: Optional[Sequence[bool]] = None,
     max_concurrent: int = MAX_CONCURRENT_TABLES,
 ) -> List[TableEnrichmentResult]:
-    """Enrich several tables concurrently. Results are in input order."""
+    """Enrich several tables concurrently. Results are in input order.
+
+    ``describe_rows`` defaults to the record's row budget over *grids*, in order.
+    """
     if not grids:
         return []
+    if describe_rows is None:
+        describe_rows = describe_rows_within_budget([len(grid) for grid in grids])
 
     coros = [
         enrich_table_grid(
@@ -261,7 +282,7 @@ async def enrich_tables(
             known_header_row_count=(
                 known_header_row_counts[i] if known_header_row_counts else None
             ),
-            describe_rows=describe_rows[i] if describe_rows else True,
+            describe_rows=describe_rows[i],
         )
         for i, grid in enumerate(grids)
     ]
@@ -322,7 +343,12 @@ def _collect_table_row_blocks(
 
 
 async def _enhance_one_table(
-    table_group: Any, block_containers: Any, llm: BaseChatModel, logger: Logger  # noqa: ANN401
+    table_group: Any,  # noqa: ANN401
+    block_containers: Any,  # noqa: ANN401
+    llm: BaseChatModel,
+    logger: Logger,
+    *,
+    describe_rows: bool = True,
 ) -> Optional[bool]:
     """Fill in one TABLE BlockGroup's summary/headers/row text in place.
 
@@ -359,7 +385,11 @@ async def _enhance_one_table(
 
     try:
         enrichment = await enrich_table_grid(
-            llm, grid, logger=logger, known_header_row_count=known_header_row_count
+            llm,
+            grid,
+            logger=logger,
+            known_header_row_count=known_header_row_count,
+            describe_rows=describe_rows,
         )
     except Exception as e:
         logger.warning(f"Table {table_group.index} enrichment failed: {e}")
@@ -428,12 +458,20 @@ async def enhance_tables_with_llm(
 
     logger.info(f"Enhancing {len(table_groups)} tables with LLM summaries")
 
+    # The row budget runs over the record's tables in document order.
+    describe_flags = describe_rows_within_budget([
+        len(_collect_table_row_blocks(block_containers, table_group))
+        for table_group in table_groups
+    ])
+
     with track_indexing_enrichment(logger, label="block-tables"):
         results = await gather_with_concurrency(
             max_concurrent_tables,
             *(
-                _enhance_one_table(table_group, block_containers, llm, logger)
-                for table_group in table_groups
+                _enhance_one_table(
+                    table_group, block_containers, llm, logger, describe_rows=describe
+                )
+                for table_group, describe in zip(table_groups, describe_flags)
             ),
             return_exceptions=True,
         )
@@ -510,3 +548,11 @@ async def get_rows_text(
             raise
     else:
         return [], []
+
+
+def fallback_table_summary(headers: "Sequence[object]", row_count: int) -> str:
+    """A table summary written without the model, for when it cannot write one: the record is
+    still indexed, with a plainer summary."""
+    columns = ", ".join(str(h) for h in headers if str(h).strip()) or "unnamed columns"
+    rows = f"{row_count} row" + ("" if row_count == 1 else "s")
+    return f"A table with {rows} and columns: {columns}."

@@ -9,7 +9,9 @@
       "reindexFailedStart": "正在重新索引失败的记录…",
       "reindexFailedError": "重新索引失败的记录时出错",
       "manualIndexStart": "正在索引手动索引记录…",
-      "manualIndexError": "启动手动索引失败"
+      "manualIndexError": "启动手动索引失败",
+      "retryClassificationStart": "分类重试已加入队列",
+      "retryClassificationError": "重试分类失败"
     }
   },
   "resetPassword": {
@@ -1953,7 +1955,12 @@
         "recordsByType": "按类型划分的记录",
         "noRecordTypes": "没有可用的记录类型",
         "localWatcherLabel": "本地监视器",
-        "localWatcherStatus": "{{state}} · {{pending}} 个待处理 · {{failed}} 个失败"
+        "localWatcherStatus": "{{state}} · {{pending}} 个待处理 · {{failed}} 个失败",
+        "classification": "分类",
+        "classificationSkipped": "已跳过",
+        "retryFailedClassification": "重试失败的分类",
+        "retryClassificationSuccess": "分类重试已加入队列",
+        "retryClassificationError": "重试分类失败"
       },
       "settingsTab": {
         "instanceName": "实例名称",
@@ -3202,6 +3209,12 @@
       "noRecordMetadata": "此项目没有其他记录元数据。"
     },
     "indexingReasonAria": "索引失败详情",
+    "stageTrackLabel": "处理流程",
+    "stageParsed": "已解析",
+    "stageSearchable": "可搜索",
+    "stageClassified": "已分类",
+    "stageAttempt": "第 {{n}} 次尝试",
+    "stageDetailsAria": "阶段详情",
     "tabRecordInformation": "记录信息",
     "tabDocumentDetails": "文档详情",
     "chat": "聊天",

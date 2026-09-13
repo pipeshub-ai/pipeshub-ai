@@ -64,3 +64,17 @@ class TestRequestContextMiddleware:
     async def test_context_is_reset_after_request(self):
         await _run([("x-request-id", "clean-id")])
         assert rc.get_context() is None
+
+
+class TestAdmittedInHeader:
+    @pytest.mark.asyncio
+    async def test_an_upstream_admission_is_bound_for_the_request_only(self) -> None:
+        captured: dict[str, str | None] = {}
+
+        async def app(scope: dict[str, object], receive: object, send: object) -> None:
+            captured["admitted_in"] = rc.get_admitted_in()
+
+        headers = [("x-pipeshub-admitted-in", "dom\r\n1")]
+        await RequestContextMiddleware(app)(_http_scope(headers), _noop_receive, _noop_send)
+        assert captured["admitted_in"] == "dom1"
+        assert rc.get_admitted_in() is None

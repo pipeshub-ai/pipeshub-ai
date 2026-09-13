@@ -3,8 +3,13 @@ from app.config.constants.arangodb import (
     ConnectorScopes,
     OriginTypes,
     PermissionModel,
+    ProgressStatus,
 )
 from app.models.entities import RecordGroupType, RecordType
+
+# One list for every status field: the three used to drift apart, and a status
+# a writer can produce but a schema rejects fails the write at runtime.
+PROGRESS_STATUS_VALUES = [status.value for status in ProgressStatus]
 
 # User schema for ArangoDB
 orgs_schema = {
@@ -231,48 +236,16 @@ record_schema = {
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
-            "parsingStatus": {
-                "type": "string",
-                "enum": [
-                    "NOT_STARTED",
-                    "IN_PROGRESS",
-                    "FAILED",
-                    "COMPLETED",
-                    "FILE_TYPE_NOT_SUPPORTED",
-                    "AUTO_INDEX_OFF",
-                    "EMPTY",
-                    "QUEUED",
-                ],
-            },
+            # Set by the stranded-record sweep when it first sees the record waiting for its
+            # event; a consumer picking the record up clears it.
+            "awaitingEventSince": {"type": ["number", "null"]},
+            "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",
-                "enum": [
-                    "NOT_STARTED",
-                    "IN_PROGRESS",
-                    "PAUSED",
-                    "FAILED",
-                    "COMPLETED",
-                    "FILE_TYPE_NOT_SUPPORTED",
-                    "AUTO_INDEX_OFF",
-                    "EMPTY",
-                    "ENABLE_MULTIMODAL_MODELS",
-                    "QUEUED",
-                    "CONNECTOR_DISABLED"   # deprecated, use AUTO_INDEX_OFF instead
-                ],
+                # CONNECTOR_DISABLED is deprecated (use AUTO_INDEX_OFF) but still on old records.
+                "enum": [*PROGRESS_STATUS_VALUES, "CONNECTOR_DISABLED"],
             },
-            "extractionStatus": {
-                "type": "string",
-                "enum": [
-                    "NOT_STARTED",
-                    "IN_PROGRESS",
-                    "PAUSED",
-                    "FAILED",
-                    "COMPLETED",
-                    "FILE_TYPE_NOT_SUPPORTED",
-                    "AUTO_INDEX_OFF",
-                    "EMPTY"
-                ],
-            },
+            "extractionStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
@@ -294,6 +267,8 @@ record_schema = {
             "definition": {"type": ["string", "null"]},
             "sourceTables": {"type": ["array", "null"], "items": {"type": "string"}},
             "rowCount": {"type": ["number", "null"]},
+            # sha256(source bytes)[:16] of the revision being processed; stage status writes CAS on it.
+            "contentRev": {"type": ["string", "null"]},
         },
         "required": [
             "recordName",
@@ -307,6 +282,68 @@ record_schema = {
     },
     "level": "strict",
     "message": "Document does not match the record schema.",
+}
+
+
+# Pipeline stage state: one document per (virtual record, content revision, stage).
+# ``_key`` is ``{virtualRecordId}:{rev}:{stage}``; see app/modules/pipeline/models.py.
+STAGE_TIERS = ["heavy", "light"]
+STAGE_PRIORITIES = ["interactive", "bulk"]
+stage_state_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "virtualRecordId": {"type": "string"},
+            "rev": {"type": "string"},
+            "stage": {"type": "string"},
+            "status": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
+            "stageVersion": {"type": "integer", "minimum": 1},
+            "recordIds": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            "connectorId": {"type": "string"},
+            "tier": {"type": "string", "enum": STAGE_TIERS},
+            "priority": {"type": "string", "enum": STAGE_PRIORITIES},
+            "trigger": {"type": "string"},
+            "force": {"type": "boolean"},
+            "mimeType": {"type": ["string", "null"]},
+            "textDigest": {"type": "string"},
+            "blocksDigest": {"type": "string"},
+            "textChars": {"type": "integer", "minimum": 0},
+            "hasTables": {"type": "boolean"},
+            "hasImages": {"type": "boolean"},
+            "fingerprint": {"type": ["string", "null"]},
+            "attempt": {"type": "integer", "minimum": 0},
+            "startedAtMs": {"type": ["number", "null"]},
+            "finishedAtMs": {"type": ["number", "null"]},
+            "publishedAtMs": {"type": ["number", "null"]},
+            "updatedAtMs": {"type": "number"},
+            "workerId": {"type": ["string", "null"]},
+            "reason": {"type": ["string", "null"]},
+            "output": {"type": ["string", "null"]},
+        },
+        "required": [
+            "orgId",
+            "virtualRecordId",
+            "rev",
+            "stage",
+            "status",
+            "stageVersion",
+            "recordIds",
+            "connectorId",
+            "tier",
+            "priority",
+            "trigger",
+            "textDigest",
+            "blocksDigest",
+            "textChars",
+            "hasTables",
+            "hasImages",
+            "updatedAtMs",
+        ],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the stage state schema.",
 }
 
 # File Record schema for ArangoDB

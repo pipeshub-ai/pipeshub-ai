@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from enum import Enum
@@ -145,9 +146,9 @@ class CircuitState(Enum):
 class CircuitBreaker:
     """Per-client circuit breaker guarding a single downstream service.
 
-    Not thread-safe by design: each ``BaseServiceClient`` instance owns one
-    breaker, and all indexing HTTP calls run on the single indexing
-    worker-thread event loop, so no locking is required here.
+    Each ``BaseServiceClient`` owns one breaker. It is called from more than one
+    thread (the server loop and the indexing worker loop), so every state
+    transition takes a lock; none of them awaits.
 
     CLOSED -> OPEN after ``failure_threshold`` consecutive failures.
     OPEN rejects all calls until ``cooldown_seconds`` elapse, then lets a
@@ -181,6 +182,7 @@ class CircuitBreaker:
         self._opened_at: float | None = None
         self._half_open_probe_in_flight = False
         self._half_open_probe_started_at: float | None = None
+        self._lock = threading.Lock()
 
     def _probe_timed_out(self, now: float) -> bool:
         return (
@@ -195,23 +197,24 @@ class CircuitBreaker:
         Used for cheap pre-checks (e.g. before marking a record IN_PROGRESS)
         so callers can fail fast without even attempting the request.
         """
-        now = time.monotonic()
-        if self._state == CircuitState.HALF_OPEN:
-            if self._probe_timed_out(now):
-                self._reset_stuck_probe(now)
+        with self._lock:
+            now = time.monotonic()
+            if self._state == CircuitState.HALF_OPEN:
+                if self._probe_timed_out(now):
+                    self._reset_stuck_probe(now)
+                    return False
+                return True
+            if self._state != CircuitState.OPEN:
+                return False
+            if (
+                self._opened_at is not None
+                and now - self._opened_at >= self.cooldown_seconds
+            ):
+                # Cooldown elapsed — a probe may proceed; the actual state
+                # transition happens in should_attempt_probe() to avoid
+                # double-probing.
                 return False
             return True
-        if self._state != CircuitState.OPEN:
-            return False
-        if (
-            self._opened_at is not None
-            and now - self._opened_at >= self.cooldown_seconds
-        ):
-            # Cooldown elapsed — a probe may proceed; the actual state
-            # transition happens in should_attempt_probe() to avoid
-            # double-probing.
-            return False
-        return True
 
     def _reset_stuck_probe(self, now: float) -> None:
         self._state = CircuitState.OPEN
@@ -228,56 +231,71 @@ class CircuitBreaker:
         cooldown hasn't elapsed yet, or another caller already owns the
         probe.
         """
-        now = time.monotonic()
-        if self._state != CircuitState.OPEN:
-            return False
-        if self._opened_at is None or now - self._opened_at < self.cooldown_seconds:
-            return False
-        if self._half_open_probe_in_flight:
-            return False
-        self._state = CircuitState.HALF_OPEN
-        self._half_open_probe_in_flight = True
-        self._half_open_probe_started_at = now
-        self.logger.info(
-            "[%s] Circuit breaker cooldown elapsed, running health-check probe",
-            self.service_name,
-        )
-        return True
+        with self._lock:
+            now = time.monotonic()
+            if self._state != CircuitState.OPEN:
+                return False
+            if self._opened_at is None or now - self._opened_at < self.cooldown_seconds:
+                return False
+            if self._half_open_probe_in_flight:
+                return False
+            self._state = CircuitState.HALF_OPEN
+            self._half_open_probe_in_flight = True
+            self._half_open_probe_started_at = now
+            self.logger.info(
+                "[%s] Circuit breaker cooldown elapsed, running health-check probe",
+                self.service_name,
+            )
+            return True
 
     def record_success(self) -> None:
-        if self._state != CircuitState.CLOSED:
-            self.logger.info(
-                "[%s] Circuit breaker closing after successful probe", self.service_name
-            )
-        self._state = CircuitState.CLOSED
-        self._consecutive_failures = 0
-        self._opened_at = None
-        self._half_open_probe_in_flight = False
-        self._half_open_probe_started_at = None
+        with self._lock:
+            if self._state != CircuitState.CLOSED:
+                self.logger.info(
+                    "[%s] Circuit breaker closing after successful probe", self.service_name
+                )
+            self._state = CircuitState.CLOSED
+            self._consecutive_failures = 0
+            self._opened_at = None
+            self._half_open_probe_in_flight = False
+            self._half_open_probe_started_at = None
 
     def record_failure(self) -> None:
-        self._half_open_probe_in_flight = False
-        self._half_open_probe_started_at = None
+        with self._lock:
+            self._half_open_probe_in_flight = False
+            self._half_open_probe_started_at = None
 
-        if self._state == CircuitState.HALF_OPEN:
-            self._state = CircuitState.OPEN
-            self._opened_at = time.monotonic()
-            self.logger.warning(
-                "[%s] Circuit breaker probe failed, re-opening for %.0fs",
-                self.service_name, self.cooldown_seconds,
-            )
-            return
+            if self._state == CircuitState.HALF_OPEN:
+                self._state = CircuitState.OPEN
+                self._opened_at = time.monotonic()
+                self.logger.warning(
+                    "[%s] Circuit breaker probe failed, re-opening for %.0fs",
+                    self.service_name, self.cooldown_seconds,
+                )
+                return
 
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= self.failure_threshold and self._state == CircuitState.CLOSED:
-            self._state = CircuitState.OPEN
-            self._opened_at = time.monotonic()
-            self.logger.warning(
-                "[%s] Circuit breaker opened after %d consecutive failures; "
-                "rejecting calls for %.0fs",
-                self.service_name, self._consecutive_failures, self.cooldown_seconds,
-            )
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.failure_threshold and self._state == CircuitState.CLOSED:
+                self._state = CircuitState.OPEN
+                self._opened_at = time.monotonic()
+                self.logger.warning(
+                    "[%s] Circuit breaker opened after %d consecutive failures; "
+                    "rejecting calls for %.0fs",
+                    self.service_name, self._consecutive_failures, self.cooldown_seconds,
+                )
 
+
+    @property
+    def state(self) -> str:
+        with self._lock:
+            return self._state.value
+
+    def retry_after(self) -> float | None:
+        """Seconds until an open circuit lets a probe through; None when it is not open."""
+        with self._lock:
+            if self._state is not CircuitState.OPEN or self._opened_at is None:
+                return None
+            return max(0.0, self.cooldown_seconds - (time.monotonic() - self._opened_at))
 
 class BaseServiceClient:
     """Async HTTP client with retry, timeout, and health-check.

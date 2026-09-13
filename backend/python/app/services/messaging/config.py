@@ -485,6 +485,13 @@ class MessagingEnvConfig:
         return max(1, _env_int("FAIR_SCHEDULING_LANE_COUNT", 8))
 
     @property
+    def kafka_topic_partitions(self) -> int:
+        """Partitions for topics the Python services create on Kafka (pipeline stage
+        topics): the same ``KAFKA_TOPIC_PARTITIONS`` the Node admin applies to
+        ``record-events``, so both sides lane the same way."""
+        return max(1, _env_int("KAFKA_TOPIC_PARTITIONS", 1))
+
+    @property
     def fair_scheduling_lane_key_field(self) -> str:
         """Payload field a lane is chosen from.
 

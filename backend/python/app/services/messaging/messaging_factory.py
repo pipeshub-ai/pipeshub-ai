@@ -1,7 +1,12 @@
+import dataclasses
 import os
 from logging import Logger
 from typing import TYPE_CHECKING
 
+from app.services.distributed.interface import (
+    IDistributedLeaseManager,
+    IRetryTracker,
+)
 from app.services.messaging.config import (
     ConsumerType,
     MessageBrokerType,
@@ -10,11 +15,10 @@ from app.services.messaging.config import (
     get_message_broker_type,
     messaging_env,
 )
-from app.services.messaging.distributed_concurrency import (
-    DistributedConcurrencyManager,
-)
+from app.services.messaging.interface.admin import IMessageAdmin
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.services.messaging.kafka.admin import KafkaAdmin
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
@@ -27,15 +31,12 @@ from app.services.messaging.kafka.producer.producer import KafkaMessagingProduce
 from app.services.messaging.lanes.hash_router import build_lane_router
 from app.services.messaging.lanes.interface import LaneConfig
 from app.services.messaging.lanes.producer import LaneAwareProducer
+from app.services.messaging.redis_streams.admin import RedisStreamsAdmin
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
-from app.services.distributed.interface import (
-    IDistributedLeaseManager,
-    IRetryTracker,
-)
 from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.interface import (
     FairnessKeyExtractor,
@@ -46,7 +47,9 @@ from app.services.messaging.scheduling.key_extractors import CompositeKeyExtract
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
+    from app.services.messaging.consumer_concurrency import StageAdmission
     from app.services.messaging.disposition import AbandonedMessageSink
+    from app.services.messaging.worker_loop import WorkerLoop
     from app.services.resource_governor import ResourceGovernor
 
 
@@ -204,6 +207,23 @@ class MessagingFactory:
         )
 
     @staticmethod
+    def create_admin(
+        logger: Logger,
+        config: KafkaProducerConfig | RedisStreamsConfig,
+        broker_type: MessageBrokerType | None = None,
+    ) -> IMessageAdmin:
+        """Topic administration for the configured broker (creates missing topics)."""
+        if broker_type is None:
+            broker_type = get_message_broker_type()
+        if broker_type == MessageBrokerType.KAFKA:
+            if not isinstance(config, KafkaProducerConfig):
+                raise TypeError(f"Expected KafkaProducerConfig, got {type(config).__name__}")
+            return KafkaAdmin(logger, config)
+        if not isinstance(config, RedisStreamsConfig):
+            raise TypeError(f"Expected RedisStreamsConfig, got {type(config).__name__}")
+        return RedisStreamsAdmin(logger, config)
+
+    @staticmethod
     def create_consumer(
         logger: Logger,
         config: KafkaConsumerConfig | RedisStreamsConfig | None = None,
@@ -218,6 +238,8 @@ class MessagingFactory:
         key_extractor: FairnessKeyExtractor | None = None,
         weight_provider: WeightProvider | None = None,
         disposition_sink: "AbandonedMessageSink | None" = None,
+        stage_admission: "StageAdmission | None" = None,
+        worker: "WorkerLoop | None" = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
 
@@ -258,6 +280,11 @@ class MessagingFactory:
             broker_type = get_message_broker_type()
 
         effective_fair_config = fair_scheduler_config or _fair_scheduler_config_from_env()
+        if stage_admission is not None:
+            # Stage jobs are independent and serialised per job, so one partition may run
+            # several at once; the stage's admission limit bounds concurrency, not the
+            # topic's partition count. Parallel dispatch needs the fair scheduler's watermark.
+            effective_fair_config = dataclasses.replace(effective_fair_config, enabled=True, parallel_partitions=True)
         effective_key_extractor = key_extractor or CompositeKeyExtractor(
             fields=effective_fair_config.key_fields
         )
@@ -284,6 +311,8 @@ class MessagingFactory:
                     key_extractor=effective_key_extractor,
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
+                    stage_admission=stage_admission,
+                    worker=worker,
                 )
             return KafkaMessagingConsumer(logger, config, retry_manager)
         else:
@@ -306,5 +335,7 @@ class MessagingFactory:
                     key_extractor=effective_key_extractor,
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
+                    stage_admission=stage_admission,
+                    worker=worker,
                 )
             return RedisStreamsConsumer(logger, config, retry_manager)

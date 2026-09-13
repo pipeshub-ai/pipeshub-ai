@@ -153,6 +153,7 @@ class TestIndexingErrorReraise:
 
         proc = _make_processor()
         parser = MagicMock()
+        parser.new_document_parser.return_value = parser
         parser.load_workbook_from_binary = MagicMock()
         parser.create_blocks = AsyncMock(
             side_effect=IndexingError("xlsx fail", record_id="r1")

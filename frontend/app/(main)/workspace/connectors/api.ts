@@ -9,6 +9,7 @@ import type {
   ConnectorConfig,
   FilterOptionsResponse,
   ConnectorStatsResponse,
+  ReindexStage,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
@@ -364,12 +365,19 @@ export const ConnectorsApi = {
    * Reindex all records for a connector instance, optionally filtered by
    * indexing status. Omitting statusFilters reindexes everything for a KB
    * connector; other connector types default server-side to FAILED-only.
+   * With `stages`, only those pipeline stages re-run and statusFilters match
+   * the stage's own status (classify -> extractionStatus).
    */
-  async reindexConnector(connectorId: string, statusFilters?: string[]) {
+  async reindexConnector(
+    connectorId: string,
+    statusFilters?: string[],
+    stages?: ReindexStage[]
+  ) {
     const { data } = await apiClient.post(
       `${BASE_URL}/${connectorId}/reindex`,
       {
         ...(statusFilters?.length ? { statusFilters } : {}),
+        ...(stages?.length ? { stages } : {}),
       }
     );
     return data;

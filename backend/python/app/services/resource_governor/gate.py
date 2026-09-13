@@ -160,8 +160,8 @@ class AdmissionGate:
             self._permit_seconds += self._in_use * elapsed
         self._last_change = now
 
-    def _try_admit(self, cost: int) -> bool:
-        limit = self._registry.get(self._pool)
+    def _try_admit(self, cost: int, cap: int | None = None) -> bool:
+        limit = self._registry.get(self._pool) if cap is None else cap
         # Deadlock guard: an oversized request (cost > limit, or limit fully
         # shrunk to 0) is still admitted alone rather than waiting forever.
         has_room = self._in_use == 0 or (self._in_use + cost <= limit)
@@ -182,8 +182,12 @@ class AdmissionGate:
 
     # -- public API ----------------------------------------------------
 
-    async def acquire(self, cost: int = 1, timeout: float | None = None) -> bool:
-        """Acquire *cost* permits.
+    async def acquire(self, cost: int = 1, timeout: float | None = None, *, cap: int | None = None) -> bool:
+        """Acquire *cost* permits, against the pool's current limit or, when given, *cap*.
+
+        *cap* is for work a process sharing this one's memory already admitted under its
+        memory brake (``memory_domain.parse_admission_cap``): the pool's ceiling still
+        bounds it, the brake does not apply twice.
 
         Returns ``False`` on timeout rather than raising, so callers can
         respond with backpressure instead of an exception (plan section
@@ -192,7 +196,7 @@ class AdmissionGate:
         loop = self._bind()
         # Nobody may overtake a queued waiter, so a fresh arrival only takes
         # the fast path while the queue is empty.
-        if not self._waiters and self._try_admit(cost):
+        if not self._waiters and self._try_admit(cost, cap):
             return True
 
         wait_start = self._clock()
@@ -211,7 +215,7 @@ class AdmissionGate:
                     else min(_SAFETY_NET_INTERVAL_SECONDS, remaining)
                 )
                 await waiter.wait(poll)
-                if self._waiters[0] is waiter and self._try_admit(cost):
+                if self._waiters[0] is waiter and self._try_admit(cost, cap):
                     return True
         finally:
             self._total_wait_seconds += self._clock() - wait_start

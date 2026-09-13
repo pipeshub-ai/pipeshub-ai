@@ -5,6 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.modules.transformers.graphdb import taxonomy_node_key
+
+ORG = "org-1"
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +72,7 @@ def _make_record(
 def _make_ctx(record):
     ctx = MagicMock()
     ctx.record = record
+    ctx.extraction_skip_reason = None
     return ctx
 
 
@@ -191,13 +195,18 @@ class TestSaveMetadataToDb:
         ctx_mgr.__aenter__ = AsyncMock(return_value=tx_store)
         ctx_mgr.__aexit__ = AsyncMock(return_value=False)
         transformer.graph_data_store.transaction.return_value = ctx_mgr
+        transformer.graph_provider.get_document = AsyncMock(return_value={"_key": "rec-1", "orgId": ORG})
+        transformer.graph_provider.ensure_nodes = AsyncMock()
         return transformer, tx_store
+
+    @staticmethod
+    def _ensured_collections(transformer) -> set[str]:
+        return {c.args[1] for c in transformer.graph_provider.ensure_nodes.await_args_list}
 
     @pytest.mark.asyncio
     async def test_record_not_found_raises(self):
-        tx_store = _make_tx_store()
-        tx_store.get_record_by_key.return_value = None
-        transformer, _ = self._setup_transformer_with_tx(tx_store)
+        transformer, _ = self._setup_transformer_with_tx()
+        transformer.graph_provider.get_document.return_value = None
 
         metadata = _make_semantic_metadata()
         with pytest.raises(Exception, match="not found in database"):
@@ -285,10 +294,19 @@ class TestSaveMetadataToDb:
         metadata = _make_semantic_metadata(categories=["NewCategory"])
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Should upsert a new category node
-        upsert_calls = tx_store.batch_upsert_nodes.call_args_list
-        # At least one call should create a category node, and one for status
-        assert len(upsert_calls) >= 1
+        # Created through ensure_nodes under a key derived from org and name,
+        # never looked up by name inside the record transaction.
+        created = transformer.graph_provider.ensure_nodes.await_args_list
+        category_docs = [
+            node for c in created if c.args[1] == CollectionNames.CATEGORIES.value for node in c.args[0]
+        ]
+        assert category_docs == [{
+            "id": taxonomy_node_key(ORG, CollectionNames.CATEGORIES.value, "NewCategory"),
+            "name": "NewCategory",
+            "normalizedName": "newcategory",
+            "orgId": ORG,
+        }]
+        tx_store.batch_upsert_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_handles_languages(self):
@@ -356,8 +374,12 @@ class TestSaveMetadataToDb:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Should have called batch_upsert_nodes for category/subcategory nodes
-        assert tx_store.batch_upsert_nodes.await_count >= 4
+        assert self._ensured_collections(transformer) == {
+            CollectionNames.CATEGORIES.value,
+            CollectionNames.SUBCATEGORIES1.value,
+            CollectionNames.SUBCATEGORIES2.value,
+            CollectionNames.SUBCATEGORIES3.value,
+        }
 
     @pytest.mark.asyncio
     async def test_status_doc_completed(self):
@@ -409,9 +431,8 @@ class TestSaveMetadataToDb:
     @pytest.mark.asyncio
     async def test_exception_in_save_propagates(self):
         """Internal errors during save should propagate."""
-        tx_store = _make_tx_store()
-        tx_store.get_record_by_key.side_effect = Exception("DB connection lost")
-        transformer, _ = self._setup_transformer_with_tx(tx_store)
+        transformer, _ = self._setup_transformer_with_tx()
+        transformer.graph_provider.get_document.side_effect = Exception("DB connection lost")
 
         metadata = _make_semantic_metadata()
         with pytest.raises(Exception, match="DB connection lost"):

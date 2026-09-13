@@ -575,7 +575,7 @@ def warm_start_limits(ceilings: Ceilings) -> Limits:
     })
 
 
-def _ceiling_for(pool: Pool, ceilings: Ceilings) -> int:
+def ceiling_for(pool: Pool, ceilings: Ceilings) -> int:
     return {
         Pool.HEAVY_PARSE: ceilings.heavy,
         Pool.LIGHT_PARSE: ceilings.light,
@@ -610,7 +610,7 @@ def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
         # and says nothing about RAM), but not under the floor, or the two
         # paths disagree about how far down is too far and the walk-down
         # quietly undercuts the brake.
-        ceiling = _ceiling_for(pool, ceilings)
+        ceiling = ceiling_for(pool, ceilings)
         mem_cap = index_memory_cap(snap, pool)
         bound = ceiling if mem_cap is None else min(ceiling, mem_cap)
         return int(_clamp(bound, pressure_floor(pool, ceiling), ceiling))
@@ -781,7 +781,7 @@ def _next_pool_limit(
     interval: float,
     feedback: FeedbackWindow | None = None,
 ) -> tuple[int, PoolState]:
-    ceiling = _ceiling_for(pool, ceilings)
+    ceiling = ceiling_for(pool, ceilings)
     floor = pressure_floor(pool, ceiling)
     shrink_step = COUNT_POOL_STEP
     target = _target_for(pool, snap, ceilings)

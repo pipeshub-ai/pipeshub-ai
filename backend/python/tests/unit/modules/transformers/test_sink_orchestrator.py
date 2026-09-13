@@ -81,18 +81,18 @@ class TestApply:
             await orch.apply(ctx)
 
     @pytest.mark.asyncio
-    async def test_completed_skips_vector_still_enriches(self):
-        """index() skips vector when already COMPLETED; enrich() still runs."""
+    async def test_completed_skips_vector_and_does_not_classify(self) -> None:
+        """index() skips vector when already COMPLETED; classification is a pipeline stage."""
         orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"})
         ctx = _make_ctx()
 
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_not_awaited()
-        orch.graphdb.apply.assert_awaited_once_with(ctx)
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_not_completed_runs_vector_and_graph(self):
+    async def test_not_completed_runs_vector_only(self) -> None:
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "IN_PROGRESS"},
             vector_result=None,  # None is not False, so processing continues
@@ -102,10 +102,10 @@ class TestApply:
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_awaited_once_with(ctx)
-        orch.graphdb.apply.assert_awaited_once_with(ctx)
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_missing_indexing_status_runs_vector_and_graph(self):
+    async def test_missing_indexing_status_runs_vector_only(self) -> None:
         """If the document has no indexingStatus field it is not 'COMPLETED'."""
         orch = _make_orchestrator(
             graph_doc={"someOtherField": "x"},
@@ -116,7 +116,7 @@ class TestApply:
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_awaited_once()
-        orch.graphdb.apply.assert_awaited_once()
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_vector_store_returns_false_fails_pipeline(self):
@@ -135,7 +135,7 @@ class TestApply:
         orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_vector_store_returns_true_continues_to_graph(self):
+    async def test_vector_store_returns_true_completes_indexing(self) -> None:
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "NOT_STARTED"},
             vector_result=True,
@@ -145,7 +145,7 @@ class TestApply:
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_awaited_once()
-        orch.graphdb.apply.assert_awaited_once()
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_graph_provider_called_with_correct_args(self):

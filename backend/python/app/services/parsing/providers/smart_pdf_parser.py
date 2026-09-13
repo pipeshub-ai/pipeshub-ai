@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import random
 from typing import Any
 
 import pdfplumber
@@ -27,6 +26,18 @@ logger = logging.getLogger(__name__)
 
 # Fraction of sampled pages that must meet the general OCR heuristics.
 _OCR_PAGE_THRESHOLD = 0.3
+_OCR_SAMPLE_PAGES = 5
+
+
+def _sample_page_indices(total: int, sample_size: int) -> list[int]:
+    """Evenly spaced page indices, first and last included.
+
+    Deterministic so a retry of the same file makes the same OCR decision.
+    """
+    if sample_size <= 1:
+        return [0]
+    step = (total - 1) / (sample_size - 1)
+    return sorted({round(i * step) for i in range(sample_size)})
 
 
 def _detect_needs_ocr(content: bytes) -> bool:
@@ -36,8 +47,11 @@ def _detect_needs_ocr(content: bytes) -> bool:
             total = len(pdf.pages)
             if total == 0:
                 return False
-            sample_size = min(5, total)
-            sample_pages = random.sample(pdf.pages, sample_size)
+            sample_pages = [
+                pdf.pages[i]
+                for i in _sample_page_indices(total, min(_OCR_SAMPLE_PAGES, total))
+            ]
+            sample_size = len(sample_pages)
             if any(
                 OCRStrategy.has_dominant_image_with_limited_text(page)
                 for page in sample_pages
