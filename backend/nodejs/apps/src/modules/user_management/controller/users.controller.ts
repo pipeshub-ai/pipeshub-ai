@@ -55,6 +55,9 @@ import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { AuthService } from '../services/auth.service';
 import { Org } from '../schema/org.schema';
 import { UserCredentials } from '../../auth/schema/userCredentials.schema';
+import { passwordValidator } from '../../auth/utils/passwordValidator';
+import { SALT_ROUNDS } from '../../auth/controller/userAccount.controller';
+import bcrypt from 'bcryptjs';
 import { UserActivities } from '../../auth/schema/userActivities.schema';
 import { userActivitiesType } from '../../../libs/utils/userActivities.utils';
 import { AICommandOptions } from '../../../libs/commands/ai_service/ai.service.command';
@@ -585,8 +588,19 @@ export class UserController {
     next: NextFunction,
   ): Promise<void> {
     try {
+      // An optional starting password lets an admin create a sign-in-ready
+      // account without SMTP (the invite flow mails a password-set link).
+      const { password, ...userFields } = req.body as {
+        password?: string;
+        [field: string]: unknown;
+      };
+      if (password !== undefined && !passwordValidator(password)) {
+        throw new BadRequestError(
+          'Password must be at least 8 characters with an uppercase letter, a lowercase letter, a number and a special character',
+        );
+      }
       const newUser = new Users({
-        ...req.body,
+        ...userFields,
         orgId: req.user?.orgId,
         role: resolveOptionalUserRole(req.body.role),
       });
@@ -611,6 +625,15 @@ export class UserController {
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
       await newUser.save();
+      if (password !== undefined) {
+        await new UserCredentials({
+          userId: newUser._id,
+          orgId: newUser.orgId,
+          isDeleted: false,
+          hashedPassword: await bcrypt.hash(password, SALT_ROUNDS),
+          ipAddress: req.ip,
+        }).save();
+      }
       this.logger.debug('user created');
       res.status(201).json(newUser);
     } catch (error) {

@@ -72,6 +72,9 @@ const createUserBody = z.object({
   designation: z.string().optional(),
   // Absent → member (resolveOptionalUserRole). Present must be admin|member.
   role: z.enum(['admin', 'member']).optional(),
+  // Optional starting password so the account can sign in without an invite
+  // email; complexity is checked in the controller (passwordValidator).
+  password: z.string().optional(),
 });
 
 const updateUserBody = z.object({
