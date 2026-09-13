@@ -391,6 +391,22 @@ async def _load_toolset_instances(
         ) from e
 
 
+
+def _auth_type_is_none(auth_type: Any) -> bool:
+    """True when the instance needs no credentials (AuthType.NONE / "NONE")."""
+    if auth_type is None:
+        return False
+    value = getattr(auth_type, "value", auth_type)
+    return str(value).upper() == "NONE"
+
+
+def _is_toolset_authenticated(inst: dict[str, Any], auth_record: dict[str, Any] | None) -> bool:
+    """NONE-auth instances are ready without a per-user credential record."""
+    if _auth_type_is_none(inst.get("authType")):
+        return True
+    return bool(auth_record and auth_record.get("isAuthenticated", False))
+
+
 def _get_user_auth_path(instance_id: str, user_id: str) -> str:
     """
     Etcd path for a user's auth/credentials for a specific toolset instance.
@@ -1851,10 +1867,10 @@ async def get_authenticated_toolsets(
     authenticated_toolsets = []
     auth_by_instance: dict[str, dict[str, Any]] = {}
     for inst, user_auth in results:
-        # Only include authenticated toolsets
-        if not user_auth or not user_auth.get("isAuthenticated", False):
+        # NONE-auth instances have nothing to store; missing records are ready.
+        if not _is_toolset_authenticated(inst, user_auth):
             continue
-        auth_by_instance[inst.get("_id", "")] = user_auth
+        auth_by_instance[inst.get("_id", "")] = user_auth or {}
 
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
@@ -2689,7 +2705,7 @@ async def get_instance_status(
         "toolsetType": instance.get("toolsetType"),
         "authType": instance.get("authType"),
         "isConfigured": True,
-        "isAuthenticated": bool(user_auth and user_auth.get("isAuthenticated", False)),
+        "isAuthenticated": _is_toolset_authenticated(instance, user_auth),
     }
 
 
@@ -2788,8 +2804,8 @@ async def _build_toolsets_list_response(
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
         auth_type = inst.get("authType", "NONE")
-        auth_type_upper = auth_type.upper()
-        is_authenticated = bool(auth_record and auth_record.get("isAuthenticated", False))
+        auth_type_upper = str(getattr(auth_type, "value", auth_type)).upper()
+        is_authenticated = _is_toolset_authenticated(inst, auth_record)
 
         meta_cfg = (meta.get("config") or {}) if meta else {}
         doc_links = meta_cfg.get("documentationLinks", []) if isinstance(meta_cfg, dict) else []
