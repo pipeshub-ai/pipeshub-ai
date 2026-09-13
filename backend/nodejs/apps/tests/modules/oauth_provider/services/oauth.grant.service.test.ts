@@ -75,7 +75,7 @@ describe('OAuthGrantService', () => {
 
   beforeEach(() => {
     mockLogger = createMockLogger()
-    mockAppConfig = { REPLICA_SET_AVAILABLE: false } as AppConfig
+    mockAppConfig = { rsAvailable: 'false' } as AppConfig
     service = new OAuthGrantService(mockLogger as unknown as Logger, mockAppConfig)
   })
 
@@ -289,7 +289,7 @@ describe('OAuthGrantService', () => {
     })
 
     it('revokes refresh token and associated access tokens within a transaction when REPLICA_SET_AVAILABLE is true', async () => {
-      mockAppConfig.REPLICA_SET_AVAILABLE = true
+      mockAppConfig.rsAvailable = 'true'
       try {
         const mockSession = {
           withTransaction: sinon.stub().callsFake(async (fn: () => Promise<void>) => {
@@ -320,7 +320,7 @@ describe('OAuthGrantService', () => {
         expect(updateManyStub.calledOnce).to.be.true
         expect(updateManyStub.firstCall.args[2]).to.deep.equal({ session: mockSession })
       } finally {
-        mockAppConfig.REPLICA_SET_AVAILABLE = false
+        mockAppConfig.rsAvailable = 'false'
       }
     })
 
@@ -544,7 +544,7 @@ describe('OAuthGrantService', () => {
     })
 
     it('revokes refresh token and associated access tokens within a transaction when REPLICA_SET_AVAILABLE is true', async () => {
-      mockAppConfig.REPLICA_SET_AVAILABLE = true
+      mockAppConfig.rsAvailable = 'true'
       try {
         const mockSession = {
           withTransaction: sinon.stub().callsFake(async (fn: () => Promise<void>) => {
@@ -584,7 +584,7 @@ describe('OAuthGrantService', () => {
         expect(updateManyStub.calledOnce).to.be.true
         expect(updateManyStub.firstCall.args[2]).to.deep.equal({ session: mockSession })
       } finally {
-        mockAppConfig.REPLICA_SET_AVAILABLE = false
+        mockAppConfig.rsAvailable = 'false'
       }
     })
 

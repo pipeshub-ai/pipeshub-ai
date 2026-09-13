@@ -1,8 +1,8 @@
 import { injectable, inject } from 'inversify';
 import mongoose, { Types } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
-import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema';
-import { OAuthAccessToken } from '../schema/oauth.access_token.schema';
+import { OAuthRefreshToken, IOAuthRefreshToken } from '../schema/oauth.refresh_token.schema';
+import { OAuthAccessToken, IOAuthAccessToken } from '../schema/oauth.access_token.schema';
 import { OAuthApp } from '../schema/oauth.app.schema';
 import { Users } from '../../user_management/schema/users.schema';
 import { PAT_APP_CLIENT_ID_PREFIX } from '../constants/constants';
@@ -531,11 +531,11 @@ export class OAuthGrantService {
   }
 
   private async executeRevocation(
-    refreshToken: any,
-    updateFilter: any,
-    updateDoc: any,
+    refreshToken: mongoose.Document & IOAuthRefreshToken,
+    updateFilter: mongoose.FilterQuery<IOAuthAccessToken>,
+    updateDoc: mongoose.UpdateQuery<IOAuthAccessToken>,
   ): Promise<void> {
-    if (this.appConfig.REPLICA_SET_AVAILABLE) {
+    if (this.appConfig.rsAvailable === 'true') {
       const session = await mongoose.startSession();
       try {
         await session.withTransaction(async () => {
