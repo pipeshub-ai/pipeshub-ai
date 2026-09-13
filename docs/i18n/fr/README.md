@@ -59,7 +59,7 @@
 - 📝 **Réponses explicables :** PipesHub fournit des réponses étayées avec des citations précises par bloc vers les documents d'origine.
 - 🔒 **Recherche tenant compte des permissions :** Applique des contrôles d'accès au niveau de la source afin que les utilisateurs ne voient que ce à quoi ils sont autorisés.
 - 🕸️ **Récupération par graphe de connaissances :** Récupération fondée sur les graphes, qui capture les relations entre les données de l'entreprise.
-- 🔌 **Connecteurs d'entreprise :** Plus de 30 connecteurs avec indexation en temps réel et planifiée, prêts à l'emploi.
+- 🔌 **Connecteurs d'entreprise :** Plus de 50 connecteurs avec indexation en temps réel et planifiée, prêts à l'emploi.
 - 🔍 **Recherche unifiée, recherche approfondie et agents :** Recherche, questions-réponses, recherche approfondie, recherche web et agents IA sur une seule couche de contexte.
 - 📊 **Artefacts et exécution de code :** Générez des rapports, des graphiques et des tableaux de bord dans un bac à sable d'exécution sécurisé.
 - 🎙️ **Prise en charge multimodale :** Compréhension des images, des schémas et des fichiers numérisés, ainsi qu'une interaction vocale.
@@ -86,23 +86,6 @@
 <p align="center">
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
-
-## Formats de fichiers pris en charge
-
-| Format | Détails |
-|--------|---------|
-| PDF | Y compris les PDF numérisés |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Valeurs séparées par des virgules |
-| Markdown | Fichiers .md |
-| HTML | Pages web |
-| Text | Fichiers texte brut |
-| Google Docs, Sheets, Slides | Formats Google Workspace |
-| Images | PNG, JPG, etc. |
-| Audio | Fichiers audio |
-| Vidéo | Fichiers vidéo |
 
 ## 🚀 Guide de déploiement
 
@@ -218,7 +201,11 @@ PipesHub est entièrement open source (Apache 2.0) et auto-hébergeable — vos 
 
 ### Quels connecteurs PipesHub prend-il en charge ?
 
-PipesHub dispose de plus de 30 connecteurs d'entreprise avec indexation en temps réel et planifiée. Il prend en charge des formats de fichiers tels que PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio et vidéo.
+PipesHub dispose de plus de 50 connecteurs d'entreprise avec indexation en temps réel et planifiée. Voir la [vue d'ensemble des connecteurs](https://docs.pipeshub.com/connectors/overview).
+
+### Quels formats de fichiers PipesHub peut-il indexer ?
+
+PDF (y compris les scans), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, texte brut et images. L'audio et la vidéo peuvent être stockés mais ne sont pas encore indexés. Le service de stockage accepte une liste plus large de types MIME — voir [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### Comment déployer PipesHub ?
 
