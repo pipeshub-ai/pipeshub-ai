@@ -210,16 +210,12 @@ PDF (incluidos los escaneados), Microsoft Office (Word, Excel, PowerPoint), Goog
 ### ¿Cómo despliego PipesHub?
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables (refer to env.template)
-# Start production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-Nota: Usa HTTPS para los despliegues en la nube. HTTP puede provocar bloqueos de seguridad en el frontend.
+Esto escribe los archivos de Compose en `./pipeshub` e inicia el instalador interactivo. Abre **http://localhost:3000** cuando termine. Usa HTTPS para los despliegues en la nube; HTTP puede provocar bloqueos de seguridad en el frontend.
+
+Los desarrolladores que compilen desde el código fuente deben clonar el repositorio y ejecutar `./install.sh` (o `./install.sh --build`) desde la raíz del repositorio. Consulta la [Guía de despliegue](#-guía-de-despliegue).
 
 ### ¿Qué proveedores de LLM admite PipesHub?
 
