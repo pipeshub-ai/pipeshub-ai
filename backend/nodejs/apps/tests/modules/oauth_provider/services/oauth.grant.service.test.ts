@@ -1,40 +1,66 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { Types } from 'mongoose'
+import mongoose, { Types } from 'mongoose'
 import { OAuthGrantService } from '../../../../src/modules/oauth_provider/services/oauth.grant.service'
-import { OAuthRefreshToken } from '../../../../src/modules/oauth_provider/schema/oauth.refresh_token.schema'
-import { OAuthAccessToken } from '../../../../src/modules/oauth_provider/schema/oauth.access_token.schema'
-import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
-import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { OAuthRefreshToken, IOAuthRefreshToken } from '../../../../src/modules/oauth_provider/schema/oauth.refresh_token.schema'
+import { OAuthAccessToken, IOAuthAccessToken } from '../../../../src/modules/oauth_provider/schema/oauth.access_token.schema'
+import { OAuthApp, IOAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
+import { Users, User } from '../../../../src/modules/user_management/schema/users.schema'
 import { NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { createMockLogger, MockLogger } from '../../../helpers/mock-logger'
 import { Logger } from '../../../../src/libs/services/logger.service'
 
-interface ChainableQueryStub<T> {
-  sort: sinon.SinonStub
-  skip: sinon.SinonStub
-  limit: sinon.SinonStub
-  select: sinon.SinonStub
-  lean: sinon.SinonStub
-  exec: sinon.SinonStub
+function createRefreshTokenQueryFixture(
+  docs: Partial<IOAuthRefreshToken>[],
+): ReturnType<typeof OAuthRefreshToken.find> {
+  const query = new mongoose.Query<IOAuthRefreshToken[], IOAuthRefreshToken>()
+  sinon.stub(query, 'sort').returns(query)
+  sinon.stub(query, 'skip').returns(query)
+  sinon.stub(query, 'limit').returns(query)
+  sinon.stub(query, 'select').returns(query)
+  sinon.stub(query, 'lean').returns(query)
+  sinon.stub(query, 'exec').resolves(docs as IOAuthRefreshToken[])
+  return query
 }
 
-function createChainableQuery<T>(resolvedValue: T): ChainableQueryStub<T> {
-  const stub: ChainableQueryStub<T> = {
-    sort: sinon.stub(),
-    skip: sinon.stub(),
-    limit: sinon.stub(),
-    select: sinon.stub(),
-    lean: sinon.stub(),
-    exec: sinon.stub().resolves(resolvedValue),
-  }
-  stub.sort.returns(stub)
-  stub.skip.returns(stub)
-  stub.limit.returns(stub)
-  stub.select.returns(stub)
-  stub.lean.returns(stub)
-  return stub
+function createAccessTokenQueryFixture(
+  docs: Partial<IOAuthAccessToken>[],
+): ReturnType<typeof OAuthAccessToken.find> {
+  const query = new mongoose.Query<IOAuthAccessToken[], IOAuthAccessToken>()
+  sinon.stub(query, 'sort').returns(query)
+  sinon.stub(query, 'skip').returns(query)
+  sinon.stub(query, 'limit').returns(query)
+  sinon.stub(query, 'select').returns(query)
+  sinon.stub(query, 'lean').returns(query)
+  sinon.stub(query, 'exec').resolves(docs as IOAuthAccessToken[])
+  return query
+}
+
+function createOAuthAppQueryFixture(
+  docs: Partial<IOAuthApp>[],
+): ReturnType<typeof OAuthApp.find> {
+  const query = new mongoose.Query<IOAuthApp[], IOAuthApp>()
+  sinon.stub(query, 'sort').returns(query)
+  sinon.stub(query, 'skip').returns(query)
+  sinon.stub(query, 'limit').returns(query)
+  sinon.stub(query, 'select').returns(query)
+  sinon.stub(query, 'lean').returns(query)
+  sinon.stub(query, 'exec').resolves(docs as IOAuthApp[])
+  return query
+}
+
+function createUserQueryFixture(
+  docs: Partial<User>[],
+): ReturnType<typeof Users.find> {
+  const query = new mongoose.Query<User[], User>()
+  sinon.stub(query, 'sort').returns(query)
+  sinon.stub(query, 'skip').returns(query)
+  sinon.stub(query, 'limit').returns(query)
+  sinon.stub(query, 'select').returns(query)
+  sinon.stub(query, 'lean').returns(query)
+  sinon.stub(query, 'exec').resolves(docs as User[])
+  return query
 }
 
 describe('OAuthGrantService', () => {
@@ -70,10 +96,10 @@ describe('OAuthGrantService', () => {
 
       sinon
         .stub(OAuthRefreshToken, 'find')
-        .returns(createChainableQuery([mockRefreshToken]) as any)
+        .returns(createRefreshTokenQueryFixture([mockRefreshToken]))
       sinon
         .stub(OAuthAccessToken, 'find')
-        .returns(createChainableQuery([]) as any)
+        .returns(createAccessTokenQueryFixture([]))
 
       const mockApp = {
         clientId,
@@ -84,7 +110,7 @@ describe('OAuthGrantService', () => {
       }
       sinon
         .stub(OAuthApp, 'find')
-        .returns(createChainableQuery([mockApp]) as any)
+        .returns(createOAuthAppQueryFixture([mockApp]))
 
       const lastUsed = new Date('2026-09-12T12:00:00Z')
       sinon.stub(OAuthAccessToken, 'aggregate').resolves([
@@ -122,11 +148,11 @@ describe('OAuthGrantService', () => {
 
       sinon
         .stub(OAuthRefreshToken, 'find')
-        .returns(createChainableQuery([]) as any)
+        .returns(createRefreshTokenQueryFixture([]))
       sinon
         .stub(OAuthAccessToken, 'find')
-        .returns(createChainableQuery([mockAccessToken]) as any)
-      sinon.stub(OAuthApp, 'find').returns(createChainableQuery([]) as any)
+        .returns(createAccessTokenQueryFixture([mockAccessToken]))
+      sinon.stub(OAuthApp, 'find').returns(createOAuthAppQueryFixture([]))
       sinon.stub(OAuthAccessToken, 'aggregate').resolves([])
 
       const result = await service.listUserGrants(orgId, userId)
@@ -134,6 +160,69 @@ describe('OAuthGrantService', () => {
       expect(result).to.have.length(1)
       expect(result[0].id).to.equal(atId.toString())
       expect(result[0].appName).to.equal('standalone-client')
+    })
+
+    it('suppresses access token only when parentRefreshTokenId matches active refresh token, preserving separate standalone access token for same client', async () => {
+      const rtId = new Types.ObjectId()
+      const atChildId = new Types.ObjectId()
+      const atStandaloneId = new Types.ObjectId()
+
+      const mockRefreshToken = {
+        _id: rtId,
+        clientId,
+        userId: new Types.ObjectId(userId),
+        orgId: new Types.ObjectId(orgId),
+        scopes: ['read', 'offline_access'],
+        createdAt: new Date('2026-09-10T10:00:00Z'),
+        expiresAt: new Date('2026-10-10T10:00:00Z'),
+        isRevoked: false,
+      }
+
+      const mockChildAccessToken = {
+        _id: atChildId,
+        clientId,
+        userId: new Types.ObjectId(userId),
+        orgId: new Types.ObjectId(orgId),
+        scopes: ['read'],
+        createdAt: new Date('2026-09-10T10:00:00Z'),
+        expiresAt: new Date('2026-09-10T11:00:00Z'),
+        parentRefreshTokenId: rtId,
+        isRevoked: false,
+      }
+
+      const mockStandaloneAccessToken = {
+        _id: atStandaloneId,
+        clientId,
+        userId: new Types.ObjectId(userId),
+        orgId: new Types.ObjectId(orgId),
+        scopes: ['read'],
+        createdAt: new Date('2026-09-11T10:00:00Z'),
+        expiresAt: new Date('2026-09-11T11:00:00Z'),
+        parentRefreshTokenId: undefined,
+        isRevoked: false,
+      }
+
+      sinon
+        .stub(OAuthRefreshToken, 'find')
+        .returns(createRefreshTokenQueryFixture([mockRefreshToken]))
+      sinon
+        .stub(OAuthAccessToken, 'find')
+        .returns(
+          createAccessTokenQueryFixture([
+            mockChildAccessToken,
+            mockStandaloneAccessToken,
+          ]),
+        )
+      sinon.stub(OAuthApp, 'find').returns(createOAuthAppQueryFixture([]))
+      sinon.stub(OAuthAccessToken, 'aggregate').resolves([])
+
+      const result = await service.listUserGrants(orgId, userId)
+
+      expect(result).to.have.length(2)
+      const ids = result.map((g) => g.id)
+      expect(ids).to.include(rtId.toString())
+      expect(ids).to.include(atStandaloneId.toString())
+      expect(ids).to.not.include(atChildId.toString())
     })
   })
 
@@ -149,22 +238,24 @@ describe('OAuthGrantService', () => {
 
     it('revokes refresh token and associated access tokens filtering by parentRefreshTokenId', async () => {
       const grantId = new Types.ObjectId().toString()
-      const mockRt = {
+      const mockRt = new OAuthRefreshToken({
         _id: new Types.ObjectId(grantId),
         clientId,
         isRevoked: false,
-        save: sinon.stub().resolves(),
-      }
+      })
+      sinon.stub(mockRt, 'save').resolves()
 
-      sinon.stub(OAuthRefreshToken, 'findOne').resolves(mockRt as any)
+      sinon
+        .stub(OAuthRefreshToken, 'findOne')
+        .resolves(mockRt)
       const updateManyStub = sinon
         .stub(OAuthAccessToken, 'updateMany')
-        .resolves({} as any)
+        .resolves()
 
       await service.revokeUserGrant(orgId, userId, grantId, 'test reason')
 
       expect(mockRt.isRevoked).to.be.true
-      expect(mockRt.save.calledOnce).to.be.true
+      expect((mockRt.save as sinon.SinonStub).calledOnce).to.be.true
       expect(updateManyStub.calledOnce).to.be.true
       const filterArg = updateManyStub.firstCall.args[0]
       expect(filterArg).to.have.property('parentRefreshTokenId')
@@ -174,18 +265,56 @@ describe('OAuthGrantService', () => {
       const grantId = new Types.ObjectId().toString()
       sinon.stub(OAuthRefreshToken, 'findOne').resolves(null)
 
-      const mockAt = {
+      const mockAt = new OAuthAccessToken({
         _id: new Types.ObjectId(grantId),
         clientId,
         isRevoked: false,
-        save: sinon.stub().resolves(),
-      }
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(mockAt as any)
+      })
+      sinon.stub(mockAt, 'save').resolves()
+      sinon
+        .stub(OAuthAccessToken, 'findOne')
+        .resolves(mockAt)
 
       await service.revokeUserGrant(orgId, userId, grantId)
 
       expect(mockAt.isRevoked).to.be.true
-      expect(mockAt.save.calledOnce).to.be.true
+      expect((mockAt.save as sinon.SinonStub).calledOnce).to.be.true
+    })
+
+    it('revokes refresh token and associated access tokens within a transaction when REPLICA_SET_AVAILABLE is true', async () => {
+      const origEnv = process.env.REPLICA_SET_AVAILABLE
+      process.env.REPLICA_SET_AVAILABLE = 'true'
+      try {
+        const mockSession = {
+          withTransaction: sinon.stub().callsFake(async (fn: () => Promise<void>) => {
+            await fn()
+          }),
+          endSession: sinon.stub().resolves(),
+        }
+        sinon.stub(mongoose, 'startSession').resolves(mockSession as any)
+
+        const grantId = new Types.ObjectId().toString()
+        const mockRt = new OAuthRefreshToken({
+          _id: new Types.ObjectId(grantId),
+          clientId,
+          isRevoked: false,
+        })
+        sinon.stub(mockRt, 'save').resolves()
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(mockRt)
+        const updateManyStub = sinon
+          .stub(OAuthAccessToken, 'updateMany')
+          .resolves()
+
+        await service.revokeUserGrant(orgId, userId, grantId, 'test reason')
+
+        expect(mockSession.withTransaction.calledOnce).to.be.true
+        expect(mockSession.endSession.calledOnce).to.be.true
+        expect(mockRt.isRevoked).to.be.true
+        expect(updateManyStub.calledOnce).to.be.true
+        expect(updateManyStub.firstCall.args[2]).to.deep.equal({ session: mockSession })
+      } finally {
+        process.env.REPLICA_SET_AVAILABLE = origEnv
+      }
     })
 
     it('throws NotFoundError when grant does not exist or is already revoked', async () => {
@@ -214,35 +343,35 @@ describe('OAuthGrantService', () => {
         scopes: ['read'],
         createdAt: new Date('2026-09-10T10:00:00Z'),
         expiresAt: new Date('2026-10-10T10:00:00Z'),
-        isRevoked: false,
+        type: 'refresh' as const,
       }
 
-      sinon
-        .stub(OAuthRefreshToken, 'find')
-        .returns(createChainableQuery([mockRefreshToken]) as any)
-      sinon
-        .stub(OAuthAccessToken, 'find')
-        .returns(createChainableQuery([]) as any)
+      sinon.stub(OAuthRefreshToken, 'aggregate').resolves([
+        {
+          metadata: [{ total: 1 }],
+          data: [mockRefreshToken],
+        },
+      ])
 
       sinon.stub(Users, 'find').returns(
-        createChainableQuery([
+        createUserQueryFixture([
           {
             _id: userObjId,
             email: 'user@example.com',
             fullName: 'Test User',
             isDeleted: false,
           },
-        ]) as any,
+        ]),
       )
 
       sinon.stub(OAuthApp, 'find').returns(
-        createChainableQuery([
+        createOAuthAppQueryFixture([
           {
             clientId,
             name: 'Coding Agent',
             isConfidential: false,
           },
-        ]) as any,
+        ]),
       )
 
       sinon.stub(OAuthAccessToken, 'aggregate').resolves([])
@@ -279,35 +408,35 @@ describe('OAuthGrantService', () => {
         createdAt: new Date('2026-09-10T10:00:00Z'),
         expiresAt: new Date('2026-10-10T10:00:00Z'),
         lastUsedAt: new Date('2026-09-11T12:00:00Z'),
-        isRevoked: false,
+        type: 'access' as const,
       }
 
-      sinon
-        .stub(OAuthRefreshToken, 'find')
-        .returns(createChainableQuery([]) as any)
-      sinon
-        .stub(OAuthAccessToken, 'find')
-        .returns(createChainableQuery([mockAccessToken]) as any)
+      sinon.stub(OAuthRefreshToken, 'aggregate').resolves([
+        {
+          metadata: [{ total: 1 }],
+          data: [mockAccessToken],
+        },
+      ])
 
       sinon.stub(Users, 'find').returns(
-        createChainableQuery([
+        createUserQueryFixture([
           {
             _id: userObjId,
             email: 'standalone@example.com',
             fullName: 'Standalone User',
             isDeleted: false,
           },
-        ]) as any,
+        ]),
       )
 
       sinon.stub(OAuthApp, 'find').returns(
-        createChainableQuery([
+        createOAuthAppQueryFixture([
           {
             clientId: 'standalone-agent',
             name: 'Standalone Agent App',
             isConfidential: true,
           },
-        ]) as any,
+        ]),
       )
 
       sinon.stub(OAuthAccessToken, 'aggregate').resolves([])
@@ -339,28 +468,28 @@ describe('OAuthGrantService', () => {
         scopes: ['read'],
         createdAt: new Date(),
         expiresAt: new Date(Date.now() + 100000),
-        isRevoked: false,
+        type: 'refresh' as const,
       }
 
-      sinon
-        .stub(OAuthRefreshToken, 'find')
-        .returns(createChainableQuery([mockRefreshToken]) as any)
-      sinon
-        .stub(OAuthAccessToken, 'find')
-        .returns(createChainableQuery([]) as any)
+      sinon.stub(OAuthRefreshToken, 'aggregate').resolves([
+        {
+          metadata: [{ total: 1 }],
+          data: [mockRefreshToken],
+        },
+      ])
 
       sinon.stub(Users, 'find').returns(
-        createChainableQuery([
+        createUserQueryFixture([
           {
             _id: userObjId,
             email: 'departed@example.com',
             fullName: 'Departed User',
             isDeleted: true,
           },
-        ]) as any,
+        ]),
       )
 
-      sinon.stub(OAuthApp, 'find').returns(createChainableQuery([]) as any)
+      sinon.stub(OAuthApp, 'find').returns(createOAuthAppQueryFixture([]))
       sinon.stub(OAuthAccessToken, 'aggregate').resolves([])
 
       const result = await service.listAllGrants(orgId)
@@ -374,18 +503,20 @@ describe('OAuthGrantService', () => {
       const adminUserId = new Types.ObjectId().toString()
       const targetUserObjId = new Types.ObjectId()
 
-      const mockRt = {
+      const mockRt = new OAuthRefreshToken({
         _id: new Types.ObjectId(grantId),
         userId: targetUserObjId,
         clientId,
         isRevoked: false,
-        save: sinon.stub().resolves(),
-      }
+      })
+      sinon.stub(mockRt, 'save').resolves()
 
-      sinon.stub(OAuthRefreshToken, 'findOne').resolves(mockRt as any)
+      sinon
+        .stub(OAuthRefreshToken, 'findOne')
+        .resolves(mockRt)
       const updateManyStub = sinon
         .stub(OAuthAccessToken, 'updateMany')
-        .resolves({} as any)
+        .resolves()
 
       await service.adminRevokeGrant(
         orgId,
@@ -395,10 +526,55 @@ describe('OAuthGrantService', () => {
       )
 
       expect(mockRt.isRevoked).to.be.true
-      expect(mockRt.save.calledOnce).to.be.true
+      expect((mockRt.save as sinon.SinonStub).calledOnce).to.be.true
       expect(updateManyStub.calledOnce).to.be.true
       const filterArg = updateManyStub.firstCall.args[0]
       expect(filterArg).to.have.property('parentRefreshTokenId')
+    })
+
+    it('revokes refresh token and associated access tokens within a transaction when REPLICA_SET_AVAILABLE is true', async () => {
+      const origEnv = process.env.REPLICA_SET_AVAILABLE
+      process.env.REPLICA_SET_AVAILABLE = 'true'
+      try {
+        const mockSession = {
+          withTransaction: sinon.stub().callsFake(async (fn: () => Promise<void>) => {
+            await fn()
+          }),
+          endSession: sinon.stub().resolves(),
+        }
+        sinon.stub(mongoose, 'startSession').resolves(mockSession as any)
+
+        const grantId = new Types.ObjectId().toString()
+        const adminUserId = new Types.ObjectId().toString()
+        const targetUserObjId = new Types.ObjectId()
+
+        const mockRt = new OAuthRefreshToken({
+          _id: new Types.ObjectId(grantId),
+          userId: targetUserObjId,
+          clientId,
+          isRevoked: false,
+        })
+        sinon.stub(mockRt, 'save').resolves()
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(mockRt)
+        const updateManyStub = sinon
+          .stub(OAuthAccessToken, 'updateMany')
+          .resolves()
+
+        await service.adminRevokeGrant(
+          orgId,
+          adminUserId,
+          grantId,
+          'incident response',
+        )
+
+        expect(mockSession.withTransaction.calledOnce).to.be.true
+        expect(mockSession.endSession.calledOnce).to.be.true
+        expect(mockRt.isRevoked).to.be.true
+        expect(updateManyStub.calledOnce).to.be.true
+        expect(updateManyStub.firstCall.args[2]).to.deep.equal({ session: mockSession })
+      } finally {
+        process.env.REPLICA_SET_AVAILABLE = origEnv
+      }
     })
 
     it('throws NotFoundError on invalid grantId', async () => {

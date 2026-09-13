@@ -1,5 +1,5 @@
 import { injectable, inject } from 'inversify';
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema';
 import { OAuthAccessToken } from '../schema/oauth.access_token.schema';
@@ -102,10 +102,11 @@ export class OAuthGrantService {
     );
 
     const grants: OAuthGrantListItem[] = [];
-    const clientsWithRefreshTokens = new Set<string>();
+    const activeRefreshTokenIds = new Set(
+      refreshTokens.map((rt) => (rt._id as Types.ObjectId).toString()),
+    );
 
     for (const rt of refreshTokens) {
-      clientsWithRefreshTokens.add(rt.clientId);
       const app = appsByClientId.get(rt.clientId);
       grants.push({
         id: (rt._id as Types.ObjectId).toString(),
@@ -121,9 +122,12 @@ export class OAuthGrantService {
       });
     }
 
-    // Include access tokens for clients that do not have refresh tokens
+    // Include access tokens that are not children of an active refresh token grant
     for (const at of accessTokens) {
-      if (!clientsWithRefreshTokens.has(at.clientId)) {
+      const parentId = at.parentRefreshTokenId
+        ? at.parentRefreshTokenId.toString()
+        : undefined;
+      if (!parentId || !activeRefreshTokenIds.has(parentId)) {
         const app = appsByClientId.get(at.clientId);
         grants.push({
           id: (at._id as Types.ObjectId).toString(),
@@ -173,24 +177,35 @@ export class OAuthGrantService {
       refreshToken.revokedAt = new Date();
       refreshToken.revokedBy = userObjId;
       refreshToken.revokedReason = reason ?? 'Revoked by owner';
-      await refreshToken.save();
 
-      // Revoke any active access tokens for this user & client issued under this grant
-      await OAuthAccessToken.updateMany(
-        {
-          userId: { $eq: userObjId },
-          orgId: { $eq: orgObjId },
-          clientId: { $eq: refreshToken.clientId },
-          parentRefreshTokenId: { $eq: grantObjId },
-          isRevoked: { $eq: false },
-        },
-        {
-          isRevoked: true,
-          revokedAt: new Date(),
-          revokedBy: userObjId,
-          revokedReason: reason ?? 'Revoked by owner',
-        },
-      );
+      const updateFilter = {
+        userId: { $eq: userObjId },
+        orgId: { $eq: orgObjId },
+        clientId: { $eq: refreshToken.clientId },
+        parentRefreshTokenId: { $eq: grantObjId },
+        isRevoked: { $eq: false },
+      };
+      const updateDoc = {
+        isRevoked: true,
+        revokedAt: new Date(),
+        revokedBy: userObjId,
+        revokedReason: reason ?? 'Revoked by owner',
+      };
+
+      if (process.env.REPLICA_SET_AVAILABLE === 'true') {
+        const session = await mongoose.startSession();
+        try {
+          await session.withTransaction(async () => {
+            await refreshToken.save({ session });
+            await OAuthAccessToken.updateMany(updateFilter, updateDoc, { session });
+          });
+        } finally {
+          await session.endSession();
+        }
+      } else {
+        await refreshToken.save();
+        await OAuthAccessToken.updateMany(updateFilter, updateDoc);
+      }
 
       this.logger.info('OAuth grant revoked by owner', {
         orgId,
@@ -241,82 +256,118 @@ export class OAuthGrantService {
   ): Promise<PaginatedResponse<AdminOAuthGrantListItem>> {
     const orgObjId = new Types.ObjectId(orgId);
     const now = new Date();
+    const skip = Math.max(0, (page - 1) * limit);
+    const patPrefixRegex = new RegExp(`^${PAT_APP_CLIENT_ID_PREFIX}`);
 
-    const [allRefreshTokens, allAccessTokens] = await Promise.all([
-      OAuthRefreshToken.find({
-        orgId: { $eq: orgObjId },
-        isRevoked: { $eq: false },
-        expiresAt: { $gt: now },
-      })
-        .sort({ createdAt: -1 })
-        .exec(),
-      OAuthAccessToken.find({
-        orgId: { $eq: orgObjId },
-        isRevoked: { $eq: false },
-        expiresAt: { $gt: now },
-        clientId: { $not: new RegExp(`^${PAT_APP_CLIENT_ID_PREFIX}`) },
-      })
-        .sort({ createdAt: -1 })
-        .exec(),
+    const [facetResult] = await OAuthRefreshToken.aggregate<{
+      metadata: [{ total: number }] | [];
+      data: Array<{
+        _id: Types.ObjectId;
+        clientId: string;
+        userId?: Types.ObjectId;
+        orgId: Types.ObjectId;
+        scopes: string[];
+        createdAt: Date;
+        expiresAt: Date;
+        lastUsedAt?: Date;
+        type: 'refresh' | 'access';
+      }>;
+    }>([
+      {
+        $match: {
+          orgId: { $eq: orgObjId },
+          isRevoked: { $eq: false },
+          expiresAt: { $gt: now },
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          clientId: 1,
+          userId: 1,
+          orgId: 1,
+          scopes: 1,
+          createdAt: 1,
+          expiresAt: 1,
+          type: { $literal: 'refresh' },
+        },
+      },
+      {
+        $unionWith: {
+          coll: 'oauthAccessTokens',
+          pipeline: [
+            {
+              $match: {
+                orgId: { $eq: orgObjId },
+                isRevoked: { $eq: false },
+                expiresAt: { $gt: now },
+                clientId: { $not: patPrefixRegex },
+              },
+            },
+            {
+              $lookup: {
+                from: 'oauthRefreshTokens',
+                let: { parentId: '$parentRefreshTokenId' },
+                pipeline: [
+                  {
+                    $match: {
+                      $expr: {
+                        $and: [
+                          { $eq: ['$_id', '$$parentId'] },
+                          { $eq: ['$isRevoked', false] },
+                          { $gt: ['$expiresAt', now] },
+                        ],
+                      },
+                    },
+                  },
+                ],
+                as: 'activeParent',
+              },
+            },
+            {
+              $match: {
+                activeParent: { $size: 0 },
+              },
+            },
+            {
+              $project: {
+                _id: 1,
+                clientId: 1,
+                userId: 1,
+                orgId: 1,
+                scopes: 1,
+                createdAt: 1,
+                expiresAt: 1,
+                lastUsedAt: 1,
+                type: { $literal: 'access' },
+              },
+            },
+          ],
+        },
+      },
+      {
+        $sort: { createdAt: -1 },
+      },
+      {
+        $facet: {
+          metadata: [{ $count: 'total' }],
+          data: [{ $skip: skip }, { $limit: limit }],
+        },
+      },
     ]);
 
-    // Track active refresh token identifiers
-    const activeRefreshKeys = new Set<string>();
-    const activeRefreshTokenIds = new Set<string>();
-    for (const rt of allRefreshTokens) {
-      activeRefreshKeys.add(`${rt.clientId}:${rt.userId.toString()}`);
-      activeRefreshTokenIds.add((rt._id as Types.ObjectId).toString());
-    }
-
-    // Suppress access tokens with a corresponding active refresh token
-    const seenStandaloneKeys = new Set<string>();
-    const standaloneAccessTokens: typeof allAccessTokens = [];
-
-    for (const at of allAccessTokens) {
-      if (!at.userId) continue;
-      const userStr = at.userId.toString();
-      const key = `${at.clientId}:${userStr}`;
-      const parentIdStr = at.parentRefreshTokenId
-        ? at.parentRefreshTokenId.toString()
-        : undefined;
-
-      const hasActiveRefreshToken =
-        (parentIdStr !== undefined && activeRefreshTokenIds.has(parentIdStr)) ||
-        activeRefreshKeys.has(key);
-
-      if (!hasActiveRefreshToken && !seenStandaloneKeys.has(key)) {
-        seenStandaloneKeys.add(key);
-        standaloneAccessTokens.push(at);
-      }
-    }
-
-    type CombinedGrantItem =
-      | { type: 'refresh'; token: (typeof allRefreshTokens)[0] }
-      | { type: 'access'; token: (typeof allAccessTokens)[0] };
-
-    const combined: CombinedGrantItem[] = [
-      ...allRefreshTokens.map((rt) => ({
-        type: 'refresh' as const,
-        token: rt,
-      })),
-      ...standaloneAccessTokens.map((at) => ({
-        type: 'access' as const,
-        token: at,
-      })),
-    ].sort((a, b) => b.token.createdAt.getTime() - a.token.createdAt.getTime());
-
-    const total = combined.length;
-    const paginatedItems = combined.slice((page - 1) * limit, page * limit);
+    const total = facetResult?.metadata?.[0]?.total ?? 0;
+    const paginatedItems = facetResult?.data ?? [];
 
     const userIds = Array.from(
       new Set(
         paginatedItems
-          .map((item) => item.token.userId?.toString())
+          .map((item) => item.userId?.toString())
           .filter((id): id is string => typeof id === 'string'),
       ),
     );
     const clientIds = Array.from(
-      new Set(paginatedItems.map((item) => item.token.clientId)),
+      new Set(paginatedItems.map((item) => item.clientId)),
     );
 
     const [owners, apps] = await Promise.all([
@@ -338,54 +389,54 @@ export class OAuthGrantService {
     );
     const appsByClientId = new Map(apps.map((a) => [a.clientId, a]));
 
-    // Find latest lastUsedAt per client/user pair for paginated items
-    const latestAccessTokens =
-      await OAuthAccessToken.aggregate<AdminLatestTokenGroup>([
-        {
-          $match: {
-            orgId: orgObjId,
-            userId: { $in: userIds.map((id) => new Types.ObjectId(id)) },
-            clientId: { $in: clientIds },
+    const refreshItems = paginatedItems.filter((item) => item.type === 'refresh');
+    let lastUsedMap = new Map<string, Date | undefined>();
+    if (refreshItems.length > 0) {
+      const latestAccessTokens =
+        await OAuthAccessToken.aggregate<AdminLatestTokenGroup>([
+          {
+            $match: {
+              orgId: orgObjId,
+              userId: { $in: userIds.map((id) => new Types.ObjectId(id)) },
+              clientId: { $in: refreshItems.map((r) => r.clientId) },
+            },
           },
-        },
-        {
-          $group: {
-            _id: { clientId: '$clientId', userId: '$userId' },
-            lastUsedAt: { $max: '$lastUsedAt' },
+          {
+            $group: {
+              _id: { clientId: '$clientId', userId: '$userId' },
+              lastUsedAt: { $max: '$lastUsedAt' },
+            },
           },
-        },
-      ]);
-
-    const lastUsedMap = new Map(
-      latestAccessTokens.map((t) => [
-        `${t._id.clientId}:${t._id.userId.toString()}`,
-        t.lastUsedAt,
-      ]),
-    );
+        ]);
+      lastUsedMap = new Map(
+        latestAccessTokens.map((t) => [
+          `${t._id.clientId}:${t._id.userId.toString()}`,
+          t.lastUsedAt,
+        ]),
+      );
+    }
 
     const data: AdminOAuthGrantListItem[] = paginatedItems.map((item) => {
-      const token = item.token;
-      const userStr = token.userId ? token.userId.toString() : '';
-      const owner = ownersById.get(userStr);
-      const app = appsByClientId.get(token.clientId);
-      const lastUsedKey = `${token.clientId}:${userStr}`;
+      const userStr = item.userId ? item.userId.toString() : '';
+      const owner = item.userId ? ownersById.get(userStr) : undefined;
+      const app = appsByClientId.get(item.clientId);
+      const lastUsedKey = `${item.clientId}:${userStr}`;
 
       const lastUsedAt =
         item.type === 'access'
-          ? ((token as (typeof allAccessTokens)[0]).lastUsedAt ??
-            lastUsedMap.get(lastUsedKey))
+          ? item.lastUsedAt
           : lastUsedMap.get(lastUsedKey);
 
       return {
-        id: (token._id as Types.ObjectId).toString(),
-        clientId: token.clientId,
-        appName: app?.name ?? token.clientId,
+        id: item._id.toString(),
+        clientId: item.clientId,
+        appName: app?.name ?? item.clientId,
         appDescription: app?.description,
         appLogoUrl: app?.logoUrl,
         isConfidential: app?.isConfidential ?? false,
-        scopes: token.scopes,
-        createdAt: token.createdAt,
-        expiresAt: token.expiresAt,
+        scopes: item.scopes,
+        createdAt: item.createdAt,
+        expiresAt: item.expiresAt,
         lastUsedAt,
         userId: userStr,
         ownerEmail: owner?.email,
@@ -394,13 +445,15 @@ export class OAuthGrantService {
       };
     });
 
+    const totalPages = Math.ceil(total / limit) || 1;
+
     return {
       data,
       pagination: {
         page,
         limit,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages,
       },
     };
   }
@@ -434,23 +487,35 @@ export class OAuthGrantService {
       refreshToken.revokedAt = new Date();
       refreshToken.revokedBy = adminObjId;
       refreshToken.revokedReason = reason ?? 'Revoked by org admin';
-      await refreshToken.save();
 
-      await OAuthAccessToken.updateMany(
-        {
-          userId: { $eq: refreshToken.userId },
-          orgId: { $eq: orgObjId },
-          clientId: { $eq: refreshToken.clientId },
-          parentRefreshTokenId: { $eq: grantObjId },
-          isRevoked: { $eq: false },
-        },
-        {
-          isRevoked: true,
-          revokedAt: new Date(),
-          revokedBy: adminObjId,
-          revokedReason: reason ?? 'Revoked by org admin',
-        },
-      );
+      const updateFilter = {
+        userId: { $eq: refreshToken.userId },
+        orgId: { $eq: orgObjId },
+        clientId: { $eq: refreshToken.clientId },
+        parentRefreshTokenId: { $eq: grantObjId },
+        isRevoked: { $eq: false },
+      };
+      const updateDoc = {
+        isRevoked: true,
+        revokedAt: new Date(),
+        revokedBy: adminObjId,
+        revokedReason: reason ?? 'Revoked by org admin',
+      };
+
+      if (process.env.REPLICA_SET_AVAILABLE === 'true') {
+        const session = await mongoose.startSession();
+        try {
+          await session.withTransaction(async () => {
+            await refreshToken.save({ session });
+            await OAuthAccessToken.updateMany(updateFilter, updateDoc, { session });
+          });
+        } finally {
+          await session.endSession();
+        }
+      } else {
+        await refreshToken.save();
+        await OAuthAccessToken.updateMany(updateFilter, updateDoc);
+      }
 
       this.logger.info('OAuth grant revoked by admin', {
         orgId,

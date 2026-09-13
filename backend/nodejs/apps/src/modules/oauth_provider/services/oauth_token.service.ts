@@ -2,7 +2,7 @@ import { injectable, inject } from 'inversify'
 import jwt, { Algorithm, Secret } from 'jsonwebtoken'
 import crypto from 'crypto'
 import { randomUUID } from 'crypto'
-import { Types } from 'mongoose'
+import mongoose, { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
 import {
   OAuthAccessToken,
@@ -97,26 +97,16 @@ export class OAuthTokenService {
 
     // Store access token hash for revocation lookup
     const accessTokenHash = this.hashToken(accessToken)
-    const storedAccessToken = await OAuthAccessToken.create({
-      tokenHash: accessTokenHash,
-      clientId: app.clientId,
-      userId: userId ? new Types.ObjectId(userId) : undefined,
-      orgId: new Types.ObjectId(orgId),
-      scopes,
-      expiresAt: new Date((now + accessTokenLifetime) * 1000),
-      name: opts?.name,
-    })
 
-    const result: GeneratedTokens = {
-      accessToken,
-      accessTokenId: (storedAccessToken._id as Types.ObjectId).toString(),
-      tokenType: 'Bearer',
-      expiresIn: accessTokenLifetime,
-      scope: scopes.join(' '),
-    }
+    // Check if refresh token should be generated
+    const hasRefreshToken = Boolean(
+      includeRefreshToken && userId && scopes.includes('offline_access'),
+    )
+    const refreshTokenId = hasRefreshToken ? new Types.ObjectId() : undefined
+    let refreshToken: string | undefined
+    let refreshTokenHash: string | undefined
 
-    // Generate refresh token if requested and user is present
-    if (includeRefreshToken && userId && scopes.includes('offline_access')) {
+    if (hasRefreshToken && userId) {
       const refreshJti = randomUUID()
       const refreshTokenPayload: OAuthTokenPayload = {
         userId: userId,
@@ -134,34 +124,85 @@ export class OAuthTokenService {
         createdBy: app.createdBy?.toString(),
       }
 
-      const refreshToken = jwt.sign(refreshTokenPayload, this.signingKey, signOptions)
+      refreshToken = jwt.sign(refreshTokenPayload, this.signingKey, signOptions)
+      refreshTokenHash = this.hashToken(refreshToken)
+    }
 
-      // Store refresh token
-      const refreshTokenHash = this.hashToken(refreshToken)
-      const storedRefreshToken = await OAuthRefreshToken.create({
-        tokenHash: refreshTokenHash,
-        clientId: app.clientId,
-        userId: new Types.ObjectId(userId),
-        orgId: new Types.ObjectId(orgId),
-        scopes,
-        expiresAt: new Date((now + app.refreshTokenLifetime) * 1000),
-      })
+    const accessTokenData = {
+      tokenHash: accessTokenHash,
+      clientId: app.clientId,
+      userId: userId ? new Types.ObjectId(userId) : undefined,
+      orgId: new Types.ObjectId(orgId),
+      scopes,
+      expiresAt: new Date((now + accessTokenLifetime) * 1000),
+      name: opts?.name,
+      parentRefreshTokenId: refreshTokenId,
+    }
 
-      if (
-        storedRefreshToken &&
-        storedRefreshToken._id &&
-        storedAccessToken &&
-        storedAccessToken._id
-      ) {
-        storedAccessToken.parentRefreshTokenId =
-          storedRefreshToken._id as Types.ObjectId
-        await OAuthAccessToken.updateOne(
-          { _id: storedAccessToken._id },
-          { parentRefreshTokenId: storedRefreshToken._id },
-        )
+    let storedAccessToken: any
+    if (process.env.REPLICA_SET_AVAILABLE === 'true') {
+      const session = await mongoose.startSession()
+      try {
+        await session.withTransaction(async () => {
+          const createdAccess = await OAuthAccessToken.create([accessTokenData], { session })
+          storedAccessToken = Array.isArray(createdAccess) ? createdAccess[0] : createdAccess
+
+          if (hasRefreshToken && refreshTokenHash && userId) {
+            await OAuthRefreshToken.create(
+              [
+                {
+                  _id: refreshTokenId,
+                  tokenHash: refreshTokenHash,
+                  clientId: app.clientId,
+                  userId: new Types.ObjectId(userId),
+                  orgId: new Types.ObjectId(orgId),
+                  scopes,
+                  expiresAt: new Date((now + app.refreshTokenLifetime) * 1000),
+                },
+              ],
+              { session },
+            )
+          }
+        })
+      } finally {
+        await session.endSession()
       }
+    } else {
+      // Safe non-transactional fallback:
+      // When a refresh token is requested, create it first so the access token is linked upon creation.
+      // If access token creation fails, cleanly delete the created refresh token so partial failures
+      // cannot leave tokens incorrectly active or unlinked.
+      if (hasRefreshToken && refreshTokenHash && userId) {
+        await OAuthRefreshToken.create({
+          _id: refreshTokenId,
+          tokenHash: refreshTokenHash,
+          clientId: app.clientId,
+          userId: new Types.ObjectId(userId),
+          orgId: new Types.ObjectId(orgId),
+          scopes,
+          expiresAt: new Date((now + app.refreshTokenLifetime) * 1000),
+        })
 
-      result.refreshToken = refreshToken
+        try {
+          const createdAccess = await OAuthAccessToken.create(accessTokenData)
+          storedAccessToken = Array.isArray(createdAccess) ? createdAccess[0] : createdAccess
+        } catch (err) {
+          await OAuthRefreshToken.deleteOne({ _id: refreshTokenId }).catch(() => {})
+          throw err
+        }
+      } else {
+        const createdAccess = await OAuthAccessToken.create(accessTokenData)
+        storedAccessToken = Array.isArray(createdAccess) ? createdAccess[0] : createdAccess
+      }
+    }
+
+    const result: GeneratedTokens = {
+      accessToken,
+      accessTokenId: (storedAccessToken._id as Types.ObjectId).toString(),
+      tokenType: 'Bearer',
+      expiresIn: accessTokenLifetime,
+      scope: scopes.join(' '),
+      refreshToken,
     }
 
     this.logger.info('OAuth tokens generated', {

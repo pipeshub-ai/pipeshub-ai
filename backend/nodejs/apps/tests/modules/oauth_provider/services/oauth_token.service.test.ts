@@ -2,7 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import jwt from 'jsonwebtoken'
-import { Types } from 'mongoose'
+import mongoose, { Types } from 'mongoose'
 import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service'
 import { OAuthAccessToken } from '../../../../src/modules/oauth_provider/schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../../../../src/modules/oauth_provider/schema/oauth.refresh_token.schema'
@@ -120,6 +120,65 @@ describe('OAuthTokenService', () => {
       )
 
       expect(result.refreshToken).to.be.undefined
+    })
+
+    it('should execute inside transaction when REPLICA_SET_AVAILABLE is true', async () => {
+      const origEnv = process.env.REPLICA_SET_AVAILABLE
+      process.env.REPLICA_SET_AVAILABLE = 'true'
+      try {
+        const mockSession = {
+          withTransaction: sinon.stub().callsFake(async (fn: () => Promise<void>) => {
+            await fn()
+          }),
+          endSession: sinon.stub().resolves(),
+        }
+        sinon.stub(mongoose, 'startSession').resolves(mockSession as any)
+        sinon.stub(OAuthAccessToken, 'create').resolves([{ _id: new Types.ObjectId() }] as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves([{ _id: new Types.ObjectId() }] as any)
+
+        const userId = new Types.ObjectId().toString()
+        const result = await service.generateTokens(
+          mockApp,
+          userId,
+          new Types.ObjectId().toString(),
+          ['org:read', 'offline_access'],
+          true,
+        )
+
+        expect(mockSession.withTransaction.calledOnce).to.be.true
+        expect(mockSession.endSession.calledOnce).to.be.true
+        expect(result.accessToken).to.be.a('string')
+        expect(result.refreshToken).to.be.a('string')
+      } finally {
+        process.env.REPLICA_SET_AVAILABLE = origEnv
+      }
+    })
+
+    it('should pre-allocate parentRefreshTokenId and clean up refresh token if access token creation fails in non-transactional mode', async () => {
+      const origEnv = process.env.REPLICA_SET_AVAILABLE
+      process.env.REPLICA_SET_AVAILABLE = 'false'
+      try {
+        const deleteStub = sinon.stub(OAuthRefreshToken, 'deleteOne').resolves({} as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthAccessToken, 'create').rejects(new Error('DB connection error'))
+
+        const userId = new Types.ObjectId().toString()
+        try {
+          await service.generateTokens(
+            mockApp,
+            userId,
+            new Types.ObjectId().toString(),
+            ['org:read', 'offline_access'],
+            true,
+          )
+          expect.fail('should have thrown')
+        } catch (err: any) {
+          expect(err.message).to.equal('DB connection error')
+          expect(deleteStub.calledOnce).to.be.true
+        }
+      } finally {
+        process.env.REPLICA_SET_AVAILABLE = origEnv
+      }
     })
   })
 
