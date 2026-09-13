@@ -2371,6 +2371,20 @@ def _stub_site_scoped_drive_builder():
     return MagicMock(spec=["get", "to_get_request_information", "with_url"])
 
 
+def _root_ace(*, inherited: bool, link: bool = False):
+    """One entry from a drive root's `permissions` collection.
+
+    `inherited_from` is set by Graph on an ACE the root received from the site
+    above it; a grant made on the library itself has none. `link` marks a
+    sharing link. Both facets are what separate a site-scoped ACE from a
+    library-scoped one.
+    """
+    perm = MagicMock()
+    perm.link = MagicMock() if link else None
+    perm.inherited_from = MagicMock() if inherited else None
+    return perm
+
+
 class TestDriveRecordGroupPermissions:
 
     @pytest.mark.asyncio
@@ -2517,7 +2531,7 @@ class TestSitePermissionGraphFallback:
         root_item = MagicMock()
         root_item.id = "root-item-1"
         perms_response = MagicMock()
-        perms_response.value = [MagicMock()]
+        perms_response.value = [_root_ace(inherited=True)]
         connector._safe_api_call = AsyncMock(
             side_effect=[default_drive, root_item, perms_response]
         )
@@ -2530,6 +2544,66 @@ class TestSitePermissionGraphFallback:
 
         assert result == expected
         connector.client.drives.by_drive_id.assert_called_once_with("default-drive-1")
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_keeps_only_inherited_aces(self):
+        """A drive root's permission collection mixes site-inherited ACEs with
+        grants scoped to that one library. Promoting the latter to the site
+        RecordGroup would let a principal with access to the default document
+        library reach every sibling library through the traversal."""
+        connector, *_ = _make_connector()
+        connector.rate_limiter = AsyncMock()
+        connector.rate_limiter.__aenter__ = AsyncMock()
+        connector.rate_limiter.__aexit__ = AsyncMock()
+        connector.client = MagicMock()
+
+        inherited_group_ace = _root_ace(inherited=True)
+        direct_grant = _root_ace(inherited=False)
+        sharing_link = _root_ace(inherited=True, link=True)
+
+        default_drive = MagicMock()
+        default_drive.id = "default-drive-1"
+        root_item = MagicMock()
+        root_item.id = "root-item-1"
+        perms_response = MagicMock()
+        perms_response.value = [inherited_group_ace, direct_grant, sharing_link]
+        connector._safe_api_call = AsyncMock(
+            side_effect=[default_drive, root_item, perms_response]
+        )
+        connector._convert_to_permissions = AsyncMock(return_value=[])
+
+        await connector._get_site_permissions_via_graph("site-1")
+
+        converted = connector._convert_to_permissions.await_args[0][0]
+        assert converted == [inherited_group_ace]
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_returns_empty_when_nothing_is_inherited(self):
+        """A 200 carrying only library-scoped grants must resolve to no site
+        ACL at all — an empty ACL is safer than a wrong one, on a success as
+        much as on an exception."""
+        connector, *_ = _make_connector()
+        connector.rate_limiter = AsyncMock()
+        connector.rate_limiter.__aenter__ = AsyncMock()
+        connector.rate_limiter.__aexit__ = AsyncMock()
+        connector.client = MagicMock()
+
+        default_drive = MagicMock()
+        default_drive.id = "default-drive-1"
+        root_item = MagicMock()
+        root_item.id = "root-item-1"
+        perms_response = MagicMock()
+        perms_response.value = [
+            _root_ace(inherited=False),
+            _root_ace(inherited=True, link=True),
+        ]
+        connector._safe_api_call = AsyncMock(
+            side_effect=[default_drive, root_item, perms_response]
+        )
+        connector._convert_to_permissions = AsyncMock(return_value=[])
+
+        assert await connector._get_site_permissions_via_graph("site-1") == []
+        connector._convert_to_permissions.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_graph_fallback_returns_empty_when_no_default_drive(self):
