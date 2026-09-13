@@ -16,7 +16,9 @@
 #   6. PUT  /api/v1/org/onboarding-status       { status: configured }
 #   7. PIPESHUB_DEMO_DATA=1 only: create the bundled "Demo" connector (the
 #      Acme Corp sample company) and start its sync, so the instance has
-#      something to search before any real source is connected.
+#      something to search before any real source is connected. With
+#      PIPESHUB_DEMO_PERSONAS=1 as well, first create Alice and Bob — the two
+#      sample employees who can sign in — with PIPESHUB_DEMO_PASSWORD.
 #
 # Does not:
 #   - Connect Slack / Drive / Jira (browser OAuth)
@@ -66,6 +68,10 @@ Environment (also accepted in --env-file):
   PIPESHUB_LLM_ENDPOINT        ollama default http://host.docker.internal:11434
   PIPESHUB_LLM_DEPLOYMENT      azureOpenAI only: the deployment name
   PIPESHUB_DEMO_DATA           1 to load the Acme Corp demo data (Demo connector)
+  PIPESHUB_DEMO_PERSONAS       1 to also create Alice and Bob as sign-in users
+                               (needs DEMO_DATA=1, a business account, and
+                               PIPESHUB_DEMO_PASSWORD; same complexity rule)
+  PIPESHUB_DEMO_PASSWORD       starting password for the demo personas
   PIPESHUB_ALLOW_NONLOCAL      1 to skip the loopback/private-host check
   PIPESHUB_BOOTSTRAP_CURL      curl binary (tests inject a fake)
 EOF
@@ -114,6 +120,8 @@ allowed = {
     "PIPESHUB_LLM_ENDPOINT",
     "PIPESHUB_LLM_DEPLOYMENT",
     "PIPESHUB_DEMO_DATA",
+    "PIPESHUB_DEMO_PERSONAS",
+    "PIPESHUB_DEMO_PASSWORD",
     "PIPESHUB_ALLOW_NONLOCAL",
 }
 path = sys.argv[1]
@@ -162,6 +170,8 @@ LLM_API_KEY="${PIPESHUB_LLM_API_KEY:-}"
 LLM_ENDPOINT="${PIPESHUB_LLM_ENDPOINT:-}"
 LLM_DEPLOYMENT="${PIPESHUB_LLM_DEPLOYMENT:-}"
 DEMO_DATA="${PIPESHUB_DEMO_DATA:-0}"
+DEMO_PERSONAS="${PIPESHUB_DEMO_PERSONAS:-0}"
+DEMO_PASSWORD="${PIPESHUB_DEMO_PASSWORD:-}"
 ALLOW_NONLOCAL="${PIPESHUB_ALLOW_NONLOCAL:-0}"
 
 [[ -n "$ACCOUNT_EMAIL" ]] || die "PIPESHUB_ACCOUNT_EMAIL is required"
@@ -171,6 +181,12 @@ ALLOW_NONLOCAL="${PIPESHUB_ALLOW_NONLOCAL:-0}"
   || die "PIPESHUB_ACCOUNT_TYPE must be individual or business"
 if [[ "$ACCOUNT_TYPE" == "business" && -z "$REGISTERED_NAME" ]]; then
   die "PIPESHUB_REGISTERED_NAME is required for business accounts"
+fi
+if [[ "$DEMO_PERSONAS" == "1" ]]; then
+  [[ "$DEMO_DATA" == "1" ]] || die "PIPESHUB_DEMO_PERSONAS=1 needs PIPESHUB_DEMO_DATA=1"
+  [[ "$ACCOUNT_TYPE" == "business" ]] \
+    || die "PIPESHUB_DEMO_PERSONAS=1 needs PIPESHUB_ACCOUNT_TYPE=business (individual accounts are single-user)"
+  [[ -n "$DEMO_PASSWORD" ]] || die "PIPESHUB_DEMO_PASSWORD is required with PIPESHUB_DEMO_PERSONAS=1"
 fi
 [[ -n "$LLM_PROVIDER" ]] || die "PIPESHUB_LLM_PROVIDER is required"
 [[ -n "$LLM_MODEL" ]] || die "PIPESHUB_LLM_MODEL is required"
@@ -425,6 +441,30 @@ printf '{"status":"configured"}' >"$WORKDIR/onboard.json"
 ph_request PUT "/api/v1/org/onboarding-status" "$WORKDIR/onboard.json" bearer
 
 # --- 7. optional demo data: the bundled Demo connector, synced once ---
+if [[ "$DEMO_PERSONAS" == "1" ]]; then
+  # The sample employees, created before the sync so the connector's group
+  # memberships attach to real accounts. Emails match the bundled fixture.
+  for persona in "Alice Chen|alice@acme-demo.example" "Bob Okafor|bob@acme-demo.example"; do
+    PERSONA_NAME="${persona%%|*}" PERSONA_EMAIL="${persona#*|}" DEMO_PASSWORD="$DEMO_PASSWORD" \
+      python3 - "$WORKDIR/persona.json" <<'PY'
+import json, os, sys
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump(
+        {
+            "fullName": os.environ["PERSONA_NAME"],
+            "email": os.environ["PERSONA_EMAIL"],
+            "role": "member",
+            "password": os.environ["DEMO_PASSWORD"],
+        },
+        f,
+        separators=(",", ":"),
+    )
+PY
+    chmod 600 "$WORKDIR/persona.json"
+    ph_request POST "/api/v1/users/" "$WORKDIR/persona.json" bearer
+    rm -f "$WORKDIR/persona.json"
+  done
+fi
 if [[ "$DEMO_DATA" == "1" ]]; then
   # The agent picks which sources to search by their names, so the name says
   # what the sample company's records imitate.
@@ -445,6 +485,10 @@ echo "Slack / Drive / Jira still need a browser. This script does not connect th
 if [[ "$DEMO_DATA" == "1" ]]; then
   echo "Demo data: the Acme Corp connector is syncing; records index over the next minute or two."
   echo "Try: \"Why was the payment service architecture changed, and how was the decision made?\""
+  if [[ "$DEMO_PERSONAS" == "1" ]]; then
+    echo "Personas: alice@acme-demo.example and bob@acme-demo.example can sign in with PIPESHUB_DEMO_PASSWORD."
+    echo "Ask both \"What is the enterprise pricing strategy for 2026?\" — only Bob is on the pricing committee."
+  fi
 else
   echo "Next: Knowledge Base upload or Local FS, then pipeshub_search with backoff."
 fi
