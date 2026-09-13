@@ -270,10 +270,10 @@ records:
       self-inflicted outage, because all replicas retried in lockstep.
 
       ## Decision
-      Retries use **exponential backoff with full jitter**:
-      delay = random(0, min(cap, base × 2^attempt)), with base 2 seconds and cap
-      120 seconds. Max attempts is 6. This spreads retry load across time and across
-      replicas, so a transient provider error decays instead of amplifying.
+      Retries use **exponential backoff with full jitter** so that retry load is
+      spread across time and across replicas, and a transient provider error
+      decays instead of amplifying. The base delay, cap and attempt limit are set
+      in the implementing pull request, not here.
 
       ## How this was decided
       The options — fixed interval, backoff without jitter, equal jitter, full
@@ -300,7 +300,7 @@ records:
       - { type: RELATED, to: jira-inc-2031 }
       - { type: RELATED, to: drive-billing-resilience }
     body: |
-      **Merged** 2026-03-21 · **Reviewers:** Marcus Webb (approved), Dana Okafor (approved)
+      **Merged** 2026-03-21 · **Reviewers:** Marcus Webb (approved), Dana Okafor (approved after her requested histogram-bucket change)
       **References:** INC-2031
 
       ## Summary
@@ -319,6 +319,13 @@ records:
       - `worker_config.yaml`: `max_attempts` raised from 3 to 6
       - Metrics: new `billing_retry_delay_seconds` histogram
 
+      ## Review
+      - Dana Okafor requested changes: add an explicit 120s bucket to the
+        `billing_retry_delay_seconds` histogram so the cap is visible on the
+        dashboard. Added in the second revision; Dana then approved.
+      - Marcus Webb approved and asked for the `max_attempts` change to be
+        noted in the release notes for support.
+
   - id: gh-pr-482-c1
     container: gh-svc-billing-worker
     type: COMMENT
@@ -327,9 +334,10 @@ records:
     created: 2026-03-19T09:20:00Z
     parent: gh-pr-482
     body: |
-      Histogram buckets: can we go up to 120s explicitly so the cap is visible as
-      its own bucket? Otherwise LGTM — this is exactly the full-jitter shape we
-      discussed.
+      Dana Okafor requested changes before merge: please add an explicit 120s
+      bucket to the `billing_retry_delay_seconds` histogram so the cap shows up
+      as its own bucket on the dashboard. Otherwise this is exactly the
+      full-jitter shape we discussed — approving once that is in.
 
   - id: gh-pr-482-c2
     container: gh-svc-billing-worker
@@ -339,8 +347,8 @@ records:
     created: 2026-03-20T17:05:00Z
     parent: gh-pr-482
     body: |
-      Approved. Please note the max_attempts change in the release notes — support
-      will want to know renewals can now take longer to give up.
+      Marcus Webb: Approved. Please note the max_attempts change in the release
+      notes — support will want to know renewals can now take longer to give up.
 
   # ---------------------------------------------------------------------------
   # Story 2 — export timeouts (Support → Engineering)
@@ -958,7 +966,7 @@ questions:
     # The answer names the customers from the ServiceNow cases every time, but the
     # model doesn't always attach a citation marker to a bulleted list; the fix
     # citation is the reliable one. ServiceNow cited is the stretch, tracked separately.
-    must_cite_any_of: [gh-pr-211, gh-issue-207]
+    must_cite_any_of: [gh-pr-211, gh-issue-207, drive-export-runbook]
     stretch_cite_any_of: [sn-4471, sn-4478, sn-4480]
     answer_must_mention: ["Northwind", "Contoso", "Fabrikam", "queue"]
     must_not_cite: [gh-pr-482, jira-inc-2031, drive-billing-resilience, drive-pricing-2026]

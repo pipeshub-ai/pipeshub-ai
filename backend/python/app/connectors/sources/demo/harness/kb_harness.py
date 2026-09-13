@@ -175,6 +175,9 @@ def main() -> None:
     ap.add_argument("--only", help="comma-separated question ids")
     ap.add_argument("--persona", choices=["alice", "bob", "installer"],
                     help="connector mode: ask as this person through the synced Demo connector; no uploads")
+    ap.add_argument("--min-pass", type=int,
+                    help="acceptance mode: exit 1 unless every question passes at least this many runs "
+                         "(restricted questions must pass every run)")
     args = ap.parse_args()
 
     env = load_env(args.env)
@@ -270,8 +273,21 @@ def main() -> None:
             summary.append((q["id"], persona, passes, args.runs))
 
         print("\n== summary")
+        failed = []
         for qid, p, ok, n in summary:
-            print(f"   {qid} [{p}]: {ok}/{n}")
+            q = next(x for x in fx["questions"] if x["id"] == qid)
+            # A leak of restricted material is a failure of the whole demo, so
+            # questions with a restricted list must pass every run.
+            need = n if q.get("restricted") else (args.min_pass if args.min_pass is not None else 0)
+            verdict = "" if ok >= need else f"   <-- below {need}/{n}"
+            print(f"   {qid} [{p}]: {ok}/{n}{verdict}")
+            if ok < need:
+                failed.append(qid)
+        if args.min_pass is not None:
+            if failed:
+                print(f"ACCEPTANCE FAILED for {persona}: {', '.join(failed)}")
+                sys.exit(1)
+            print(f"ACCEPTANCE PASSED for {persona}")
 
 
 if __name__ == "__main__":
