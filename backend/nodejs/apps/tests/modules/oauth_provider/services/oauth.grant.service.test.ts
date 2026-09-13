@@ -116,8 +116,8 @@ describe('OAuthGrantService', () => {
         .returns(createOAuthAppQueryFixture([mockApp]))
 
       const lastUsed = new Date('2026-09-12T12:00:00Z')
-      sinon.stub(OAuthAccessToken, 'aggregate').resolves([
-        { _id: clientId, lastUsedAt: lastUsed },
+      const aggregateStub = sinon.stub(OAuthAccessToken, 'aggregate').resolves([
+        { _id: rtId, lastUsedAt: lastUsed },
       ])
 
       const result = await service.listUserGrants(orgId, userId)
@@ -133,6 +133,14 @@ describe('OAuthGrantService', () => {
         scopes: ['read', 'write'],
         lastUsedAt: lastUsed,
       })
+
+      const pipeline = aggregateStub.firstCall.args[0]
+      const matchStage = pipeline[0].$match
+      expect(matchStage).to.have.property('isRevoked', false)
+      expect(matchStage.parentRefreshTokenId.$in.map(String)).to.include(rtId.toString())
+
+      const groupStage = pipeline[1].$group
+      expect(groupStage._id).to.equal('$parentRefreshTokenId')
     })
 
     it('returns standalone access tokens when no refresh token exists', async () => {
