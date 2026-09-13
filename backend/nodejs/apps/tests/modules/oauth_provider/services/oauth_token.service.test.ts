@@ -147,10 +147,16 @@ describe('OAuthTokenService', () => {
 
         expect(mockSession.withTransaction.calledOnce).to.be.true
         expect(mockSession.endSession.calledOnce).to.be.true
+        expect((OAuthAccessToken.create as sinon.SinonStub).firstCall.args[1]).to.deep.equal({ session: mockSession })
+        expect((OAuthRefreshToken.create as sinon.SinonStub).firstCall.args[1]).to.deep.equal({ session: mockSession })
         expect(result.accessToken).to.be.a('string')
         expect(result.refreshToken).to.be.a('string')
       } finally {
-        process.env.REPLICA_SET_AVAILABLE = origEnv
+        if (origEnv === undefined) {
+          delete process.env.REPLICA_SET_AVAILABLE
+        } else {
+          process.env.REPLICA_SET_AVAILABLE = origEnv
+        }
       }
     })
 
@@ -172,12 +178,20 @@ describe('OAuthTokenService', () => {
             true,
           )
           expect.fail('should have thrown')
-        } catch (err: any) {
-          expect(err.message).to.equal('DB connection error')
+        } catch (err: unknown) {
+          if (err instanceof Error) {
+            expect(err.message).to.equal('DB connection error')
+          } else {
+            expect.fail('Thrown error is not an Error')
+          }
           expect(deleteStub.calledOnce).to.be.true
         }
       } finally {
-        process.env.REPLICA_SET_AVAILABLE = origEnv
+        if (origEnv === undefined) {
+          delete process.env.REPLICA_SET_AVAILABLE
+        } else {
+          process.env.REPLICA_SET_AVAILABLE = origEnv
+        }
       }
     })
   })
@@ -246,8 +260,12 @@ describe('OAuthTokenService', () => {
       try {
         await service.verifyAccessToken(token)
         expect.fail('Should have thrown')
-      } catch (error) {
-        expect(error).to.be.instanceOf(InvalidTokenError)
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          expect(error).to.be.instanceOf(InvalidTokenError)
+        } else {
+          expect.fail('Thrown error is not an Error')
+        }
       }
     })
 
@@ -268,8 +286,12 @@ describe('OAuthTokenService', () => {
       try {
         await service.verifyAccessToken(token)
         expect.fail('Should have thrown')
-      } catch (error) {
-        expect(error).to.be.instanceOf(InvalidTokenError)
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          expect(error).to.be.instanceOf(InvalidTokenError)
+        } else {
+          expect.fail('Thrown error is not an Error')
+        }
       }
     })
 
@@ -290,8 +312,12 @@ describe('OAuthTokenService', () => {
       try {
         await service.verifyAccessToken(token)
         expect.fail('Should have thrown')
-      } catch (error) {
-        expect(error).to.be.instanceOf(ExpiredTokenError)
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          expect(error).to.be.instanceOf(ExpiredTokenError)
+        } else {
+          expect.fail('Thrown error is not an Error')
+        }
       }
     })
 
@@ -299,8 +325,12 @@ describe('OAuthTokenService', () => {
       try {
         await service.verifyAccessToken('invalid-token')
         expect.fail('Should have thrown')
-      } catch (error) {
-        expect(error).to.be.instanceOf(InvalidTokenError)
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          expect(error).to.be.instanceOf(InvalidTokenError)
+        } else {
+          expect.fail('Thrown error is not an Error')
+        }
       }
     })
   })
@@ -340,8 +370,12 @@ describe('OAuthTokenService', () => {
       try {
         await service.verifyRefreshToken(token)
         expect.fail('Should have thrown')
-      } catch (error) {
-        expect(error).to.be.instanceOf(InvalidTokenError)
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          expect(error).to.be.instanceOf(InvalidTokenError)
+        } else {
+          expect.fail('Thrown error is not an Error')
+        }
       }
     })
   })

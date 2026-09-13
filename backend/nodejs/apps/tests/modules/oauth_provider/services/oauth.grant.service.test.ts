@@ -10,6 +10,7 @@ import { Users, User } from '../../../../src/modules/user_management/schema/user
 import { NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { createMockLogger, MockLogger } from '../../../helpers/mock-logger'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 
 function createRefreshTokenQueryFixture(
   docs: Partial<IOAuthRefreshToken>[],
@@ -66,6 +67,7 @@ function createUserQueryFixture(
 describe('OAuthGrantService', () => {
   let service: OAuthGrantService
   let mockLogger: MockLogger
+  let mockAppConfig: AppConfig
 
   const orgId = new Types.ObjectId().toString()
   const userId = new Types.ObjectId().toString()
@@ -73,7 +75,8 @@ describe('OAuthGrantService', () => {
 
   beforeEach(() => {
     mockLogger = createMockLogger()
-    service = new OAuthGrantService(mockLogger as unknown as Logger)
+    mockAppConfig = { REPLICA_SET_AVAILABLE: false } as AppConfig
+    service = new OAuthGrantService(mockLogger as unknown as Logger, mockAppConfig)
   })
 
   afterEach(() => {
@@ -231,8 +234,12 @@ describe('OAuthGrantService', () => {
       try {
         await service.revokeUserGrant(orgId, userId, 'invalid-id')
         expect.fail('should have thrown')
-      } catch (err) {
-        expect(err).to.be.instanceOf(NotFoundError)
+      } catch (err: unknown) {
+        if (err instanceof Error) {
+          expect(err).to.be.instanceOf(NotFoundError)
+        } else {
+          expect.fail('Thrown error is not an Error')
+        }
       }
     })
 
@@ -282,8 +289,7 @@ describe('OAuthGrantService', () => {
     })
 
     it('revokes refresh token and associated access tokens within a transaction when REPLICA_SET_AVAILABLE is true', async () => {
-      const origEnv = process.env.REPLICA_SET_AVAILABLE
-      process.env.REPLICA_SET_AVAILABLE = 'true'
+      mockAppConfig.REPLICA_SET_AVAILABLE = true
       try {
         const mockSession = {
           withTransaction: sinon.stub().callsFake(async (fn: () => Promise<void>) => {
@@ -310,10 +316,11 @@ describe('OAuthGrantService', () => {
         expect(mockSession.withTransaction.calledOnce).to.be.true
         expect(mockSession.endSession.calledOnce).to.be.true
         expect(mockRt.isRevoked).to.be.true
+        expect((mockRt.save as sinon.SinonStub).firstCall.args[0]).to.deep.equal({ session: mockSession })
         expect(updateManyStub.calledOnce).to.be.true
         expect(updateManyStub.firstCall.args[2]).to.deep.equal({ session: mockSession })
       } finally {
-        process.env.REPLICA_SET_AVAILABLE = origEnv
+        mockAppConfig.REPLICA_SET_AVAILABLE = false
       }
     })
 
@@ -325,8 +332,12 @@ describe('OAuthGrantService', () => {
       try {
         await service.revokeUserGrant(orgId, userId, grantId)
         expect.fail('should have thrown')
-      } catch (err) {
-        expect(err).to.be.instanceOf(NotFoundError)
+      } catch (err: unknown) {
+        if (err instanceof Error) {
+          expect(err).to.be.instanceOf(NotFoundError)
+        } else {
+          expect.fail('Thrown error is not an Error')
+        }
       }
     })
   })
@@ -533,8 +544,7 @@ describe('OAuthGrantService', () => {
     })
 
     it('revokes refresh token and associated access tokens within a transaction when REPLICA_SET_AVAILABLE is true', async () => {
-      const origEnv = process.env.REPLICA_SET_AVAILABLE
-      process.env.REPLICA_SET_AVAILABLE = 'true'
+      mockAppConfig.REPLICA_SET_AVAILABLE = true
       try {
         const mockSession = {
           withTransaction: sinon.stub().callsFake(async (fn: () => Promise<void>) => {
@@ -570,10 +580,11 @@ describe('OAuthGrantService', () => {
         expect(mockSession.withTransaction.calledOnce).to.be.true
         expect(mockSession.endSession.calledOnce).to.be.true
         expect(mockRt.isRevoked).to.be.true
+        expect((mockRt.save as sinon.SinonStub).firstCall.args[0]).to.deep.equal({ session: mockSession })
         expect(updateManyStub.calledOnce).to.be.true
         expect(updateManyStub.firstCall.args[2]).to.deep.equal({ session: mockSession })
       } finally {
-        process.env.REPLICA_SET_AVAILABLE = origEnv
+        mockAppConfig.REPLICA_SET_AVAILABLE = false
       }
     })
 
@@ -581,8 +592,12 @@ describe('OAuthGrantService', () => {
       try {
         await service.adminRevokeGrant(orgId, userId, 'bad-id')
         expect.fail('should have thrown')
-      } catch (err) {
-        expect(err).to.be.instanceOf(NotFoundError)
+      } catch (err: unknown) {
+        if (err instanceof Error) {
+          expect(err).to.be.instanceOf(NotFoundError)
+        } else {
+          expect.fail('Thrown error is not an Error')
+        }
       }
     })
   })

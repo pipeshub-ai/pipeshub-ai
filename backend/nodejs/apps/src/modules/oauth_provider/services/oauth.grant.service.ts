@@ -7,6 +7,7 @@ import { OAuthApp } from '../schema/oauth.app.schema';
 import { Users } from '../../user_management/schema/users.schema';
 import { PAT_APP_CLIENT_ID_PREFIX } from '../constants/constants';
 import { NotFoundError } from '../../../libs/errors/http.errors';
+import { AppConfig } from '../../tokens_manager/config/config';
 import {
   OAuthGrantListItem,
   AdminOAuthGrantListItem,
@@ -33,7 +34,10 @@ interface AdminLatestTokenGroup {
  */
 @injectable()
 export class OAuthGrantService {
-  constructor(@inject('Logger') private logger: Logger) {}
+  constructor(
+    @inject('Logger') private logger: Logger,
+    @inject('AppConfig') private appConfig: AppConfig,
+  ) {}
 
   /**
    * List the calling user's active OAuth grants.
@@ -127,7 +131,7 @@ export class OAuthGrantService {
       const parentId = at.parentRefreshTokenId
         ? at.parentRefreshTokenId.toString()
         : undefined;
-      if (!parentId || !activeRefreshTokenIds.has(parentId)) {
+      if (parentId === undefined || !activeRefreshTokenIds.has(parentId)) {
         const app = appsByClientId.get(at.clientId);
         grants.push({
           id: (at._id as Types.ObjectId).toString(),
@@ -192,20 +196,7 @@ export class OAuthGrantService {
         revokedReason: reason ?? 'Revoked by owner',
       };
 
-      if (process.env.REPLICA_SET_AVAILABLE === 'true') {
-        const session = await mongoose.startSession();
-        try {
-          await session.withTransaction(async () => {
-            await refreshToken.save({ session });
-            await OAuthAccessToken.updateMany(updateFilter, updateDoc, { session });
-          });
-        } finally {
-          await session.endSession();
-        }
-      } else {
-        await refreshToken.save();
-        await OAuthAccessToken.updateMany(updateFilter, updateDoc);
-      }
+      await this.executeRevocation(refreshToken, updateFilter, updateDoc);
 
       this.logger.info('OAuth grant revoked by owner', {
         orgId,
@@ -346,7 +337,7 @@ export class OAuthGrantService {
         },
       },
       {
-        $sort: { createdAt: -1 },
+        $sort: { createdAt: -1, _id: -1 },
       },
       {
         $facet: {
@@ -445,7 +436,7 @@ export class OAuthGrantService {
       };
     });
 
-    const totalPages = Math.ceil(total / limit) || 1;
+    const totalPages = total === 0 ? 1 : Math.ceil(total / limit);
 
     return {
       data,
@@ -502,20 +493,7 @@ export class OAuthGrantService {
         revokedReason: reason ?? 'Revoked by org admin',
       };
 
-      if (process.env.REPLICA_SET_AVAILABLE === 'true') {
-        const session = await mongoose.startSession();
-        try {
-          await session.withTransaction(async () => {
-            await refreshToken.save({ session });
-            await OAuthAccessToken.updateMany(updateFilter, updateDoc, { session });
-          });
-        } finally {
-          await session.endSession();
-        }
-      } else {
-        await refreshToken.save();
-        await OAuthAccessToken.updateMany(updateFilter, updateDoc);
-      }
+      await this.executeRevocation(refreshToken, updateFilter, updateDoc);
 
       this.logger.info('OAuth grant revoked by admin', {
         orgId,
@@ -550,5 +528,26 @@ export class OAuthGrantService {
     }
 
     throw new NotFoundError('OAuth grant not found');
+  }
+
+  private async executeRevocation(
+    refreshToken: any,
+    updateFilter: any,
+    updateDoc: any,
+  ): Promise<void> {
+    if (this.appConfig.REPLICA_SET_AVAILABLE) {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          await refreshToken.save({ session });
+          await OAuthAccessToken.updateMany(updateFilter, updateDoc, { session });
+        });
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      await OAuthAccessToken.updateMany(updateFilter, updateDoc);
+      await refreshToken.save();
+    }
   }
 }

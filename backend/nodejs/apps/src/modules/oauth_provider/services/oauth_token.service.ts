@@ -139,7 +139,7 @@ export class OAuthTokenService {
       parentRefreshTokenId: refreshTokenId,
     }
 
-    let storedAccessToken: any
+    let storedAccessToken: IOAuthAccessToken
     if (process.env.REPLICA_SET_AVAILABLE === 'true') {
       const session = await mongoose.startSession()
       try {
