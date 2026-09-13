@@ -126,7 +126,7 @@ class DemoApp(App):
         lambda builder: builder.with_icon(DEMO_ICON_PATH)
         .with_realtime_support(False)
         .add_documentation_link(
-            DocumentationLink("Try PipesHub with demo data", "https://docs.pipeshub.com", "setup")
+            DocumentationLink("Try PipesHub with demo data", "https://docs.pipeshub.com/demo-data", "setup")
         )
         .with_sync_strategies([SyncStrategy.MANUAL], selected=SyncStrategy.MANUAL)
         .with_sync_support(True)
