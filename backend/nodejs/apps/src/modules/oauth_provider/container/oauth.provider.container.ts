@@ -16,6 +16,8 @@ import { OAuthAppController } from '../controller/oauth.app.controller'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
 import { PatController } from '../controller/pat.controller'
+import { OAuthGrantService } from '../services/oauth.grant.service'
+import { OAuthGrantController } from '../controller/oauth.grant.controller'
 import { OAuthAuthMiddleware } from '../middlewares/oauth.auth.middleware'
 
 const loggerConfig = {
@@ -151,6 +153,10 @@ export class OAuthProviderContainer {
         scopeValidatorService,
       )
       container.bind<PatService>('PatService').toConstantValue(patService)
+      const oauthGrantService = new OAuthGrantService(logger)
+      container
+        .bind<OAuthGrantService>('OAuthGrantService')
+        .toConstantValue(oauthGrantService)
 
       // Initialize Controllers
       container
@@ -167,6 +173,12 @@ export class OAuthProviderContainer {
       container.bind<PatController>('PatController').toDynamicValue(() => {
         return new PatController(logger, patService, scopeValidatorService)
       })
+
+      container
+        .bind<OAuthGrantController>('OAuthGrantController')
+        .toDynamicValue(() => {
+          return new OAuthGrantController(logger, oauthGrantService)
+        })
 
       container
         .bind<OAuthProviderController>('OAuthProviderController')

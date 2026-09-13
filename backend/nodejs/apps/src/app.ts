@@ -83,6 +83,7 @@ import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
+import { createOAuthGrantsRouter } from './modules/oauth_provider/routes/oauth.grants.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import {
   resolveMessageBrokerConfig,
@@ -633,6 +634,11 @@ export class Application {
     this.app.use(
       '/api/v1/personal-access-tokens',
       createPatRouter(this.oauthProviderContainer),
+    );
+
+    this.app.use(
+      '/api/v1/oauth-grants',
+      createOAuthGrantsRouter(this.oauthProviderContainer),
     );
 
     // MCP (Model Context Protocol) routes

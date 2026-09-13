@@ -308,6 +308,34 @@ export interface AdminPatListItem extends PatListItem {
   ownerDeleted: boolean
 }
 
+/**
+ * An active OAuth grant (session) as seen by the owning user
+ * (`GET /api/v1/oauth-grants`).
+ */
+export interface OAuthGrantListItem {
+  id: string
+  clientId: string
+  appName: string
+  appDescription?: string
+  appLogoUrl?: string
+  isConfidential: boolean
+  scopes: string[]
+  createdAt: Date
+  expiresAt: Date
+  lastUsedAt?: Date
+}
+
+/**
+ * An active OAuth grant as seen by an org admin
+ * (`GET /api/v1/oauth-grants/admin`).
+ */
+export interface AdminOAuthGrantListItem extends OAuthGrantListItem {
+  userId: string
+  ownerEmail?: string
+  ownerFullName?: string
+  ownerDeleted: boolean
+}
+
 // Request with OAuth user info
 export interface OAuthAuthenticatedRequest {
   oauthClient?: {

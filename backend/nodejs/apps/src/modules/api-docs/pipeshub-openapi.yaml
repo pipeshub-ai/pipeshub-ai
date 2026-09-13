@@ -135,6 +135,11 @@ tags:
         `/personal-access-tokens/admin*` — for incident response (a departed
         employee, a compromised laptop) — without needing the OAuth app CRUD
         access described above.
+  - name: OAuth Grants
+    description: |
+      User and organization administration endpoints for inspecting and revoking
+      active OAuth grants (sessions) issued to third-party clients and first-party
+      coding agents.
   - name: OpenID Connect
     description: |
       OpenID Connect 1.0 endpoints for identity federation and discovery.
@@ -2281,6 +2286,142 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AdminPatListItem'
+        pagination:
+          type: object
+          required:
+            - page
+            - limit
+            - total
+            - totalPages
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+              description: Items per page (max 100)
+            total:
+              type: integer
+            totalPages:
+              type: integer
+
+    OAuthGrantListItem:
+      type: object
+      description: |
+        An active OAuth grant as seen by the owning user (`GET /oauth-grants`).
+      required:
+        - id
+        - clientId
+        - appName
+        - isConfidential
+        - scopes
+        - createdAt
+        - expiresAt
+      properties:
+        id:
+          type: string
+          description: Grant identifier
+          pattern: '^[a-fA-F0-9]{24}$'
+        clientId:
+          type: string
+          description: Client ID of the authorized application
+        appName:
+          type: string
+          description: Display name of the authorized application
+        appDescription:
+          type: string
+          description: Description of the application
+        appLogoUrl:
+          type: string
+          description: Logo URL of the application
+        isConfidential:
+          type: boolean
+          description: Whether the client is confidential or public
+        scopes:
+          type: array
+          items:
+            type: string
+          description: Scopes granted to the application
+        createdAt:
+          type: string
+          format: date-time
+          description: When the grant was issued / approved
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the grant expires
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: When an access token for this grant was last used
+
+    ListOAuthGrantsResponse:
+      type: object
+      description: |
+        Response body for `GET /oauth-grants` (`listGrants`) — the caller's
+        own active OAuth grants.
+      required:
+        - grants
+      properties:
+        grants:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthGrantListItem'
+
+    RevokeOAuthGrantRequest:
+      type: object
+      description: |
+        Optional request body for `DELETE /oauth-grants/{grantId}` and
+        `DELETE /oauth-grants/admin/{grantId}`.
+      properties:
+        reason:
+          type: string
+          example: "revoked by user"
+
+    RevokeOAuthGrantResponse:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          example: OAuth grant revoked successfully
+
+    AdminOAuthGrantListItem:
+      description: |
+        An active OAuth grant as seen by an org admin (`GET /oauth-grants/admin`).
+      allOf:
+        - $ref: '#/components/schemas/OAuthGrantListItem'
+        - type: object
+          required:
+            - userId
+            - ownerDeleted
+          properties:
+            userId:
+              type: string
+              description: ID of the user who authorized this grant
+            ownerEmail:
+              type: string
+              format: email
+              description: Owner's email address
+            ownerFullName:
+              type: string
+              description: Owner's full name
+            ownerDeleted:
+              type: boolean
+              description: True if the owning user has been deleted from the org
+
+    AdminOAuthGrantsListResponse:
+      type: object
+      description: |
+        Response body for `GET /oauth-grants/admin` (`adminListGrants`).
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminOAuthGrantListItem'
         pagination:
           type: object
           required:
@@ -16071,6 +16212,212 @@ paths:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: Token not found in this org, already revoked, or the org has no PAT app yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /oauth-grants:
+    get:
+      tags:
+        - OAuth Grants
+      summary: List caller's active OAuth grants
+      description: |
+        Lists active OAuth grants (sessions) for the signed-in user, including
+        application name, granted scopes, approval time, and last used time.
+      operationId: listOAuthGrants
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of active OAuth grants
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListOAuthGrantsResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /oauth-grants/{grantId}:
+    delete:
+      tags:
+        - OAuth Grants
+      summary: Revoke caller's active OAuth grant
+      description: |
+        Revokes an active OAuth grant owned by the signed-in user, invalidating
+        tokens issued for this grant.
+      operationId: revokeOAuthGrant
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: grantId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: OAuth grant ID
+      requestBody:
+        description: Optional request body with reason
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeOAuthGrantRequest'
+      responses:
+        '200':
+          description: OAuth grant revoked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokeOAuthGrantResponse'
+        '400':
+          description: Invalid grant ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: OAuth grant not found or already revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /oauth-grants/admin:
+    get:
+      tags:
+        - OAuth Grants
+      summary: 'Admin: list all active OAuth grants in the organization'
+      description: |
+        Lists active OAuth grants across all users in the organization with user
+        details and pagination. Requires org-admin privileges.
+      operationId: adminListOAuthGrants
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+          description: Items per page (maximum 100)
+      responses:
+        '200':
+          description: Paginated list of all active OAuth grants in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOAuthGrantsListResponse'
+        '400':
+          description: Invalid query parameters, or caller is not an org admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /oauth-grants/admin/{grantId}:
+    delete:
+      tags:
+        - OAuth Grants
+      summary: 'Admin: revoke any user''s active OAuth grant'
+      description: |
+        Revokes an OAuth grant in the organization by ID. Requires org-admin
+        privileges.
+      operationId: adminRevokeOAuthGrant
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: grantId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: OAuth grant ID
+      requestBody:
+        description: Optional request body with reason
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeOAuthGrantRequest'
+      responses:
+        '200':
+          description: OAuth grant revoked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokeOAuthGrantResponse'
+        '400':
+          description: Invalid grant ID, or caller is not an org admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: OAuth grant not found or already revoked
           content:
             application/json:
               schema:
