@@ -461,6 +461,20 @@ class TestRetryDelayBeforeSemaphore:
         assert before + 59.0 <= sent_payload["_retry_not_before"] <= before + 61.0
 
     @pytest.mark.asyncio
+    async def test_requeue_message_holds_for_a_given_delay(self, logger, plain_config) -> None:
+        consumer = IndexingKafkaConsumer(logger, plain_config)
+        consumer.producer = AsyncMock()
+        before = time.time()
+
+        await consumer._requeue_message(
+            "pipeline.classify", StreamMessage(eventType="stageJob", payload={"jobId": "j1"}), "stable-id",
+            retry_count=0, delay_s=90.0,
+        )
+
+        sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
+        assert before + 89.0 <= sent_payload["_retry_not_before"] <= before + 91.0
+
+    @pytest.mark.asyncio
     async def test_requeue_failure_does_not_commit_original(
         self, logger, plain_config
     ):
@@ -1521,6 +1535,36 @@ class TestProcessMessageWrapperWithGovernor:
         assert result is False
         governor_consumer._requeue_message.assert_awaited_once()
         assert governor_consumer._requeue_message.await_args.kwargs["retry_count"] == 0
+        governor_consumer.retry_manager.increment_and_check.assert_not_awaited()
+        governor_consumer._commit_offset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_paused_dependency_hand_back_waits_its_delay_and_is_not_a_crash_loop(
+        self, governor_consumer
+    ) -> None:
+        """However long an outage lasts, a job waiting on it is never dead-lettered for waiting."""
+
+        class DependencyPaused(concurrency.RequeueWithoutAttempt):
+            counts_toward_backstop = False
+
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer.retry_manager.record_delivery = AsyncMock(return_value=1)
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._commit_offset = AsyncMock()
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise DependencyPaused("provider down", delay_s=42.0)
+            yield  # an async generator, like every handler
+
+        governor_consumer.message_handler = handler
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
+        result = await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
+
+        assert result is False
+        assert governor_consumer._requeue_message.await_args.kwargs["delay_s"] == 42.0
+        governor_consumer.retry_manager.clear_deliveries.assert_awaited_once()
         governor_consumer.retry_manager.increment_and_check.assert_not_awaited()
         governor_consumer._commit_offset.assert_awaited_once()
 

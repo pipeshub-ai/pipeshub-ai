@@ -1,15 +1,21 @@
 import asyncio
 import base64
 import logging
-from pathlib import Path
 import re
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.utils.image_utils import get_extension_from_mimetype
 from app.services.parsing.interface import ParseResult
+from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.ssrf_resolver import PolicyResolver
+from app.utils.url_fetcher import (
+    NO_LOCAL,
+    FetchError,
+    check_url_host_without_dns,
+)
 
 try:
     from cairosvg import svg2png
@@ -21,6 +27,12 @@ from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
 VALID_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp','.svg']
 VIEWBOX_NUM_COMPONENTS = 4
+_MAX_IMAGE_REDIRECTS = 3
+# A larger image is dropped rather than buffered whole: a document's image URL can
+# serve any amount. downscale_to_limits fits accepted images to each model.
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+_IMAGE_READ_CHUNK_BYTES = 64 * 1024
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _logger = logging.getLogger(__name__)
 
 
@@ -119,6 +131,56 @@ class ImageParser:
         return True
 
     @staticmethod
+    async def _get_with_checked_redirects(
+        session: aiohttp.ClientSession, url: str, log: logging.Logger
+    ) -> aiohttp.ClientResponse | None:
+        """GET *url*, following redirects only to hosts the SSRF policy allows.
+
+        Each hop is checked here because a redirect to a literal address never
+        reaches the session's resolver, which vets hostnames at connect time.
+        Returns None when a hop is refused or the chain is too long.
+        """
+        current = url
+        for _ in range(_MAX_IMAGE_REDIRECTS + 1):
+            try:
+                check_url_host_without_dns(current, NO_LOCAL)
+            except FetchError as exc:
+                log.warning(f"⚠️ Refusing to fetch image from {current[:150]}: {exc}")
+                return None
+            response = await session.get(
+                current, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=False
+            )
+            location = (
+                response.headers.get("Location")
+                if response.status in _REDIRECT_STATUSES
+                else None
+            )
+            if location:
+                response.release()
+                current = urljoin(current, location)
+                continue
+            return response
+        log.warning(f"⚠️ Too many redirects fetching image {url[:150]}")
+        return None
+
+    @staticmethod
+    async def _read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes | None:
+        """The response body, or None once it is known to pass *limit* bytes.
+
+        A declared Content-Length over the limit is refused before reading; otherwise the
+        body is read in chunks (decompressed, as aiohttp serves it), because a server
+        may omit or understate its length.
+        """
+        if response.content_length is not None and response.content_length > limit:
+            return None
+        body = bytearray()
+        async for chunk in response.content.iter_chunked(_IMAGE_READ_CHUNK_BYTES):
+            body.extend(chunk)
+            if len(body) > limit:
+                return None
+        return bytes(body)
+
+    @staticmethod
     async def _fetch_single_url(
         session: aiohttp.ClientSession,
         url: str,
@@ -142,7 +204,10 @@ class ImageParser:
                 log.warning(f"⚠️ URL does not appear to be an image URL: {url[:100]}...")
                 return None
 
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as response:
+            fetched = await ImageParser._get_with_checked_redirects(session, url, log)
+            if fetched is None:
+                return None
+            async with fetched as response:
                 response.raise_for_status()
 
                 get_content_type_header = response.headers.get('content-type', '').lower()
@@ -163,8 +228,10 @@ class ImageParser:
                     log.info(f"⚠️ Extension {extension} not in valid image extensions, from URL: {url[:100]}... Skipping image")
                     return None
 
-                # Read content and encode to base64
-                content = await response.read()
+                content = await ImageParser._read_limited(response, _MAX_IMAGE_BYTES)
+                if content is None:
+                    log.info("⚠️ Image larger than %d bytes, skipping: %s", _MAX_IMAGE_BYTES, url[:100])
+                    return None
 
                 # Basic validation - ensure we got some content
                 if not content:
@@ -230,7 +297,9 @@ class ImageParser:
         Returns:
             List of base64 encoded image strings (None for SVG images or failed conversions)
         """
-        async with aiohttp.ClientSession() as session:
+        # Resolved addresses are vetted at connect time; per-hop URL checks cover the rest.
+        connector = aiohttp.TCPConnector(resolver=PolicyResolver(NO_LOCAL))
+        async with aiohttp.ClientSession(connector=connector) as session:
             tasks = [
                 ImageParser._fetch_single_url(session, url, logger=logger)
                 for url in urls

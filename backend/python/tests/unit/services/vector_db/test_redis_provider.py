@@ -1,6 +1,8 @@
 """Unit tests for the Redis vector DB provider."""
 
+import asyncio
 import struct
+import threading
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -485,10 +487,6 @@ class TestRedisFilterTranslation:
 # Phase 4 regression: Redis provider hardening
 # ===========================================================================
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock
-
-
 def _make_redis_service():
     from app.services.vector_db.redis.redis_vector import RedisVectorService
     svc = RedisVectorService.__new__(RedisVectorService)
@@ -899,6 +897,94 @@ class TestConnectionLifecycle:
         
         await service.disconnect()  # Should not raise
         assert service.client is None
+
+
+_GET_PROVIDER = "app.services.redis.connection_provider_factory.get_redis_provider"
+
+
+def _recording_redis_client() -> MagicMock:
+    """A client whose aclose() records the event loop it ran on."""
+    client = MagicMock()
+    client.ping = AsyncMock(return_value=True)
+    client.closed_on = None
+
+    async def aclose() -> None:
+        client.closed_on = asyncio.get_running_loop()
+
+    client.aclose = aclose
+    return client
+
+
+def _per_loop_provider() -> MagicMock:
+    provider = MagicMock()
+    provider.create_client = MagicMock(side_effect=lambda _options: _recording_redis_client())
+    return provider
+
+
+async def _current_client(svc: RedisVectorService) -> object:
+    return svc.client
+
+
+class TestPerLoopClients:
+    """A redis.asyncio pool binds to one loop, so each loop gets its own client."""
+
+    def test_each_loop_gets_its_own_client_with_the_same_options(self, redis_config) -> None:
+        svc = RedisVectorService(redis_config)
+        provider = _per_loop_provider()
+        a, b = asyncio.new_event_loop(), asyncio.new_event_loop()
+        try:
+            with patch(_GET_PROVIDER, return_value=provider):
+                a.run_until_complete(svc.connect())
+            client_a = a.run_until_complete(_current_client(svc))
+            client_b = b.run_until_complete(_current_client(svc))
+
+            assert client_b is not client_a
+            # connect() verified the calling loop's client, which that loop then keeps.
+            client_a.ping.assert_awaited_once()
+            assert a.run_until_complete(_current_client(svc)) is client_a
+            (first,), (second,) = (c.args for c in provider.create_client.call_args_list)
+            assert first is second
+            assert first.decode_responses is False
+            assert (client_a.closed_on, client_b.closed_on) == (None, None)
+        finally:
+            a.close()
+            b.close()
+
+    def test_disconnect_closes_each_client_on_its_owning_loop(self, redis_config) -> None:
+        svc = RedisVectorService(redis_config)
+        owner = asyncio.new_event_loop()
+        thread = threading.Thread(target=owner.run_forever, daemon=True)
+        thread.start()
+        here = asyncio.new_event_loop()
+        try:
+            with patch(_GET_PROVIDER, return_value=_per_loop_provider()):
+                here.run_until_complete(svc.connect())
+            remote = asyncio.run_coroutine_threadsafe(_current_client(svc), owner).result(timeout=5)
+            mine = here.run_until_complete(_current_client(svc))
+
+            here.run_until_complete(svc.disconnect())
+
+            assert (remote.closed_on, mine.closed_on) == (owner, here)
+            assert svc.client is None
+        finally:
+            owner.call_soon_threadsafe(owner.stop)
+            thread.join(timeout=5)
+            owner.close()
+            here.close()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_ping_closes_the_client_and_stays_disconnected(self, redis_config) -> None:
+        client = _recording_redis_client()
+        client.ping = AsyncMock(side_effect=ConnectionError("down"))
+        provider = MagicMock()
+        provider.create_client = MagicMock(return_value=client)
+        svc = RedisVectorService(redis_config)
+
+        with patch(_GET_PROVIDER, return_value=provider), pytest.raises(ConnectionError):
+            await svc.connect()
+
+        assert client.closed_on is asyncio.get_running_loop()
+        assert svc.client is None
 
 
 # ---------------------------------------------------------------------------

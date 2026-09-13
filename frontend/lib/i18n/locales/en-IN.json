@@ -1,4 +1,10 @@
 {
+  "collections": {
+    "stats": {
+      "retryClassificationStart": "Classification retry queued",
+      "retryClassificationError": "Failed to retry classification"
+    }
+  },
   "resetPassword": {
     "failure": {
       "missingTokenMessage": "This page is only accessible from a password-reset email link. Please use the Forgot Password option on the sign-in page.",
@@ -1860,7 +1866,12 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "LOCAL WATCHER",
-        "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed"
+        "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed",
+        "classification": "Classification",
+        "classificationSkipped": "Skipped",
+        "retryFailedClassification": "Retry failed classification",
+        "retryClassificationSuccess": "Classification retry queued",
+        "retryClassificationError": "Failed to retry classification"
       },
       "settingsTab": {
         "instanceName": "Instance Name",
@@ -2971,6 +2982,12 @@
       "noRecordMetadata": "No additional record metadata for this item."
     },
     "indexingReasonAria": "Indexing failure details",
+    "stageTrackLabel": "Pipeline",
+    "stageParsed": "Parsed",
+    "stageSearchable": "Searchable",
+    "stageClassified": "Classified",
+    "stageAttempt": "Attempt {{n}}",
+    "stageDetailsAria": "Stage details",
     "tabRecordInformation": "Record Information",
     "tabDocumentDetails": "Document details",
     "chat": "Chat",

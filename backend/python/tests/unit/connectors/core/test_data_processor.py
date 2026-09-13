@@ -2833,3 +2833,27 @@ class TestNewRecordsAreStoredNotStarted:
             ProgressStatus.NOT_STARTED.value,
             ProgressStatus.QUEUED.value,
         )
+
+
+class TestStageRerunEvents:
+    def test_the_event_payload_names_the_stages(self) -> None:
+        proc = _make_processor()
+        record = _make_record()
+        record.id = "rec-1"
+        assert proc._reindex_event_payload(record, vector_db_only=False, stages=["classify"])["stages"] == ["classify"]
+        assert "stages" not in proc._reindex_event_payload(record, vector_db_only=False)
+
+    @pytest.mark.asyncio
+    async def test_a_stage_rerun_leaves_the_record_searchable(self) -> None:
+        proc = _make_processor()
+        record = _make_record()
+        record.id = "rec-1"
+        proc.data_store_provider.get_existing_record_keys = AsyncMock(return_value={"rec-1"})
+        proc.messaging_producer.send_messages = AsyncMock(return_value=[True])
+        proc._mark_queued_after_publish = AsyncMock()
+
+        await proc.reindex_existing_records([record], stages=["classify"])
+
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        assert messages[0][1]["payload"]["stages"] == ["classify"]
+        proc._mark_queued_after_publish.assert_not_awaited()

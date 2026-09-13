@@ -1291,7 +1291,8 @@ class TestGetRecordById:
         request = _mock_request(container=container)
 
         result = await get_record_by_id("rec-1", request, gp)
-        assert result == {"record": "data"}
+        # No revision on the record, so no stage states.
+        assert result == {"record": "data", "stageStates": []}
 
     async def test_no_access_raises_404(self):
         from app.connectors.api.router import get_record_by_id
@@ -3733,3 +3734,78 @@ class TestUpdateConnectorInstanceAuthConfig:
             with patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=999):
                 result = await update_connector_instance_auth_config("c1", request, gp)
         assert result["success"] is True
+
+
+class TestRecordStageStates:
+    """Record detail carries the pipeline stage states of the record's current revision."""
+
+    @staticmethod
+    def _request() -> MagicMock:
+        container = MagicMock()
+        container.logger = MagicMock(return_value=MagicMock())
+        return _mock_request(container=container)
+
+    async def test_the_current_revisions_stage_states_are_included(self) -> None:
+        from unittest.mock import patch
+
+        from app.config.constants.arangodb import ProgressStatus
+        from app.connectors.api.router import get_record_by_id
+        from app.modules.pipeline.models import StageStateSummary
+
+        gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(
+            return_value={"record": {"_key": "rec-1", "virtualRecordId": "vr-1", "contentRev": "rev-a"}}
+        )
+        summary = StageStateSummary(stage="classify", status=ProgressStatus.FAILED, reason="LLM quota", attempt=3)
+        with patch("app.connectors.api.router.stage_summaries", AsyncMock(return_value=[summary])) as summaries:
+            result = await get_record_by_id("rec-1", self._request(), gp)
+        summaries.assert_awaited_once_with(gp, "vr-1", "rev-a")
+        assert result["stageStates"] == [{
+            "stage": "classify", "status": "FAILED", "reason": "LLM quota", "attempt": 3,
+            "startedAtMs": None, "finishedAtMs": None, "updatedAtMs": None,
+        }]
+
+    async def test_a_stage_read_failure_still_returns_the_record(self) -> None:
+        from unittest.mock import patch
+
+        from app.connectors.api.router import get_record_by_id
+
+        gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(
+            return_value={"record": {"_key": "rec-1", "virtualRecordId": "vr-1", "contentRev": "rev-a"}}
+        )
+        with patch("app.connectors.api.router.stage_summaries", AsyncMock(side_effect=RuntimeError("graph down"))):
+            result = await get_record_by_id("rec-1", self._request(), gp)
+        assert result["stageStates"] == [] and result["record"]["_key"] == "rec-1"
+
+
+class TestParseStages:
+    def test_absent_means_no_stage_rerun(self) -> None:
+        from app.connectors.api.router import _parse_stages
+
+        assert _parse_stages(None) is None
+        assert _parse_stages({"statusFilters": ["FAILED"]}) is None
+
+    def test_known_stages_pass_once_each(self) -> None:
+        from app.connectors.api.router import _parse_stages
+
+        assert _parse_stages({"stages": ["classify", "classify"]}) == ["classify"]
+
+    @pytest.mark.parametrize("raw", [[], "classify", [1], ["entities"]])
+    def test_anything_else_is_a_400(self, raw) -> None:
+        from fastapi import HTTPException
+
+        from app.connectors.api.router import _parse_stages
+
+        with pytest.raises(HTTPException) as raised:
+            _parse_stages({"stages": raw})
+        assert raised.value.status_code == 400
+
+    def test_the_reindex_event_carries_the_stages(self) -> None:
+        from app.connectors.api.router import _build_reindex_event
+
+        event = _build_reindex_event(
+            event_type="gmail.reindex", org_id="o", connector_id="c", status_filters=["FAILED"], stages=["classify"]
+        )
+        assert event["payload"]["stages"] == ["classify"]
+        assert "stages" not in _build_reindex_event(event_type="gmail.reindex", org_id="o", connector_id="c")["payload"]

@@ -30,7 +30,7 @@ def _make_governor(*, env_parse: int | None = None, env_index: int = 8):
 def _host(*, governor=None, parsing_semaphore=None) -> SimpleNamespace:
     """Minimal stand-in satisfying the ConcurrencyHost protocol surface
     these helpers actually read."""
-    return SimpleNamespace(governor=governor, parsing_semaphore=parsing_semaphore)
+    return SimpleNamespace(governor=governor, parsing_semaphore=parsing_semaphore, stage_admission=None)
 
 
 class TestIndexAndParseCeiling:
@@ -344,3 +344,38 @@ class TestParseAdmissionWait:
             await asyncio.sleep(0.01)
         host.logger.info.assert_called_once()
         assert "waited" in host.logger.info.call_args.args[0]
+
+
+class _StampGate:
+    def __init__(self) -> None:
+        self.released = 0
+
+    async def acquire(self, cost: int = 1, timeout: float | None = None) -> bool:
+        return True
+
+    def release(self, cost: int = 1) -> None:
+        self.released += cost
+
+
+class _StampGovernor:
+    def __init__(self) -> None:
+        self.stamp_gate = _StampGate()
+
+    def gate(self, pool: object) -> _StampGate:
+        return self.stamp_gate
+
+
+@pytest.mark.asyncio
+async def test_a_parse_admitted_here_is_stamped_until_its_permit_is_released(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parsing and Docling, sharing this memory, then admit it without braking it again."""
+    from app.utils import request_context as rc
+
+    monkeypatch.setattr(concurrency, "memory_domain_id", lambda: "dom-1")
+    governor = _StampGovernor()
+    admission = await concurrency.acquire_parsing_slot(_host(governor=governor), ParseTier.HEAVY, 1024)
+    assert rc.get_admitted_in() == "dom-1"
+    concurrency.release_admission(admission)
+    assert rc.get_admitted_in() is None
+    assert governor.stamp_gate.released == admission.cost

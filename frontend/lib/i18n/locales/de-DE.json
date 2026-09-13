@@ -1,4 +1,10 @@
 {
+  "collections": {
+    "stats": {
+      "retryClassificationStart": "Klassifizierung erneut eingeplant",
+      "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden"
+    }
+  },
   "resetPassword": {
     "failure": {
       "missingTokenMessage": "Diese Seite ist nur über einen E-Mail-Link zum Zurücksetzen des Passworts zugänglich. Bitte verwenden Sie die Option „Passwort vergessen“ auf der Anmeldeseite.",
@@ -1862,7 +1868,12 @@
         "recordsByType": "Datensätze nach Typ",
         "noRecordTypes": "Keine Datensatztypen verfügbar",
         "localWatcherLabel": "LOKALER WATCHER",
-        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen"
+        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen",
+        "classification": "Klassifizierung",
+        "classificationSkipped": "Übersprungen",
+        "retryFailedClassification": "Fehlgeschlagene Klassifizierung wiederholen",
+        "retryClassificationSuccess": "Klassifizierung erneut eingeplant",
+        "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden"
       },
       "settingsTab": {
         "instanceName": "Instanzname",
@@ -2974,6 +2985,12 @@
       "noRecordMetadata": "Für dieses Element liegen keine zusätzlichen Metadaten vor."
     },
     "indexingReasonAria": "Details zur Indexierung",
+    "stageTrackLabel": "Pipeline",
+    "stageParsed": "Geparst",
+    "stageSearchable": "Durchsuchbar",
+    "stageClassified": "Klassifiziert",
+    "stageAttempt": "Versuch {{n}}",
+    "stageDetailsAria": "Phasendetails",
     "tabRecordInformation": "Datensatzinformationen",
     "tabDocumentDetails": "Dokumentdetails",
     "chat": "Chat",

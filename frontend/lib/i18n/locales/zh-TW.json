@@ -9,7 +9,9 @@
       "reindexFailedStart": "正在重新索引失敗的記錄…",
       "reindexFailedError": "重新索引失敗的記錄時發生錯誤",
       "manualIndexStart": "正在索引手動索引的記錄…",
-      "manualIndexError": "啟動手動索引失敗"
+      "manualIndexError": "啟動手動索引失敗",
+      "retryClassificationStart": "分類重試已加入佇列",
+      "retryClassificationError": "重試分類失敗"
     }
   },
   "resetPassword": {
@@ -1953,7 +1955,12 @@
         "recordsByType": "依類型統計的記錄",
         "noRecordTypes": "沒有可用的記錄類型",
         "localWatcherLabel": "本機監看程式",
-        "localWatcherStatus": "{{state}} · {{pending}} 個待處理 · {{failed}} 個失敗"
+        "localWatcherStatus": "{{state}} · {{pending}} 個待處理 · {{failed}} 個失敗",
+        "classification": "分類",
+        "classificationSkipped": "已略過",
+        "retryFailedClassification": "重試失敗的分類",
+        "retryClassificationSuccess": "分類重試已加入佇列",
+        "retryClassificationError": "重試分類失敗"
       },
       "settingsTab": {
         "instanceName": "執行個體名稱",
@@ -3202,6 +3209,12 @@
       "noRecordMetadata": "此項目沒有其他記錄中繼資料。"
     },
     "indexingReasonAria": "索引失敗詳細資訊",
+    "stageTrackLabel": "處理流程",
+    "stageParsed": "已解析",
+    "stageSearchable": "可搜尋",
+    "stageClassified": "已分類",
+    "stageAttempt": "第 {{n}} 次嘗試",
+    "stageDetailsAria": "階段詳細資訊",
     "tabRecordInformation": "記錄資訊",
     "tabDocumentDetails": "文件詳細資訊",
     "chat": "聊天",

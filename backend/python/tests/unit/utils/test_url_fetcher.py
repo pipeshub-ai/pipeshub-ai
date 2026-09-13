@@ -6,9 +6,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.utils.url_fetcher import (
+    NO_LOCAL,
+    PUBLIC_ONLY,
     FetchError,
     FetchResult,
     _build_headers,
+    _follow_http_redirects,
     _get_profiles,
     _get_supported_profiles,
     _try_cloudscraper,
@@ -457,7 +460,7 @@ class TestTryRequests:
 
 
 class TestSsrfValidation:
-    """Host validation runs before fetch strategies (initial URL only)."""
+    """Host validation runs before fetch strategies and on every redirect hop."""
 
     def test_blocks_literal_loopback_ipv4(self) -> None:
         with pytest.raises(FetchError, match="Blocked unsafe URL"):
@@ -491,6 +494,106 @@ class TestSsrfValidation:
     def test_rejects_non_http_scheme(self) -> None:
         with pytest.raises(FetchError, match="Only HTTP/HTTPS"):
             fetch_url("file:///etc/passwd")
+
+    def test_blocks_redirect_to_loopback(self) -> None:
+        hop = MagicMock(status_code=302, headers={"Location": "http://127.0.0.1/secret"})
+        with pytest.raises(FetchError, match="Blocked"):
+            _follow_http_redirects(lambda _url: hop, "https://example.com/page", PUBLIC_ONLY)
+
+    def test_blocks_redirect_to_cloud_metadata(self) -> None:
+        hop = MagicMock(status_code=302, headers={"Location": "http://169.254.169.254/latest/meta-data/"})
+        with pytest.raises(FetchError, match="Blocked"):
+            _follow_http_redirects(lambda _url: hop, "https://example.com/page", PUBLIC_ONLY)
+
+    def test_blocks_redirect_to_hostname_that_resolves_private(self) -> None:
+        hop = MagicMock(status_code=302, headers={"Location": "http://internal.corp/"})
+
+        def fake_getaddrinfo(
+            host: str, port: object, *_args: object, **_kwargs: object
+        ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+            addr = "10.0.0.1" if host == "internal.corp" else "8.8.8.8"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (addr, 0))]
+
+        with patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
+            with pytest.raises(FetchError, match="Blocked"):
+                _follow_http_redirects(lambda _url: hop, "https://example.com/page", PUBLIC_ONLY)
+
+    def test_no_local_allows_redirect_to_hostname_that_resolves_private(self) -> None:
+        hops = [
+            MagicMock(status_code=302, headers={"Location": "http://internal.corp/logo"}),
+            MagicMock(status_code=200, headers={}),
+        ]
+
+        def fake_getaddrinfo(
+            host: str, port: object, *_args: object, **_kwargs: object
+        ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+            addr = "10.0.0.1" if host == "internal.corp" else "8.8.8.8"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (addr, 0))]
+
+        with patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
+            resp = _follow_http_redirects(lambda _url: hops.pop(0), "https://example.com/page", NO_LOCAL)
+        assert resp.status_code == 200
+
+    def test_follows_redirect_to_another_public_url(self) -> None:
+        hops = [
+            MagicMock(status_code=302, headers={"Location": "https://cdn.example.com/x"}),
+            MagicMock(status_code=200, headers={}, url="https://cdn.example.com/x"),
+        ]
+        seen: list[str] = []
+
+        def get(url: str) -> MagicMock:
+            seen.append(url)
+            return hops.pop(0)
+
+        resp = _follow_http_redirects(get, "https://example.com/page", PUBLIC_ONLY)
+        assert resp.status_code == 200
+        assert seen == ["https://example.com/page", "https://cdn.example.com/x"]
+
+    def test_resolves_relative_redirect_against_current_url(self) -> None:
+        hops = [
+            MagicMock(status_code=302, headers={"Location": "/next"}),
+            MagicMock(status_code=200, headers={}),
+        ]
+        seen: list[str] = []
+
+        def get(url: str) -> MagicMock:
+            seen.append(url)
+            return hops.pop(0)
+
+        _follow_http_redirects(get, "https://example.com/page", PUBLIC_ONLY)
+        assert seen[1] == "https://example.com/next"
+
+    def test_no_local_allows_redirect_to_private_literal(self) -> None:
+        hops = [
+            MagicMock(status_code=302, headers={"Location": "http://10.0.0.8/logo.png"}),
+            MagicMock(status_code=200, headers={}),
+        ]
+
+        def get(_url: str) -> MagicMock:
+            return hops.pop(0)
+
+        resp = _follow_http_redirects(get, "https://example.com/page", NO_LOCAL)
+        assert resp.status_code == 200
+
+    def test_too_many_redirects_are_refused(self) -> None:
+        hop = MagicMock(status_code=302, headers={"Location": "/loop"})
+        with pytest.raises(FetchError, match="Too many redirects"):
+            _follow_http_redirects(lambda _url: hop, "https://example.com/", PUBLIC_ONLY)
+
+    def test_requests_strategy_does_not_auto_follow_redirects(self) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "ok"
+        mock_resp.content = b"ok"
+        mock_resp.headers = {}
+        mock_resp.url = "https://example.com"
+        mock_session = MagicMock()
+        mock_session.headers = {}
+        mock_session.get = MagicMock(return_value=mock_resp)
+        with patch("requests.Session", return_value=mock_session):
+            result = _try_requests("https://example.com", {}, 10, host_policy=PUBLIC_ONLY)
+        assert result is not None
+        assert mock_session.get.call_args.kwargs["allow_redirects"] is False
 
 
 class TestFetchUrl:
@@ -557,7 +660,7 @@ class TestFetchUrl:
     def test_max_retries_honored(self) -> None:
         call_count = [0]
 
-        def counting_requests(url: str, headers: dict, timeout: int) -> FetchResult | None:
+        def counting_requests(*_args: object, **_kwargs: object) -> FetchResult | None:
             call_count[0] += 1
             return None
 

@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
+from app.api.middlewares.request_context import RequestContextMiddleware
 from app.api.routes.parsing import router as parsing_router
 from app.models.blocks import BlocksContainer
 from app.services.parsing.interface import (
@@ -459,3 +460,45 @@ async def test_health_stays_responsive_while_parse_in_flight() -> None:
 
         release_event.set()
         await parse_task
+
+
+@pytest.mark.asyncio
+async def test_a_parse_already_braked_in_this_memory_is_not_braked_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The all-in-one image: indexing braked the parse, so parsing admits it up to its
+    ceiling instead of queueing it behind its own braked limit."""
+    import app.api.routes.parsing as parsing_routes
+    import app.services.resource_governor.memory_domain as memory_domain_module
+
+    monkeypatch.setattr(parsing_routes, "PARSE_QUEUE_WAIT_WARN_SECONDS", 0.02)
+    monkeypatch.setattr(parsing_routes, "PARSE_GATE_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(memory_domain_module, "memory_domain_id", lambda: "dom-1")
+
+    release_event = asyncio.Event()
+    registry = MagicMock(spec=ParserRegistry)
+    registry.resolve = MagicMock(return_value=_slow_parser(release_event, hold_seconds=1.0))
+    app = _build_app(registry, heavy_limit=4)
+    # As parsing_main installs it: it reads the stamp an upstream service sent.
+    app.add_middleware(RequestContextMiddleware)
+    # Braked below its ceiling by memory pressure.
+    app.state.governor._registry.set(Pool.HEAVY_PARSE, 1)
+    pdf = {"file": ("a.pdf", b"%PDF-1.4", "application/pdf")}
+    form = {"mime_type": "application/pdf", "extension": "pdf", "provider": "default"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = asyncio.create_task(client.post("/api/v1/parse", files=pdf, data=form))
+        await asyncio.sleep(0.05)  # the first request holds the one braked slot
+        braked_elsewhere = await client.post(
+            "/api/v1/parse", files=pdf, data=form, headers={"x-pipeshub-admitted-in": "dom-2"}
+        )
+        braked_here = asyncio.create_task(
+            client.post("/api/v1/parse", files=pdf, data=form, headers={"x-pipeshub-admitted-in": "dom-1"})
+        )
+        await asyncio.sleep(0.2)
+        release_event.set()
+        first_response, same_memory_response = await asyncio.gather(first, braked_here)
+
+    assert first_response.status_code == 200
+    assert braked_elsewhere.status_code == 429
+    assert same_memory_response.status_code == 200

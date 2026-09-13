@@ -41,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from functools import partial
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from app.config.configuration_service import ConfigurationService
@@ -80,9 +81,11 @@ from app.services.vector_db.redis.utils import (
     vector_to_bytes,
 )
 from app.utils.logger import create_logger
+from app.utils.loop_local import LoopLocal
 
 if TYPE_CHECKING:
     import redis.asyncio as aioredis
+    from app.services.redis.connection_provider import RedisClient
 
 logger = create_logger("redis_vector_service")
 
@@ -131,7 +134,11 @@ class RedisVectorService(IVectorDBService):
         config_service: ConfigurationService | RedisVectorConfig,
     ) -> None:
         self.config_service = config_service
-        self.client: Optional[aioredis.Redis] = None
+        # A redis.asyncio pool binds to the loop that first uses it, and this service is shared
+        # by the server loop and every consumer's worker loop. Set by connect().
+        self._clients: LoopLocal[RedisClient] | None = None
+        # Assigned through `client` (tests); served to every loop as-is.
+        self._client_override: RedisClient | None = None
         # Cached collection metadata: name → CollectionConfig used at creation
         self._collection_configs: Dict[str, CollectionConfig] = {}
         # Dense vector dtype applied to all indexes; set from config on connect().
@@ -175,29 +182,57 @@ class RedisVectorService(IVectorDBService):
                 ),
                 mode="standalone",
             )
-            self.client = provider.create_client(
-                ClientOptions(
-                    decode_responses=False,  # we handle bytes ourselves for vectors
-                    socket_timeout_seconds=cfg.timeout,
-                    socket_connect_timeout_seconds=cfg.timeout,
+            clients: LoopLocal[RedisClient] = LoopLocal(
+                partial(
+                    provider.create_client,
+                    ClientOptions(
+                        decode_responses=False,  # we handle bytes ourselves for vectors
+                        socket_timeout_seconds=cfg.timeout,
+                        socket_connect_timeout_seconds=cfg.timeout,
+                    ),
                 )
             )
-            # Verify connectivity
-            await self.client.ping()
+            # Verified on the calling loop; other loops build their client on first use.
+            try:
+                await clients.get().ping()
+            except Exception:
+                # Caller-owned client: a failed ping must not leak its connection.
+                _ = await clients.aclose_all(lambda client: client.aclose())
+                raise
+            self._clients = clients
             logger.info(f"Connected to Redis vector store at {cfg.host}:{cfg.port}")
         except Exception as e:
             logger.error(f"Failed to connect to Redis: {e}")
             raise
 
+    @property
+    def client(self) -> RedisClient | None:
+        """The running loop's client, or None before connect()."""
+        if self._client_override is not None:
+            return self._client_override
+        if self._clients is None:
+            return None
+        return self._clients.get()
+
+    @client.setter
+    def client(self, value: RedisClient | None) -> None:
+        self._client_override = value
+
     async def disconnect(self) -> None:
-        if self.client is not None:
+        """Close every loop's client, each on the loop that owns it."""
+        override, self._client_override = self._client_override, None
+        clients, self._clients = self._clients, None
+        if override is None and clients is None:
+            return
+        errors = [] if clients is None else await clients.aclose_all(lambda client: client.aclose())
+        if override is not None:
             try:
-                await self.client.aclose()
-                logger.info("Disconnected from Redis vector store")
+                await override.aclose()
             except Exception as e:
-                logger.warning(f"Error during Redis disconnect: {e}")
-            finally:
-                self.client = None
+                errors.append(e)
+        for error in errors:
+            logger.warning(f"Error during Redis disconnect: {error}")
+        logger.info("Disconnected from Redis vector store")
 
     async def _load_config(self) -> RedisVectorConfig:
         if isinstance(self.config_service, ConfigurationService):

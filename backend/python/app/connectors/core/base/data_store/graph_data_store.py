@@ -3,7 +3,7 @@ import functools
 import logging
 from contextlib import asynccontextmanager
 from logging import Logger
-from typing import AsyncContextManager, Optional
+from typing import Any, AsyncContextManager, Optional
 
 # Import Neo4j exceptions with fallback for compatibility
 try:
@@ -421,7 +421,7 @@ class GraphTransactionStore(TransactionStore):
     async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> list[User]:
         return await self.graph_provider.get_users_with_permission_to_node(node_id, node_collection, transaction=self.txn)
 
-    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
+    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict[str, Any]]:
         return await self.graph_provider.get_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
     async def get_record_by_conversation_index(self, connector_id: str, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
@@ -730,7 +730,7 @@ class GraphTransactionStore(TransactionStore):
                 transaction=self.txn
             )
 
-    async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
+    async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str) -> None:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
     async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:

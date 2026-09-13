@@ -1,4 +1,10 @@
 {
+  "collections": {
+    "stats": {
+      "retryClassificationStart": "वर्गीकरण पुनः प्रयास कतार में है",
+      "retryClassificationError": "वर्गीकरण पुनः प्रयास विफल रहा"
+    }
+  },
   "resetPassword": {
     "failure": {
       "missingTokenMessage": "यह पृष्ठ केवल पासवर्ड-रीसेट ईमेल लिंक से ही उपलब्ध है। कृपया साइन-इन पृष्ठ पर पासवर्ड भूल गए विकल्प का उपयोग करें।",
@@ -1860,7 +1866,12 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "लोकल वॉचर",
-        "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल"
+        "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल",
+        "classification": "वर्गीकरण",
+        "classificationSkipped": "छोड़े गए",
+        "retryFailedClassification": "विफल वर्गीकरण पुनः प्रयास करें",
+        "retryClassificationSuccess": "वर्गीकरण पुनः प्रयास कतार में है",
+        "retryClassificationError": "वर्गीकरण पुनः प्रयास विफल रहा"
       },
       "settingsTab": {
         "instanceName": "इंस्टेंस का नाम",
@@ -2971,6 +2982,12 @@
       "noRecordMetadata": "इस आइटम के लिए कोई अतिरिक्त मेटाडेटा नहीं है।"
     },
     "indexingReasonAria": "अनुक्रमण विफलता विवरण",
+    "stageTrackLabel": "पाइपलाइन",
+    "stageParsed": "पार्स किया गया",
+    "stageSearchable": "खोजने योग्य",
+    "stageClassified": "वर्गीकृत",
+    "stageAttempt": "प्रयास {{n}}",
+    "stageDetailsAria": "चरण विवरण",
     "tabRecordInformation": "रिकॉर्ड जानकारी",
     "tabDocumentDetails": "दस्तावेज़ विवरण",
     "chat": "चैट",

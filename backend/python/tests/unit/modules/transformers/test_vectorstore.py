@@ -1396,6 +1396,25 @@ class TestGetEmbeddingModelInstance:
         assert result is False  # Default is not multimodal
 
     @pytest.mark.asyncio
+    async def test_default_embedding_when_ai_settings_never_saved(self) -> None:
+        """A fresh org has no AI-models node at all; indexing must still use the default model."""
+        vs = _make_vectorstore()
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1024)
+        mock_embeddings.model_name = "default-model"
+        vs.config_service.get_config = AsyncMock(return_value=None)
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            return_value=mock_embeddings,
+        ) as default_model:
+            result = await vs.get_embedding_model_instance()
+
+        assert result is False
+        default_model.assert_called_once()
+        assert vs.dense_embeddings is mock_embeddings
+
+    @pytest.mark.asyncio
     async def test_configured_embedding_model(self):
         """When embedding configs exist, should use configured model."""
         vs = _make_vectorstore()

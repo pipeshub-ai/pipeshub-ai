@@ -302,3 +302,15 @@ class TestArrivalOrder:
         gate.release()
         await asyncio.sleep(0.01)
         assert patient.done() and patient.result() is True
+
+
+@pytest.mark.asyncio
+async def test_a_cap_admits_past_a_shrunk_limit_but_not_past_the_cap() -> None:
+    gate = AdmissionGate(Pool.HEAVY_PARSE, _registry(limit=1))
+    assert await gate.acquire(cost=1)
+    # The braked limit is full; work already braked in this memory is bounded by the cap.
+    assert await gate.acquire(cost=1, timeout=0.01) is False
+    assert await gate.acquire(cost=1, timeout=0.01, cap=3)
+    assert await gate.acquire(cost=1, timeout=0.01, cap=3)
+    assert await gate.acquire(cost=1, timeout=0.01, cap=3) is False
+    assert gate.in_use == 3

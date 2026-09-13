@@ -47,6 +47,9 @@ class ConfigurationService:
 
         # Initialize LRU cache
         self.cache = LRUCache(maxsize=1000)
+        # LRUCache is not thread-safe (even a read reorders it), and it is used from every
+        # event loop's thread plus the watch thread. Never hold this across an await.
+        self._cache_lock = threading.Lock()
         self.logger.debug("📦 Initialized LRU cache with max size 1000")
 
         self.store = key_value_store
@@ -85,9 +88,11 @@ class ConfigurationService:
         """
         try:
             # Check cache first
-            if use_cache and key in self.cache:
-                self.logger.debug("📦 Cache hit for key: %s", key)
-                return self.cache[key]
+            if use_cache:
+                with self._cache_lock:
+                    if key in self.cache:
+                        self.logger.debug("📦 Cache hit for key: %s", key)
+                        return self.cache[key]
 
             value = await self.store.get_key(key)
             if value is None:
@@ -95,12 +100,14 @@ class ConfigurationService:
                 env_fallback = self._get_env_fallback(key)
                 if env_fallback is not None:
                     self.logger.debug("📦 Using environment variable fallback for key: %s", key)
-                    self.cache[key] = env_fallback
+                    with self._cache_lock:
+                        self.cache[key] = env_fallback
                     return env_fallback
 
                 self.logger.debug("📦 Cache miss for key: %s", key)
                 return default
-            self.cache[key] = value
+            with self._cache_lock:
+                self.cache[key] = value
             return value
         except Exception as e:
             self.logger.error("❌ Failed to get config %s: %s", key, str(e))
@@ -290,7 +297,8 @@ class ConfigurationService:
                 self.clear_cache()
                 self._log_safe("📦 Entire cache cleared via change notification")
             else:
-                self.cache.pop(key, None)
+                with self._cache_lock:
+                    self.cache.pop(key, None)
                 self._log_safe("📦 Cache invalidated for key: %s" % key, level="debug")
         except Exception as e:
             self._log_safe("❌ Error in cache invalidation callback: %s" % str(e), level="error")
@@ -311,7 +319,8 @@ class ConfigurationService:
         all services pick up the new configuration values.
         """
         try:
-            self.cache.clear()
+            with self._cache_lock:
+                self.cache.clear()
             self._log_safe("📦 In-memory configuration cache cleared")
         except Exception as e:
             self._log_safe("❌ Failed to clear cache: %s" % str(e), level="error")
@@ -330,7 +339,8 @@ class ConfigurationService:
 
             if success:
                 # Update cache with value
-                self.cache[key] = value
+                with self._cache_lock:
+                    self.cache[key] = value
                 self.logger.info("✅ Successfully set config for key: %s, now publishing cache invalidation", key)
 
                 # Publish cache invalidation for other processes (Redis only)
@@ -358,13 +368,15 @@ class ConfigurationService:
         """
         created = await self.store.create_key(key, value, overwrite=False)
         if created:
-            self.cache[key] = value
+            with self._cache_lock:
+                self.cache[key] = value
             self.logger.info("✅ Created config key %s (was absent)", key)
             await self._publish_cache_invalidation(key)
         else:
             # Someone else owns the value; drop any cached guess so the caller's
             # read-back sees theirs rather than ours.
-            self.cache.pop(key, None)
+            with self._cache_lock:
+                self.cache.pop(key, None)
             self.logger.debug("Config key %s already exists; leaving it untouched", key)
         return created
 
@@ -387,7 +399,8 @@ class ConfigurationService:
 
             if success:
                 # Update cache with value
-                self.cache[key] = value
+                with self._cache_lock:
+                    self.cache[key] = value
                 self.logger.debug("✅ Successfully updated config for key: %s", key)
 
                 # Publish cache invalidation for other processes (Redis only)
@@ -408,7 +421,8 @@ class ConfigurationService:
 
             if success:
                 # Remove from cache
-                self.cache.pop(key, None)
+                with self._cache_lock:
+                    self.cache.pop(key, None)
                 self.logger.debug("✅ Successfully deleted config for key: %s", key)
 
                 # Publish cache invalidation for other processes (Redis only)

@@ -54,6 +54,7 @@ def _make_host(
     gate_waiters=0,
 ):
     host = SimpleNamespace(
+        stage_admission=None,
         logger=MagicMock(),
         running=running,
         main_loop=main_loop,

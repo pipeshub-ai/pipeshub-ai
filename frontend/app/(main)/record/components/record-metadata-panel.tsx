@@ -167,6 +167,56 @@ function IndexingStatusChip({ status }: { status: string | undefined }) {
   );
 }
 
+function ReasonHintButton({ content, ariaLabel }: { content: string; ariaLabel: string }) {
+  return (
+    <Tooltip content={content} delayDuration={200}>
+      <button
+        type="button"
+        aria-label={ariaLabel}
+        style={{
+          border: 'none',
+          background: 'transparent',
+          padding: 0,
+          cursor: 'pointer',
+          display: 'inline-flex',
+          alignItems: 'center',
+          flexShrink: 0,
+        }}
+      >
+        <MaterialIcon name="info" size={16} color="var(--olive-11)" />
+      </button>
+    </Tooltip>
+  );
+}
+
+const CLASSIFY_STAGE = 'classify';
+
+function StageStep({
+  label,
+  status,
+  hint,
+  hintAriaLabel,
+}: {
+  label: string;
+  status: string | null | undefined;
+  hint?: string;
+  hintAriaLabel: string;
+}) {
+  return (
+    <Flex align="center" gap="1" style={{ minWidth: 0 }}>
+      <Text
+        size="1"
+        weight="medium"
+        style={{ color: 'var(--olive-10)', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.04em' }}
+      >
+        {label}
+      </Text>
+      <IndexingStatusChip status={status || 'NOT_STARTED'} />
+      {hint ? <ReasonHintButton content={hint} ariaLabel={hintAriaLabel} /> : null}
+    </Flex>
+  );
+}
+
 function shouldShowIndexingReasonTooltip(status: string | undefined, reason: string | undefined): boolean {
   if (!reason?.trim()) return false;
   return (
@@ -351,6 +401,61 @@ function MetadataSection({
   );
 }
 
+interface StageTrackStep {
+  key: string;
+  label: string;
+  status: string | null | undefined;
+  hint?: string;
+}
+
+function StageTrack({
+  record,
+  stageStates,
+}: {
+  record: RecordDetailsResponse['record'];
+  stageStates: RecordDetailsResponse['stageStates'];
+}) {
+  const { t } = useTranslation();
+  const classify = stageStates?.find((s) => s.stage === CLASSIFY_STAGE);
+  const classifyHint = classify
+    ? [t('recordView.stageAttempt', { n: classify.attempt }), classify.reason?.trim()]
+        .filter(Boolean)
+        .join(' · ')
+    : undefined;
+
+  const steps: StageTrackStep[] = [
+    { key: 'parsed', label: t('recordView.stageParsed'), status: record.parsingStatus },
+    { key: 'searchable', label: t('recordView.stageSearchable'), status: record.indexingStatus },
+    {
+      key: 'classified',
+      label: t('recordView.stageClassified'),
+      status: record.extractionStatus,
+      hint: classifyHint,
+    },
+  ];
+
+  return (
+    <Flex style={{ ...ROW_STYLE, alignItems: 'center' }}>
+      <Text size="2" weight="medium" style={LABEL_STYLE}>
+        {t('recordView.stageTrackLabel')}
+      </Text>
+      <Flex align="center" gap="2" wrap="wrap" style={{ minWidth: 0, flex: 1 }}>
+        {steps.map((step, i) => (
+          <Flex key={step.key} align="center" gap="2" style={{ minWidth: 0 }}>
+            {i > 0 ? <MaterialIcon name="chevron_right" size={16} color="var(--olive-8)" /> : null}
+            <StageStep
+              label={step.label}
+              status={step.status}
+              hint={step.hint}
+              hintAriaLabel={t('recordView.stageDetailsAria')}
+            />
+          </Flex>
+        ))}
+      </Flex>
+    </Flex>
+  );
+}
+
 /** Scroll + padding on tab body. Tabs.Content is the scroll host; inner Flex owns column layout. */
 const RECORD_METADATA_TAB_CONTENT_STYLE: CSSProperties = {
   flex: 1,
@@ -465,27 +570,12 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                 </Text>
                 <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
                   <IndexingStatusChip status={record.indexingStatus} />
-                  {showReasonHint ? (
-                    <Tooltip content={record.reason} delayDuration={200}>
-                      <button
-                        type="button"
-                        aria-label={t('recordView.indexingReasonAria')}
-                        style={{
-                          border: 'none',
-                          background: 'transparent',
-                          padding: 0,
-                          cursor: 'pointer',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          flexShrink: 0,
-                        }}
-                      >
-                        <MaterialIcon name="info" size={16} color="var(--olive-11)" />
-                      </button>
-                    </Tooltip>
+                  {showReasonHint && record.reason ? (
+                    <ReasonHintButton content={record.reason} ariaLabel={t('recordView.indexingReasonAria')} />
                   ) : null}
                 </Flex>
               </Flex>
+              <StageTrack record={record} stageStates={recordDetails.stageStates} />
               {fileSizeDisplay ? (
                 <DetailRow label={t('recordView.labels.fileSize')} value={fileSizeDisplay} />
               ) : null}

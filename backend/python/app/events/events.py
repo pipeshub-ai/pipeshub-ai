@@ -32,15 +32,21 @@ from app.config.constants.arangodb import (
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.pipeline.fingerprint import content_revision
+from app.modules.pipeline.ingress import StageIngress
+from app.models.entities import Record
 from app.modules.transformers.pipeline import IndexingPipeline
+from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.events.dedup import DedupDecision, select_duplicate
 from app.services.base_client import ServiceUnavailableError
+from app.services.extraction.client import ExtractionClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
 )
+from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider
 from app.services.resource_governor import classify
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
@@ -131,10 +137,11 @@ class EventProcessor:
         processor: Processor,
         graph_provider: IGraphDBProvider,
         config_service: ConfigurationService | None = None,
-        parsing_client=None,
-        extraction_client=None,
-        sink_orchestrator=None,
+        parsing_client: ParsingClient | None = None,
+        extraction_client: ExtractionClient | None = None,
+        sink_orchestrator: SinkOrchestrator | None = None,
         collection_strategy: CollectionStrategy | None = None,
+        stage_ingress: StageIngress | None = None,
     ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing EventProcessor")
@@ -145,6 +152,8 @@ class EventProcessor:
         self.parsing_client = parsing_client
         self.extraction_client = extraction_client
         self.sink_orchestrator = sink_orchestrator
+        # Hands searchable records to the pipeline stages (classification and after).
+        self.stage_ingress = stage_ingress
         # Pure/synchronous — only used to compare "does this duplicate resolve
         # to the same collection as the record being processed", never for I/O.
         self.collection_strategy = collection_strategy or SingleCollectionStrategy()
@@ -319,6 +328,12 @@ class EventProcessor:
             ):
                 yield event
 
+    async def _dispatch_stages(self, record: Record, event_type: str | None) -> None:
+        """Hand the now-searchable record to the stage runtime."""
+        if self.stage_ingress is None:
+            raise RuntimeError("the pipeline stage runtime is not wired into this EventProcessor")
+        _ = await self.stage_ingress.on_indexed(record, trigger=event_type)
+
     def _use_service_pipeline(self) -> bool:
         """Return True when the new HTTP service pipeline should be used."""
         return (
@@ -354,6 +369,9 @@ class EventProcessor:
             TransformContext,  # noqa: PLC0415
         )
 
+        if self.parsing_client is None or self.extraction_client is None or self.sink_orchestrator is None:
+            raise RuntimeError("Service pipeline requires the parsing, extraction and sink clients")
+
         # ── Step 1: Parse ────────────────────────────────────────────────────
         self.logger.debug(
             "📤 Sending '%s' to Parsing Service (mime=%s ext=%s)", record_name, mime_type, extension
@@ -368,6 +386,19 @@ class EventProcessor:
             provider=provider,
         )
         block_container = parse_result.block_container
+        if block_container is None:
+            raise RuntimeError(f"Parsing service returned no block container for record {record_id}")
+        # IndexingPipeline.apply validates the in-process path; this path never
+        # calls it, so without this a malformed container reaches every sink.
+        from app.modules.transformers.block_container_validator import (
+            BlockContainerValidator,
+        )
+        BlockContainerValidator(
+            logger=self.logger,
+            record_id=record_id,
+            virtual_record_id=virtual_record_id,
+            record_name=record_name,
+        ).validate(block_container)
         self.logger.debug(
             "✅ Parsing complete via provider '%s' (%d blocks)",
             parse_result.provider_used.value if parse_result.provider_used else "unknown",
@@ -435,62 +466,8 @@ class EventProcessor:
         await self.sink_orchestrator.index(ctx)
         self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
-        # ── Step 3: Enrich (Extraction Service → GraphDB) ────────────────────
-        defer_extraction = (
-            ctx.settings.get("defer_extraction")
-            or os.environ.get("DEFER_EXTRACTION", "false").lower() == "true"
-        )
-        if defer_extraction:
-            await self.update_record_fields(
-                record_doc,
-                {"extractionStatus": ProgressStatus.NOT_STARTED.value},
-            )
-            self.logger.info(
-                "📨 Deferring graph enrichment for record %s", record_id
-            )
-        else:
-            await self.update_record_fields(
-                record_doc,
-                {"extractionStatus": ProgressStatus.IN_PROGRESS.value},
-            )
-            try:
-                departments = await self.graph_provider.get_departments(org_id)
-                semantic_metadata = await self.extraction_client.classify(
-                    block_container=block_container,
-                    org_id=org_id,
-                    departments=departments or [],
-                )
-
-                record.semantic_metadata = semantic_metadata
-                if semantic_metadata and (semantic_metadata.summary or "").strip():
-                    await self.sink_orchestrator.vector_store.index_record_summary(
-                        record_id,
-                        virtual_record_id,
-                        org_id,
-                        semantic_metadata,
-                        record,
-                    )
-
-                if semantic_metadata:
-                    await self.sink_orchestrator.blob_storage.apply(ctx)
-
-                await self.sink_orchestrator.enrich(ctx)
-                self.logger.info(
-                    "✅ Graph enrichment completed for record %s", record_id
-                )
-            except Exception as enrich_exc:
-                self.logger.error(
-                    "❌ Enrichment failed for record %s (document remains searchable): %s",
-                    record_id,
-                    enrich_exc,
-                )
-                await self.update_record_fields(
-                    record_doc,
-                    {
-                        "extractionStatus": ProgressStatus.FAILED.value,
-                        "reason": f"Enrichment failed: {enrich_exc}",
-                    },
-                )
+        # ── Step 3: classification runs as a pipeline stage, on its own permits ──
+        await self._dispatch_stages(record, event_type)
 
         yield PipelineEvent(
             event=IndexingEvent.INDEXING_COMPLETE,
@@ -527,7 +504,9 @@ class EventProcessor:
         if not success:
             raise IndexingError(what, details={"record_id": _record_key(doc)})
 
-    async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
+    async def mark_record_status(
+        self, doc: dict[str, Any], status: ProgressStatus, *, content_rev: str | None = None
+    ) -> None:
         """Persist the legacy pipeline's indexing and extraction status."""
         record_id = _record_key(doc) or "unknown"
         fields = {
@@ -538,6 +517,11 @@ class EventProcessor:
                 else None
             ),
         }
+        if status == ProgressStatus.IN_PROGRESS:
+            # Picked up: the stranded-record sweep's clock stops.
+            fields["awaitingEventSince"] = None
+        if content_rev is not None:
+            fields["contentRev"] = content_rev
         success = await self.update_record_fields(doc, fields)
         self._require_persisted(
             success, f"Failed to persist status {status.value} for record", doc
@@ -686,6 +670,8 @@ class EventProcessor:
         self,
         content: bytes | str | dict | list | None,
         doc: dict[str, Any],
+        *,
+        content_rev: str | None = None,
     ) -> DedupDecision:
         """Check for duplicate records by MD5 hash and decide whether to skip indexing.
 
@@ -776,6 +762,9 @@ class EventProcessor:
                     ),
                     "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
                 }
+                if content_rev is not None:
+                    # Same bytes, same revision: status writes CAS on it.
+                    duplicate_fields["contentRev"] = content_rev
             elif attached_vrid:
                 # Same content, different collection: reuse the content
                 # identity (and with it the stored blob), but leave
@@ -856,6 +845,7 @@ class EventProcessor:
         # Initialised here so the finally block can always safely release the
         # reference, regardless of where in the try block an exception occurs.
         file_content: bytes | str | None = None
+        forced_record_id: str | None = None
         try:
             # Extract event type and record ID
             event_type = event_data.get(
@@ -943,6 +933,11 @@ class EventProcessor:
             if isinstance(file_content, (dict, list)):
                 file_content = json.dumps(file_content, sort_keys=True, ensure_ascii=False).encode("utf-8")
 
+            # The revision every stage state and record-status write for this content is tied to.
+            content_rev = content_revision(
+                bytes(file_content) if isinstance(file_content, (bytes, bytearray)) else str(file_content or "").encode("utf-8")
+            )
+
             content_len = len(file_content) if file_content else 0
             doc_md5_from_connector = doc.get("md5Checksum")
             self.logger.debug(
@@ -954,7 +949,7 @@ class EventProcessor:
 
             # Calculate MD5 hash and check for duplicates for ALL record types
             try:
-                dedup_decision = await self._check_duplicate_by_md5(file_content, doc)
+                dedup_decision = await self._check_duplicate_by_md5(file_content, doc, content_rev=content_rev)
                 if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1017,12 +1012,19 @@ class EventProcessor:
                         "parsingStatus": ProgressStatus.IN_PROGRESS.value,
                         "indexingStatus": ProgressStatus.IN_PROGRESS.value,
                         "processingStartedAt": processing_started_at,
+                        # Picked up: the stranded-record sweep's clock stops.
+                        "awaitingEventSince": None,
+                        "contentRev": content_rev,
                     },
                 )
             else:
                 # Legacy inline pipeline: parse+index run in-process without a
                 # phase boundary we can hook, keep the historical behaviour.
-                await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
+                await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS, content_rev=content_rev)
+
+            if self.stage_ingress is not None and bool(event_data.get("forceReindex")):
+                self.stage_ingress.mark_forced(record_id)
+                forced_record_id = record_id
 
             prev_virtual_record_id = None
             abandoned_virtual_record_id = None
@@ -1541,6 +1543,8 @@ class EventProcessor:
             self.logger.error(f"❌ Error in event processor: {repr(e)}")
             raise
         finally:
+            if forced_record_id is not None and self.stage_ingress is not None:
+                self.stage_ingress.clear_forced(forced_record_id)
             # Release the file-content reference so the async-generator frame
             # does not keep megabytes of raw bytes alive after aclose().
             # Buffer cleanup from the payload dict is handled by record.py's

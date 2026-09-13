@@ -345,10 +345,13 @@ const resyncConnectorSchema = z.object({
 /**
  * Schema for reindexing connector records
  */
+export const REINDEX_STAGES = ['classify'] as const;
+
 export const reindexConnectorSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
   body: z.object({
       statusFilters: z.array(z.string()).optional(),
+      stages: z.array(z.enum(REINDEX_STAGES)).min(1).optional(),
     })
     .optional(),
 });

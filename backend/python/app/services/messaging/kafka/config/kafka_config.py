@@ -1,5 +1,6 @@
+import ssl
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -76,3 +77,21 @@ class KafkaConsumerConfig:
     rebalance_timeout_ms: int = field(
         default_factory=lambda: _rebalance_timeout_ms()
     )
+
+
+def kafka_security_kwargs(*, ssl_enabled: bool, sasl: dict[str, str] | None) -> dict[str, Any]:
+    """aiokafka client options for TLS and SASL (AWS MSK), shared by every Kafka client."""
+    if not ssl_enabled:
+        return {}
+    options: dict[str, Any] = {"ssl_context": ssl.create_default_context()}
+    sasl = sasl or {}
+    if sasl.get("username"):
+        if not sasl.get("password"):
+            raise ValueError("Kafka SASL is configured with a username but no password")
+        options["security_protocol"] = "SASL_SSL"
+        options["sasl_mechanism"] = sasl.get("mechanism", "SCRAM-SHA-512").upper()
+        options["sasl_plain_username"] = sasl["username"]
+        options["sasl_plain_password"] = sasl["password"]
+    else:
+        options["security_protocol"] = "SSL"
+    return options

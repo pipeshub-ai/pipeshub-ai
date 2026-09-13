@@ -14,15 +14,15 @@ No LangChain QdrantVectorStore is imported or used.
 """
 
 import asyncio
+import json
 import os
 import time
 import uuid
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from langchain_core.documents import Document
 
 from app.config.constants.arangodb import CollectionNames
-from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
     EmbeddingError,
@@ -66,8 +66,42 @@ from app.utils.embedding_retry import (
     signal_backpressure_if_rate_limited,
 )
 from app.utils.image_utils import normalize_image_to_base64
+from app.utils.llm import load_ai_models
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
+
+# Point ids are derived from what a point represents rather than minted per
+# write, so a retried or partially applied upsert overwrites its own points
+# instead of leaving duplicates beside them.
+_POINT_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "pipeshub:vector-point")
+
+
+def deterministic_point_id(metadata: dict[str, object], page_content: str) -> str:
+    """Stable id for the point *metadata*/*page_content* becomes.
+
+    Whole-block, block-group, image and summary points are one per
+    (virtual record, block). A block also yields several sentence/window
+    sub-chunks, so those additionally key on their text.
+
+    Missing identity still hashes canonical metadata and text so a retry
+    overwrites the same point instead of inserting a duplicate.
+    """
+    virtual_record_id = metadata.get("virtualRecordId")
+    block_id = metadata.get("blockId")
+    if not virtual_record_id or not block_id:
+        canonical = json.dumps(metadata, sort_keys=True, default=str, separators=(",", ":"))
+        name = f"anon|{canonical}|{page_content}"
+    else:
+        is_sub_chunk = (
+            metadata.get("isBlock") is False
+            and not metadata.get("isBlockGroup")
+            and not metadata.get("isRecordSummary")
+        )
+        if is_sub_chunk:
+            name = f"{virtual_record_id}|{block_id}|chunk|{page_content}"
+        else:
+            name = f"{virtual_record_id}|{block_id}|unit"
+    return str(uuid.uuid5(_POINT_ID_NAMESPACE, name))
 
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 
@@ -814,10 +848,9 @@ class VectorStore(Transformer):
         """
         self.logger.debug("Getting embedding model")
 
-        ai_models = await self.config_service.get_config(
-            config_node_constants.AI_MODELS.value, use_cache=False
-        )
-        embedding_configs = ai_models["embedding"]
+        # Settings never saved means the default model, like an empty list.
+        ai_models = await load_ai_models(self.config_service)
+        embedding_configs: list[dict[str, Any]] = ai_models.get("embedding") or []
         config_hash = embedding_config_hash(embedding_configs)
 
         # The config is re-read every record so an admin-UI change takes effect
@@ -1056,10 +1089,12 @@ class VectorStore(Transformer):
                     f"got {len(result.embedding)}, expected {self.embedding_size}. Skipping point."
                 )
                 continue
-            chunk = image_chunks[result.index]
+            chunk: dict[str, Any] = image_chunks[result.index]
             points.append(
                 VectorPoint(
-                    id=str(uuid.uuid4()),
+                    id=deterministic_point_id(
+                        chunk.get("metadata", {}), chunk.get("description", "")
+                    ),
                     dense_vector=result.embedding,
                     payload=vector_point_payload(
                         chunk.get("metadata", {}),
@@ -1216,7 +1251,7 @@ class VectorStore(Transformer):
 
         points: List[VectorPoint] = [
             VectorPoint(
-                id=str(uuid.uuid4()),
+                id=deterministic_point_id(doc.metadata, doc.page_content),
                 dense_vector=dense,
                 sparse_vector=sparse,
                 payload=vector_point_payload(doc.metadata, doc.page_content),

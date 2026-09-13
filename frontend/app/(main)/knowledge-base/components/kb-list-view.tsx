@@ -32,6 +32,15 @@ import {
   mapReindexOptionsToMenuActions,
 } from '../utils/reindex-label';
 
+/** "SOME_STATUS" → "Some Status", for statuses without a dedicated label. */
+function humanizeStatus(status: string): string {
+  return status
+    .toLowerCase()
+    .split('_')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
 
@@ -285,7 +294,11 @@ function TableRow({
         case 'QUEUED': baseLabel = 'Queued'; showReason = false; break;
         case 'AUTO_INDEX_OFF': baseLabel = 'Manual Indexing'; break;
         case 'EMPTY': baseLabel = 'Empty'; break;
-        default: baseLabel = 'Queued'; showReason = false;
+        case 'PAUSED': baseLabel = 'Paused'; break;
+        case 'ENABLE_MULTIMODAL_MODELS': baseLabel = 'Needs Multimodal Model'; break;
+        case 'SKIPPED': baseLabel = 'Skipped'; break;
+        // Show an unrecognised status as itself: labelling it "Queued" hid real states.
+        default: baseLabel = humanizeStatus(item.indexingStatus);
       }
       return appendReason(baseLabel, item.reason, showReason);
     }
@@ -339,8 +352,15 @@ function TableRow({
           return (
             <MaterialIcon name={getIndexStatusIcon('EMPTY')} size={16} color="var(--slate-11)" />
           );
+        case 'PAUSED':
+          return <MaterialIcon name="pause_circle" size={16} color="var(--slate-11)" />;
+        case 'ENABLE_MULTIMODAL_MODELS':
+          return <MaterialIcon name="image_not_supported" size={16} color="var(--amber-11)" />;
+        case 'SKIPPED':
+          return <MaterialIcon name="skip_next" size={16} color="var(--slate-11)" />;
         default:
-          return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
+          // Neutral, not the "Queued" clock: an unknown status is not a queued one.
+          return <MaterialIcon name="help_outline" size={16} color="var(--slate-11)" />;
       }
     }
 

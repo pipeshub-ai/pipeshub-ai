@@ -1,14 +1,15 @@
 """Tests for ExtractionClient HTTP client."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-import pytest
 import httpx
+import pytest
 
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.services.base_client import ServiceUnavailableError
 from app.services.extraction.client import ExtractionClient, ExtractionClientError
+from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 
 def _bc() -> BlocksContainer:
@@ -122,3 +123,59 @@ async def test_classify_raises_service_unavailable_on_connection_error() -> None
     ):
         with pytest.raises(ServiceUnavailableError):
             await client.classify(_bc(), "org-123")
+
+
+@pytest.mark.asyncio
+async def test_classify_maps_llm_not_configured_to_typed_error() -> None:
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    body = {
+        "success": False,
+        "error": "No LLM is configured for this organization",
+        "error_code": "LLM_NOT_CONFIGURED",
+    }
+
+    with patch.object(client, "_post_json", new=AsyncMock(return_value=_make_response(422, body))):
+        with pytest.raises(LLMNotConfiguredError, match="No LLM is configured"):
+            await client.classify(_bc(), "org-123")
+
+
+@pytest.mark.asyncio
+async def test_a_provider_outage_is_a_typed_error_that_costs_no_retry_or_breaker_failure() -> None:
+    body = {"success": False, "error": "connection refused", "error_code": "LLM_UNAVAILABLE"}
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(424, json=body)
+
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=3, retry_delay=0.0)
+    client._make_client = lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[method-assign]
+
+    with pytest.raises(LLMUnavailableError, match="connection refused"):
+        await client.classify(_bc(), "org-123")
+    assert calls == 1
+    assert client.circuit_breaker._consecutive_failures == 0
+
+
+_UNAVAILABLE = {"success": False, "error": "connection refused", "error_code": "LLM_UNAVAILABLE"}
+
+
+@pytest.mark.asyncio
+async def test_a_provider_outage_says_how_long_to_wait() -> None:
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    response = httpx.Response(424, json=_UNAVAILABLE, headers={"Retry-After": "30"})
+    with patch.object(client, "_post_json", new=AsyncMock(return_value=response)), \
+            pytest.raises(LLMUnavailableError) as raised:
+        await client.classify(_bc(), "org-123")
+    assert raised.value.retry_after == 30.0
+
+
+@pytest.mark.asyncio
+async def test_a_provider_outage_without_a_known_cooldown_names_no_wait() -> None:
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    response = httpx.Response(424, json=_UNAVAILABLE)
+    with patch.object(client, "_post_json", new=AsyncMock(return_value=response)), \
+            pytest.raises(LLMUnavailableError) as raised:
+        await client.classify(_bc(), "org-123")
+    assert raised.value.retry_after is None

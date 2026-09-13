@@ -9,7 +9,9 @@
       "reindexFailedStart": "Reindexing failed records…",
       "reindexFailedError": "Failed to reindex failed records",
       "manualIndexStart": "Indexing manual-indexing records…",
-      "manualIndexError": "Failed to start manual indexing"
+      "manualIndexError": "Failed to start manual indexing",
+      "retryClassificationStart": "Classification retry queued",
+      "retryClassificationError": "Failed to retry classification"
     }
   },
   "resetPassword": {
@@ -1962,7 +1964,12 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "LOCAL WATCHER",
-        "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed"
+        "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed",
+        "classification": "Classification",
+        "classificationSkipped": "Skipped",
+        "retryFailedClassification": "Retry failed classification",
+        "retryClassificationSuccess": "Classification retry queued",
+        "retryClassificationError": "Failed to retry classification"
       },
       "settingsTab": {
         "instanceName": "Instance Name",
@@ -3226,6 +3233,12 @@
       "noRecordMetadata": "No additional record metadata for this item."
     },
     "indexingReasonAria": "Indexing failure details",
+    "stageTrackLabel": "Pipeline",
+    "stageParsed": "Parsed",
+    "stageSearchable": "Searchable",
+    "stageClassified": "Classified",
+    "stageAttempt": "Attempt {{n}}",
+    "stageDetailsAria": "Stage details",
     "tabRecordInformation": "Record Information",
     "tabDocumentDetails": "Document details",
     "chat": "Chat",

@@ -1994,6 +1994,23 @@ class TestUserAndOrganizationLookups:
         assert await neo4j_provider.get_org_apps("org-1") == []
 
     @pytest.mark.asyncio
+    async def test_a_record_without_an_indexing_status_is_not_excluded(self, neo4j_provider: Neo4jProvider) -> None:
+        # NOT (null IN list) is null in Cypher, which drops the row; ArangoDB's NOT IN keeps it.
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_records_by_status(
+            "org-1", "app-1", ["FAILED"], exclude_statuses=["IN_PROGRESS"], status_field="extractionStatus"
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "NOT coalesce(r.indexingStatus, '') IN $exclude_statuses" in query
+        assert "r.extractionStatus IN $status_filters" in query
+
+        await neo4j_provider.reset_indexing_status_for_connector(
+            "app-1", "NOT_STARTED", exclude_statuses=["IN_PROGRESS"]
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "NOT coalesce(n.indexingStatus, '') IN $exclude_statuses" in query
+
+    @pytest.mark.asyncio
     async def test_reset_indexing_status_for_connector(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.reset_indexing_status_for_connector(
@@ -4411,3 +4428,19 @@ class TestTeamQueriesExcludeInactiveUsers:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.get_team_users("t1", "org1", "uk1")
         self._assert_guarded(self._member_query(neo4j_provider))
+
+
+class TestRecordsByStatusField:
+    @pytest.mark.asyncio
+    async def test_selects_on_the_named_status_field(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_records_by_status("org-1", "conn-1", ["FAILED"], status_field="extractionStatus")
+        query = neo4j_provider.client.execute_query.call_args[0][0]
+        assert "r.extractionStatus IN $status_filters" in query
+        assert "r.indexingStatus IN $status_filters" not in query
+
+    @pytest.mark.asyncio
+    async def test_a_field_that_is_not_a_record_status_never_reaches_the_query(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        assert await neo4j_provider.get_records_by_status("org-1", "conn-1", ["FAILED"], status_field="x} RETURN 1 //") == []
+        neo4j_provider.client.execute_query.assert_not_awaited()

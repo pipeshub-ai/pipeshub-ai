@@ -59,3 +59,15 @@ async def test_parse_to_blocks_lightweight_tsv_delimiter():
     container = await tsv_parser.parse_to_blocks_lightweight(content, max_rows=500)
     assert len(container.blocks) == 2
     assert container.block_groups[0].data["column_headers"] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_parse_to_blocks_lightweight_reads_windows_1252_and_drops_a_byte_order_mark(parser: CSVParser) -> None:
+    # latin-1 decodes every byte, so cp1252 must be tried first or the euro sign becomes a control character.
+    windows = "item,price\n“Widget”,€5\n".encode("cp1252")
+    container = await parser.parse_to_blocks_lightweight(windows, max_rows=500)
+    assert "€5" in container.blocks[0].data["row_natural_language_text"]
+
+    with_bom = "﻿name,amount\nAlice,10\n".encode()
+    container = await parser.parse_to_blocks_lightweight(with_bom, max_rows=500)
+    assert container.block_groups[0].data["column_headers"] == ["name", "amount"]

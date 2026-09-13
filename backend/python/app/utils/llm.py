@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, Tuple
+from typing import Any, Tuple, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
@@ -16,11 +16,91 @@ from app.utils.aimodels import (
 )
 
 
-async def _load_ai_models(config_service: ConfigurationService) -> dict:
-    """Load the AI models config blob (OSS: org-scoped get_config)."""
-    return await config_service.get_config(
+class LLMNotConfiguredError(ValueError):
+    """The organization has no LLM configured; permanent until an admin adds one, so never retried."""
+
+    code = "LLM_NOT_CONFIGURED"
+
+
+class LLMUnavailableError(Exception):
+    """The model provider could not serve the call (unreachable, timing out, overloaded or rate
+    limiting). Transient: the caller waits and tries again without counting a failure."""
+
+    code = "LLM_UNAVAILABLE"
+
+    def __init__(self, message: str = "", *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        # Seconds until the provider may serve again, when known (its open circuit's cooldown).
+        self.retry_after = retry_after
+
+
+# Provider SDKs name the same failures differently (openai, anthropic, httpx, google, botocore).
+_UNAVAILABLE_NAME_PARTS = ("Connect", "Timeout", "RateLimit", "Unavailable", "Overloaded", "Throttl", "InternalServer", "Disconnect")
+_TOO_MANY_REQUESTS = 429
+_SERVER_ERROR = 500
+
+
+def is_provider_unavailable(exc: BaseException) -> bool:
+    """Whether an LLM call failed because the provider could not serve it, not because of the request.
+
+    Reads status codes and exception names, following the cause chain (LangChain re-raises SDK
+    errors). A 4xx other than 429 is the request's fault.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (TimeoutError, ConnectionError)):
+            return True
+        status = getattr(current, "status_code", None)
+        if isinstance(status, int):
+            return status == _TOO_MANY_REQUESTS or status >= _SERVER_ERROR
+        if any(part in type(current).__name__ for part in _UNAVAILABLE_NAME_PARTS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+async def load_ai_models(config_service: ConfigurationService) -> dict[str, Any]:
+    """Load the AI models config blob (OSS: org-scoped get_config); ``{}`` until AI settings are saved."""
+    config = cast(object, await config_service.get_config(
         config_node_constants.AI_MODELS.value, use_cache=False
-    ) or {}
+    ))
+    return cast(dict[str, Any], config) if isinstance(config, dict) else {}
+
+
+def indexing_model_identity(ai_models: dict[str, Any], role: str = "indexing") -> str:
+    """Which model serves ``role``, without instantiating it (for stage fingerprints).
+
+    Mirrors ``get_llm_for_role``'s choice: the role's assigned model, else the default LLM,
+    else the first; an assignment that does not resolve counts as none, as it does there.
+    ``"none"`` when no LLM is configured.
+    """
+    roles = ai_models.get("modelRoles")
+    assignment = cast(dict[str, Any], roles).get(role) if isinstance(roles, dict) else None
+    if isinstance(assignment, dict):
+        chosen = cast(dict[str, Any], assignment)
+        model_type = chosen.get("modelType")
+        bucket = ai_models.get(model_type) if isinstance(model_type, str) else None
+        if chosen.get("modelKey") and isinstance(bucket, list):
+            for candidate in cast(list[Any], bucket):
+                entry = cast(dict[str, Any], candidate) if isinstance(candidate, dict) else None
+                if entry is not None and entry.get("modelKey") == chosen["modelKey"]:
+                    return _model_entry_identity(str(model_type), entry)
+    configs = ai_models.get("llm")
+    if not isinstance(configs, list) or not configs:
+        return "none"
+    entries = [cast(dict[str, Any], c) for c in cast(list[Any], configs) if isinstance(c, dict)]
+    if not entries:
+        return "none"
+    default = next((c for c in entries if c.get("isDefault")), entries[0])
+    return _model_entry_identity("llm", default)
+
+
+def _model_entry_identity(model_type: str, entry: dict[str, Any]) -> str:
+    configuration = entry.get("configuration")
+    model = cast(dict[str, Any], configuration).get("model", "") if isinstance(configuration, dict) else ""
+    return f"{model_type}:{entry.get('modelKey') or entry.get('provider', '')}:{model}"
 
 
 def _select_default_config(configs: list) -> dict | None:
@@ -34,7 +114,7 @@ async def _instantiate_llm_from_configs(
     llm_configs: list | None,
     *,
     reasoning_effort: str | None = None,
-) -> Tuple[BaseChatModel, dict]:
+) -> Tuple[BaseChatModel, dict[str, Any]]:
     """Pick and instantiate an LLM from a config list (default first, then any)."""
     if not llm_configs:
         raise ValueError("No LLM configurations found")
@@ -62,7 +142,7 @@ async def _try_resolve_role_llm(
     role: str,
     *,
     reasoning_effort: str | None = None,
-) -> Tuple[BaseChatModel, dict] | None:
+) -> Tuple[BaseChatModel, dict[str, Any]] | None:
     """Resolve modelRoles assignment to an instantiated LLM, or None."""
     model_roles: dict = (ai_models or {}).get("modelRoles") or {}
     assignment = model_roles.get(role)
@@ -91,10 +171,12 @@ async def get_llm(
     llm_configs: Any = None,
     *,
     reasoning_effort: str | None = None,
-) -> Tuple[BaseChatModel, dict]:
+) -> Tuple[BaseChatModel, dict[str, Any]]:
     if not llm_configs:
-        ai_models = await _load_ai_models(config_service)
-        llm_configs = ai_models["llm"]
+        ai_models = await load_ai_models(config_service)
+        llm_configs = ai_models.get("llm")
+        if not llm_configs:
+            raise LLMNotConfiguredError("No LLM is configured for this organization")
     return await _instantiate_llm_from_configs(llm_configs, reasoning_effort=reasoning_effort)
 
 
@@ -103,7 +185,7 @@ async def get_llm_for_role(
     role: str,
     *,
     reasoning_effort: str | None = None,
-) -> Tuple[BaseChatModel, dict]:
+) -> Tuple[BaseChatModel, dict[str, Any]]:
     """Return the LLM assigned to *role*, falling back to the default LLM.
 
     Reads ``modelRoles`` from the AI models config blob. If the role is
@@ -118,7 +200,7 @@ async def get_llm_for_role(
     ``modelRoles`` in their config are unaffected.
     """
     try:
-        ai_models = await _load_ai_models(config_service)
+        ai_models = await load_ai_models(config_service)
         resolved = await _try_resolve_role_llm(
             ai_models, role, reasoning_effort=reasoning_effort
         )
@@ -132,8 +214,8 @@ async def get_llm_for_role(
 
 async def get_embedding_model_config(config_service: ConfigurationService) -> dict | None:
     try:
-        ai_models = await _load_ai_models(config_service)
-        embedding_configs = ai_models["embedding"]
+        ai_models = await load_ai_models(config_service)
+        embedding_configs = ai_models.get("embedding")
         if not embedding_configs:
             return None
         return embedding_configs[0]
@@ -188,7 +270,7 @@ async def get_image_generation_config(config_service: ConfigurationService) -> d
     Mirrors the shape returned for other model types under the ``aiModels``
     namespace.
     """
-    ai_models = await _load_ai_models(config_service)
+    ai_models = await load_ai_models(config_service)
     return _select_default_config(ai_models.get("imageGeneration") or [])
 
 
@@ -202,7 +284,7 @@ async def _get_speech_config(
     (e.g. on a brand-new install) so callers — and the chat UI fallback —
     can treat TTS/STT as simply unconfigured instead of erroring.
     """
-    ai_models = await _load_ai_models(config_service)
+    ai_models = await load_ai_models(config_service)
     if not ai_models:
         return None
     return _select_default_config(ai_models.get(bucket) or [])

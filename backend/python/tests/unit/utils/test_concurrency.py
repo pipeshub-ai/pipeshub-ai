@@ -10,7 +10,6 @@ from app.utils.concurrency import (
     MAX_CONCURRENT_ROW_BATCHES,
     MAX_CONCURRENT_TABLES,
     TABLE_ROW_BATCH_SIZE,
-    _indexing_llm_semaphore,
     gather_with_concurrency,
     indexing_llm_slot,
 )
@@ -110,15 +109,14 @@ class TestGatherWithConcurrency:
 
 class TestIndexingLlmSemaphore:
     @pytest.mark.asyncio
-    async def test_returns_semaphore(self):
-        sem = _indexing_llm_semaphore()
-        assert isinstance(sem, asyncio.Semaphore)
+    async def test_the_slot_is_a_permit_of_the_gateways_process_wide_cap(self) -> None:
+        from app.services.llm_gateway.gateway import get_llm_gateway
 
-    @pytest.mark.asyncio
-    async def test_same_loop_same_semaphore(self):
-        sem1 = _indexing_llm_semaphore()
-        sem2 = _indexing_llm_semaphore()
-        assert sem1 is sem2
+        limiter = get_llm_gateway().limiter
+        before = limiter.in_use
+        async with indexing_llm_slot():
+            assert limiter.in_use == before + 1
+        assert limiter.in_use == before
 
 
 class TestIndexingLlmSlot:

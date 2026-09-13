@@ -62,7 +62,9 @@ def _pipeline(blob_meta=None):
     sink.vector_store = AsyncMock()
     sink.vector_store.purge_record_vectors = AsyncMock()
 
-    return IndexingPipeline(doc_extraction, sink)
+    stage_ingress = MagicMock()
+    stage_ingress.on_indexed = AsyncMock(return_value=[])
+    return IndexingPipeline(doc_extraction, sink, stage_ingress=stage_ingress)
 
 
 class TestBuildReconciliationContextEmpty:
@@ -367,8 +369,7 @@ class TestApplyReconciliationContextBuildsWhenNone:
         assert ctx.reconciliation_context is not None
         assert isinstance(ctx.reconciliation_context, ReconciliationContext)
         pipeline.sink_orchestrator.index.assert_awaited_once_with(ctx)
-        pipeline.document_extraction.apply.assert_awaited_once_with(ctx)
-        pipeline.sink_orchestrator.enrich.assert_awaited_once_with(ctx)
+        pipeline.stage_ingress.on_indexed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_existing_reconciliation_context_not_rebuilt(self):

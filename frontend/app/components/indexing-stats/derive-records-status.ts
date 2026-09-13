@@ -1,4 +1,27 @@
+'use client';
+
 import type { ConnectorStatsResponse, RecordsStatus } from '@/app/(main)/workspace/connectors/types';
+
+export interface ClassificationStatus {
+  completed: number;
+  skipped: number;
+  failed: number;
+  queued: number;
+}
+
+/** Null when the backend predates pipeline stages and sends no extractionStatus. */
+export function deriveClassificationStatus(
+  stats?: ConnectorStatsResponse['data'] | null
+): ClassificationStatus | null {
+  const ext = stats?.stats?.extractionStatus;
+  if (!ext) return null;
+  return {
+    completed: ext.COMPLETED ?? 0,
+    skipped: ext.SKIPPED ?? 0,
+    failed: ext.FAILED ?? 0,
+    queued: ext.QUEUED ?? 0,
+  };
+}
 
 export function deriveRecordsStatus(
   stats?: ConnectorStatsResponse['data'] | null

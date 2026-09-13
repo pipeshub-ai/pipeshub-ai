@@ -478,11 +478,19 @@ export interface IndexingStatus {
   PAUSED: number;
 }
 
+/** Record counts keyed by classify-stage status (`extractionStatus`). */
+export type ExtractionStatusCounts = Partial<Record<string, number>>;
+
+/** Pipeline stages that can be re-run on their own via the reindex endpoint. */
+export type ReindexStage = 'classify';
+
 /** Stats breakdown by record type */
 export interface RecordTypeStats {
   recordType: string;
   total: number;
   indexingStatus: IndexingStatus;
+  /** Absent on backends that predate pipeline stages. */
+  extractionStatus?: ExtractionStatusCounts;
 }
 
 /** Response from GET /api/v1/connectors/{connectorId}/stats */
@@ -495,6 +503,8 @@ export interface ConnectorStatsResponse {
     stats: {
       total: number;
       indexingStatus: IndexingStatus;
+      /** Absent on backends that predate pipeline stages. */
+      extractionStatus?: ExtractionStatusCounts;
     };
     byRecordType: RecordTypeStats[];
   };

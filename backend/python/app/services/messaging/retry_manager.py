@@ -5,7 +5,7 @@ Ensures retry counts survive restarts and are consistent across consumer instanc
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, override
 
 from app.services.distributed.interface import IRetryTracker
 from app.services.messaging.config import messaging_env
@@ -183,6 +183,13 @@ class RetryManager(IRetryTracker):
             raise RuntimeError("RetryManager not initialized. Call initialize() first.")
         key = self._build_key(message_id, prefix=self.DELIVERY_KEY_PREFIX)
         return await self._incr_with_ttl(key)
+
+    @override
+    async def clear_deliveries(self, message_id: str) -> None:
+        """Start *message_id*'s delivery count over; see ``IRetryTracker``."""
+        if self._redis is None and self._registry is None:
+            raise RuntimeError("RetryManager not initialized. Call initialize() first.")
+        await self._client().delete(self._build_key(message_id, prefix=self.DELIVERY_KEY_PREFIX))
 
     async def _incr_with_ttl(self, key: str) -> int:
         """INCR *key* and (re)set its TTL atomically; returns the new count.

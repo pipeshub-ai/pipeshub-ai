@@ -1,3 +1,4 @@
+
 """
 Async HTTP Client for ArangoDB REST API
 
@@ -7,24 +8,47 @@ replacing the synchronous python-arango SDK to avoid blocking the event loop.
 ArangoDB REST API Documentation: https://www.arangodb.com/docs/stable/http/
 """
 
-import asyncio
+import json
 from logging import Logger
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, cast
 
 import aiohttp
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.utils.loop_local import LoopLocal, running_loop
 
 # ArangoDB Error Code Constants
 ARANGO_ERROR_DOCUMENT_NOT_FOUND = 1202
 ARANGO_ERROR_SCHEMA_DUPLICATE = 1207
 
 
-class ArangoHTTPClient:
-    """Fully async HTTP client for ArangoDB REST API
+# ArangoDB errorNum values a caller may treat as "another writer won" rather than as an outage.
+ARANGO_CONFLICT = 1200
+ARANGO_UNIQUE_CONSTRAINT_VIOLATED = 1210
 
-    Uses session-per-event-loop pattern to handle Windows async compatibility.
-    Sessions are reused within the same event loop but recreated if the loop changes.
+
+class ArangoQueryError(Exception):
+    """An AQL request the server rejected, with its HTTP status and ArangoDB errorNum."""
+
+    def __init__(self, operation: str, status: int, body: str) -> None:
+        super().__init__(f"{operation} (status={status}): {body}")
+        self.status = status
+        self.error_num: int | None = None
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            return
+        if isinstance(parsed, dict):
+            error_num = cast(dict[str, object], parsed).get("errorNum")
+            if isinstance(error_num, int):
+                self.error_num = error_num
+
+
+class ArangoHTTPClient:
+    """Fully async HTTP client for ArangoDB REST API.
+
+    Keeps one aiohttp session per event loop: a session binds to the loop that created it,
+    and the indexing service runs a worker loop per message consumer.
     """
 
     def __init__(
@@ -50,41 +74,21 @@ class ArangoHTTPClient:
         self.username = username
         self.password = password
         self.auth = aiohttp.BasicAuth(username, password)
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._session_loop: Optional[asyncio.AbstractEventLoop] = None
         self.logger = logger
+        self._sessions: LoopLocal[aiohttp.ClientSession] = LoopLocal(self._new_session)
+
+    def _new_session(self) -> aiohttp.ClientSession:
+        self.logger.debug("🔄 Created an ArangoDB HTTP session for event loop %r", running_loop())
+        return aiohttp.ClientSession(auth=self.auth)
 
     async def _get_session(self) -> aiohttp.ClientSession:
+        """The session for the running event loop.
+
+        Replacing another loop's session from here would close it under that loop's
+        in-flight requests ("Server disconnected", cancelled tasks), so loops never share one.
         """
-        Get or create a session for the current event loop.
-
-        This handles Windows async compatibility by detecting event loop changes
-        and creating new sessions when needed. Sessions are reused within the
-        same event loop for efficiency.
-
-        Returns:
-            aiohttp.ClientSession: Session for the current event loop
-        """
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
-
-        # Check if we need a new session (no session, or loop changed)
-        if self._session is None or self._session_loop != current_loop:
-            # Close old session if exists
-            if self._session is not None:
-                try:
-                    await self._session.close()
-                except Exception:
-                    pass  # Ignore errors closing old session
-
-            # Create new session for current loop
-            self._session = aiohttp.ClientSession(auth=self.auth)
-            self._session_loop = current_loop
-            self.logger.debug("🔄 Created new HTTP session for current event loop")
-
-        return self._session
+        session = self._sessions.get()
+        return self._sessions.replace_current() if session.closed else session
 
     async def connect(self) -> bool:
         """
@@ -111,14 +115,11 @@ class ArangoHTTPClient:
             return False
 
     async def disconnect(self) -> None:
-        """Close HTTP session"""
-        if self._session:
-            try:
-                await self._session.close()
-            except Exception:
-                pass
-            self._session = None
-            self._session_loop = None
+        """Close every loop's HTTP session, each on the loop that owns it."""
+        had_sessions = len(self._sessions) > 0
+        for error in await self._sessions.aclose_all(lambda session: session.close()):
+            self.logger.warning("Error closing an ArangoDB HTTP session: %s", error)
+        if had_sessions:
             self.logger.info("✅ Disconnected from ArangoDB")
 
     # ==================== Error Checking Helpers ====================
@@ -456,10 +457,10 @@ class ArangoHTTPClient:
     async def execute_aql(
         self,
         query: str,
-        bind_vars: Optional[Dict] = None,
+        bind_vars: Optional[Dict[str, Any]] = None,
         txn_id: Optional[str] = None,
         batch_size: int = 1000
-    ) -> List[Dict]:
+    ) -> List[Any]:
         """
         Execute AQL query.
 
@@ -491,7 +492,7 @@ class ArangoHTTPClient:
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status not in [200, 201]:
                     error = await resp.text()
-                    raise Exception(f"Query failed (status={resp.status}): {error}")
+                    raise ArangoQueryError("Query failed", resp.status, error)
 
                 result = await resp.json()
                 self._check_response_for_errors(result, "Query execution")
@@ -505,7 +506,7 @@ class ArangoHTTPClient:
                     async with session.put(cursor_url, headers=headers) as cursor_resp:
                         if cursor_resp.status not in [200, 201]:
                             error = await cursor_resp.text()
-                            raise Exception(f"Cursor fetch failed (status={cursor_resp.status}): {error}")
+                            raise ArangoQueryError("Cursor fetch failed", cursor_resp.status, error)
 
                         result = await cursor_resp.json()
                         self._check_response_for_errors(result, "Cursor fetch")
@@ -522,7 +523,7 @@ class ArangoHTTPClient:
     async def batch_insert_documents(
     self,
     collection: str,
-    documents: List[Dict],
+    documents: List[Dict[str, Any]],
     txn_id: Optional[str] = None,
     overwrite: bool = True,
     overwrite_mode: str = "update"  # New parameter: "replace", "update", "ignore", or "conflict"

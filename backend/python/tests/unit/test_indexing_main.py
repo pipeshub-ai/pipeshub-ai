@@ -3,10 +3,9 @@
 import asyncio
 import os
 import time
-from unittest.mock import ANY, AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi.responses import JSONResponse
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -14,6 +13,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.services.messaging.config import MessageBrokerType
+from app.services.messaging.worker_loop import WorkerLoop
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -48,7 +48,17 @@ def _make_container():
     mock_consumer.concurrency_manager = None
     mock_consumer._run_on_main_loop = None
     container.kafka_consumers = [("record", mock_consumer, mock_producer)]
+    container.pipeline_runtime.return_value = _stage_runtime()
     return container
+
+
+def _stage_runtime() -> MagicMock:
+    """A pipeline runtime with one stage, as the container provides it."""
+    runtime = MagicMock()
+    runtime.registry.names.return_value = ("classify",)
+    runtime.registry.topic_for.side_effect = lambda name: f"pipeline.{name}"
+    runtime.stage_limits = {"classify": 2}
+    return runtime
 
 
 def _lookup_record_by_key(gp, doc_id):
@@ -87,6 +97,7 @@ def _make_graph_provider():
     connector-check path override get_document via _document_lookup().
     """
     gp = MagicMock()
+    gp.ensure_pipeline_schema = AsyncMock()
     gp.get_nodes_by_filters = AsyncMock(return_value=[])
     gp.batch_update_nodes = AsyncMock(return_value=True)
 
@@ -106,6 +117,14 @@ def _make_graph_provider():
                 record
                 for record in records
                 if record.get("parsingStatus") == filters["parsingStatus"]
+            ]
+        if "indexingStatus" in filters:
+            # Rows configured for the IN_PROGRESS scan carry no status of their own.
+            return [
+                record
+                for record in records
+                if record.get("indexingStatus", ProgressStatus.IN_PROGRESS.value)
+                == filters["indexingStatus"]
             ]
         return records
 
@@ -882,6 +901,8 @@ class TestStartKafkaConsumers:
         
         mock_producer = MagicMock()
         mock_producer.initialize = AsyncMock()
+        stage_consumer = MagicMock(start=AsyncMock())
+        admin = MagicMock(ensure_topics_exist=AsyncMock())
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
@@ -891,15 +912,32 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
+            patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[mock_consumer, stage_consumer]) as create_consumer,
+            patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
         ):
             consumers = await start_kafka_consumers(mock_container)
 
-        assert len(consumers) == 1
+        assert len(consumers) == 2
         assert consumers[0][0] == "record"
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
+        # The stage consumer shares the retry producer, which the record entry owns and closes.
+        assert consumers[1] == ("pipeline.classify", stage_consumer, None)
+        admin.ensure_topics_exist.assert_awaited_once_with(["pipeline.classify"])
+        runtime = mock_container.pipeline_runtime.return_value
+        runtime.publisher.bind.assert_called_once()
+        assert runtime.publisher.bind.call_args.args[0] is mock_producer
+        stage_kwargs = create_consumer.call_args_list[1].kwargs
+        assert stage_kwargs["stage_admission"].stage == "classify"
+        assert stage_kwargs["stage_admission"].limit == 2
+        assert stage_kwargs["disposition_sink"] is runtime.handler
+        stage_consumer.start.assert_awaited_once_with(runtime.handler)
+        # Both consumers run their handlers on one shared worker loop.
+        worker = create_consumer.call_args_list[0].kwargs["worker"]
+        assert isinstance(worker, WorkerLoop)
+        assert create_consumer.call_args_list[1].kwargs["worker"] is worker
 
     async def test_success_neo4j(self) -> None:
         """Startup under Neo4j is now ordinary.
@@ -920,6 +958,8 @@ class TestStartKafkaConsumers:
 
         mock_producer = MagicMock()
         mock_producer.initialize = AsyncMock()
+        stage_consumer = MagicMock(start=AsyncMock())
+        admin = MagicMock(ensure_topics_exist=AsyncMock())
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
@@ -929,15 +969,32 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
+            patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[mock_consumer, stage_consumer]) as create_consumer,
+            patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
         ):
             consumers = await start_kafka_consumers(mock_container)
 
-        assert len(consumers) == 1
+        assert len(consumers) == 2
         assert consumers[0][0] == "record"
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
+        # The stage consumer shares the retry producer, which the record entry owns and closes.
+        assert consumers[1] == ("pipeline.classify", stage_consumer, None)
+        admin.ensure_topics_exist.assert_awaited_once_with(["pipeline.classify"])
+        runtime = mock_container.pipeline_runtime.return_value
+        runtime.publisher.bind.assert_called_once()
+        assert runtime.publisher.bind.call_args.args[0] is mock_producer
+        stage_kwargs = create_consumer.call_args_list[1].kwargs
+        assert stage_kwargs["stage_admission"].stage == "classify"
+        assert stage_kwargs["stage_admission"].limit == 2
+        assert stage_kwargs["disposition_sink"] is runtime.handler
+        stage_consumer.start.assert_awaited_once_with(runtime.handler)
+        # Both consumers run their handlers on one shared worker loop.
+        worker = create_consumer.call_args_list[0].kwargs["worker"]
+        assert isinstance(worker, WorkerLoop)
+        assert create_consumer.call_args_list[1].kwargs["worker"] is worker
 
     async def test_distributed_concurrency_failure_aborts_startup(self) -> None:
         """Redis is a startup requirement: an unreachable one fails the boot.
@@ -1025,6 +1082,103 @@ class TestStartKafkaConsumers:
         ):
             with pytest.raises(RuntimeError, match="start fail"):
                 await start_kafka_consumers(mock_container)
+
+class TestStageTopicsUnavailable:
+    """A broker that cannot create the stage topics must not stop records being indexed."""
+
+    async def test_the_record_consumer_runs_and_stages_start_once_the_topics_exist(self) -> None:
+        from app.indexing_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        record_consumer = MagicMock(start=AsyncMock())
+        stage_consumer = MagicMock(start=AsyncMock())
+        producer = MagicMock(initialize=AsyncMock())
+        denied = RuntimeError("TopicAuthorizationFailedError")
+        admin = MagicMock(ensure_topics_exist=AsyncMock(side_effect=[denied, denied, None]))
+        runtime = mock_container.pipeline_runtime.return_value
+
+        with (
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=producer),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[record_consumer, stage_consumer]),
+            patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
+            patch("app.indexing_main._TOPIC_RETRY_FIRST_S", 0.0),
+            patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
+        ):
+            consumers = await start_kafka_consumers(mock_container)
+
+            assert [entry[0] for entry in consumers] == ["record"]
+            record_consumer.start.assert_awaited_once()
+            # Unbound, a claim stays QUEUED for the sweeper instead of waiting on a missing topic.
+            runtime.publisher.bind.assert_not_called()
+            await mock_container.stage_startup_task
+
+        assert admin.ensure_topics_exist.await_count == 3
+        assert consumers[1] == ("pipeline.classify", stage_consumer, None)
+        runtime.publisher.bind.assert_called_once()
+        assert runtime.publisher.bind.call_args.args[0] is producer
+        stage_consumer.start.assert_awaited_once_with(runtime.handler)
+
+    async def test_shutdown_cancels_a_stage_start_still_waiting_for_its_topics(self) -> None:
+        from app.indexing_main import stop_kafka_consumers
+
+        container = _make_container()
+        container.kafka_consumers = []
+        container.worker_loop = None
+        waiting = asyncio.create_task(asyncio.sleep(3600))
+        container.stage_startup_task = waiting
+
+        await stop_kafka_consumers(container)
+
+        assert waiting.cancelled()
+
+
+class TestPipelineSchemaWait:
+    async def test_startup_retries_until_the_schema_is_in_place(self) -> None:
+        from app.indexing_main import _ensure_pipeline_schema
+
+        graph = MagicMock()
+        missing = RuntimeError("could not apply the schema of collection 'records'")
+        graph.ensure_pipeline_schema = AsyncMock(side_effect=[missing, missing, None])
+
+        with patch("app.indexing_main.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            await _ensure_pipeline_schema(graph, MagicMock())
+
+        assert graph.ensure_pipeline_schema.await_count == 3
+        assert [call.args[0] for call in sleep.await_args_list] == [2.0, 4.0]
+
+    async def test_the_lifespan_ensures_the_schema_before_any_consumer_starts(self) -> None:
+        from app.indexing_main import lifespan
+
+        order: list[str] = []
+        mock_container = _make_container()
+        graph = _make_graph_provider()
+        graph.ensure_pipeline_schema = AsyncMock(side_effect=lambda: order.append("schema"))
+        mock_container._graph_provider = graph
+
+        async def start_consumers(*_args: object) -> list[object]:
+            order.append("consumers")
+            return []
+
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+        with (
+            patch("app.indexing_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.indexing_main.recover_in_progress_records", new_callable=AsyncMock),
+            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, side_effect=start_consumers),
+            patch("app.indexing_main.stop_kafka_consumers", new_callable=AsyncMock),
+        ):
+            async with lifespan(mock_app):
+                pass
+
+        assert order == ["schema", "consumers"]
+
 
 class TestStopKafkaConsumers:
     """Tests for stop_kafka_consumers()."""
@@ -1211,9 +1365,9 @@ class TestLifespan:
 # ---------------------------------------------------------------------------
 # health_check (indexing)
 # ---------------------------------------------------------------------------
-def _make_health_request(governor=None):
-    """Build a minimal mock Request exposing app.state.governor, since
-    health_check reads the governor off request.app.state (see
+def _make_health_request(governor=None, pipeline_runtime=None):
+    """Build a minimal mock Request exposing app.state.governor and
+    app.state.pipeline_runtime, which health_check reads (see
     app/indexing_main.py's /health route)."""
     request = MagicMock()
     request.app.state = MagicMock()
@@ -1221,6 +1375,10 @@ def _make_health_request(governor=None):
         del request.app.state.governor
     else:
         request.app.state.governor = governor
+    if pipeline_runtime is None:
+        del request.app.state.pipeline_runtime
+    else:
+        request.app.state.pipeline_runtime = pipeline_runtime
     return request
 
 
@@ -1240,6 +1398,7 @@ class TestIndexingHealthCheck:
     async def test_health_check_includes_timestamp(self):
         """Health check response includes timestamp."""
         import json
+
         from app.indexing_main import health_check
 
         with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
@@ -1253,6 +1412,7 @@ class TestIndexingHealthCheck:
         """When a governor is present on app.state, its stats are surfaced
         (see Phase 1/6 of the adaptive-concurrency plan)."""
         import json
+
         from app.indexing_main import health_check
 
         mock_governor = MagicMock()
@@ -1263,6 +1423,46 @@ class TestIndexingHealthCheck:
 
         body = json.loads(result.body)
         assert body["resource_governor"] == {"ceilings": {"index": 5}}
+
+    async def test_health_check_includes_pipeline_stages(self) -> None:
+        """The stage runtime reports each stage's topic, limit and outcomes."""
+        import json
+
+        from app.indexing_main import health_check
+
+        runtime = MagicMock()
+        runtime.stats.return_value = {"publisher_bound": True, "stages": {"classify": {"topic": "pipeline.classify"}}}
+
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
+            result = await health_check(_make_health_request(pipeline_runtime=runtime))
+
+        body = json.loads(result.body)
+        assert body["stages"]["stages"]["classify"]["topic"] == "pipeline.classify"
+
+    async def test_health_check_reports_the_llm_gateway(self) -> None:
+        import json
+
+        from app.indexing_main import health_check
+
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
+            result = await health_check(_make_health_request())
+
+        gateway = json.loads(result.body)["llm_gateway"]
+        assert gateway["limit"] >= 1 and gateway["in_use"] >= 0 and isinstance(gateway["providers"], dict)
+
+    async def test_health_check_survives_a_failing_stage_report(self) -> None:
+        import json
+
+        from app.indexing_main import health_check
+
+        runtime = MagicMock()
+        runtime.stats.side_effect = RuntimeError("boom")
+
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
+            result = await health_check(_make_health_request(pipeline_runtime=runtime))
+
+        assert result.status_code == 200
+        assert json.loads(result.body)["stages"] == {"error": "boom"}
 
     async def test_health_check_general_exception(self):
         """Health check returns 500 when get_epoch_timestamp_in_ms raises on first call."""
@@ -1322,8 +1522,9 @@ class TestModuleLevelCode:
 
     def test_app_is_fastapi_instance(self):
         """The module-level app is a FastAPI instance."""
-        from app.indexing_main import app
         from fastapi import FastAPI
+
+        from app.indexing_main import app
         assert isinstance(app, FastAPI)
 
     def test_container_lock_is_asyncio_lock(self):
@@ -1432,6 +1633,7 @@ class TestRunWorkersWarning:
     def test_workers_gt_one_with_reload_warns(self):
         """When reload=True and workers>1, a RuntimeWarning is issued and workers resets to 1."""
         import warnings
+
         from app.indexing_main import run
 
         with (
@@ -1478,8 +1680,9 @@ class TestRunWorkersWarning:
 
     def test_workers_from_env_default(self):
         """When INDEXING_UVICORN_WORKERS env is not set, defaults to 1."""
-        from app.indexing_main import run
         import os as _os
+
+        from app.indexing_main import run
 
         env = _os.environ.copy()
         env.pop("INDEXING_UVICORN_WORKERS", None)
@@ -1914,7 +2117,7 @@ def _stranded_env(after_seconds=3600.0):
     )
 
 
-async def _run_stranded(graph, producer=None, concurrency_manager=None):
+async def _run_stranded(graph, producer=None, concurrency_manager=None, is_backlogged=None):
     from app.indexing_main import _republish_stranded_records
 
     async def run_coordination(coro):
@@ -1927,6 +2130,7 @@ async def _run_stranded(graph, producer=None, concurrency_manager=None):
         run_coordination=run_coordination,
         concurrency_manager=concurrency_manager,
         page_size=100,
+        is_backlogged=is_backlogged,
     )
 
 
@@ -1949,6 +2153,7 @@ class TestRepublishStrandedRecords:
             "orgId": "org-1",
             "version": 0,
             "updatedAtTimestamp": 1,  # epoch ms — far older than any cutoff
+            "awaitingEventSince": 1,  # first seen waiting long ago
         }
         record.update(overrides)
         return record
@@ -2003,12 +2208,59 @@ class TestRepublishStrandedRecords:
         )
 
     @pytest.mark.asyncio
-    async def test_a_recently_touched_row_is_left_alone(self):
+    async def test_source_timestamps_do_not_make_a_row_stranded(self) -> None:
+        """Connectors write the source system's times into updatedAt/createdAt.
+
+        A Jira issue last edited a year ago looked a year old the moment it was
+        queued, so every freshly synced record was re-sent while its event was
+        still waiting in the broker. The first sighting only starts the clock.
+        """
+        row = self._old_record(createdAtTimestamp=1)
+        del row["awaitingEventSince"]
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+        key, collection, fields = graph.update_node.await_args.args
+        assert (key, collection) == ("r1", CollectionNames.RECORDS.value)
+        assert isinstance(fields["awaitingEventSince"], int)
+
+    @pytest.mark.asyncio
+    async def test_a_backlogged_consumer_defers_the_resend(self) -> None:
+        """An event queued behind a backlog is late, not lost."""
+        two_hours_ago = get_epoch_timestamp_in_ms() - 2 * 3600 * 1000
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(awaitingEventSince=two_hours_ago)]},
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, is_backlogged=lambda: True) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_backlog_defers_a_resend_only_so_long(self) -> None:
+        """A lost event is still recovered on a node that never runs out of work."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, is_backlogged=lambda: True) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_row_seen_waiting_recently_is_left_alone(self) -> None:
         """Its event may legitimately still be queued behind a backlog."""
         graph = _sweep_graph(
             {
                 ProgressStatus.QUEUED.value: [
-                    self._old_record(updatedAtTimestamp=get_epoch_timestamp_in_ms())
+                    self._old_record(awaitingEventSince=get_epoch_timestamp_in_ms())
                 ]
             },
             active_ids={"live"},
@@ -2086,7 +2338,7 @@ class TestRepublishStrandedRecords:
         key, collection, fields = graph.update_node.await_args.args
         assert key == "r1"
         assert collection == CollectionNames.RECORDS.value
-        assert "lastRepublishedAt" in fields
+        assert "awaitingEventSince" in fields
         # updatedAtTimestamp means "when the record last changed" and belongs
         # to the connectors; a recovery sweep must not move it.
         assert "updatedAtTimestamp" not in fields
@@ -2097,7 +2349,7 @@ class TestRepublishStrandedRecords:
         graph = _sweep_graph(
             {
                 ProgressStatus.QUEUED.value: [
-                    self._old_record(lastRepublishedAt=get_epoch_timestamp_in_ms())
+                    self._old_record(awaitingEventSince=get_epoch_timestamp_in_ms())
                 ]
             },
             active_ids={"live"},
@@ -2113,7 +2365,7 @@ class TestRepublishStrandedRecords:
     async def test_an_old_republish_does_not_block_a_retry(self):
         """A second lost event is still recoverable once the window passes."""
         graph = _sweep_graph(
-            {ProgressStatus.QUEUED.value: [self._old_record(lastRepublishedAt=1)]},
+            {ProgressStatus.QUEUED.value: [self._old_record(awaitingEventSince=1)]},
             active_ids={"live"},
         )
         producer = AsyncMock()
@@ -2157,7 +2409,7 @@ class TestRepublishClaimIsWrittenBeforeTheSend:
     """The republish marker is a durable claim taken *before* the send.
 
     Written after the send, a Neo4j failure following a successful Redis send
-    left `lastRepublishedAt` unset, so the record stayed eligible and was
+    left the row's clock unmoved, so the record stayed eligible and was
     re-sent every 60s tick until the consumer moved it out of
     QUEUED/NOT_STARTED -- and the 60s loop passes no concurrency_manager, so
     nothing else bounded it. Under a backlog that inflates the very backlog
@@ -2210,10 +2462,10 @@ class TestRepublishClaimIsWrittenBeforeTheSend:
 
         assert order == ["claim", "send"]
         claim_fields = graph.update_node.await_args_list[0].args[2]
-        assert isinstance(claim_fields["lastRepublishedAt"], int)
+        assert isinstance(claim_fields["awaitingEventSince"], int)
 
     @pytest.mark.asyncio
-    async def test_a_failed_send_clears_the_claim_so_the_next_tick_retries(self):
+    async def test_a_failed_send_restores_the_clock_so_the_next_tick_retries(self) -> None:
         graph = _sweep_graph(
             {ProgressStatus.QUEUED.value: [self._row()]}, active_ids={"live"}
         )
@@ -2226,5 +2478,98 @@ class TestRepublishClaimIsWrittenBeforeTheSend:
 
         writes = [c.args[2] for c in graph.update_node.await_args_list]
         assert len(writes) == 2
-        assert isinstance(writes[0]["lastRepublishedAt"], int)   # the claim
-        assert writes[1] == {"lastRepublishedAt": None}          # cleared on failure
+        assert isinstance(writes[0]["awaitingEventSince"], int)  # the claim restarts the clock
+        assert writes[1] == {"awaitingEventSince": 1}           # the old stamp, back on failure
+
+
+class TestSharedWorkerLoopShutdown:
+    async def test_the_worker_loop_closes_after_every_consumer(self) -> None:
+        from app.indexing_main import stop_kafka_consumers
+
+        container = _make_container()
+        order: list[str] = []
+        consumer = MagicMock()
+        consumer.stop = AsyncMock(side_effect=lambda: order.append("consumer"))
+        container.kafka_consumers = [("record", consumer, None)]
+        worker = MagicMock(spec=WorkerLoop)
+        worker.aclose = AsyncMock(side_effect=lambda: order.append("worker"))
+        container.worker_loop = worker
+
+        await stop_kafka_consumers(container)
+
+        assert order == ["consumer", "worker"]
+        assert container.worker_loop is None
+
+
+class TestSharedConsumerResourcesCloseLast:
+    async def test_shared_resources_close_only_after_every_consumer_stops(self) -> None:
+        """A stage consumer still stopping renews leases and re-queues through them."""
+        from app.indexing_main import stop_kafka_consumers
+
+        container = _make_container()
+        order: list[str] = []
+        leases = MagicMock()
+        leases.cleanup = AsyncMock(side_effect=lambda: order.append("leases"))
+        producer = MagicMock()
+        producer.cleanup = AsyncMock(side_effect=lambda: order.append("producer"))
+        record = MagicMock(concurrency_manager=leases, retry_manager=None)
+        record.stop = AsyncMock(side_effect=lambda: order.append("record"))
+        stage = MagicMock(concurrency_manager=leases, retry_manager=None)
+        stage.stop = AsyncMock(side_effect=lambda: order.append("stage"))
+        container.kafka_consumers = [("record", record, producer), ("pipeline.classify", stage, None)]
+        container.worker_loop = None
+
+        await stop_kafka_consumers(container)
+
+        assert order == ["record", "stage", "leases", "producer"]
+
+    async def test_a_resource_the_caller_owns_is_closed_once(self) -> None:
+        from app.indexing_main import _stop_consumers_then_shared_resources
+
+        shared = MagicMock()
+        shared.cleanup = AsyncMock()
+        consumer = MagicMock(concurrency_manager=shared, retry_manager=None)
+        consumer.stop = AsyncMock()
+
+        await _stop_consumers_then_shared_resources(
+            [("record", consumer, None)], MagicMock(), also_close=(shared, None)
+        )
+
+        shared.cleanup.assert_awaited_once()
+
+
+class TestWorkerLoopClosesAfterItsClients:
+    async def test_the_lifespan_can_keep_the_worker_loop_for_the_clients_bound_to_it(self) -> None:
+        from app.indexing_main import stop_kafka_consumers
+
+        container = _make_container()
+        consumer = MagicMock()
+        consumer.stop = AsyncMock()
+        container.kafka_consumers = [("record", consumer, None)]
+        worker = MagicMock(spec=WorkerLoop)
+        worker.aclose = AsyncMock()
+        container.worker_loop = worker
+
+        await stop_kafka_consumers(container, close_worker_loop=False)
+
+        consumer.stop.assert_awaited_once()
+        worker.aclose.assert_not_awaited()
+        assert container.worker_loop is worker
+
+
+class TestRecordConsumerBacklog:
+    def test_work_waiting_on_the_record_consumer_is_a_backlog(self) -> None:
+        from app.indexing_main import _record_consumer_backlogged
+
+        record, stage = MagicMock(stage_admission=None), MagicMock(stage_admission=object())
+        stage.dispatch_stats.return_value = {"total": {"waiters": 9}, "blocked": True}
+        container = MagicMock()
+        container.kafka_consumers = [("record", record, None), ("pipeline.classify", stage, None)]
+
+        record.dispatch_stats.return_value = {"total": {"waiters": 3, "ceiling": 64}, "blocked": False}
+        assert _record_consumer_backlogged(container)
+        record.dispatch_stats.return_value = {"total": {"waiters": 0, "ceiling": 64}, "blocked": True}
+        assert _record_consumer_backlogged(container)
+        # An idle record consumer: a stage consumer's queue is not the sweep's concern.
+        record.dispatch_stats.return_value = {"total": {"waiters": 0, "ceiling": 64}, "blocked": False}
+        assert not _record_consumer_backlogged(container)

@@ -2186,3 +2186,18 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
 
         assert result.skip_indexing is True
         assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
+
+
+class TestPickupStopsTheStrandedClock:
+    @pytest.mark.asyncio
+    async def test_picking_a_record_up_stops_the_stranded_clock(self) -> None:
+        """A record a consumer has picked up is not stranded, whatever its status later."""
+        ep, _, _, gp = _make_event_processor()
+        doc = {"_key": "k1", "awaitingEventSince": 123}
+
+        await ep.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
+        assert doc["awaitingEventSince"] is None
+        assert gp.update_node.await_args.args[2]["awaitingEventSince"] is None
+
+        await ep.mark_record_status(doc, ProgressStatus.COMPLETED)
+        assert "awaitingEventSince" not in gp.update_node.await_args.args[2]

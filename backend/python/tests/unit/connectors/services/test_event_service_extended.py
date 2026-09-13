@@ -10,13 +10,13 @@ Targets:
 """
 
 import logging
+from collections.abc import Coroutine
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import AppStatus, Connectors, ProgressStatus
+from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.services.event_service import EventService
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -387,3 +387,74 @@ class TestHandleDelete:
         assert result is False
         # Should have tried to revert status
         service.graph_provider.batch_upsert_nodes.assert_awaited()
+
+
+class TestStageReruns:
+    def test_the_task_key_keeps_a_stage_rerun_apart_from_a_reindex(self) -> None:
+        assert EventService._reindex_task_key("c1", None, None, 0, None, ["FAILED"], ["classify"]) == (
+            "reindex:c1:*:0:*:FAILED:stages=classify"
+        )
+        assert EventService._reindex_task_key("c1", None, None, 0, None, ["FAILED"]) == "reindex:c1:*:0:*:FAILED"
+
+    @pytest.mark.asyncio
+    async def test_a_stage_rerun_selects_by_the_stage_status_and_republishes_only_the_stage(self, service) -> None:
+        connector = AsyncMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        records = [_make_mock_record("r1"), _make_mock_record("r2")]
+        service.graph_provider.get_records_by_status = AsyncMock(return_value=records)
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=["FAILED"], stages=["classify"],
+        )
+
+        kwargs = service.graph_provider.get_records_by_status.call_args.kwargs
+        assert (kwargs["status_field"], kwargs["status_filters"]) == ("extractionStatus", ["FAILED"])
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(records, stages=["classify"])
+        connector.reindex_records.assert_not_awaited()
+        service.graph_provider.update_indexing_status_for_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_plain_reindex_still_selects_by_indexing_status(self, service) -> None:
+        connector = AsyncMock()
+        service.graph_provider.get_records_by_status = AsyncMock(return_value=[])
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None, status_filters=["FAILED"],
+        )
+        assert service.graph_provider.get_records_by_status.call_args.kwargs["status_field"] == "indexingStatus"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [
+        {"orgId": "o1", "connectorId": "c1", "recordId": "r1", "stages": ["classify"]},
+        {"orgId": "o1", "connectorId": "c1", "stages": ["entities"]},
+        {"orgId": "o1", "connectorId": "c1", "stages": "classify"},
+    ])
+    async def test_stage_reruns_are_connector_wide_and_name_known_stages(self, service, payload) -> None:
+        service._ensure_connector = AsyncMock()
+        assert await service._handle_reindex("gmail", payload) is False
+        service._ensure_connector.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_kb_stage_rerun_without_filters_retries_only_failures(self, service) -> None:
+        from unittest.mock import patch
+
+        connector = MagicMock()
+        connector.app.get_app_name.return_value.name = "KNOWLEDGE_BASE"
+        service._ensure_connector = AsyncMock(return_value=connector)
+        keys: list[str] = []
+
+        async def start_if_idle(key: str, coro: Coroutine[object, object, object]) -> object:
+            keys.append(key)
+            coro.close()
+            return object()
+
+        with patch("app.connectors.services.event_service.reindex_task_manager") as manager:
+            manager.start_if_idle = start_if_idle
+            ok = await service._handle_reindex(
+                Connectors.KNOWLEDGE_BASE.value.lower(), {"orgId": "o1", "connectorId": "kb1", "stages": ["classify"]}
+            )
+        assert ok is True
+        assert keys == ["reindex:kb1:*:0:*:FAILED:stages=classify"]

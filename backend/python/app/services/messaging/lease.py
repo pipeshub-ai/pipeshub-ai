@@ -101,6 +101,7 @@ class LeaseRenewer:
         self._clock = clock
         self._handles: dict[str, LeaseHandle] = {}
         self._task: asyncio.Task[None] | None = None
+        self._generation = 0
         self._last_success = clock()
 
     def register(self, owner: str) -> LeaseHandle:
@@ -127,9 +128,15 @@ class LeaseRenewer:
 
     def start(self) -> None:
         if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._run())
+            self._generation += 1
+            self._task = asyncio.create_task(self._run(self._generation))
+
+    # Stopping only cancels the renewal task; this bounds a cancellation that hangs.
+    STOP_TIMEOUT_S = 10.0
 
     async def stop(self) -> None:
+        # Ends the loop even if its renew call swallowed the cancellation, so nothing renews after stop.
+        self._generation += 1
         task = self._task
         self._task = None
         if task is not None:
@@ -137,8 +144,8 @@ class LeaseRenewer:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-    async def _run(self) -> None:
-        while True:
+    async def _run(self, generation: int) -> None:
+        while generation == self._generation:
             await asyncio.sleep(self._interval)
             try:
                 await self._renew_once()

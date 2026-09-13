@@ -801,10 +801,21 @@ class BlobStorage(Transformer):
         org_id = record.org_id
         record_id = record.id
         virtual_record_id = record.virtual_record_id
+        if not virtual_record_id:
+            raise ValueError(f"record {record_id} has no virtual record id to store under")
         # Use exclude_none=True to skip None values, then clean empty values
         record_dict = record.model_dump(mode='json', exclude_none=True)
         record_dict = self._clean_empty_values(record_dict)
 
+        await self._store_record_dict(org_id, record_id, virtual_record_id, record_dict)
+
+        ctx.record = record
+        return ctx
+
+    async def _store_record_dict(
+        self, org_id: str, record_id: str, virtual_record_id: str, record_dict: dict[str, Any]
+    ) -> None:
+        """Upload a record as the next version of its stored document, or as a new one."""
         existing_lookup = None
         if self.graph_provider:
             existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
@@ -841,8 +852,15 @@ class BlobStorage(Transformer):
         if document_id and self.graph_provider:
             await self.store_virtual_record_mapping(org_id, virtual_record_id, document_id, file_size_bytes)
 
-        ctx.record = record
-        return ctx
+    async def save_semantic_metadata(
+        self, org_id: str, record_id: str, virtual_record_id: str, semantic_metadata: dict[str, Any]
+    ) -> None:
+        """Write classification into the stored record as its next version."""
+        stored = await self.get_record_from_storage(virtual_record_id, org_id)
+        if stored is None:
+            raise LookupError(f"no stored record for virtual record {virtual_record_id}")
+        stored["semantic_metadata"] = semantic_metadata
+        await self._store_record_dict(org_id, record_id, virtual_record_id, stored)
 
     async def _with_storage_retry(
         self,
@@ -1470,8 +1488,8 @@ class BlobStorage(Transformer):
         self,
         virtual_record_id: str,
         org_id: str,
-        lookup_result: dict | None = None,
-    ) -> dict | None:
+        lookup_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """
         Retrieve a record's content from blob storage using the virtual_record_id.
 

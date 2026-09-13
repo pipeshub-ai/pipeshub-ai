@@ -12,13 +12,15 @@ Install:
   pip install cloudscraper requests   # optional fallbacks
 """
 
+import contextlib
 import ipaddress
 import random
 import socket
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Literal
-from urllib.parse import urlparse
+from typing import Literal, TypeVar
+from urllib.parse import urljoin, urlparse
 
 from app.utils.logger import create_logger
 
@@ -72,8 +74,26 @@ _BLOCKED_HOSTNAMES = frozenset(
 _NAT64_WELL_KNOWN_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
 
 
-def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """True if the address must not be contacted by the generic HTTP fetcher.
+# How much of the address space a fetch may reach.
+#   "public_only": the public internet only; the default for user/admin-supplied URLs.
+#   "no_local":    private networks too (self-hosted Confluence/Jira serve images
+#                  from them), but never loopback, link-local or cloud metadata.
+HostPolicy = Literal["public_only", "no_local"]
+PUBLIC_ONLY: HostPolicy = "public_only"
+NO_LOCAL: HostPolicy = "no_local"
+
+# Cloud metadata endpoints at addresses the "no_local" tier would otherwise allow.
+_METADATA_IPS = frozenset(
+    ipaddress.ip_address(addr)
+    for addr in ("169.254.169.254", "fd00:ec2::254", "100.100.100.200")
+)
+
+
+def _ip_is_blocked(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    policy: HostPolicy = PUBLIC_ONLY,
+) -> bool:
+    """True if the address must not be contacted under *policy*.
 
     NAT64 well-known-prefix addresses are unwrapped to their embedded IPv4 address and
     re-checked against the same rules, instead of trusting `is_reserved` — so a NAT64-routed
@@ -82,31 +102,70 @@ def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """
     if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_WELL_KNOWN_PREFIX:
         embedded_ipv4 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-        return _ip_is_blocked(embedded_ipv4)
-    return bool(
-        ip.is_private
-        or ip.is_loopback
+        return _ip_is_blocked(embedded_ipv4, policy)
+    if ip in _METADATA_IPS:
+        return True
+    local = (
+        ip.is_loopback
         or ip.is_link_local
         or ip.is_multicast
         or ip.is_reserved
         or ip.is_unspecified
     )
+    if policy == NO_LOCAL:
+        return bool(local)
+    return bool(ip.is_private or local)
 
 
-def _hostname_is_blocked(hostname: str) -> bool:
+def ip_is_blocked(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address, policy: HostPolicy
+) -> bool:
+    """Public form of the address check, for resolvers that vet at connect time."""
+    return _ip_is_blocked(ip, policy)
+
+
+def _hostname_is_blocked(hostname: str, policy: HostPolicy = PUBLIC_ONLY) -> bool:
     hn = hostname.lower().removesuffix(".")
-    if hn in _BLOCKED_HOSTNAMES:
+    if hn in _BLOCKED_HOSTNAMES or hn.endswith(".localhost"):
         return True
-    if hn.endswith(".localhost") or hn.endswith(".local"):
-        return True
-    return False
+    return policy == PUBLIC_ONLY and hn.endswith(".local")
+
+
+def check_url_host_without_dns(url: str, policy: HostPolicy) -> None:
+    """Scheme, hostname and literal-address checks; no DNS lookup.
+
+    For callers whose HTTP client vets resolved addresses at connect time: that
+    covers hostnames, and this covers what never reaches a resolver — literal
+    addresses and blocked names — on the first request and on every redirect.
+
+    Raises:
+        FetchError: if the URL is disallowed under *policy*.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise FetchError(f"Only HTTP/HTTPS URLs are allowed, got scheme {parsed.scheme!r}")
+    hostname = parsed.hostname
+    if not hostname:
+        raise FetchError("URL has no hostname")
+    if _hostname_is_blocked(hostname, policy):
+        raise FetchError(f"Blocked unsafe URL hostname: {hostname}")
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return
+    if _ip_is_blocked(ip, policy):
+        raise FetchError(f"Blocked unsafe URL address: {ip}")
 
 
 def _validate_public_http_url(url: str) -> None:
+    _validate_http_url(url, PUBLIC_ONLY)
+
+
+def _validate_http_url(url: str, policy: HostPolicy) -> None:
     """
-    Reject URLs that would trigger SSRF against RFC1918, loopback, link-local,
-    cloud metadata IPs, etc. Applies to the initial URL only; redirect targets are
-    not re-validated (see allow_redirects in fetch strategies).
+    Reject URLs that would trigger SSRF under *policy* (loopback, link-local,
+    cloud metadata IPs, and for "public_only" RFC1918 too). Called for the
+    initial URL and every redirect hop before the next request.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -116,13 +175,13 @@ def _validate_public_http_url(url: str) -> None:
     if not hostname:
         raise FetchError("URL has no hostname")
 
-    if _hostname_is_blocked(hostname):
+    if _hostname_is_blocked(hostname, policy):
         raise FetchError(f"Blocked unsafe URL hostname: {hostname}")
 
     # Literal IP in the URL (IPv4 or IPv6)
     try:
         ip = ipaddress.ip_address(hostname)
-        if _ip_is_blocked(ip):
+        if _ip_is_blocked(ip, policy):
             raise FetchError(f"Blocked unsafe URL address: {ip}")
         return
     except ValueError:
@@ -143,7 +202,7 @@ def _validate_public_http_url(url: str) -> None:
             ip = ipaddress.ip_address(addr)
         except ValueError:
             continue
-        if _ip_is_blocked(ip):
+        if _ip_is_blocked(ip, policy):
             raise FetchError(f"Blocked unsafe URL: hostname {hostname!r} resolves to {ip}")
 
 
@@ -158,11 +217,59 @@ def validate_public_http_url(url: str) -> None:
     _validate_public_http_url(url)
 
 
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_REDIRECTS = 10
+
+
+def _close_response(resp: object) -> None:
+    close = getattr(resp, "close", None)
+    if callable(close):
+        with contextlib.suppress(Exception):
+            close()
+
+
+def _redirect_location(resp: object) -> str | None:
+    status = getattr(resp, "status_code", None)
+    if status not in _REDIRECT_STATUSES:
+        return None
+    headers: Mapping[str, str] = getattr(resp, "headers", None) or {}
+    location = headers.get("Location") or headers.get("location")
+    if not location:
+        return None
+    return str(location).strip() or None
+
+
+_Response = TypeVar("_Response")
+
+
+def _follow_http_redirects(
+    get: Callable[[str], _Response],
+    url: str,
+    host_policy: HostPolicy | None,
+) -> _Response:
+    """GET *url*, following redirects only to hosts *host_policy* allows.
+
+    Clients must not auto-follow: a public URL can 302 to loopback or metadata.
+    """
+    current = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        if host_policy is not None:
+            _validate_http_url(current, host_policy)
+        resp = get(current)
+        location = _redirect_location(resp)
+        if location is None:
+            return resp
+        next_url = urljoin(current, location)
+        _close_response(resp)
+        current = next_url
+    raise FetchError("Too many redirects")
+
+
 # ---------------------------------------------------------------------------
 # Shared headers
 # ---------------------------------------------------------------------------
 
-def _build_headers(url: str, referer: str | None, extra: dict | None) -> dict:
+def _build_headers(url: str, referer: str | None, extra: dict[str, str] | None) -> dict[str, str]:
     parsed = urlparse(url)
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -220,10 +327,11 @@ def _get_profiles() -> list[str]:
 
 def _try_curl_cffi(
     url: str,
-    headers: dict,
+    headers: dict[str, str],
     timeout: int,
     use_http2: bool = True,
     profiles: list[str] | None = None,
+    host_policy: HostPolicy | None = None,
 ) -> FetchResult | None:
     """Try curl_cffi with rotating profiles or an explicit profile list."""
     try:
@@ -254,7 +362,11 @@ def _try_curl_cffi(
                     except Exception:
                         pass
 
-                resp = session.get(url, headers=headers, allow_redirects=True)
+                resp = _follow_http_redirects(
+                    lambda current: session.get(current, headers=headers, allow_redirects=False),
+                    url,
+                    host_policy,
+                )
 
                 if resp.status_code == HTTP_STATUS_OK:
                     return FetchResult(
@@ -282,6 +394,8 @@ def _try_curl_cffi(
                         strategy=f"curl_cffi({profile})",
                     )
 
+        except FetchError:
+            raise
         except Exception:
             logger.debug("Exception for %s with profile %s", url, profile, exc_info=True)
             continue
@@ -293,7 +407,9 @@ def _try_curl_cffi(
 # Strategy 2: cloudscraper
 # ---------------------------------------------------------------------------
 
-def _try_cloudscraper(url: str, headers: dict, timeout: int) -> FetchResult | None:
+def _try_cloudscraper(
+    url: str, headers: dict[str, str], timeout: int, host_policy: HostPolicy | None = None
+) -> FetchResult | None:
     try:
         import cloudscraper
     except ImportError:
@@ -303,7 +419,11 @@ def _try_cloudscraper(url: str, headers: dict, timeout: int) -> FetchResult | No
         scraper = cloudscraper.create_scraper(
             browser={"browser": "chrome", "platform": "windows", "mobile": False}
         )
-        resp = scraper.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        resp = _follow_http_redirects(
+            lambda current: scraper.get(current, headers=headers, timeout=timeout, allow_redirects=False),
+            url,
+            host_policy,
+        )
 
         if resp.status_code == HTTP_STATUS_OK:
             return FetchResult(
@@ -314,6 +434,8 @@ def _try_cloudscraper(url: str, headers: dict, timeout: int) -> FetchResult | No
                 url=resp.url,
                 strategy="cloudscraper",
             )
+    except FetchError:
+        raise
     except Exception:
         pass
 
@@ -324,7 +446,9 @@ def _try_cloudscraper(url: str, headers: dict, timeout: int) -> FetchResult | No
 # Strategy 3: plain requests with stealth UA
 # ---------------------------------------------------------------------------
 
-def _try_requests(url: str, headers: dict, timeout: int) -> FetchResult | None:
+def _try_requests(
+    url: str, headers: dict[str, str], timeout: int, host_policy: HostPolicy | None = None
+) -> FetchResult | None:
     try:
         import requests as req
     except ImportError:
@@ -342,7 +466,11 @@ def _try_requests(url: str, headers: dict, timeout: int) -> FetchResult | None:
         ]
         session.headers["User-Agent"] = random.choice(ua_list)
 
-        resp = session.get(url, timeout=timeout, allow_redirects=True)
+        resp = _follow_http_redirects(
+            lambda current: session.get(current, timeout=timeout, allow_redirects=False),
+            url,
+            host_policy,
+        )
 
         if resp.status_code == HTTP_STATUS_OK:
             return FetchResult(
@@ -353,6 +481,8 @@ def _try_requests(url: str, headers: dict, timeout: int) -> FetchResult | None:
                 url=resp.url,
                 strategy="requests",
             )
+    except FetchError:
+        raise
     except Exception:
         pass
 
@@ -366,7 +496,7 @@ MAX_RETRIES = 0
 def fetch_url(
     url: str,
     *,
-    headers: dict | None = None,
+    headers: dict[str, str] | None = None,
     referer: str | None = None,
     timeout: int = 15,
     max_retries: int = MAX_RETRIES,
@@ -374,6 +504,7 @@ def fetch_url(
     profile: str | None = None,
     verbose: bool = False,
     block_private_hosts: bool = True,
+    host_policy: HostPolicy | None = None,
 ) -> FetchResult:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -407,8 +538,10 @@ def fetch_url(
         FetchError: If the URL fails SSRF validation (when ``block_private_hosts`` is True),
             if all strategies fail, or for unknown ``strategy`` values.
     """
-    if block_private_hosts:
-        _validate_public_http_url(url)
+    if host_policy is None and block_private_hosts:
+        host_policy = PUBLIC_ONLY
+    if host_policy is not None:
+        _validate_http_url(url, host_policy)
 
     req_headers = _build_headers(url, referer, headers)
     selected_profiles = [profile] if profile else None
@@ -417,17 +550,25 @@ def fetch_url(
         "curl_cffi_h2": (
             "curl_cffi (HTTP/2)",
             lambda: _try_curl_cffi(
-                url, req_headers, timeout, use_http2=True, profiles=selected_profiles
+                url, req_headers, timeout, use_http2=True, profiles=selected_profiles,
+                host_policy=host_policy,
             ),
         ),
         "curl_cffi_h1": (
             "curl_cffi (HTTP/1.1)",
             lambda: _try_curl_cffi(
-                url, req_headers, timeout, use_http2=False, profiles=selected_profiles
+                url, req_headers, timeout, use_http2=False, profiles=selected_profiles,
+                host_policy=host_policy,
             ),
         ),
-        "cloudscraper": ("cloudscraper", lambda: _try_cloudscraper(url, req_headers, timeout)),
-        "requests": ("requests", lambda: _try_requests(url, req_headers, timeout)),
+        "cloudscraper": (
+            "cloudscraper",
+            lambda: _try_cloudscraper(url, req_headers, timeout, host_policy=host_policy),
+        ),
+        "requests": (
+            "requests",
+            lambda: _try_requests(url, req_headers, timeout, host_policy=host_policy),
+        ),
     }
 
     if strategy is not None:
@@ -455,6 +596,8 @@ def fetch_url(
                     if verbose:
                         logger.debug("Success via %s", result.strategy)
                     return result
+            except FetchError:
+                raise
             except Exception as e:
                 errors.append(f"{e}")
 

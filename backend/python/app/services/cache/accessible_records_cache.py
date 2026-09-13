@@ -33,6 +33,7 @@ import json
 import os
 import time
 import zlib
+from functools import partial
 from typing import TYPE_CHECKING
 
 from app.services.cache.interface import (
@@ -42,8 +43,10 @@ from app.services.cache.interface import (
 )
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
+from app.utils.loop_local import LoopLocal
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from logging import Logger
 
     from app.config.configuration_service import ConfigurationService
@@ -94,18 +97,26 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         ttl_seconds: int,
         enabled: bool,  # noqa: FBT001 - positional keeps the test fakes terse
         key_namespace: str = "",
+        client_factory: "Callable[[], RedisClient] | None" = None,
     ) -> None:
         self.logger = logger
+        # An injected `redis_client` (tests) serves every loop as-is. `create()` passes a
+        # factory instead: a redis.asyncio pool binds to the loop that first uses it, and this
+        # cache is shared by the server loop and every consumer's worker loop.
         self._redis = redis_client
+        self._clients: LoopLocal[RedisClient] | None = (
+            None if client_factory is None else LoopLocal(client_factory)
+        )
         self._ttl = ttl_seconds
-        self._enabled = enabled and redis_client is not None
+        self._enabled = enabled and (redis_client is not None or client_factory is not None)
         self._down_until = 0.0
         # REDIS_KEY_NAMESPACE (R9): set by `create()` from the provider;
         # stays empty when a raw `redis_client` is injected directly without
         # a namespace (mostly tests), same as an unset namespace.
         self._key_namespace = key_namespace
-        self._locks: tuple[asyncio.Lock, ...] = tuple(
-            asyncio.Lock() for _ in range(self.LOCK_STRIPES)
+        # Per loop, as a Lock binds to its first waiter's loop: a stripe excludes misses within one loop only.
+        self._lock_stripes: LoopLocal[tuple[asyncio.Lock, ...]] = LoopLocal(
+            lambda: tuple(asyncio.Lock() for _ in range(self.LOCK_STRIPES))
         )
 
     @classmethod
@@ -125,7 +136,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             logger.info("Accessible-records cache disabled via %s", cls.ENV_ENABLED)
             return NoopAccessibleRecordsCache()
 
-        client = None
+        cache: AccessibleRecordsCache | None = None
         try:
             redis_config = await config_service.get_redis_config()
             provider = get_redis_provider(
@@ -137,14 +148,22 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
                     tls=redis_config.tls,
                 )
             )
-            client = provider.create_client(
-                ClientOptions(
-                    decode_responses=True,
-                    socket_timeout_seconds=cls.OP_TIMEOUT_SECONDS,
-                    socket_connect_timeout_seconds=cls.OP_TIMEOUT_SECONDS,
-                )
+            cache = cls(
+                logger,
+                None,
+                ttl,
+                enabled=True,
+                key_namespace=provider.key_namespace,
+                client_factory=partial(
+                    provider.create_client,
+                    ClientOptions(
+                        decode_responses=True,
+                        socket_timeout_seconds=cls.OP_TIMEOUT_SECONDS,
+                        socket_connect_timeout_seconds=cls.OP_TIMEOUT_SECONDS,
+                    ),
+                ),
             )
-            await client.ping()
+            await cache._client().ping()
         except Exception as e:
             logger.warning(
                 "Accessible-records cache unavailable (%s); falling back to live queries", str(e)
@@ -152,18 +171,12 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             # `create_client()` hands out a caller-owned client (not the
             # provider's shared one) -- release it ourselves on failure, or
             # the ping-that-never-succeeded connection leaks for good.
-            if client is not None:
-                try:
-                    await client.aclose()
-                except Exception as close_error:
-                    logger.debug(
-                        "Error closing accessible-records cache client after setup failure: %s",
-                        str(close_error),
-                    )
+            if cache is not None:
+                await cache.close()
             return NoopAccessibleRecordsCache()
 
         logger.info("Accessible-records cache ready (ttl=%ss)", ttl)
-        return cls(logger, client, ttl, enabled=True, key_namespace=provider.key_namespace)
+        return cache
 
     @property
     def enabled(self) -> bool:
@@ -177,13 +190,27 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         return self._ttl
 
     async def close(self) -> None:
+        """Close every loop's client, each on the loop that owns it."""
         client, self._redis = self._redis, None
         self._enabled = False
+        errors: list[Exception] = []
+        if self._clients is not None:
+            errors = await self._clients.aclose_all(lambda loop_client: loop_client.aclose())
         if client is not None:
             try:
                 await client.aclose()
             except Exception as e:
-                self.logger.debug("Error closing accessible-records cache: %s", str(e))
+                errors.append(e)
+        for error in errors:
+            self.logger.debug("Error closing accessible-records cache: %s", str(error))
+
+    def _client(self) -> "RedisClient":
+        """The running loop's client, or the injected one."""
+        if self._clients is not None:
+            return self._clients.get()
+        if self._redis is None:
+            raise RuntimeError("Accessible-records cache has no Redis client")
+        return self._redis
 
     # ---- keys ---------------------------------------------------------
 
@@ -254,13 +281,13 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
     def _lock_for(self, lock_key: str) -> asyncio.Lock:
         """Stripe for this key. crc32 rather than hash() so the mapping is
         stable across processes and test runs."""
-        return self._locks[zlib.crc32(lock_key.encode()) % len(self._locks)]
+        stripes = self._lock_stripes.get()
+        return stripes[zlib.crc32(lock_key.encode()) % len(stripes)]
 
     async def _read(self, key: str, field: str | None) -> dict[str, str] | None:
         try:
-            raw = await (
-                self._redis.get(key) if field is None else self._redis.hget(key, field)
-            )
+            redis = self._client()
+            raw = await (redis.get(key) if field is None else redis.hget(key, field))
         except Exception as e:
             self._mark_down("read", e)
             return None
@@ -291,12 +318,13 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
 
     async def _write(self, key: str, field: str | None, value: dict[str, str]) -> None:
         try:
+            redis = self._client()
             if field is None:
-                await self._redis.set(key, json.dumps(value, separators=(",", ":")), ex=self._ttl)
+                await redis.set(key, json.dumps(value, separators=(",", ":")), ex=self._ttl)
             else:
                 envelope = json.dumps({"t": int(time.time()), "m": value}, separators=(",", ":"))
-                await self._redis.hset(key, field, envelope)
-                await self._redis.expire(key, self._ttl)
+                await redis.hset(key, field, envelope)
+                await redis.expire(key, self._ttl)
         except Exception as e:
             self._mark_down("write", e)
 
@@ -322,7 +350,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         if not self.enabled:
             return
         try:
-            async with self._redis.pipeline(transaction=False) as pipe:
+            async with self._client().pipeline(transaction=False) as pipe:
                 for key in keys:
                     pipe.delete(key)
                 await pipe.execute()

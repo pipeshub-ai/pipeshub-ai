@@ -142,6 +142,16 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def ensure_pipeline_schema(self) -> None:
+        """Ensure what the indexing pipeline writes against: the stage-state store with its
+        unique key and indexes, and the current record schema where the engine enforces one.
+
+        Idempotent, and safe beside the connector service's ``ensure_schema``: the indexing
+        service runs it before consuming because that bootstrap may not have run yet (a first
+        start, or an older connector image). Raises when the schema cannot be ensured.
+        """
+
     # ==================== Transaction Management ====================
 
     @abstractmethod
@@ -182,7 +192,7 @@ class IGraphDBProvider(ABC):
         document_key: str,
         collection: str,
         transaction: str | None = None
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """
         Get a document by its key from a collection.
 
@@ -279,7 +289,7 @@ class IGraphDBProvider(ABC):
         sort_field: str | None = None,
         transaction: str | None = None,
         raise_on_error: bool = False,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """
         Fetch a single page of documents from a collection using database-level
         pagination, so memory usage stays proportional to `limit` regardless of
@@ -330,6 +340,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def ensure_nodes(
+        self,
+        nodes: list[dict[str, Any]],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Create each node whose ``id`` does not exist yet; never modify an existing one.
+
+        For shared nodes with derived keys (taxonomy terms, entities): concurrent
+        writers of one key neither conflict nor overwrite each other.
+
+        Args:
+            nodes (List[Dict]): Documents with an 'id' field, as for batch_upsert_nodes
+            collection (str): Collection/table name
+            transaction (Optional[Any]): Optional transaction context
+
+        Raises:
+            Exception: when a node could not be created for a reason other than
+                already existing.
+        """
+        pass
+
+    @abstractmethod
     async def delete_nodes(
         self,
         keys: list[str],
@@ -354,7 +388,7 @@ class IGraphDBProvider(ABC):
         self,
         key: str,
         collection: str,
-        node_updates: dict,
+        node_updates: dict[str, Any],
         transaction: str | None = None
     ) -> bool:
         """
@@ -1126,6 +1160,7 @@ class IGraphDBProvider(ABC):
         is_placeholder: bool | None = None,
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
+        status_field: str = "indexingStatus",
     ) -> list['Record']:
         """
         Get records by their indexing status.
@@ -1335,6 +1370,48 @@ class IGraphDBProvider(ABC):
                        other status and were left alone - a normal outcome, not an error.
         """
         pass
+
+    # ==================== Pipeline stage states ====================
+
+    @abstractmethod
+    async def stage_state_get(self, key: str) -> dict[str, Any] | None:
+        """One stage-state document by key (``id`` holds the key), or None."""
+
+    @abstractmethod
+    async def stage_states_for_revision(self, virtual_record_id: str, rev: str) -> list[dict[str, Any]]:
+        """Every stage-state document of one content revision."""
+
+    @abstractmethod
+    async def stage_state_create(self, document: dict[str, Any]) -> bool:
+        """Insert a stage state on its unique key (``document["id"]``); False when the key exists.
+
+        Raises on infrastructure errors, so an outage is never mistaken for a lost race.
+        """
+
+    @abstractmethod
+    async def stage_state_compare_and_set(
+        self, key: str, expected: str, new: str, fields: dict[str, Any]
+    ) -> bool:
+        """Set ``status`` to ``new`` and write ``fields`` in one statement, only while ``status == expected``.
+
+        False when the status was something else or a concurrent writer won; raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_stale(
+        self, statuses: list[str], updated_before_ms: int, limit: int
+    ) -> list[dict[str, Any]]:
+        """Stage states in ``statuses`` with ``updatedAtMs < updated_before_ms``, oldest first."""
+
+    @abstractmethod
+    async def compare_and_set_record_fields(
+        self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
+    ) -> list[str]:
+        """Write ``fields`` on each record whose ``contentRev`` equals ``content_rev``, in one statement.
+
+        Returns the ids updated; a record that moved to another revision is left alone.
+        Raises on infrastructure errors.
+        """
 
     @abstractmethod
     async def get_existing_record_keys(

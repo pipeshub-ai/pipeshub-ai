@@ -2,7 +2,7 @@ import asyncio
 import io
 import json
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Tuple, cast
 
 from app.config.constants.ai_models import AzureDocIntelligenceModel, OCRProvider
 from app.config.constants.arangodb import (
@@ -18,7 +18,6 @@ from app.exceptions.indexing_exceptions import (
     IndexingError,
     RecordStatusUpdateError,
 )
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -32,27 +31,43 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
-from app.modules.parsers.code_parser.lang_config import config_for_extension, detect_language
+from app.modules.parsers.code_parser.lang_config import (
+    config_for_extension,
+    detect_language,
+)
+from app.modules.parsers.csv.csv_parser import CSVParser
+from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
-from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+    PDFPlumberOpenCVProcessor,
+)
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+)
 from app.utils.aimodels import is_multimodal_llm
-from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
-from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
+from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.table_enrichment import enhance_tables_with_llm
+from app.utils.text_encoding import TEXT_FILE_ENCODINGS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.modules.pipeline.ingress import StageIngress
 
 
 SCANNED_PDF_NO_OCR_MESSAGE = "Scanned document, add Multimodal"
 
 
-def convert_record_dict_to_record(record_dict: dict) -> Record:
+def convert_record_dict_to_record(record_dict: dict[str, Any]) -> Record:
     conn_name_value = record_dict.get("connectorName")
     try:
         connector_name = (
@@ -68,15 +83,16 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
     except ValueError:
         origin = OriginTypes.UPLOAD
 
-    mime_type = record_dict.get("mimeType")
+    mime_type = cast(str, record_dict.get("mimeType"))
 
+    # Record validates the required string fields; a document missing one fails there.
     return Record(
-        id=record_dict.get("_key") or record_dict.get("id"),
-        org_id=record_dict.get("orgId"),
-        record_name=record_dict.get("recordName"),
+        id=cast(str, record_dict.get("_key") or record_dict.get("id")),
+        org_id=cast(str, record_dict.get("orgId")),
+        record_name=cast(str, record_dict.get("recordName")),
         record_type=RecordType(record_dict.get("recordType", "FILE")),
         record_status=ProgressStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
-        external_record_id=record_dict.get("externalRecordId"),
+        external_record_id=cast(str, record_dict.get("externalRecordId")),
         version=record_dict.get("version", 1),
         origin=origin,
         summary_document_id=record_dict.get("summaryDocumentId"),
@@ -97,7 +113,7 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         external_revision_id=record_dict.get("externalRevisionId"),
         connector_name=connector_name,
         is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
-        connector_id=record_dict.get("connectorId"),
+        connector_id=cast(str, record_dict.get("connectorId")),
         md5_hash=record_dict.get("md5Checksum"),
         record_group_id=record_dict.get("recordGroupId"),
         external_record_group_id=record_dict.get("externalGroupId"),
@@ -113,6 +129,7 @@ class Processor:
         parsers,
         document_extractor,
         sink_orchestrator,
+        stage_ingress: "StageIngress | None" = None,
     ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing Processor")
@@ -122,6 +139,7 @@ class Processor:
         self.config_service = config_service
         self.document_extraction = document_extractor
         self.sink_orchestrator = sink_orchestrator
+        self.stage_ingress = stage_ingress
 
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
@@ -134,6 +152,13 @@ class Processor:
         """Resolve LLM for a role."""
         return await get_llm_for_role(
             self.config_service, role, reasoning_effort=reasoning_effort
+        )
+
+    def _pipeline(self) -> IndexingPipeline:
+        return IndexingPipeline(
+            document_extraction=self.document_extraction,
+            sink_orchestrator=self.sink_orchestrator,
+            stage_ingress=self.stage_ingress,
         )
 
     def _convert_record(self, record_dict: dict) -> Record:
@@ -224,7 +249,7 @@ class Processor:
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -313,7 +338,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -365,7 +390,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -535,10 +560,7 @@ class Processor:
                 record.is_vlm_ocr_processed = True
 
                 ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-                pipeline = IndexingPipeline(
-                    document_extraction=self.document_extraction,
-                    sink_orchestrator=self.sink_orchestrator
-                )
+                pipeline = self._pipeline()
                 await pipeline.apply(ctx)
 
                 # Signal indexing complete
@@ -612,7 +634,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -694,7 +716,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -778,10 +800,7 @@ class Processor:
 
             # Apply indexing pipeline
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(
-                document_extraction=self.document_extraction,
-                sink_orchestrator=self.sink_orchestrator
-            )
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1300,7 +1319,7 @@ class Processor:
         try:
             self.logger.debug("📊 Processing Excel content")
             llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
-            parser = self.parsers[ExtensionTypes.XLSX.value]
+            parser = cast(ExcelParser, self.parsers[ExtensionTypes.XLSX.value])
             if not excel_binary:
                 self.logger.info(f"No Excel binary found for record: {recordName}")
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
@@ -1308,14 +1327,16 @@ class Processor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 
-            # Phase 1: Load workbook (no LLM calls)
-            parser.load_workbook_from_binary(excel_binary)
+            # Phase 1: Load workbook (no LLM calls), on a parser of its own —
+            # self.parsers is shared by concurrent records.
+            document_parser: ExcelParser = parser.new_document_parser()
+            await asyncio.to_thread(document_parser.load_workbook_from_binary, excel_binary)
 
             # Signal parsing complete after workbook is loaded
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for summaries)
-            blocks_containers = await parser.create_blocks(llm)
+            blocks_containers = await document_parser.create_blocks(llm)
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -1330,7 +1351,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1397,40 +1418,31 @@ class Processor:
             # Initialize parser
             self.logger.debug("📊 Processing delimited file content")
             if extension is None:
-                parser = self.parsers[ExtensionTypes.CSV.value]
+                parser = cast(CSVParser, self.parsers[ExtensionTypes.CSV.value])
             else:
-                parser = self.parsers[extension]
+                parser = cast(CSVParser, self.parsers[extension])
 
             llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
 
-            # Try different encodings to decode binary data
-            encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
-            all_rows = None
-            for encoding in encodings:
-                try:
-                    self.logger.debug(
-                        f"Attempting to decode delimited file with {encoding} encoding"
-                    )
-                    # Decode binary data to string
-                    csv_text = file_binary.decode(encoding)
-
-                    # Create string stream from decoded text
-                    csv_stream = io.StringIO(csv_text)
-
-                    # Read raw rows for table detection
-                    all_rows = parser.read_raw_rows(csv_stream)
-
-
+            def read_rows() -> list[list[str]] | None:
+                """Rows from the first encoding that decodes and parses."""
+                for encoding in TEXT_FILE_ENCODINGS:
+                    try:
+                        rows: list[list[str]] = parser.read_raw_rows(io.StringIO(file_binary.decode(encoding)))
+                    except UnicodeDecodeError:
+                        self.logger.debug(f"Failed to decode with {encoding} encoding")
+                        continue
+                    except Exception as e:
+                        self.logger.debug(f"Failed to process delimited file with {encoding} encoding: {str(e)}")
+                        continue
                     self.logger.info(
-                        f"✅ Successfully parsed delimited file with {encoding} encoding. Rows: {len(all_rows)}"
+                        f"✅ Successfully parsed delimited file with {encoding} encoding. Rows: {len(rows)}"
                     )
-                    break
-                except UnicodeDecodeError:
-                    self.logger.debug(f"Failed to decode with {encoding} encoding")
-                    continue
-                except Exception as e:
-                    self.logger.debug(f"Failed to process delimited file with {encoding} encoding: {str(e)}")
-                    continue
+                    return rows
+                return None
+
+            # Decoding and csv.reader walk the whole file; keep that off the event loop.
+            all_rows = await asyncio.to_thread(read_rows)
 
 
             if all_rows is None or not all_rows:
@@ -1469,7 +1481,7 @@ class Processor:
             record.block_containers = block_containers
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1599,7 +1611,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1719,7 +1731,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1821,7 +1833,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1847,7 +1859,7 @@ class Processor:
 
         try:
             # Try different encodings to decode the binary content
-            encodings = ["utf-8", "utf-8-sig", "latin-1", "iso-8859-1"]
+            encodings = TEXT_FILE_ENCODINGS
             text_content = None
 
             for encoding in encodings:
@@ -1932,7 +1944,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -2049,7 +2061,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
             
             # Signal indexing complete
@@ -2123,7 +2135,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = self._pipeline()
             await pipeline.apply(ctx)
 
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))

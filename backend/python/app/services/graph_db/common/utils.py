@@ -36,6 +36,16 @@ def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
     return names
 
 
+# Record-node status fields a query may select on (interpolated, so only these names).
+RECORD_STATUS_FIELDS = frozenset({"indexingStatus", "parsingStatus", "extractionStatus"})
+
+
+def record_status_field(name: str) -> str:
+    if name not in RECORD_STATUS_FIELDS:
+        raise ValueError(f"not a record status field: {name!r}")
+    return name
+
+
 def build_connector_stats_response(
     rows: List[Dict[str, Any]],
     statuses: List[str],
@@ -50,7 +60,7 @@ def build_connector_stats_response(
     get_connector_stats query results.
 
     Args:
-        rows: Query results with recordType, indexingStatus, cnt
+        rows: Query results with recordType, indexingStatus, extractionStatus, cnt
         statuses: List of valid indexing status values
         org_id: Organization ID
         connector_id: Connector ID
@@ -60,6 +70,7 @@ def build_connector_stats_response(
         Formatted stats response dictionary
     """
     indexing_status_counts = {s: 0 for s in statuses}
+    extraction_status_counts = dict.fromkeys(statuses, 0)
     record_type_counts: Dict[str, Dict[str, Any]] = {}
     total = 0
 
@@ -69,6 +80,9 @@ def build_connector_stats_response(
         st = row.get("indexingStatus")
         if st in indexing_status_counts:
             indexing_status_counts[st] += cnt
+        ex = row.get("extractionStatus")
+        if ex in extraction_status_counts:
+            extraction_status_counts[ex] += cnt
         rt = row.get("recordType")
         if rt:
             if rt not in record_type_counts:
@@ -76,10 +90,13 @@ def build_connector_stats_response(
                     "recordType": rt,
                     "total": 0,
                     "indexingStatus": {s: 0 for s in statuses},
+                    "extractionStatus": dict.fromkeys(statuses, 0),
                 }
             record_type_counts[rt]["total"] += cnt
             if st in statuses:
                 record_type_counts[rt]["indexingStatus"][st] += cnt
+            if ex in statuses:
+                record_type_counts[rt]["extractionStatus"][ex] += cnt
 
     return {
         "orgId": org_id,
@@ -88,6 +105,7 @@ def build_connector_stats_response(
         "stats": {
             "total": total,
             "indexingStatus": indexing_status_counts,
+            "extractionStatus": extraction_status_counts,
         },
         "byRecordType": list(record_type_counts.values()),
     }

@@ -60,7 +60,7 @@ Instructions must be strictly followed, failure to do so will result in terminat
       "languages": string[],  // Array of languages detected in the content (use ISO language names)
       "sentiment": string,  // Must be exactly one of the sentiments listed below
       "confidence_score": float,  // Between 0 and 1, indicating confidence in classification
-      "topics": string[]  // Key topics or themes extracted from the content
+      "topics": string[],  // Key topics or themes extracted from the content
       "summary": string  // Summary of the document
 }}
 
@@ -156,7 +156,7 @@ Instructions must be strictly followed, failure to do so will result in terminat
       "languages": string[],  // Array of languages detected in the content (use ISO language names)
       "sentiment": string,  // Must be exactly one of the sentiments listed below
       "confidence_score": float,  // Between 0 and 1, indicating confidence in classification
-      "topics": string[]  // Key topics or themes extracted from the content
+      "topics": string[],  // Key topics or themes extracted from the content
       "summary": string  // Summary of the document
 }}
 

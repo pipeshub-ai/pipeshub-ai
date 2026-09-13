@@ -178,6 +178,7 @@ class TestAbstractMethodInventory:
         "connect",
         "disconnect",
         "ensure_schema",
+        "ensure_pipeline_schema",
         # Transaction management
         "begin_transaction",
         "commit_transaction",
@@ -190,6 +191,13 @@ class TestAbstractMethodInventory:
         "get_all_documents",
         "get_documents_paginated",
         "batch_upsert_nodes",
+        "ensure_nodes",
+        "stage_state_get",
+        "stage_states_for_revision",
+        "stage_state_create",
+        "stage_state_compare_and_set",
+        "stage_states_stale",
+        "compare_and_set_record_fields",
         "delete_nodes",
         "update_node",
         # Edge operations

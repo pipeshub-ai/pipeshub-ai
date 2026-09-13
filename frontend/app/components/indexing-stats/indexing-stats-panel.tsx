@@ -3,7 +3,7 @@
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Badge } from '@radix-ui/themes';
-import { deriveRecordsStatus } from './derive-records-status';
+import { deriveClassificationStatus, deriveRecordsStatus } from './derive-records-status';
 import { StatCard } from './stat-card';
 import {
   OverviewStatsGridShimmer,
@@ -20,6 +20,8 @@ export interface IndexingStatsPanelProps {
   onRefresh?: () => Promise<void>;
   onReindexFailed?: () => Promise<void>;
   onManualIndex?: () => Promise<void>;
+  /** Re-runs only the classify stage for records whose classification failed. */
+  onRetryFailedClassification?: () => Promise<void>;
   onNavigateToRecords?: (statuses?: IndexingStatus[]) => void;
   /** Connector-only: shows a "Sync now" button beside Refresh. Omit for KB collections. */
   onSync?: () => Promise<void>;
@@ -28,6 +30,7 @@ export interface IndexingStatsPanelProps {
   isSyncBusy?: boolean;
   isReindexFailedBusy?: boolean;
   isManualIndexBusy?: boolean;
+  isRetryClassificationBusy?: boolean;
 }
 
 export function IndexingStatsPanel({
@@ -36,6 +39,7 @@ export function IndexingStatsPanel({
   onRefresh,
   onReindexFailed,
   onManualIndex,
+  onRetryFailedClassification,
   onNavigateToRecords,
   onSync,
   showSyncActions = false,
@@ -43,19 +47,25 @@ export function IndexingStatsPanel({
   isSyncBusy = false,
   isReindexFailedBusy = false,
   isManualIndexBusy = false,
+  isRetryClassificationBusy = false,
 }: IndexingStatsPanelProps) {
   const { t } = useTranslation();
   const showStatsShimmer = loading || isRefreshBusy;
-  const reindexActionsBusy = isReindexFailedBusy || isManualIndexBusy;
+  const reindexActionsBusy = isReindexFailedBusy || isManualIndexBusy || isRetryClassificationBusy;
 
   const recordsStatus = useMemo(
     () => (showStatsShimmer ? null : deriveRecordsStatus(stats)),
+    [stats, showStatsShimmer]
+  );
+  const classificationStatus = useMemo(
+    () => (showStatsShimmer ? null : deriveClassificationStatus(stats)),
     [stats, showStatsShimmer]
   );
 
   const byRecordType = stats?.byRecordType ?? [];
   const showReindexFailedAction = Boolean(recordsStatus && recordsStatus.failed > 0) && !showStatsShimmer;
   const showManualIndexAction = Boolean(recordsStatus && recordsStatus.autoIndexOff > 0) && !showStatsShimmer;
+  const showRetryClassificationAction = Boolean(classificationStatus && classificationStatus.failed > 0);
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
@@ -99,8 +109,19 @@ export function IndexingStatsPanel({
                   loading={isRefreshBusy}
                 />
               </Flex>
-              {(showReindexFailedAction || showManualIndexAction) && recordsStatus && (
-                <Flex align="center" gap="1">
+              {(showReindexFailedAction || showManualIndexAction || showRetryClassificationAction) && recordsStatus && (
+                <Flex align="center" gap="1" wrap="wrap" justify="end">
+                  {showRetryClassificationAction && onRetryFailedClassification && classificationStatus && (
+                    <IndexActionButton
+                      label={`${t('workspace.connectors.overview.retryFailedClassification')} (${classificationStatus.failed})`}
+                      icon="replay"
+                      color="orange"
+                      iconColor="var(--orange-11)"
+                      onClick={() => void onRetryFailedClassification()}
+                      disabled={reindexActionsBusy || isSyncBusy}
+                      loading={isRetryClassificationBusy}
+                    />
+                  )}
                   {showReindexFailedAction && onReindexFailed && (
                     <IndexActionButton
                       label={`Reindex failed (${recordsStatus.failed})`}
@@ -196,6 +217,52 @@ export function IndexingStatsPanel({
                 subtitle={t('workspace.connectors.overview.statNotStartedSub')}
                 onClick={onNavigateToRecords ? () => onNavigateToRecords(['NOT_STARTED']) : undefined}
               />
+            </Flex>
+          </Flex>
+        ) : null}
+
+        {classificationStatus ? (
+          <Flex
+            direction="column"
+            gap="2"
+            style={{ borderTop: '1px solid var(--olive-3)', paddingTop: 'var(--space-3)' }}
+          >
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {t('workspace.connectors.overview.classification')}
+            </Text>
+            <Flex gap="4" wrap="wrap">
+              {[
+                {
+                  key: 'completed',
+                  label: t('workspace.connectors.overview.statCompleted'),
+                  value: classificationStatus.completed,
+                },
+                {
+                  key: 'skipped',
+                  label: t('workspace.connectors.overview.classificationSkipped'),
+                  value: classificationStatus.skipped,
+                },
+                {
+                  key: 'failed',
+                  label: t('status.failed'),
+                  value: classificationStatus.failed,
+                  valueColor: classificationStatus.failed > 0 ? 'var(--red-11)' : undefined,
+                },
+                {
+                  key: 'queued',
+                  label: t('workspace.connectors.overview.statQueued'),
+                  value: classificationStatus.queued,
+                },
+              ].map((item) => (
+                <Flex key={item.key} align="baseline" gap="1">
+                  <Text size="2" weight="medium" style={{ color: item.valueColor ?? 'var(--gray-12)' }}>
+                    {item.value}
+                  </Text>
+                  <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                    {item.label}
+                  </Text>
+                </Flex>
+              ))}
             </Flex>
           </Flex>
         ) : null}

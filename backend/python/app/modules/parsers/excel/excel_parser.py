@@ -7,23 +7,15 @@ import re
 from datetime import datetime, time
 from typing import Any
 
-from app.services.parsing.interface import ParseResult
-from app.utils.llm import get_llm_for_role
-from app.config.configuration_service import ConfigurationService
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-)
 
+from app.config.configuration_service import ConfigurationService
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -44,12 +36,17 @@ from app.modules.parsers.excel.prompt_template import (
     sheet_summary_prompt,
     table_summary_prompt,
 )
+from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
+from app.services.parsing.interface import ParseResult
 from app.utils.aimodels import coerce_message_content_to_text
+from app.utils.concurrency import max_table_rows_for_llm
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.llm import get_llm_for_role
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
 )
+from app.utils.table_enrichment import fallback_table_summary
 
 # Module-level constants for Excel processing (mirror CSV parser)
 NUM_SAMPLE_ROWS = 5  # Number of representative sample rows to select for header generation
@@ -378,16 +375,26 @@ class ExcelParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
+            document_parser = self.new_document_parser()
             llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
             # openpyxl's load is synchronous and can take seconds on large
             # workbooks; keep it off the event loop.
-            await asyncio.to_thread(self.load_workbook_from_binary, content)
-            blocks_containers = await self.create_blocks(llm)
+            await asyncio.to_thread(document_parser.load_workbook_from_binary, content)
+            blocks_containers = await document_parser.create_blocks(llm)
 
             return ParseResult(
                 block_container=blocks_containers,
                 metadata={"record_name": record_name},
             )
+
+    def new_document_parser(self) -> "ExcelParser":
+        """A parser for one document.
+
+        The loaded workbook is instance state, and callers hold one shared
+        ExcelParser while block creation awaits LLM calls; parsing on the shared
+        instance lets a concurrent document replace the workbook mid-parse.
+        """
+        return ExcelParser(self.logger, self.config_service)
 
     def load_workbook_from_binary(self, file_binary: bytes) -> None:
         """Load workbook from binary (no LLM calls).
@@ -1271,16 +1278,11 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
         return consolidated
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
-            f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
-        ),
-    )
     async def _call_llm(self, messages: list[Any]) -> AIMessage:
-        """Wrapper for LLM calls with retry logic"""
-        return await self.llm.ainvoke(messages)  # type: ignore[return-value]
+        """Through the LLM gateway: its cap, the provider's breaker and its 429 retries."""
+        return await get_llm_gateway().invoke(  # type: ignore[no-any-return]
+            self.llm, messages, provider=provider_key(self.llm), call_site="table_summary"
+        )
 
     async def get_tables_in_sheet(self, sheet_name: str, llm: BaseChatModel) -> list[dict[str, Any]]:
         """Get all tables in a specific sheet with LLM-based header detection/generation
@@ -1341,8 +1343,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             return summary
 
         except Exception as e:
-            self.logger.error(f"Error getting table summary: {e}", exc_info=True)
-            raise
+            self.logger.warning("Table summary unavailable (%s); using a plain one", e)
+            return fallback_table_summary(table["headers"], len(table["data"]))
 
     async def get_rows_text(
         self, rows: list[list[dict[str, Any]]], table_summary: str
@@ -1411,7 +1413,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             return None
 
         # Get threshold from environment variable (default: 1000)
-        threshold = int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000"))
+        threshold = max_table_rows_for_llm()
         self.logger.info(f"Using LLM threshold for row processing: {threshold} (cumulative count: {cumulative_row_count[0]})")
 
         # Get tables in the sheet

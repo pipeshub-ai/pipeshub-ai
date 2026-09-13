@@ -284,7 +284,10 @@ class PDFPlumberOpenCVProcessor:
                 # correctness never depends on the two walks staying in sync.
                 self.logger.warning("Table missed pre-enrichment; enriching inline")
                 llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
-                enrichment = await enrich_table_grid(llm, grid, logger=self.logger)
+                # Outside the pre-pass's row budget: summary and headers only.
+                enrichment = await enrich_table_grid(
+                    llm, grid, logger=self.logger, describe_rows=False
+                )
 
             table_summary = enrichment.summary
             column_headers = enrichment.headers

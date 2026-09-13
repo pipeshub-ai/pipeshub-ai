@@ -36,6 +36,10 @@ from app.services.resource_governor import (
     gate_pool,
     parse_cost,
 )
+from app.services.resource_governor.memory_domain import (
+    parse_admission_cap,
+    stamp_admitted_here,
+)
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
 
@@ -154,6 +158,7 @@ async def parse_file(
 
     governor = request.app.state.governor
     gate = governor.gate(gate_pool(tier))
+    cap = parse_admission_cap(governor, gate_pool(tier))
 
     admitted = await acquire_gate_with_backpressure(
         gate, cost, tier, message_id,
@@ -161,6 +166,7 @@ async def parse_file(
         log_prefix="parsing",
         queue_wait_warn_seconds=PARSE_QUEUE_WAIT_WARN_SECONDS,
         gate_timeout_seconds=PARSE_GATE_TIMEOUT_SECONDS,
+        cap=cap,
     )
     if not admitted:
         return JSONResponse(
@@ -171,10 +177,14 @@ async def parse_file(
                 "error": {
                     "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
                     "message": "Parsing service is at capacity; retry later.",
-                    "details": {"tier": tier.value, "limit": gate.limit},
+                    "details": {"tier": tier.value, "limit": gate.limit if cap is None else cap},
                 },
             },
         )
+
+    if cap is None:
+        # Braked here: a Docling service sharing this memory need not brake it again.
+        stamp_admitted_here()
 
     parse_start = time.monotonic()
     try:

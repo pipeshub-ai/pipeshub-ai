@@ -35,6 +35,7 @@ from app.schema.arango.documents import (
     project_record_schema,
     record_group_schema,
     record_schema,
+    stage_state_schema,
     team_schema,
     ticket_record_schema,
     user_schema,
@@ -77,6 +78,7 @@ def adapt_schema(arango_schema: dict | None) -> dict | None:
 # This mirrors the NODE_COLLECTIONS list defined by CollectionNames in app/config/constants/arangodb.py
 NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.RECORDS.value: adapt_schema(record_schema),
+    CollectionNames.STAGE_STATES.value: adapt_schema(stage_state_schema),
     CollectionNames.DRIVES.value: None,  # No schema
     CollectionNames.FILES.value: adapt_schema(file_record_schema),
     CollectionNames.LINKS.value: adapt_schema(link_record_schema),

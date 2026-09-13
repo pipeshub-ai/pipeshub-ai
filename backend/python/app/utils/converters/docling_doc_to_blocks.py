@@ -338,6 +338,8 @@ class DoclingDocToBlocksConverter():
                     fallback_llm,
                     table_grid,
                     logger=self.logger,
+                    # Outside the pre-pass's row budget: summary and headers only.
+                    describe_rows=False,
                 )
 
             table_summary = enrichment.summary

@@ -23,6 +23,8 @@ this system must scale up for.
 """
 from __future__ import annotations
 
+import functools
+import hashlib
 import logging
 import os
 import re
@@ -46,6 +48,7 @@ except ImportError:  # pragma: no cover - environment dependent, no hard depende
 
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _PROC_SELF_CGROUP = Path("/proc/self/cgroup")
+_BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 _PROC_MEMINFO = Path("/proc/meminfo")
 _PROC_STAT = Path("/proc/stat")
 # Some kernels report this sentinel for memory.limit_in_bytes / memsw limits
@@ -127,6 +130,26 @@ def _resolve_cgroup_path(v1_controller: str, v1_filename: str, v2_filename: str 
             if candidate.exists():
                 return candidate
     return None
+
+
+@functools.cache
+def memory_domain_id() -> str | None:
+    """An opaque id shared by every process under this memory cgroup, and by no other.
+
+    The cgroup directory's device and inode (unique on a host) with the kernel's boot
+    id (unique per host). None where either cannot be read, so callers keep their own
+    memory brake.
+    """
+    boot_id = _read_text(_BOOT_ID)
+    limit_file = _resolve_cgroup_path("memory", "memory.limit_in_bytes", "memory.max")
+    if not boot_id or limit_file is None:
+        return None
+    try:
+        directory = limit_file.parent.stat()
+    except OSError:
+        return None
+    raw = f"{boot_id.strip()}:{directory.st_dev}:{directory.st_ino}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
 # ---------------------------------------------------------------------------

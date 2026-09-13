@@ -1,7 +1,7 @@
-import ssl
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from app.services.messaging.kafka.config.kafka_config import kafka_security_kwargs
 from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
 from app.edition_services import (
     EntityEventService,
@@ -128,17 +128,7 @@ class KafkaUtils:
             'topics': kafka_config.topics  # Include topics in the dictionary
         }
 
-        # Add SSL/SASL configuration for AWS MSK
-        if kafka_config.ssl:
-            config["ssl_context"] = ssl.create_default_context()
-            sasl_config = kafka_config.sasl or {}
-            if sasl_config.get("username"):
-                config["security_protocol"] = "SASL_SSL"
-                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
-                config["sasl_plain_username"] = sasl_config["username"]
-                config["sasl_plain_password"] = sasl_config["password"]
-            else:
-                config["security_protocol"] = "SSL"
+        config.update(kafka_security_kwargs(ssl_enabled=kafka_config.ssl, sasl=kafka_config.sasl))
 
         return config
 

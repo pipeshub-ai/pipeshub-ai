@@ -4064,3 +4064,24 @@ class TestDeleteSingleRecord:
         )
         assert result["success"] is True
         connected_provider.commit_transaction.assert_not_called()
+
+
+class TestGetRecordsByStatusField:
+    async def test_selects_on_the_named_status_field(self, typed_provider) -> None:
+        typed_provider.http_client.execute_aql.return_value = []
+        await typed_provider.get_records_by_status(
+            org_id="org1", connector_id="conn1", status_filters=["FAILED"], status_field="extractionStatus",
+        )
+        query = typed_provider.http_client.execute_aql.call_args[0][0]
+        assert "record.extractionStatus IN @status_filters" in query
+        assert "record.indexingStatus IN @status_filters" not in query
+
+    async def test_a_field_that_is_not_a_record_status_never_reaches_the_query(self, typed_provider) -> None:
+        try:
+            result = await typed_provider.get_records_by_status(
+                org_id="org1", connector_id="conn1", status_filters=["FAILED"], status_field="name) || true //",
+            )
+        except ValueError:
+            result = []
+        assert result == []
+        typed_provider.http_client.execute_aql.assert_not_awaited()

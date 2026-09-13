@@ -158,7 +158,10 @@ export type IndexingStatus =
   | 'NOT_STARTED'
   | 'AUTO_INDEX_OFF'
   | 'QUEUED'
-  | 'EMPTY';
+  | 'EMPTY'
+  | 'PAUSED'
+  | 'ENABLE_MULTIMODAL_MODELS'
+  | 'SKIPPED';
 export type SharingStatus = 'private' | 'team' | 'personal' | 'shared';
 
 /**
@@ -528,11 +531,12 @@ export interface RecordDetailsResponse {
     connectorId: string;
     sizeInBytes?: number | null;
     md5Checksum: string;
-    extractionStatus: 'COMPLETED' | 'IN_PROGRESS' | 'FAILED';
+    extractionStatus: IndexingStatus;
     isDirty: boolean;
     lastIndexTimestamp: number;
     virtualRecordId: string;
     lastExtractionTimestamp: number;
+    parsingStatus?: IndexingStatus | null;
     fileRecord: {
       _key: string;
       _id: string;
@@ -575,4 +579,17 @@ export interface RecordDetailsResponse {
     relationship: 'OWNER' | 'READER' | 'WRITER';
     accessType: string;
   }>;
+  /** Empty or absent for records indexed before pipeline stages existed. */
+  stageStates?: StageStateSummary[];
+}
+
+/** Status of one pipeline stage for the record's current content revision. */
+export interface StageStateSummary {
+  stage: string;
+  status: IndexingStatus;
+  reason: string | null;
+  attempt: number;
+  startedAtMs: number | null;
+  finishedAtMs: number | null;
+  updatedAtMs: number | null;
 }

@@ -346,8 +346,8 @@ class TestSmartPDFParser:
                 return_value=pdf_context,
             ),
             patch(
-                "app.services.parsing.providers.smart_pdf_parser.random.sample",
-                return_value=pages,
+                "app.services.parsing.providers.smart_pdf_parser._sample_page_indices",
+                return_value=[0, 1, 2, 3, 4],
             ),
             patch.object(
                 OCRStrategy,
@@ -371,8 +371,8 @@ class TestSmartPDFParser:
                 return_value=pdf_context,
             ),
             patch(
-                "app.services.parsing.providers.smart_pdf_parser.random.sample",
-                return_value=pages,
+                "app.services.parsing.providers.smart_pdf_parser._sample_page_indices",
+                return_value=[0, 1, 2, 3, 4],
             ),
             patch.object(
                 OCRStrategy,

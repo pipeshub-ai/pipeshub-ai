@@ -1,8 +1,6 @@
-import asyncio
 import json
 import logging
 import os
-import random
 import re
 from collections.abc import AsyncGenerator
 from typing import (
@@ -27,6 +25,7 @@ from app.modules.agents.qna.reference_data import normalize_reference_data_items
 from app.modules.parsers.excel.prompt_template import RowDescriptions
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.llm_gateway.gateway import Invocable, get_llm_gateway, provider_key
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.chat_helpers import (
     CitationRefMapper,
@@ -41,9 +40,8 @@ from app.utils.citations import (
     normalize_citations_and_chunks,
     normalize_citations_and_chunks_for_agent,
 )
-from app.utils.concurrency import indexing_llm_slot
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
-from app.utils.indexing_metrics import note_llm_call, note_rate_limit_retry
+from app.utils.llm import LLMUnavailableError
 from app.utils.logger import create_logger
 from app.utils.tool_handlers import ContentHandler, ToolHandlerRegistry
 
@@ -68,42 +66,13 @@ TOOL_EXECUTION_TOKEN_RATIO = 0.5
 MAX_REFLECTION_RETRIES_DEFAULT = 2
 MAX_CITATION_REFLECTION_RETRIES = 2
 MAX_TOOL_HOPS = 6
-MAX_RATE_LIMIT_RETRIES = 3
-_RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "429", "too many requests", "quota exceeded")
 
 
-def _is_rate_limit_error(exc: Exception) -> bool:
-    if getattr(exc, "status_code", None) == HttpStatusCode.TOO_MANY_REQUESTS.value:
-        return True
-    message = str(exc).lower()
-    return any(marker in message for marker in _RATE_LIMIT_MARKERS)
+async def _ainvoke_throttled(runnable: "Invocable", messages: list[Any], *, provider: str) -> Any:  # noqa: ANN401
+    """Invoke through the indexing LLM gateway: its process-wide cap, the provider's breaker, a
+    ceiling on hangs and jittered 429 retries."""
+    return await get_llm_gateway().invoke(runnable, messages, provider=provider)
 
-
-async def _ainvoke_throttled(llm: BaseChatModel, messages: list[Any]) -> Any:  # noqa: ANN401
-    """Invoke *llm*, holding a slot in the process-wide indexing budget.
-
-    Retries rate-limit errors with jittered backoff. The jitter matters more than the
-    retry: LangChain's own ``max_retries`` has none, so concurrent row batches that get
-    429ed all retry in lockstep.
-    """
-    delay = 0.0
-    for attempt in range(MAX_RATE_LIMIT_RETRIES):
-        async with indexing_llm_slot():
-            try:
-                result = await llm.ainvoke(messages)
-                note_llm_call()
-                return result
-            except Exception as e:
-                if not _is_rate_limit_error(e) or attempt == MAX_RATE_LIMIT_RETRIES - 1:
-                    raise
-                note_rate_limit_retry()
-                delay = 2 ** attempt + random.uniform(0, 1)
-        logger.warning(
-            f"Rate limited (attempt {attempt + 1}/{MAX_RATE_LIMIT_RETRIES}), "
-            f"retrying in {delay:.1f}s"
-        )
-        # Sleep outside the slot so a backing-off call does not occupy the budget.
-        await asyncio.sleep(delay)
 
 def _build_citation_reflection_message(
     hallucinated_urls: list[str],
@@ -1087,9 +1056,14 @@ async def invoke_with_structured_output_and_reflection(
     messages: list,
     schema: type[SchemaT],
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+    *,
+    raise_unavailable: bool = False,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
+
+    With ``raise_unavailable`` a provider outage raises ``LLMUnavailableError`` instead of
+    returning None, for callers that must tell an outage from output they cannot use.
 
     Args:
         llm: The LangChain chat model to use
@@ -1101,10 +1075,13 @@ async def invoke_with_structured_output_and_reflection(
         Validated Pydantic model instance, or None if parsing fails after all retries
     """
     llm_with_structured_output = _apply_structured_output(llm, schema=schema)
+    provider = provider_key(llm)
 
     try:
-        response = await _ainvoke_throttled(llm_with_structured_output, messages)
+        response = await _ainvoke_throttled(llm_with_structured_output, messages, provider=provider)
     except Exception as e:
+        if raise_unavailable and isinstance(e, LLMUnavailableError):
+            raise
         recovered = _recover_structured_json_from_exception(e, schema)
         if recovered is not None:
             logger.info("Recovered schema-valid structured output from invocation error")
@@ -1173,7 +1150,9 @@ Respond only with valid JSON that matches the schema."""
 
         for attempt in range(max_retries):
             try:
-                reflection_response = await _ainvoke_throttled(llm_with_structured_output, reflection_messages)
+                reflection_response = await _ainvoke_throttled(
+                    llm_with_structured_output, reflection_messages, provider=provider
+                )
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
@@ -1204,6 +1183,8 @@ Respond only with valid JSON that matches the schema."""
                 return parsed_response
 
             except Exception as reflection_error:
+                if raise_unavailable and isinstance(reflection_error, LLMUnavailableError):
+                    raise
                 recovered = _recover_structured_json_from_exception(reflection_error, schema)
                 if recovered is not None:
                     logger.info(
