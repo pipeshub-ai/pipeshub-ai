@@ -1194,8 +1194,17 @@ class SharePointConnector(BaseConnector):
                     # Create document library record
                     drive_record_group = self._create_document_library_record_group(drive, site_id, internal_site_record_group_id)
                     if drive_record_group:
-                        drive_record_groups_with_permissions.append((drive_record_group, []))
-                        # permissions = await self._get_drive_permissions(site_id, drive_id)
+                        # Drive RecordGroups were created with an empty permission list
+                        # (the fetch below was commented out), which leaves them with no
+                        # PERMISSION edge. The knowledge-hub traversal walks
+                        # App -> Site -> Drive -> Record and gates every hop on one, so a
+                        # drive without it is never descended into: browse shows an empty
+                        # connector even though the records underneath are permissioned.
+                        # `_get_drive_permissions` uses Graph and fails soft to [].
+                        drive_permissions = await self._get_drive_permissions(site_id, drive_id)
+                        drive_record_groups_with_permissions.append(
+                            (drive_record_group, drive_permissions)
+                        )
 
             self.logger.info(f"Found {len(drive_record_groups_with_permissions)} drive record groups to process.")
             await self.data_entities_processor.on_new_record_groups(drive_record_groups_with_permissions)
@@ -2697,10 +2706,64 @@ class SharePointConnector(BaseConnector):
                 )
 
             self.logger.info(f"Found {len(permissions_dict)} unique permissions for site {site_id}")
+            if not permissions_dict:
+                self.logger.warning(
+                    f"No site permissions resolved for {site_id} via the SharePoint REST API — "
+                    f"falling back to Graph drive-root permissions"
+                )
+                return await self._get_site_permissions_via_graph(site_id)
             return list(permissions_dict.values())
 
         except Exception as e:
             self.logger.error(f"❌ Error resolving site permissions: {e}")
+            return await self._get_site_permissions_via_graph(site_id)
+
+    async def _get_site_permissions_via_graph(self, site_id: str) -> List[Permission]:
+        """Resolve a site's ACL over Microsoft Graph.
+
+        `_get_site_permissions` reads SharePoint-native site groups through the
+        classic REST API (`/_api/web/sitegroups`), which needs a token issued for
+        the SharePoint resource. An app registered with Graph permissions only
+        gets 401 on every one of those calls, the helpers fail soft, and the site
+        RecordGroup ends up with no permissions at all — silently, because the
+        connector still reports `isAuthenticated=True`.
+
+        The site's default drive root carries the same site groups (Owners /
+        Members / Visitors) and is readable with `Sites.Read.All`, so read it
+        rather than leave the RecordGroup unreachable. This is a fallback: a
+        deployment that does hold the SharePoint REST grant keeps the richer
+        result (custom groups, per-group user expansion) from the primary path.
+
+        Returns [] on failure — an empty ACL is safer than a wrong one.
+        """
+        try:
+            encoded_site_id = self._construct_site_url(site_id)
+            async with self.rate_limiter:
+                default_drive = await self._safe_api_call(
+                    self.client.sites.by_site_id(encoded_site_id).drive.get()
+                )
+                if not default_drive or not getattr(default_drive, "id", None):
+                    return []
+                # Top-level `drives` builder, not the site-scoped one — see
+                # `_get_drive_permissions` for why.
+                drive_builder = self.client.drives.by_drive_id(default_drive.id)
+                root_item = await self._safe_api_call(drive_builder.root.get())
+                if not root_item:
+                    return []
+                perms_response = await self._safe_api_call(
+                    drive_builder.items.by_drive_item_id(root_item.id).permissions.get()
+                )
+
+            if perms_response and perms_response.value:
+                permissions = await self._convert_to_permissions(perms_response.value)
+                self.logger.info(
+                    f"Graph fallback resolved {len(permissions)} site permission(s) for {site_id}"
+                )
+                return permissions
+            return []
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Graph site-permission fallback failed for {site_id}: {e}")
             return []
 
     async def _get_sharepoint_group_users(self, site_url: str, group_type: str, access_token: str) -> List[dict]:
@@ -2862,17 +2925,22 @@ class SharePointConnector(BaseConnector):
         """Get permissions for a document library."""
         try:
             permissions = []
-            encoded_site_id = self._construct_site_url(site_id)
 
             async with self.rate_limiter:
-                # Use the correct Graph API structure for drive permissions
-                # For SharePoint, we need to get the root item first, then its permissions
-                root_item = await self._safe_api_call(
-                    self.client.sites.by_site_id(encoded_site_id).drives.by_drive_id(drive_id).root.get()
-                )
+                # Address the drive through the TOP-LEVEL `drives` builder.
+                # `sites.by_site_id(...).drives.by_drive_id(...)` returns a
+                # different `DriveItemRequestBuilder` class that exposes only
+                # `get`/`to_get_request_information`/`with_url` — no `.root` and
+                # no `.items` — so the call below used to raise
+                # AttributeError: 'DriveItemRequestBuilder' object has no attribute 'root'
+                # and be swallowed by this method's own `except`. Same shape
+                # `_get_item_permissions` already uses.
+                drive_builder = self.client.drives.by_drive_id(drive_id)
+                # For SharePoint we need the root item first, then its permissions.
+                root_item = await self._safe_api_call(drive_builder.root.get())
                 if root_item:
                     perms_response = await self._safe_api_call(
-                        self.client.sites.by_site_id(encoded_site_id).drives.by_drive_id(drive_id).items.by_drive_item_id(root_item.id).permissions.get()
+                        drive_builder.items.by_drive_item_id(root_item.id).permissions.get()
                     )
                 else:
                     perms_response = None
@@ -2883,7 +2951,7 @@ class SharePointConnector(BaseConnector):
             return permissions
 
         except Exception as e:
-            self.logger.debug(f"❌ Could not get drive permissions: {e}")
+            self.logger.debug(f"❌ Could not get drive permissions for {drive_id} (site {site_id}): {e}")
             return []
 
     async def _get_item_permissions(self, site_id: str, drive_id: str, item_id: str) -> List[Permission]:
