@@ -248,7 +248,7 @@ PipesHub üç parçadan oluşur:
 
 Bu hizmetler **sizin getirdiğiniz yapay zekâ modellerini** çağırır. Bir **gömme modeli** metni arama için vektöre çevirir. Bir **LLM** alıntılı yanıtı yazar. Herhangi bir sağlayıcı veya yerel bir model (Ollama) kullanın; yerel gömme sunucusu varsayılandır.
 
-Veriler bir bilgi grafiğinde (Neo4j), bir vektör deposunda (Qdrant) ve MongoDB'de durur. Önbellek Redis'tir. Dosyalar diskte veya nesne depolamada durur. Hizmetler işi yerel makinede Redis üzerinden, daha büyük bir kurulumda Kafka üzerinden birbirine aktarır. [Sistem genel bakışına](https://docs.pipeshub.com/system-overview) bakın.
+Veriler bir bilgi grafiğinde (varsayılan Neo4j, alternatif ArangoDB), bir vektör deposunda (Qdrant) ve MongoDB'de durur. Önbellek Redis'tir. Dosyalar diskte veya nesne depolamada durur. Hizmetler işi yerel makinede Redis üzerinden, daha büyük bir kurulumda Kafka üzerinden birbirine aktarır. [Sistem genel bakışına](https://docs.pipeshub.com/system-overview) bakın.
 
 ### Bilgi Grafiği ile Erişim özelliği nedir?
 

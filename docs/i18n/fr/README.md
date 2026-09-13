@@ -248,7 +248,7 @@ PipesHub a trois parties :
 
 Ces services appellent des **modèles d'IA que vous apportez**. Un **modèle d'embeddings** transforme le texte en vecteurs pour la recherche. Un **LLM** rédige la réponse citée. Utilisez n'importe quel fournisseur ou un modèle local (Ollama) ; un serveur d'embeddings local est la valeur par défaut.
 
-Les données sont dans un graphe de connaissances (Neo4j), un magasin de vecteurs (Qdrant) et MongoDB. Redis est le cache. Les fichiers sont sur disque ou en stockage objet. Les services se transmettent le travail via Redis en local, ou via Kafka dans un déploiement plus large. Voir la [vue d'ensemble du système](https://docs.pipeshub.com/system-overview).
+Les données sont dans un graphe de connaissances (Neo4j par défaut, ou ArangoDB), un magasin de vecteurs (Qdrant) et MongoDB. Redis est le cache. Les fichiers sont sur disque ou en stockage objet. Les services se transmettent le travail via Redis en local, ou via Kafka dans un déploiement plus large. Voir la [vue d'ensemble du système](https://docs.pipeshub.com/system-overview).
 
 ### Qu'est-ce que la fonctionnalité de récupération par graphe de connaissances ?
 

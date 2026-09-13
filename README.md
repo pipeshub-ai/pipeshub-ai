@@ -301,7 +301,7 @@ PipesHub has three parts:
 
 Those services call **AI models you bring**. An **embedding model** turns parsed text into vectors for search. An **LLM** writes the cited answer. Use any provider or a local model (Ollama); a local embedding server is the default.
 
-Data sits in a knowledge graph (Neo4j), a vector store (Qdrant), and MongoDB. Redis is the cache. Files live on disk or object storage. Services hand work to each other over Redis on a local machine, or Kafka in a larger deployment. See the [system overview](https://docs.pipeshub.com/system-overview).
+Data sits in a knowledge graph (Neo4j by default, or ArangoDB), a vector store (Qdrant), and MongoDB. Redis is the cache. Files live on disk or object storage. Services hand work to each other over Redis on a local machine, or Kafka in a larger deployment. See the [system overview](https://docs.pipeshub.com/system-overview).
 
 ### What is the Knowledge Graph Retrieval feature?
 

@@ -248,7 +248,7 @@ PipesHub gồm ba phần:
 
 Các dịch vụ đó gọi **mô hình AI do bạn mang tới**. **Mô hình embedding** biến văn bản thành vector để tìm kiếm. **LLM** viết câu trả lời có trích dẫn. Dùng bất kỳ nhà cung cấp nào hoặc mô hình local (Ollama); máy chủ embedding local là mặc định.
 
-Dữ liệu nằm trong đồ thị tri thức (Neo4j), kho vector (Qdrant) và MongoDB. Redis là bộ nhớ đệm. Tệp nằm trên đĩa hoặc object storage. Các dịch vụ chuyển việc cho nhau qua Redis trên máy local, hoặc Kafka khi triển khai lớn hơn. Xem [tổng quan hệ thống](https://docs.pipeshub.com/system-overview).
+Dữ liệu nằm trong đồ thị tri thức (Neo4j mặc định, hoặc ArangoDB), kho vector (Qdrant) và MongoDB. Redis là bộ nhớ đệm. Tệp nằm trên đĩa hoặc object storage. Các dịch vụ chuyển việc cho nhau qua Redis trên máy local, hoặc Kafka khi triển khai lớn hơn. Xem [tổng quan hệ thống](https://docs.pipeshub.com/system-overview).
 
 ### Tính năng truy xuất bằng đồ thị tri thức là gì?
 

@@ -248,7 +248,7 @@ PipesHub 由三部分组成：
 
 这些服务会调用 **你自带的 AI 模型**。**嵌入模型**把文本变成检索向量，**LLM** 写出带引用的回答。任意云厂商或本地模型（Ollama）都可以；默认是本地嵌入服务。
 
-数据在知识图谱（Neo4j）、向量库（Qdrant）和 MongoDB 里。Redis 是缓存。文件在磁盘或对象存储上。服务之间在本地用 Redis 传任务，更大规模可以用 Kafka。详见 [系统概览](https://docs.pipeshub.com/system-overview)。
+数据在知识图谱（默认 Neo4j，或 ArangoDB）、向量库（Qdrant）和 MongoDB 里。Redis 是缓存。文件在磁盘或对象存储上。服务之间在本地用 Redis 传任务，更大规模可以用 Kafka。详见 [系统概览](https://docs.pipeshub.com/system-overview)。
 
 ### 什么是知识图谱检索功能？
 

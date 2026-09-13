@@ -248,7 +248,7 @@ PipesHub besteht aus drei Teilen:
 
 Diese Dienste rufen **KI-Modelle auf, die du mitbringst**. Ein **Embedding-Modell** macht aus Text Vektoren für die Suche. Ein **LLM** schreibt die zitierte Antwort. Nutze einen beliebigen Anbieter oder ein lokales Modell (Ollama); ein lokaler Embedding-Server ist die Voreinstellung.
 
-Die Daten liegen in einem Wissensgraphen (Neo4j), einem Vektorspeicher (Qdrant) und MongoDB. Redis ist der Cache. Dateien liegen auf der Festplatte oder in Object Storage. Die Dienste übergeben einander Arbeit über Redis auf einem lokalen Rechner, oder über Kafka in einer größeren Umgebung. Siehe die [Systemübersicht](https://docs.pipeshub.com/system-overview).
+Die Daten liegen in einem Wissensgraphen (standardmäßig Neo4j, sonst ArangoDB), einem Vektorspeicher (Qdrant) und MongoDB. Redis ist der Cache. Dateien liegen auf der Festplatte oder in Object Storage. Die Dienste übergeben einander Arbeit über Redis auf einem lokalen Rechner, oder über Kafka in einer größeren Umgebung. Siehe die [Systemübersicht](https://docs.pipeshub.com/system-overview).
 
 ### Was ist die Funktion zum Wissensgraph-Abruf?
 
