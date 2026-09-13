@@ -73,6 +73,8 @@ from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
 from app.agents.agent_loop.reasoning_persistence import build_reasoning_payload, filter_reasoning_parts
 from app.modules.agents.qna.helpers import _tool_names_and_results_from_state
+from app.telemetry.event_buffer import record_event
+from app.telemetry.identity import domain_from_email
 from app.utils.citations import normalize_citations_and_chunks
 from app.utils.streaming import parse_confidence_from_answer
 
@@ -391,6 +393,7 @@ class AnswerFinalizer:
             "AnswerFinalizer: finalized response (%d chars, %d citations)",
             len(normalized), len(citations),
         )
+        _record_answer_generated(self._context, state, citations)
         return completion_data
 
     async def _emit_ask_user_question_fallback(self, state: dict[str, Any], event_sink: EventSink) -> None:
@@ -445,3 +448,48 @@ class AnswerFinalizer:
 
 
 __all__ = ["AnswerFinalizer"]
+
+
+def _record_answer_generated(
+    context: "AgentContext", state: dict[str, Any], citations: list[dict[str, Any]]
+) -> None:
+    """Activation signal: an answer with (or without) sources reached the user.
+
+    Records counts and source *types* only — never the question, the answer,
+    or record names. ``demo_sources`` is true when any cited record comes from
+    the bundled Demo connector, which is how "demo query run" is measured.
+    """
+    try:
+        knowledge: list[object] = list(state.get("agent_knowledge") or [])
+        demo_ids: set[str] = set()
+        for entry in knowledge:
+            if not isinstance(entry, dict):
+                continue
+            typed: dict[str, object] = dict(entry)  # type: ignore[arg-type]
+            if str(typed.get("type") or "").lower() == "demo":
+                demo_ids.add(str(typed.get("connectorId") or ""))
+        connectors: set[str] = set()
+        demo_sources = False
+        for citation in citations:
+            meta_obj: object = citation.get("metadata")
+            if not isinstance(meta_obj, dict):
+                continue
+            meta: dict[str, object] = dict(meta_obj)  # type: ignore[arg-type]
+            name = meta.get("connector") or meta.get("origin")
+            if name:
+                connectors.add(str(name))
+            if str(meta.get("connectorId") or "") in demo_ids:
+                demo_sources = True
+        email = str(context.user_email or "")
+        record_event("answer_generated", {
+            "orgId": context.org_id,
+            "userId": context.user_id,
+            "email": email,
+            "domain": domain_from_email(email),
+            "chat_mode": state.get("chat_mode"),
+            "citation_count": len(citations),
+            "connectors": sorted(connectors),
+            "demo_sources": demo_sources,
+        })
+    except Exception as exc:  # telemetry must never break an answer
+        logging.getLogger(__name__).debug("telemetry: answer_generated not recorded: %s", exc)

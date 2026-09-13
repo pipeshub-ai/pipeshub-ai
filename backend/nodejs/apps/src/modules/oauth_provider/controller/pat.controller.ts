@@ -5,6 +5,8 @@ import { PatService } from '../services/pat.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
 import { CreatePatRequest } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
+import { recordEvent } from '../../../libs/services/telemetry/event-buffer'
+import { domainFromEmail } from '../../../libs/services/telemetry/identity'
 
 @injectable()
 export class PatController {
@@ -43,6 +45,18 @@ export class PatController {
         orgId,
         userId,
         name: data.name,
+      })
+
+      // Activation signal: a token is the first step of every programmatic
+      // path (MCP clients, SDKs). Scopes are counted, not listed.
+      const email = req.user?.email as string | undefined
+      recordEvent('pat_created', {
+        orgId,
+        userId,
+        email,
+        domain: domainFromEmail(email),
+        scope_count: token.scopes.length,
+        expiry_days: data.expiryDays ?? null,
       })
 
       res.status(201).json({

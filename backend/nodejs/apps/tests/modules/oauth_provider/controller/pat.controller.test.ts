@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { PatController } from '../../../../src/modules/oauth_provider/controller/pat.controller'
+import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
 
 describe('PatController', () => {
   let controller: PatController
@@ -62,6 +63,29 @@ describe('PatController', () => {
       mockPatService.createToken.rejects(new Error('fail'))
       await controller.createToken(mockReq, mockRes, mockNext)
       expect(mockNext.calledOnce).to.be.true
+    })
+
+    it('records a pat_created activation event without the token itself', async () => {
+      eventBuffer.drain()
+      const token = { id: 'tok-1', name: 'agent', scopes: ['semantic:write', 'kb:read'], createdAt: new Date(), expiresAt: new Date(), accessToken: 'raw-secret' }
+      mockPatService.createToken.resolves(token)
+      mockReq.user.email = 'dev@example.com'
+      mockReq.body = { name: 'agent', scopes: token.scopes, expiryDays: 30 }
+
+      await controller.createToken(mockReq, mockRes, mockNext)
+
+      const events = eventBuffer.drain()
+      expect(events).to.have.length(1)
+      expect(events[0].event).to.equal('pat_created')
+      expect(events[0].props).to.deep.equal({
+        orgId: 'org-1',
+        userId: 'user-1',
+        email: 'dev@example.com',
+        domain: 'example.com',
+        scope_count: 2,
+        expiry_days: 30,
+      })
+      expect(JSON.stringify(events[0])).to.not.include('raw-secret')
     })
   })
 

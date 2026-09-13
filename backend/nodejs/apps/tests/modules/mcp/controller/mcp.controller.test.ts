@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import { createMockRequest, createMockResponse, createMockNext, createAuthenticatedRequest } from '../../../helpers/mock-request'
 import { createMockAppConfig } from '../../../helpers/fixtures/config.fixture'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
 
 // The controller is imported AFTER mock-mcp-global.ts has patched require.cache
 // for @pipeshub-ai/mcp/* and @modelcontextprotocol/sdk, so all ESM deps resolve
@@ -45,6 +46,63 @@ describe('MCP Controller — handleMCPRequest', () => {
     mcpCoreExports.PipeshubCore = origPipeshubCore
     sdkTransportExports.StreamableHTTPServerTransport = origTransport
     sinon.restore()
+  })
+
+  // =========================================================================
+  // Activation events
+  // =========================================================================
+  describe('activation events', () => {
+    const arm = () => {
+      mcpServerExports.createMCPServer = sinon.stub().returns({ server: { connect: sinon.stub().resolves() } })
+      eventBuffer.drain()
+    }
+    const patUser = {
+      userId: 'user-1', orgId: 'org-1', email: 'dev@example.com',
+      isOAuth: true, oauthClientId: 'pat-system:org-1',
+    }
+
+    it('records mcp_connected on initialize, with the client name and auth type', async () => {
+      arm()
+      const req = createMockRequest({
+        user: patUser,
+        body: { jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'claude-code', version: '2.1.0' } } },
+      })
+      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+
+      const events = eventBuffer.drain()
+      expect(events).to.have.length(1)
+      expect(events[0].event).to.equal('mcp_connected')
+      expect(events[0].props).to.deep.equal({
+        orgId: 'org-1', userId: 'user-1', email: 'dev@example.com', domain: 'example.com',
+        auth_type: 'pat', client_name: 'claude-code', client_version: '2.1.0',
+      })
+    })
+
+    it('records mcp_tool_called with the tool name only, never its arguments', async () => {
+      arm()
+      const req = createMockRequest({
+        user: { ...patUser, oauthClientId: 'some-oauth-app' },
+        body: { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'pipeshub_search', arguments: { query: 'confidential plan' } } },
+      })
+      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+
+      const events = eventBuffer.drain()
+      expect(events).to.have.length(1)
+      expect(events[0].event).to.equal('mcp_tool_called')
+      expect(events[0].props?.tool).to.equal('pipeshub_search')
+      expect(events[0].props?.auth_type).to.equal('oauth')
+      expect(JSON.stringify(events[0])).to.not.include('confidential plan')
+    })
+
+    it('records nothing for other JSON-RPC methods', async () => {
+      arm()
+      const req = createMockRequest({
+        user: patUser,
+        body: { jsonrpc: '2.0', id: 3, method: 'tools/list' },
+      })
+      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+      expect(eventBuffer.drain()).to.have.length(0)
+    })
   })
 
   // =========================================================================
