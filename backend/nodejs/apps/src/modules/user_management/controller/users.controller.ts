@@ -589,7 +589,7 @@ export class UserController {
           ipAddress: req.ip,
         }).save();
         this.logger.info('Demo account created with a starting password', {
-          orgId: newUser.orgId?.toString(),
+          orgId: newUser.orgId.toString(),
           createdBy: req.user?.userId,
           email: newUser.email,
         });
