@@ -3239,7 +3239,7 @@ describe('UserController', () => {
 
     it('should store a hashed credential when a starting password is given', async () => {
       req.body = {
-        email: 'alice@test.com',
+        email: 'alice@acme-demo.example',
         fullName: 'Alice Chen',
         password: 'Str0ng-pass!',
       };
@@ -3264,7 +3264,7 @@ describe('UserController', () => {
 
     it('should reject a weak starting password before creating anything', async () => {
       req.body = {
-        email: 'alice@test.com',
+        email: 'alice@acme-demo.example',
         fullName: 'Alice Chen',
         password: 'weak',
       };
@@ -3278,6 +3278,27 @@ describe('UserController', () => {
       expect(next.firstCall.args[0].message).to.include('Password must be');
       expect(groupUpdate.called).to.be.false;
       expect(userSave.called).to.be.false;
+    });
+
+    it('should refuse a starting password for any address outside the demo domain', async () => {
+      // Connector permissions attach to the email, so a password on a real
+      // colleague's address would let the admin see everything they can see.
+      for (const email of ['alice@example.com', 'ceo@acme-demo.example.com', 'bob@acme-demo.example.evil.io']) {
+        req.body = { email, fullName: 'Someone Real', password: 'Str0ng-pass!' };
+        const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+        const userSave = sinon.stub(Users.prototype, 'save').resolves();
+        const credentialSave = sinon.stub(UserCredentials.prototype, 'save').resolves();
+
+        await controller.createUser(req, res, next);
+
+        expect(next.calledOnce, email).to.be.true;
+        expect(next.firstCall.args[0].message).to.include('demo accounts');
+        expect(groupUpdate.called, email).to.be.false;
+        expect(userSave.called, email).to.be.false;
+        expect(credentialSave.called, email).to.be.false;
+        sinon.restore();
+        next.resetHistory();
+      }
     });
 
     it('should not create a credential when no password is given', async () => {
