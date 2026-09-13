@@ -103,11 +103,15 @@ export class OAuthGrantController {
     try {
       const { orgId } = this.extractUser(req);
       const page =
-        typeof req.query.page === 'string'
+        typeof req.query.page === 'number'
+          ? req.query.page
+          : typeof req.query.page === 'string'
           ? parseInt(req.query.page, 10)
           : undefined;
       const limit =
-        typeof req.query.limit === 'string'
+        typeof req.query.limit === 'number'
+          ? req.query.limit
+          : typeof req.query.limit === 'string'
           ? parseInt(req.query.limit, 10)
           : undefined;
 

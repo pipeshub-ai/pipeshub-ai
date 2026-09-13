@@ -23,6 +23,7 @@ import {
 } from '../types/oauth.types'
 import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig'
 import { PAT_TOKEN_PREFIX } from '../constants/constants'
+import { AppConfig } from '../../tokens_manager/config/config'
 
 @injectable()
 export class OAuthTokenService {
@@ -35,6 +36,7 @@ export class OAuthTokenService {
     @inject('Logger') private logger: Logger,
     @inject('JwtConfig') private jwtConfig: JwtConfig,
     @inject('OAUTH_ISSUER') private issuer: string,
+    @inject('AppConfig') private appConfig: AppConfig,
   ) {
     const keyConfig = getJwtKeyFromConfig(jwtConfig)
     this.algorithm = keyConfig.algorithm
@@ -140,12 +142,12 @@ export class OAuthTokenService {
     }
 
     let storedAccessToken: IOAuthAccessToken | null = null
-    if (process.env.REPLICA_SET_AVAILABLE === 'true') {
+    if (this.appConfig.rsAvailable === 'true') {
       const session = await mongoose.startSession()
       try {
         await session.withTransaction(async () => {
           const createdAccess = await OAuthAccessToken.create([accessTokenData], { session })
-          storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) as any as IOAuthAccessToken
+          storedAccessToken = Array.isArray(createdAccess) ? createdAccess[0] : createdAccess
 
           if (hasRefreshToken && refreshTokenHash && userId) {
             await OAuthRefreshToken.create(

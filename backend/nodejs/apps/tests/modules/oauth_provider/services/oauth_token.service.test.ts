@@ -26,7 +26,8 @@ describe('OAuthTokenService', () => {
       debug: sinon.stub(),
     }
     const jwtConfig = { secret: testSecret } as any
-    service = new OAuthTokenService(mockLogger, jwtConfig, testIssuer)
+    const mockAppConfig = { rsAvailable: 'false' } as any
+    service = new OAuthTokenService(mockLogger, jwtConfig, testIssuer, mockAppConfig)
   })
 
   afterEach(() => {
@@ -123,8 +124,8 @@ describe('OAuthTokenService', () => {
     })
 
     it('should execute inside transaction when REPLICA_SET_AVAILABLE is true', async () => {
-      const origEnv = process.env.REPLICA_SET_AVAILABLE
-      process.env.REPLICA_SET_AVAILABLE = 'true'
+      const origRsAvailable = (service as any).appConfig.rsAvailable
+      ;(service as any).appConfig.rsAvailable = 'true'
       try {
         const mockSession = {
           withTransaction: sinon.stub().callsFake(async (fn: () => Promise<void>) => {
@@ -152,17 +153,13 @@ describe('OAuthTokenService', () => {
         expect(result.accessToken).to.be.a('string')
         expect(result.refreshToken).to.be.a('string')
       } finally {
-        if (origEnv === undefined) {
-          delete process.env.REPLICA_SET_AVAILABLE
-        } else {
-          process.env.REPLICA_SET_AVAILABLE = origEnv
-        }
+        ;(service as any).appConfig.rsAvailable = origRsAvailable
       }
     })
 
     it('should pre-allocate parentRefreshTokenId and clean up refresh token if access token creation fails in non-transactional mode', async () => {
-      const origEnv = process.env.REPLICA_SET_AVAILABLE
-      process.env.REPLICA_SET_AVAILABLE = 'false'
+      const origRsAvailable = (service as any).appConfig.rsAvailable
+      ;(service as any).appConfig.rsAvailable = 'false'
       try {
         const deleteStub = sinon.stub(OAuthRefreshToken, 'deleteOne').resolves({} as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
@@ -187,11 +184,7 @@ describe('OAuthTokenService', () => {
           expect(deleteStub.calledOnce).to.be.true
         }
       } finally {
-        if (origEnv === undefined) {
-          delete process.env.REPLICA_SET_AVAILABLE
-        } else {
-          process.env.REPLICA_SET_AVAILABLE = origEnv
-        }
+        ;(service as any).appConfig.rsAvailable = origRsAvailable
       }
     })
   })
@@ -863,11 +856,13 @@ describe('OAuthTokenService - branch coverage', () => {
 
   beforeEach(() => {
     mockLogger = createMockLogger()
+    const mockAppConfig = { rsAvailable: 'false' } as any
     // Create with HMAC key config
     service = new OAuthTokenService(
       mockLogger as any,
       { algorithm: 'HS256', secret: 'test-secret-key-for-signing-tokens-at-least-32-bytes' } as any,
       'https://test-issuer.com',
+      mockAppConfig,
     )
   })
 

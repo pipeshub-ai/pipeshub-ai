@@ -182,7 +182,7 @@ describe('OAuthGrantController', () => {
 
   describe('adminListGrants', () => {
     it('parses pagination query params and returns org grants', async () => {
-      mockReq.query = { page: '2', limit: '25' }
+      mockReq.query = { page: 2, limit: 25 }
       const mockResult = {
         data: [{ id: 'g-1' }],
         pagination: { page: 2, limit: 25, total: 30, totalPages: 2 },
