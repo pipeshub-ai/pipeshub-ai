@@ -72,8 +72,8 @@ const createUserBody = z.object({
   designation: z.string().optional(),
   // Absent → member (resolveOptionalUserRole). Present must be admin|member.
   role: z.enum(['admin', 'member']).optional(),
-  // Optional starting password so the account can sign in without an invite
-  // email; complexity is checked in the controller (passwordValidator).
+  // Starting password for the bundled demo personas only (@acme-demo.example);
+  // the controller refuses it for any other address and checks complexity.
   password: z.string().optional(),
 });
 
