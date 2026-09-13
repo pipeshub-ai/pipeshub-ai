@@ -153,7 +153,7 @@ export class OAuthProviderContainer {
         scopeValidatorService,
       )
       container.bind<PatService>('PatService').toConstantValue(patService)
-      const oauthGrantService = new OAuthGrantService(logger)
+      const oauthGrantService = new OAuthGrantService(logger, appConfig)
       container
         .bind<OAuthGrantService>('OAuthGrantService')
         .toConstantValue(oauthGrantService)

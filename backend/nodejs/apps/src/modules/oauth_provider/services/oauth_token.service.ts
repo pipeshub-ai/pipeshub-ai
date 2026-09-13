@@ -139,13 +139,13 @@ export class OAuthTokenService {
       parentRefreshTokenId: refreshTokenId,
     }
 
-    let storedAccessToken: IOAuthAccessToken
+    let storedAccessToken: IOAuthAccessToken | null = null
     if (process.env.REPLICA_SET_AVAILABLE === 'true') {
       const session = await mongoose.startSession()
       try {
         await session.withTransaction(async () => {
           const createdAccess = await OAuthAccessToken.create([accessTokenData], { session })
-          storedAccessToken = Array.isArray(createdAccess) ? createdAccess[0] : createdAccess
+          storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) as any as IOAuthAccessToken
 
           if (hasRefreshToken && refreshTokenHash && userId) {
             await OAuthRefreshToken.create(
@@ -185,15 +185,19 @@ export class OAuthTokenService {
 
         try {
           const createdAccess = await OAuthAccessToken.create(accessTokenData)
-          storedAccessToken = Array.isArray(createdAccess) ? createdAccess[0] : createdAccess
+          storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) as any as IOAuthAccessToken
         } catch (err) {
           await OAuthRefreshToken.deleteOne({ _id: refreshTokenId }).catch(() => {})
           throw err
         }
       } else {
         const createdAccess = await OAuthAccessToken.create(accessTokenData)
-        storedAccessToken = Array.isArray(createdAccess) ? createdAccess[0] : createdAccess
+        storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) as any as IOAuthAccessToken
       }
+    }
+
+    if (!storedAccessToken) {
+      throw new Error('OAuth access token creation failed')
     }
 
     const result: GeneratedTokens = {
