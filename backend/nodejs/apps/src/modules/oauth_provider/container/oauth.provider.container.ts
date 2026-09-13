@@ -129,6 +129,7 @@ export class OAuthProviderContainer {
         logger,
         jwtConfig,
         container.get<string>('OAUTH_ISSUER'),
+        appConfig,
       )
       container
         .bind<OAuthTokenService>('OAuthTokenService')

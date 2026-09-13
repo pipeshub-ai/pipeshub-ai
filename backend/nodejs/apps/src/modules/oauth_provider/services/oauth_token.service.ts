@@ -147,7 +147,7 @@ export class OAuthTokenService {
       try {
         await session.withTransaction(async () => {
           const createdAccess = await OAuthAccessToken.create([accessTokenData], { session })
-          storedAccessToken = Array.isArray(createdAccess) ? createdAccess[0] : createdAccess
+          storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) || null
 
           if (hasRefreshToken && refreshTokenHash && userId) {
             await OAuthRefreshToken.create(
@@ -187,14 +187,14 @@ export class OAuthTokenService {
 
         try {
           const createdAccess = await OAuthAccessToken.create(accessTokenData)
-          storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) as any as IOAuthAccessToken
+          storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) || null
         } catch (err) {
           await OAuthRefreshToken.deleteOne({ _id: refreshTokenId }).catch(() => {})
           throw err
         }
       } else {
         const createdAccess = await OAuthAccessToken.create(accessTokenData)
-        storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) as any as IOAuthAccessToken
+        storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) || null
       }
     }
 
