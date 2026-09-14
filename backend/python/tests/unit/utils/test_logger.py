@@ -478,9 +478,17 @@ class TestHttpxSuccessFilter:
         assert "hunter2" not in message
 
     def test_real_httpx_request_log_is_redacted(self, caplog):
-        client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(403)))
-        with caplog.at_level(logging.INFO, logger="httpx"):
-            client.get("https://bucket.example/pack.zip?X-Amz-Signature=SECRET")
-        messages = [r.getMessage() for r in caplog.records if r.name == "httpx"]
-        assert messages
-        assert all("SECRET" not in m for m in messages)
+        # Attach the filter explicitly rather than relying on the module-level install:
+        # other tests reset logging, so the global filter may be absent in some orderings.
+        httpx_logger = logging.getLogger("httpx")
+        filt = HttpxSuccessFilter()
+        httpx_logger.addFilter(filt)
+        try:
+            client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(403)))
+            with caplog.at_level(logging.INFO, logger="httpx"):
+                client.get("https://bucket.example/pack.zip?X-Amz-Signature=SECRET")
+            messages = [r.getMessage() for r in caplog.records if r.name == "httpx"]
+            assert messages
+            assert all("SECRET" not in m for m in messages)
+        finally:
+            httpx_logger.removeFilter(filt)
