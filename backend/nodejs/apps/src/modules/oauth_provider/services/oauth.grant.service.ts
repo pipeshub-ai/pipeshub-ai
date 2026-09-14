@@ -114,7 +114,9 @@ export class OAuthGrantService {
 
     const grants: OAuthGrantListItem[] = [];
     const activeRefreshTokenIdsSet = new Set(
-      refreshTokens.map((rt) => (rt._id as Types.ObjectId).toString()),
+      refreshTokens.map((rt) =>
+        (rt.familyId || (rt._id as Types.ObjectId)).toString(),
+      ),
     );
 
     for (const rt of refreshTokens) {
@@ -130,7 +132,7 @@ export class OAuthGrantService {
         createdAt: rt.createdAt,
         expiresAt: rt.expiresAt,
         lastUsedAt: lastUsedByTokenId.get(
-          (rt._id as Types.ObjectId).toString(),
+          (rt.familyId || (rt._id as Types.ObjectId)).toString(),
         ),
       });
     }
@@ -315,7 +317,12 @@ export class OAuthGrantService {
                     $match: {
                       $expr: {
                         $and: [
-                          { $eq: ['$_id', '$$parentId'] },
+                          {
+                            $or: [
+                              { $eq: ['$familyId', '$$parentId'] },
+                              { $eq: ['$_id', '$$parentId'] },
+                            ],
+                          },
                           { $eq: ['$isRevoked', false] },
                           { $gt: ['$expiresAt', now] },
                         ],
@@ -430,7 +437,9 @@ export class OAuthGrantService {
       const lastUsedAt =
         item.type === 'access'
           ? item.lastUsedAt
-          : lastUsedMap.get(item._id.toString());
+          : lastUsedMap.get(
+              (item.familyId || (item._id as Types.ObjectId)).toString(),
+            );
 
       return {
         id: item._id.toString(),
