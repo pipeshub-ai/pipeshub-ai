@@ -9540,6 +9540,7 @@ components:
               items: {}
 
     AgentCreateWebSearch:
+      nullable: true
       description: |
         Web-search attachment for an agent. Accepts either a provider string
         or an object with at least a `provider` field.
@@ -9561,7 +9562,6 @@ components:
               maxLength: 500
           required:
             - provider
-        - type: 'null'
 
     AgentSkillAssignment:
       type: object
@@ -9819,6 +9819,7 @@ components:
           items:
             type: string
         webSearch:
+          nullable: true
           anyOf:
             - type: object
               additionalProperties: false
@@ -9829,7 +9830,6 @@ components:
                   type: string
                 providerLabel:
                   type: string
-            - type: 'null'
         defaultReasoningEffort:
           type: string
           nullable: true
@@ -9885,11 +9885,10 @@ components:
         agent:
           $ref: '#/components/schemas/AgentCreateResponseAgent'
         warnings:
-          anyOf:
-            - type: array
-              items:
-                $ref: '#/components/schemas/AgentCreateWarning'
-            - type: 'null'
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/AgentCreateWarning'
 
     AgentUpdateRequest:
       type: object
@@ -10543,7 +10542,8 @@ components:
             - Conversation deleted successfully
         conversation:
           nullable: true
-          $ref: '#/components/schemas/StoredAgentConversation'
+          allOf:
+            - $ref: '#/components/schemas/StoredAgentConversation'
 
     AgentConversationDetailMessageCitation:
       type: object
@@ -17077,15 +17077,15 @@ paths:
                 Frontend success URL or `{frontendUrl}/login?saml_error=<code>` on failure.
               schema:
                 type: string
-                examples:
-                  success:
-                    value: "https://app.example.com/auth/sign-in/samlSso/success"
-                  error_sso_disabled:
-                    value: "https://app.example.com/login?saml_error=saml_sso_disabled"
-                  error_jit_disabled:
-                    value: "https://app.example.com/login?saml_error=jit_disabled"
-                  error_auth_failed:
-                    value: "https://app.example.com/login?saml_error=auth_failed"
+              examples:
+                success:
+                  value: "https://app.example.com/auth/sign-in/samlSso/success"
+                error_sso_disabled:
+                  value: "https://app.example.com/login?saml_error=saml_sso_disabled"
+                error_jit_disabled:
+                  value: "https://app.example.com/login?saml_error=jit_disabled"
+                error_auth_failed:
+                  value: "https://app.example.com/login?saml_error=auth_failed"
             Set-Cookie:
               description: |
                 Set on successful authentication only.
@@ -19014,6 +19014,44 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: "`userId` or `orgId` missing from token (`userAdminCheck`)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/me/role:
+    get:
+      tags:
+        - Users
+      summary: Get the requester's role
+      description: |
+        Returns the **authenticated requester's** current role in their organization, read
+        live from the user record. Only the bearer's own role is disclosed, so no OAuth scope
+        is required.
+
+        Returns `401` when the credentials are no longer valid — an expired or revoked
+        OAuth/PAT token, an invalidated session, or a user that no longer exists. Internal
+        services rely on this to stop accepting such tokens.
+      operationId: getMyRole
+      security:
+        - bearerAuth: []
+        - oauth2: []
+      responses:
+        '200':
+          description: The requester's role
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - role
+                properties:
+                  role:
+                    type: string
+                    enum: [admin, member]
+        '401':
+          description: Unauthorized - token missing, invalid, expired or revoked, or the user no longer exists
           content:
             application/json:
               schema:
@@ -22880,6 +22918,7 @@ paths:
         '500':
           description: Failed to verify knowledge base or folder access
           content:
+            application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
@@ -30124,8 +30163,9 @@ paths:
           description: |
             Filter by scope. Defaults to <code>team</code> when omitted.
           schema:
-            $ref: '#/components/schemas/ConnectorScope'
-          default: team
+            allOf:
+              - $ref: '#/components/schemas/ConnectorScope'
+            default: team
         - name: page
           in: query
           schema:

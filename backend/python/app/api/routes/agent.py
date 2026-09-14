@@ -21,13 +21,13 @@ from app.utils.stage_timer import StageTimer
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
-from app.api.middlewares.auth import authMiddleware, require_scopes
+from app.api.middlewares.auth import require_scopes
 from app.api.routes.chatbot import get_llm_for_chat, load_system_prompts
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import REASONING_EFFORT_VALUES, validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import OAuthScopes, config_node_constants
+from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.modules.agents.qna.chat_state import _extract_kb_app_ids
 from app.modules.agents.qna.router import (
@@ -2044,7 +2044,17 @@ async def create_agent(request: Request) -> JSONResponse:
         logger.error(f"Error creating agent: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-@router.get("/{agent_id}/internal/service-account", dependencies=[Depends(authMiddleware)])
+@router.get(
+    "/{agent_id}/internal/service-account",
+    dependencies=[
+        Depends(
+            require_scopes(
+                OAuthScopes.AGENT_READ,
+                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
+            )
+        )
+    ],
+)
 async def get_agent_internal(request: Request, agent_id: str) -> JSONResponse:
     """
     Internal route: verify that an agent is a service account and return its
@@ -3132,7 +3142,17 @@ async def chat(request: Request, agent_id: str) -> JSONResponse:
     return JSONResponse(content=completion_data)
 
 
-@router.post("/{agent_id}/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
+@router.post(
+    "/{agent_id}/chat/stream",
+    dependencies=[
+        Depends(
+            require_scopes(
+                OAuthScopes.AGENT_EXECUTE,
+                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
+            )
+        )
+    ],
+)
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
     """Chat with an agent using streaming response"""
     timer = StageTimer()

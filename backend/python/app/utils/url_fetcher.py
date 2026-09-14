@@ -17,8 +17,9 @@ import random
 import socket
 import time
 from dataclasses import dataclass
+from functools import partial
 from typing import Literal
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from app.utils.logger import create_logger
 
@@ -28,6 +29,7 @@ logger = create_logger(__name__)
 # HTTP status constants
 # ---------------------------------------------------------------------------
 HTTP_STATUS_OK = 200
+HTTP_STATUS_MULTIPLE_CHOICES = 300
 HTTP_STATUS_BAD_REQUEST = 400
 HTTP_STATUS_FORBIDDEN = 403
 HTTP_STATUS_CLIENT_ERROR_MAX = 500
@@ -72,17 +74,36 @@ _BLOCKED_HOSTNAMES = frozenset(
 _NAT64_WELL_KNOWN_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
 
 
-def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+
+
+@dataclass(frozen=True)
+class PublicTarget:
+    """A validated http(s) URL target: every address in ``addresses`` passed the SSRF policy."""
+
+    scheme: str
+    host: str
+    port: int
+    addresses: tuple[IPAddress, ...]
+
+
+def _ip_is_blocked(ip: IPAddress, *, block_non_global: bool = True) -> bool:
     """True if the address must not be contacted by the generic HTTP fetcher.
 
     NAT64 well-known-prefix addresses are unwrapped to their embedded IPv4 address and
     re-checked against the same rules, instead of trusting `is_reserved` — so a NAT64-routed
     private/loopback/metadata IPv4 address is still blocked, but a NAT64-routed public one
     (e.g. a legitimate SaaS host resolved from an IPv6-only network) is not.
+
+    ``block_non_global`` also rejects addresses that are not globally routable but are not
+    flagged private either, e.g. CGNAT ``100.64.0.0/10`` (Alibaba Cloud metadata lives at
+    ``100.100.100.200``).
     """
     if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_WELL_KNOWN_PREFIX:
         embedded_ipv4 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-        return _ip_is_blocked(embedded_ipv4)
+        return _ip_is_blocked(embedded_ipv4, block_non_global=block_non_global)
     return bool(
         ip.is_private
         or ip.is_loopback
@@ -90,6 +111,7 @@ def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         or ip.is_multicast
         or ip.is_reserved
         or ip.is_unspecified
+        or (block_non_global and not ip.is_global)
     )
 
 
@@ -102,52 +124,64 @@ def _hostname_is_blocked(hostname: str) -> bool:
     return False
 
 
-def _validate_public_http_url(url: str) -> None:
-    """
-    Reject URLs that would trigger SSRF against RFC1918, loopback, link-local,
-    cloud metadata IPs, etc. Applies to the initial URL only; redirect targets are
-    not re-validated (see allow_redirects in fetch strategies).
+def resolve_public_http_target(url: str, *, block_non_global: bool = True) -> PublicTarget:
+    """Resolve ``url`` and reject it if it could reach loopback, RFC1918, link-local,
+    cloud metadata or other non-public addresses. Every resolved address must pass,
+    so one private A record among public ones is enough to reject the URL.
+
+    This is the single blocked-host policy: ``validate_public_http_url``, ``fetch_url``
+    (per redirect hop) and ``app.utils.public_http`` all go through it.
+
+    Raises:
+        FetchError: if the URL's scheme/hostname/port/resolved address is disallowed.
     """
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
+    if parsed.scheme not in _DEFAULT_PORTS:
         raise FetchError(f"Only HTTP/HTTPS URLs are allowed, got scheme {parsed.scheme!r}")
 
     hostname = parsed.hostname
     if not hostname:
         raise FetchError("URL has no hostname")
 
+    try:
+        port = parsed.port or _DEFAULT_PORTS[parsed.scheme]
+    except ValueError as e:
+        raise FetchError("URL has an invalid port") from e
+
     if _hostname_is_blocked(hostname):
         raise FetchError(f"Blocked unsafe URL hostname: {hostname}")
 
-    # Literal IP in the URL (IPv4 or IPv6)
     try:
-        ip = ipaddress.ip_address(hostname)
-        if _ip_is_blocked(ip):
-            raise FetchError(f"Blocked unsafe URL address: {ip}")
-        return
+        literal_ip = ipaddress.ip_address(hostname)
     except ValueError:
-        pass
+        literal_ip = None
+    if literal_ip is not None:
+        if _ip_is_blocked(literal_ip, block_non_global=block_non_global):
+            raise FetchError(f"Blocked unsafe URL address: {literal_ip}")
+        return PublicTarget(parsed.scheme, hostname, port, (literal_ip,))
 
     try:
         infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
     except socket.gaierror as e:
         raise FetchError(f"Could not resolve hostname {hostname!r}: {e}") from e
 
-    if not infos:
-        raise FetchError(f"No addresses resolved for hostname {hostname!r}")
-
+    addresses: list[IPAddress] = []
     for info in infos:
-        sockaddr = info[4]
-        addr = sockaddr[0]
         try:
-            ip = ipaddress.ip_address(addr)
+            ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if _ip_is_blocked(ip):
+        if _ip_is_blocked(ip, block_non_global=block_non_global):
             raise FetchError(f"Blocked unsafe URL: hostname {hostname!r} resolves to {ip}")
+        if ip not in addresses:
+            addresses.append(ip)
+
+    if not addresses:
+        raise FetchError(f"No addresses resolved for hostname {hostname!r}")
+    return PublicTarget(parsed.scheme, hostname, port, tuple(addresses))
 
 
-def validate_public_http_url(url: str) -> None:
+def validate_public_http_url(url: str, *, block_non_global: bool = True) -> None:
     """Public entry point for the SSRF guard above — reused by callers outside this module
     (e.g. MCP OAuth metadata discovery) so there is exactly one blocked-host policy for
     fetching admin-supplied URLs, instead of a second copy drifting out of sync.
@@ -155,7 +189,22 @@ def validate_public_http_url(url: str) -> None:
     Raises:
         FetchError: if the URL's scheme/hostname/resolved address is disallowed.
     """
-    _validate_public_http_url(url)
+    resolve_public_http_target(url, block_non_global=block_non_global)
+
+
+_MAX_REDIRECTS = 5
+_FOLLOWED_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+def _is_redirect_status(status_code: int) -> bool:
+    return HTTP_STATUS_MULTIPLE_CHOICES <= status_code < HTTP_STATUS_BAD_REQUEST
+
+
+def _redirect_location(result: FetchResult) -> str | None:
+    if result.status_code not in _FOLLOWED_REDIRECT_STATUSES:
+        return None
+    headers: dict[str, str] = result.headers
+    return next((v for k, v in headers.items() if k.lower() == "location"), None)
 
 
 # ---------------------------------------------------------------------------
@@ -224,8 +273,14 @@ def _try_curl_cffi(
     timeout: int,
     use_http2: bool = True,
     profiles: list[str] | None = None,
+    *,
+    follow_redirects: bool = True,
 ) -> FetchResult | None:
-    """Try curl_cffi with rotating profiles or an explicit profile list."""
+    """Try curl_cffi with rotating profiles or an explicit profile list.
+
+    With ``follow_redirects=False`` a 3xx is returned as-is so the caller can validate the
+    next hop.
+    """
     try:
         from curl_cffi import CurlOpt
         from curl_cffi.requests import Session
@@ -254,9 +309,11 @@ def _try_curl_cffi(
                     except Exception:
                         pass
 
-                resp = session.get(url, headers=headers, allow_redirects=True)
+                resp = session.get(url, headers=headers, allow_redirects=follow_redirects)
 
-                if resp.status_code == HTTP_STATUS_OK:
+                if resp.status_code == HTTP_STATUS_OK or (
+                    not follow_redirects and _is_redirect_status(resp.status_code)
+                ):
                     return FetchResult(
                         status_code=resp.status_code,
                         text=resp.text,
@@ -293,7 +350,9 @@ def _try_curl_cffi(
 # Strategy 2: cloudscraper
 # ---------------------------------------------------------------------------
 
-def _try_cloudscraper(url: str, headers: dict, timeout: int) -> FetchResult | None:
+def _try_cloudscraper(
+    url: str, headers: dict, timeout: int, *, follow_redirects: bool = True
+) -> FetchResult | None:
     try:
         import cloudscraper
     except ImportError:
@@ -303,9 +362,13 @@ def _try_cloudscraper(url: str, headers: dict, timeout: int) -> FetchResult | No
         scraper = cloudscraper.create_scraper(
             browser={"browser": "chrome", "platform": "windows", "mobile": False}
         )
-        resp = scraper.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        resp = scraper.get(
+            url, headers=headers, timeout=timeout, allow_redirects=follow_redirects
+        )
 
-        if resp.status_code == HTTP_STATUS_OK:
+        if resp.status_code == HTTP_STATUS_OK or (
+            not follow_redirects and _is_redirect_status(resp.status_code)
+        ):
             return FetchResult(
                 status_code=resp.status_code,
                 text=resp.text,
@@ -324,7 +387,9 @@ def _try_cloudscraper(url: str, headers: dict, timeout: int) -> FetchResult | No
 # Strategy 3: plain requests with stealth UA
 # ---------------------------------------------------------------------------
 
-def _try_requests(url: str, headers: dict, timeout: int) -> FetchResult | None:
+def _try_requests(
+    url: str, headers: dict, timeout: int, *, follow_redirects: bool = True
+) -> FetchResult | None:
     try:
         import requests as req
     except ImportError:
@@ -342,9 +407,11 @@ def _try_requests(url: str, headers: dict, timeout: int) -> FetchResult | None:
         ]
         session.headers["User-Agent"] = random.choice(ua_list)
 
-        resp = session.get(url, timeout=timeout, allow_redirects=True)
+        resp = session.get(url, timeout=timeout, allow_redirects=follow_redirects)
 
-        if resp.status_code == HTTP_STATUS_OK:
+        if resp.status_code == HTTP_STATUS_OK or (
+            not follow_redirects and _is_redirect_status(resp.status_code)
+        ):
             return FetchResult(
                 status_code=resp.status_code,
                 text=resp.text,
@@ -396,20 +463,57 @@ def fetch_url(
         profile:     Optional curl_cffi profile to use (e.g. "chrome120").
         verbose:     Print which strategy is being tried.
         block_private_hosts: When True (default), refuse loopback, RFC1918,
-            link-local, metadata-style hosts, and related SSRF-prone targets before
-            any network I/O. Set False only for trusted same-origin fetches (e.g.
-            connector-provided image URLs that may point at corporate hosts).
+            link-local, CGNAT, metadata-style hosts, and related SSRF-prone targets
+            before any network I/O, and re-validate every redirect hop (at most
+            ``_MAX_REDIRECTS``). Set False only for URLs an operator configured,
+            never for URLs a user, a model or a third-party document supplied.
 
     Returns:
         FetchResult with .text, .content, .status_code, .strategy, etc.
 
     Raises:
-        FetchError: If the URL fails SSRF validation (when ``block_private_hosts`` is True),
-            if all strategies fail, or for unknown ``strategy`` values.
+        FetchError: If the URL or a redirect hop fails SSRF validation (when
+            ``block_private_hosts`` is True), on too many redirects, if all strategies
+            fail, or for unknown ``strategy`` values.
     """
-    if block_private_hosts:
-        _validate_public_http_url(url)
+    run = partial(
+        _run_strategies,
+        headers=headers,
+        referer=referer,
+        timeout=timeout,
+        max_retries=max_retries,
+        strategy=strategy,
+        profile=profile,
+        verbose=verbose,
+    )
+    if not block_private_hosts:
+        return run(url, follow_redirects=True)
 
+    # Each hop is validated before it is fetched, but curl_cffi/cloudscraper/requests resolve
+    # DNS again when they connect, so a DNS-rebinding answer can still slip in between.
+    current_url = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        validate_public_http_url(current_url)
+        result = run(current_url, follow_redirects=False)
+        location = _redirect_location(result)
+        if location is None:
+            return result
+        current_url = urljoin(current_url, location)
+    raise FetchError(f"Too many redirects (more than {_MAX_REDIRECTS})")
+
+
+def _run_strategies(
+    url: str,
+    *,
+    headers: dict[str, str] | None,
+    referer: str | None,
+    timeout: int,
+    max_retries: int,
+    strategy: str | None,
+    profile: str | None,
+    verbose: bool,
+    follow_redirects: bool,
+) -> FetchResult:
     req_headers = _build_headers(url, referer, headers)
     selected_profiles = [profile] if profile else None
 
@@ -417,17 +521,35 @@ def fetch_url(
         "curl_cffi_h2": (
             "curl_cffi (HTTP/2)",
             lambda: _try_curl_cffi(
-                url, req_headers, timeout, use_http2=True, profiles=selected_profiles
+                url,
+                req_headers,
+                timeout,
+                use_http2=True,
+                profiles=selected_profiles,
+                follow_redirects=follow_redirects,
             ),
         ),
         "curl_cffi_h1": (
             "curl_cffi (HTTP/1.1)",
             lambda: _try_curl_cffi(
-                url, req_headers, timeout, use_http2=False, profiles=selected_profiles
+                url,
+                req_headers,
+                timeout,
+                use_http2=False,
+                profiles=selected_profiles,
+                follow_redirects=follow_redirects,
             ),
         ),
-        "cloudscraper": ("cloudscraper", lambda: _try_cloudscraper(url, req_headers, timeout)),
-        "requests": ("requests", lambda: _try_requests(url, req_headers, timeout)),
+        "cloudscraper": (
+            "cloudscraper",
+            lambda: _try_cloudscraper(
+                url, req_headers, timeout, follow_redirects=follow_redirects
+            ),
+        ),
+        "requests": (
+            "requests",
+            lambda: _try_requests(url, req_headers, timeout, follow_redirects=follow_redirects),
+        ),
     }
 
     if strategy is not None:
@@ -442,7 +564,7 @@ def fetch_url(
             strategy_map["requests"],
         ]
 
-    errors = []
+    errors: list[str] = []
 
     for name, strategy_fn in strategies:
         for attempt in range(max_retries + 1):

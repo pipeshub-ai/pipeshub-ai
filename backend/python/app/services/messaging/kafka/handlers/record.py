@@ -17,7 +17,11 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service import (
+    DefaultEndpoints,
+    TokenScopes,
+    config_node_constants,
+)
 from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
@@ -1011,7 +1015,7 @@ class RecordEventHandler(BaseEventService):
                 try:
                     jwt_payload  = {
                         "orgId": payload["orgId"],
-                        "scopes": ["connector:signedUrl"],
+                        "scopes": [TokenScopes.CONNECTOR_SIGNED_URL.value],
                     }
                     token = await generate_jwt(self.config_service, jwt_payload)
                     self.logger.debug(f"Generated JWT token for message {message_id}")

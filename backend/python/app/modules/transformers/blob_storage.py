@@ -8,7 +8,6 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, TypedDict
 
 import aiohttp
-import jwt
 import msgspec
 from yarl import URL
 
@@ -27,6 +26,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.worker_scaling import scaled
@@ -429,7 +429,6 @@ class BlobStorage(Transformer):
         payload = {
             "orgId": org_id,
             "scopes": [TokenScopes.STORAGE_TOKEN.value],
-            "exp": int(time.time()) + 3600,
         }
         # use_cache: these three reads are otherwise an etcd round trip each, on
         # every record download (~100 per chat turn). The config cache is
@@ -441,7 +440,7 @@ class BlobStorage(Transformer):
         if not scoped_jwt_secret:
             raise ValueError("Missing scoped JWT secret")
 
-        jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+        jwt_token = mint_service_token(scoped_jwt_secret, payload)
         # Headers are rebuilt per call, never cached: inject_request_headers
         # stamps the caller's request id from a ContextVar.
         headers = inject_request_headers({"Authorization": f"Bearer {jwt_token}"})
