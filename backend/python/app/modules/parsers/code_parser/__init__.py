@@ -6,6 +6,7 @@ from app.modules.parsers.code_parser.file_role import (
     is_ignored_path,
     should_index_code_file,
 )
+from app.modules.parsers.code_parser.ids import file_stem_for, make_id, normalize_id
 from app.modules.parsers.code_parser.lang_config import (
     SUPPORTED_CODE_EXTENSIONS,
     detect_language,
@@ -17,6 +18,9 @@ __all__ = [
     "FileRole",
     "classify_file_role",
     "detect_language",
+    "file_stem_for",
     "is_ignored_path",
+    "make_id",
+    "normalize_id",
     "should_index_code_file",
 ]

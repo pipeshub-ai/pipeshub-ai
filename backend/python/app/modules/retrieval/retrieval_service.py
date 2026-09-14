@@ -408,14 +408,12 @@ class RetrievalService:
             # Graph key for KH permission_role checks (Location trails).
             user_key = (user.get("_key") or user.get("id")) if user else None
 
-            if virtual_record_ids_from_tool:
-                filter  = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id,"virtualRecordId": virtual_record_ids_from_tool},
-                    )
-            else:
-                filter = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id, "virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
-                    )
+            virtual_record_ids = virtual_record_ids_from_tool or list(
+                accessible_virtual_id_to_record_id.keys()
+            )
+            filter = await self.vector_db_service.filter_collection(
+                must={"orgId": org_id, "virtualRecordId": virtual_record_ids},
+            )
             search_results = await self._execute_parallel_searches(
                 queries, filter, limit, org_id, user_id
             )

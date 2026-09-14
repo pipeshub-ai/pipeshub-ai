@@ -308,6 +308,7 @@ class TestCreateTransformContext:
                 record=mock_record,
                 event_type=None,
                 prev_virtual_record_id=None,
+                is_code=False,
             )
 
     def test_creates_context_with_event_type(self):
@@ -321,6 +322,7 @@ class TestCreateTransformContext:
                 record=mock_record,
                 event_type="updateRecord",
                 prev_virtual_record_id=None,
+                is_code=False,
             )
 
     def test_creates_context_with_explicit_prev_virtual_record_id(self):
@@ -338,6 +340,7 @@ class TestCreateTransformContext:
                 record=mock_record,
                 event_type="newRecord",
                 prev_virtual_record_id="prev-vr-123",
+                is_code=False,
             )
 
 

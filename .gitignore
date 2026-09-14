@@ -227,3 +227,5 @@ deployment/docker-compose/bootstrap-first-run.env
 
 # Local scratch workspace, not part of the repo
 loom/
+
+reference-codeindexing

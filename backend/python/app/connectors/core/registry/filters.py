@@ -305,6 +305,7 @@ class IndexingFilterKey(str, Enum):
     # GitLab
     MERGE_REQUESTS = "merge_requests"
     CODE_FILES = "code_files"
+    TEST_FILES = "test_files"
 
     # Knowledge base
     KNOWLEDGE_BASE = "knowledge_base"

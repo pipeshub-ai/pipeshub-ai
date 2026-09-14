@@ -228,6 +228,15 @@ class GitLabPersonalProjectsSync(ProjectsSync):
                 default_value=True,
             )
         )
+        .add_filter_field(
+            FilterField(
+                name=IndexingFilterKey.TEST_FILES.value,
+                display_name="Index Test Files",
+                filter_type=FilterType.BOOLEAN,
+                category=FilterCategory.INDEXING,
+                default_value=False,
+            )
+        )
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_agent_support(False)
     )

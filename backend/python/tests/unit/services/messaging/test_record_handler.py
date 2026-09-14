@@ -16,13 +16,17 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
+from app.modules.code_graph import edge_build_trigger
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
     StreamMessage,
 )
-from app.services.messaging.error_classifier import MessageErrorType
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 
 # ---------------------------------------------------------------------------
@@ -307,6 +311,479 @@ class TestSyncVectorMembershipEvent:
         assert len(events) == 2
         processor.sync_vector_membership.assert_not_awaited()
         pipeline.bulk_delete_embeddings.assert_not_awaited()
+
+
+class TestBuildCodeEdges:
+    @staticmethod
+    def _payload() -> dict[str, str]:
+        return {
+            "org_id": "org-1",
+            "connector_id": "connector-1",
+            "record_group_id": "repo-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_builds_edges_stamps_sync_point_and_releases_lock(self) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=False)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        graph_provider.upsert_sync_point = AsyncMock()
+
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+
+        result = MagicMock()
+        result.as_log_fields.return_value = {"edges_written": 3}
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                AsyncMock(return_value=result),
+            ) as build,
+        ):
+            await handler._build_code_edges(**self._payload())
+
+        build.assert_awaited_once_with(
+            graph_provider=graph_provider,
+            org_id="org-1",
+            record_group_id="repo-1",
+            touched_record_ids=None,
+            log=handler.logger,
+        )
+        graph_provider.upsert_sync_point.assert_awaited_once()
+        sync_call = graph_provider.upsert_sync_point.await_args
+        assert sync_call.kwargs["sync_point_key"] == "repo-1/code-edge-build"
+        assert sync_call.kwargs["sync_point_data"]["connectorId"] == "connector-1"
+        redis.eval.assert_awaited_once()
+        redis.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_build_failure_is_retried_and_releases_lock(self) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=False)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        graph_provider.upsert_sync_point = AsyncMock()
+
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                AsyncMock(side_effect=RuntimeError("build failed")),
+            ),
+            pytest.raises(RuntimeError, match="build failed"),
+        ):
+            await handler._build_code_edges(**self._payload())
+
+        graph_provider.upsert_sync_point.assert_not_awaited()
+        redis.eval.assert_awaited_once()
+        redis.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_lease_is_renewed_while_building_and_stopped_before_release(
+        self,
+    ) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=False)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        graph_provider.upsert_sync_point = AsyncMock()
+
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+
+        renewal = {"started": False, "cancelled": False, "args": None}
+
+        async def fake_renew(redis_client, lock_key, lock_token, log) -> None:
+            renewal["started"] = True
+            renewal["args"] = (redis_client, lock_key, lock_token)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                renewal["cancelled"] = True
+                raise
+
+        async def fake_build(**_kwargs):
+            # Yield so the renewal task actually reaches its first statement.
+            await asyncio.sleep(0)
+            return MagicMock()
+
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch.object(
+                edge_build_trigger,
+                "renew_build_lock_until_cancelled",
+                fake_renew,
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                fake_build,
+            ),
+        ):
+            await handler._build_code_edges(**self._payload())
+
+        assert renewal["started"] is True
+        assert renewal["cancelled"] is True
+        assert renewal["args"][0] is redis
+        assert renewal["args"][1] == "pipeshub:code-edge-build:org-1:repo-1"
+        # Same token the owner-checked release compares against.
+        assert renewal["args"][2] == redis.set.await_args.args[1]
+        redis.eval.assert_awaited_once()
+        redis.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_lock_contention_acknowledges_duplicate_without_building(
+        self,
+    ) -> None:
+        handler = _make_handler()
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=False)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                new_callable=AsyncMock,
+            ) as build,
+        ):
+            await handler._build_code_edges(**self._payload())
+
+        build.assert_not_awaited()
+        redis.eval.assert_not_awaited()
+        redis.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unfinished_records_skip_build_and_release_lock(self) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=True)
+
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                new_callable=AsyncMock,
+            ) as build,
+        ):
+            await handler._build_code_edges(**self._payload())
+
+        build.assert_not_awaited()
+        redis.eval.assert_awaited_once()
+        redis.aclose.assert_awaited_once()
+
+
+class TestRequestCodeEdges:
+    """The publish side: which finished record asks for a repo's edge build."""
+
+    @staticmethod
+    def _record(**overrides):
+        record = {
+            "_key": "record-1",
+            "connectorName": "GitLab",
+            "connectorId": "connector-1",
+            "orgId": "org-1",
+            "recordGroupId": "repo-1-code-repository",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+        }
+        record.update(overrides)
+        return record
+
+    @staticmethod
+    async def _request(handler, record, *, unfinished=False, pending=False, claimed=True):
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.get_document = AsyncMock(return_value=record)
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=unfinished)
+        graph_provider.get_nodes_by_filters = AsyncMock(
+            return_value=[{"lastEdgeBuildAt": 1700, "edgeBuildPending": pending}]
+        )
+        graph_provider.upsert_sync_point = AsyncMock()
+
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=claimed)
+        redis.aclose = AsyncMock()
+        with patch(
+            "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+            AsyncMock(return_value=redis),
+        ):
+            await handler._request_code_edge_build_if_repo_drained("record-1")
+        return graph_provider, redis
+
+    @pytest.mark.asyncio
+    async def test_a_drained_repo_asks_for_its_build(self) -> None:
+        handler = _make_handler()
+
+        await self._request(handler, self._record())
+
+        handler.producer.send_event.assert_awaited_once_with(
+            topic="record-events",
+            event_type=EventTypes.BUILD_CODE_EDGES.value,
+            payload={
+                "orgId": "org-1",
+                "connectorId": "connector-1",
+                "recordGroupId": "repo-1-code-repository",
+            },
+            key="repo-1-code-repository",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_repo_still_indexing_asks_for_nothing(self) -> None:
+        handler = _make_handler()
+
+        await self._request(handler, self._record(), unfinished=True)
+
+        handler.producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_last_file_still_asks(self) -> None:
+        """The regression the COMPLETED-only trigger had: a repo whose final
+        file dies terminally is drained, and nobody else is left to notice."""
+        handler = _make_handler()
+
+        await self._request(
+            handler, self._record(indexingStatus=ProgressStatus.FAILED.value)
+        )
+
+        handler.producer.send_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_non_code_record_asks_for_nothing(self) -> None:
+        handler = _make_handler()
+
+        await self._request(handler, self._record(connectorName="Slack"))
+
+        handler.producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_tail_of_a_repo_asks_only_once(self) -> None:
+        """Several of the last files each finish and each see a drained group."""
+        handler = _make_handler()
+
+        await self._request(handler, self._record(), claimed=False)
+
+        handler.producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_build_already_owed_skips_the_dedupe_window(self) -> None:
+        handler = _make_handler()
+
+        await self._request(handler, self._record(), pending=True, claimed=False)
+
+        handler.producer.send_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_marks_the_repo_as_owed_before_asking(self) -> None:
+        """So a request that dies in the broker leaves a mark, not nothing."""
+        handler = _make_handler()
+
+        graph_provider, _ = await self._request(handler, self._record())
+
+        kwargs = graph_provider.upsert_sync_point.await_args.kwargs
+        assert kwargs["sync_point_key"] == "repo-1-code-repository/code-edge-build"
+        assert kwargs["sync_point_data"]["edgeBuildPending"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failure_while_asking_never_reaches_the_record(self) -> None:
+        """The record indexed fine; asking for edges must not report otherwise."""
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            side_effect=RuntimeError("graph down")
+        )
+
+        await handler._request_code_edge_build_if_repo_drained("record-1")
+
+        handler.logger.exception.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_a_non_code_record_in_hand_costs_no_reads(self) -> None:
+        """Every record on the platform reaches this; only code ones may read."""
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock()
+
+        await handler._request_code_edge_build_if_repo_drained(
+            "record-1", self._record(connectorName="Slack")
+        )
+
+        handler.event_processor.graph_provider.get_document.assert_not_awaited()
+        handler.producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stale_copy_of_a_code_record_is_re_read(self) -> None:
+        """On the failure path the copy in scope predates the status write, so
+        one that still reads IN_PROGRESS there may well be terminal by now."""
+        handler = _make_handler()
+        stale = self._record(indexingStatus=ProgressStatus.IN_PROGRESS.value)
+
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.get_document = AsyncMock(
+            return_value=self._record(indexingStatus=ProgressStatus.FAILED.value)
+        )
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=False)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        graph_provider.upsert_sync_point = AsyncMock()
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.aclose = AsyncMock()
+        with patch(
+            "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+            AsyncMock(return_value=redis),
+        ):
+            await handler._request_code_edge_build_if_repo_drained("record-1", stale)
+
+        graph_provider.get_document.assert_awaited_once()
+        handler.producer.send_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_without_a_producer_nothing_is_asked_for(self) -> None:
+        handler = _make_handler()
+        handler.producer = None
+        handler.event_processor.graph_provider.get_document = AsyncMock()
+
+        await handler._request_code_edge_build_if_repo_drained("record-1")
+
+        handler.event_processor.graph_provider.get_document.assert_not_awaited()
+
+
+class TestConsumeCodeEdgesRequest:
+    """The consume side: what the request does when it is delivered."""
+
+    _PAYLOAD = {
+        "orgId": "org-1",
+        "connectorId": "connector-1",
+        "recordGroupId": "repo-1-code-repository",
+    }
+
+    @pytest.mark.asyncio
+    async def test_the_request_builds_and_completes(self) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=False)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        graph_provider.upsert_sync_point = AsyncMock()
+
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+        result = MagicMock()
+        result.as_log_fields.return_value = {}
+
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                new_callable=AsyncMock,
+                return_value=result,
+            ) as build,
+        ):
+            events = await _collect_events(
+                handler, EventTypes.BUILD_CODE_EDGES.value, dict(self._PAYLOAD)
+            )
+
+        build.assert_awaited_once()
+        assert [event.event for event in events] == [
+            IndexingEvent.PARSING_COMPLETE,
+            IndexingEvent.INDEXING_COMPLETE,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_repo_that_started_indexing_again_is_left_alone(self) -> None:
+        """Records can arrive between the drain that asked and the delivery;
+        whichever one lands last asks again."""
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=True)
+
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.eval = AsyncMock()
+        redis.aclose = AsyncMock()
+
+        with (
+            patch(
+                "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+                AsyncMock(return_value=redis),
+            ),
+            patch(
+                "app.services.messaging.kafka.handlers.record.build_code_graph_edges",
+                new_callable=AsyncMock,
+            ) as build,
+        ):
+            events = await _collect_events(
+                handler, EventTypes.BUILD_CODE_EDGES.value, dict(self._PAYLOAD)
+            )
+
+        build.assert_not_awaited()
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_request_missing_scope_dead_letters_in_one_attempt(self) -> None:
+        handler = _make_handler()
+
+        with pytest.raises(Exception) as excinfo:
+            await _collect_events(
+                handler, EventTypes.BUILD_CODE_EDGES.value, {"orgId": "org-1"}
+            )
+
+        assert (
+            MessageErrorClassifier.classify_by_exception(excinfo.value)
+            == MessageErrorType.TERMINAL
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_discarded_request_leaves_the_repo_marked_as_owed(self) -> None:
+        """The request was a moment that does not come back."""
+        handler = _make_handler()
+        handler.event_processor.graph_provider.upsert_sync_point = AsyncMock()
+
+        await handler.on_message_abandoned(
+            StreamMessage(
+                eventType=EventTypes.BUILD_CODE_EDGES.value,
+                payload=dict(self._PAYLOAD),
+            ),
+            reason="max attempts",
+            attempts=3,
+        )
+
+        kwargs = (
+            handler.event_processor.graph_provider.upsert_sync_point.await_args.kwargs
+        )
+        assert kwargs["sync_point_data"]["edgeBuildPending"] is True
+        handler.logger.error.assert_called()
 
 
 def _vector_only_graph_doc(**overrides):

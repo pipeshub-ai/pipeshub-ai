@@ -75,6 +75,7 @@ def shape_artifact_compaction(
     pin_first_n: int = 1,
     trigger_ratio: float = 0.5,
     keep_last_n_turns: int = 1,
+    protected_tool_names: frozenset[str] | None = None,
 ):
     """PRE_MODEL middleware that compacts artifact-annotated tool messages.
 
@@ -91,6 +92,12 @@ def shape_artifact_compaction(
     trigger_ratio:
         Old-turn artifacts are only compacted when context exceeds
         ``trigger_ratio × budget``.
+    protected_tool_names:
+        Results from these tools are exempt from the old-turn pass, the
+        same contract ``shape_tool_result_clearing`` offers — for data
+        whose value is spread across turns rather than held in one.  They
+        remain eligible for the recent-turn overflow passes, so the
+        exemption can never push context past the absolute budget.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
@@ -107,7 +114,13 @@ def shape_artifact_compaction(
         for i, msg in enumerate(messages):
             if not isinstance(msg, ToolMessage) or msg.artifact_meta is None:
                 continue
-            if msg.artifact_meta.turn_index < prev_cutoff:
+            protected = bool(protected_tool_names) and (
+                msg.artifact_meta.tool_name in protected_tool_names
+            )
+            # Protected results fall through to the overflow tiers rather than
+            # being exempted outright: age stops aging them out, an absolute
+            # budget overrun still releases them.
+            if msg.artifact_meta.turn_index < prev_cutoff and not protected:
                 prev_indices.append(i)
             else:
                 if msg.artifact_meta.result_schema is not None:

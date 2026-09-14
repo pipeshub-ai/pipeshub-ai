@@ -326,6 +326,35 @@ class TestBuildCodeFileRecords:
         from app.config.constants.arangodb import ProgressStatus
         assert updates[0].record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
+    async def test_test_file_syncs_but_is_not_indexed_by_default(self) -> None:
+        """A test file still becomes a record; only its content indexing is off."""
+        from app.config.constants.arangodb import ProgressStatus
+
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        repos._process_records = AsyncMock()
+
+        await repos.build_code_file_records(
+            [self._blob_node("tests/test_main.py")], _PROJECT_ID, _PROJECT_PATH
+        )
+        record = repos._process_records.call_args.args[0][0].record
+        assert record.file_role == "test"
+        assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_test_file_is_indexed_once_the_filter_is_on(self) -> None:
+        from app.config.constants.arangodb import ProgressStatus
+
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        repos._process_records = AsyncMock()
+        repos._test_files_indexing_enabled = MagicMock(return_value=True)
+
+        await repos.build_code_file_records(
+            [self._blob_node("tests/test_main.py")], _PROJECT_ID, _PROJECT_PATH
+        )
+        record = repos._process_records.call_args.args[0][0].record
+        assert record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
     async def test_nested_file_sets_parent_external_record_id(self) -> None:
         c = make_mock_connector()
         repos = ReposSync(c)

@@ -613,6 +613,41 @@ code_file_record_schema={
         },
     },
 }
+
+# Deliberately loose: no "level": "strict" and no additionalProperties:false.
+# update_collection_schema re-applies this on every boot, so a strict schema
+# would hard-reject existing documents the moment a field is added.
+block_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "recordId": {"type": "string"},
+            "recordGroupId": {"type": ["string", "null"]},
+            "connectorId": {"type": ["string", "null"]},
+            "filePath": {"type": ["string", "null"]},
+            "qualifiedName": {"type": ["string", "null"]},
+            "name": {"type": ["string", "null"]},
+            "kind": {"type": ["string", "null"]},
+            "subType": {"type": ["string", "null"]},
+            "isBlockGroup": {"type": "boolean"},
+            "isExternal": {"type": "boolean"},
+            "index": {"type": ["number", "null"]},
+            "startLine": {"type": ["number", "null"]},
+            "endLine": {"type": ["number", "null"]},
+            "language": {"type": ["string", "null"]},
+            "contentHash": {"type": ["string", "null"]},
+            "parentBlockId": {"type": ["string", "null"]},
+            "source": {"type": "string"},
+            "pendingEdges": {"type": ["array", "null"], "items": {"type": "object"}},
+            "pendingEdgesTruncated": {"type": ["boolean", "null"]},
+            "typeTable": {"type": ["object", "null"]},
+            "createdAtTimestamp": {"type": ["number", "null"]},
+            "updatedAtTimestamp": {"type": ["number", "null"]},
+        },
+        "required": ["orgId", "recordId"],
+    },
+}
 sql_table_record_schema = {
     "rule": {
         "type": "object",

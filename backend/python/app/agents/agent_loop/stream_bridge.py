@@ -265,24 +265,27 @@ async def run_agent_loop_stream(
     second LLM call — see `respond.py`) through one shared `QueueEventSink`.
     """
     from app.modules.agents.qna.chat_state import build_initial_state
+    from app.modules.code_graph.connectors import connector_instances_have_code
     from app.utils.connector_instances import fetch_user_connector_instances
     from app.utils.execute_query import connector_instances_have_sql
     from app.utils.fetch_slack_thread import connector_instances_have_slack
 
     try:
-        # One query feeds both flags; they used to be two identical lookups.
+        # One query feeds every flag; they used to be one identical lookup each.
         connector_instances = await fetch_user_connector_instances(
             graph_provider, user_info["userId"], user_info["orgId"], log,
         )
         has_sql_connector = connector_instances_have_sql(connector_instances)
         has_slack_connector = connector_instances_have_slack(connector_instances)
+        has_code_connector = connector_instances_have_code(connector_instances)
         if stage_timer:
             stage_timer.mark("connector_flags")
         chat_state = build_initial_state(
             query_info, user_info, llm, log, retrieval_service, graph_provider,
             reranker_service, config_service, model_name, model_key, org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
-            has_slack_connector=has_slack_connector, client_name=client_name,
+            has_slack_connector=has_slack_connector,
+            has_code_connector=has_code_connector, client_name=client_name,
         )
     except Exception as exc:
         log.error("agent-loop stream: failed to build initial state: %s", exc, exc_info=True)

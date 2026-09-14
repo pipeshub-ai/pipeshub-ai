@@ -346,7 +346,7 @@ class TestFullSync:
         stamped AUTO_INDEX_OFF published one event per folder purely for the
         consumer to throw away."""
         c = make_mock_connector()
-        c.indexing_filters = SimpleNamespace(is_enabled=lambda _key: False)
+        c.indexing_filters = SimpleNamespace(is_enabled=lambda _key, default=True: False)
         repo = make_repo(repo_id=1)
         c.runtime.ds_call.return_value = ok_response(make_git_tree([
             make_tree_element("src", entry_type="tree", sha="sha-src"),
@@ -363,6 +363,47 @@ class TestFullSync:
         ]
         assert {r.record_name for r in persisted} == {"src", "main.py"}
         assert all(r.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value for r in persisted)
+
+    async def test_test_files_sync_but_are_not_indexed_by_default(self) -> None:
+        """Test files must still become records — only their content indexing is
+        off, and only because the opt-in filter defaults to off."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.runtime.ds_call.return_value = ok_response(make_git_tree([
+            make_tree_element("src/main.py", entry_type="blob", sha="sha-main", size=10),
+            make_tree_element("tests/test_main.py", entry_type="blob", sha="sha-test", size=10),
+        ]))
+
+        sync = ReposSync(c)
+        assert await sync._full_sync(repo, "head-sha") is True
+
+        persisted = {
+            record.file_path: record
+            for call in c.data_entities_processor.on_new_records.call_args_list
+            for record, _perms in call.args[0]
+            if isinstance(record, CodeFileRecord)
+        }
+        assert set(persisted) == {"src/main.py", "tests/test_main.py"}
+        assert persisted["tests/test_main.py"].file_role == "test"
+        assert (
+            persisted["tests/test_main.py"].indexing_status
+            == ProgressStatus.AUTO_INDEX_OFF.value
+        )
+        assert persisted["src/main.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_test_files_are_indexed_once_the_filter_is_on(self) -> None:
+        c = make_mock_connector()
+        c.indexing_filters = SimpleNamespace(is_enabled=lambda _key, default=True: True)
+        repo = make_repo(repo_id=1)
+        c.runtime.ds_call.return_value = ok_response(make_git_tree([
+            make_tree_element("tests/test_main.py", entry_type="blob", sha="sha-test", size=10),
+        ]))
+
+        sync = ReposSync(c)
+        assert await sync._full_sync(repo, "head-sha") is True
+
+        record, _perms = c.data_entities_processor.on_new_records.call_args_list[0].args[0][0]
+        assert record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
     async def test_folders_stay_indexable_when_code_files_are(self) -> None:
         c = make_mock_connector()

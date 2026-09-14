@@ -55,6 +55,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordGroupType, RecordType
+from app.modules.parsers.code_parser.file_role import FileRole, classify_file_role
 
 from .constants import (
     CODE_FILE_MAX_SIZE_BYTES,
@@ -341,6 +342,7 @@ class ReposSync:
         blobs = [(p, s, sz) for p, t, s, sz in entries if t == "blob"]
 
         code_files_enabled = self._code_files_indexing_enabled()
+        test_files_enabled = self._test_files_indexing_enabled()
 
         all_ok = True
         level_wise: dict[int, list[tuple[str, str]]] = {}
@@ -355,7 +357,11 @@ class ReposSync:
 
         batch: list[Record] = []
         for path, sha, size in blobs:
-            batch.append(self._build_code_file_record(repo, path, sha, code_files_enabled, size=size))
+            batch.append(
+                self._build_code_file_record(
+                    repo, path, sha, code_files_enabled, test_files_enabled, size=size
+                )
+            )
             if len(batch) >= c.batch_size * 4:
                 all_ok = await self._process_records(batch) and all_ok
                 batch = []
@@ -629,9 +635,12 @@ class ReposSync:
         folders_ok = await self._ensure_folder_records_for_paths(repo, new_paths)
 
         code_files_enabled = self._code_files_indexing_enabled()
+        test_files_enabled = self._test_files_indexing_enabled()
         moves = [
             (blob_external_id(repo.id, old_path),
-             self._build_code_file_record(repo, new_path, new_sha, code_files_enabled),
+             self._build_code_file_record(
+                 repo, new_path, new_sha, code_files_enabled, test_files_enabled
+             ),
              [])
             for old_path, new_path, new_sha in renames
         ]
@@ -651,6 +660,7 @@ class ReposSync:
             return True
         folders_ok = await self._ensure_folder_records_for_paths(repo, list(path_to_sha.keys()))
         code_files_enabled = self._code_files_indexing_enabled()
+        test_files_enabled = self._test_files_indexing_enabled()
         # Exact per-file dates at sync time (~2 GraphQL queries per 100 files)
         # — the ONLY way a modified file's source_updated stays fresh: the
         # processor carries stored dates forward when the incoming record has
@@ -661,7 +671,9 @@ class ReposSync:
         )
         records: list[Record] = []
         for path, sha in path_to_sha.items():
-            record = self._build_code_file_record(repo, path, sha, code_files_enabled)
+            record = self._build_code_file_record(
+                repo, path, sha, code_files_enabled, test_files_enabled
+            )
             created_ms, updated_ms = dates.get(path, (None, None))
             if created_ms is not None or updated_ms is not None:
                 record.source_created_at = created_ms
@@ -764,6 +776,7 @@ class ReposSync:
         path: str,
         sha: str | None,
         code_files_enabled: bool,
+        test_files_enabled: bool,
         size: int | None = None,
     ) -> CodeFileRecord:
         """A code file record. Every file gets one — oversized files (size only
@@ -779,6 +792,7 @@ class ReposSync:
         external_id = blob_external_id(repo.id, path)
         parent_path = path.rpartition("/")[0] if "/" in path else None
         parent_external_id = tree_external_id(repo.id, parent_path) if parent_path else None
+        file_role = classify_file_role(path, name)
         record = CodeFileRecord(
             id=str(uuid.uuid4()), org_id=c.data_entities_processor.org_id, record_name=name,
             record_type=RecordType.CODE_FILE.value, connector_name=c.connector_name, connector_id=c.connector_id,
@@ -789,12 +803,14 @@ class ReposSync:
             # None, not "", for extensionless names (LICENSE, Dockerfile).
             extension=extension.lower() or None,
             preview_renderable=extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS if extension else True,
-            file_path=path, file_hash=sha,
+            file_path=path, file_hash=sha, file_role=file_role.value,
             inherit_permissions=True, parent_external_record_id=parent_external_id,
             parent_record_type=(RecordType.FILE if parent_external_id else None),
             weburl=f"{repo.html_url}/blob/{repo.default_branch}/{path}",
         )
         if not code_files_enabled:
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        elif file_role is FileRole.TEST and not test_files_enabled:
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         if size is not None and size > CODE_FILE_MAX_SIZE_BYTES:
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -823,6 +839,18 @@ class ReposSync:
         if not c.indexing_filters:
             return True
         return c.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
+
+    def _test_files_indexing_enabled(self) -> bool:
+        """Whether test files get their content indexed. Off unless opted in.
+
+        Unlike ``_code_files_indexing_enabled``, an absent filter means False:
+        a connector configured before this filter existed must not start
+        indexing tests just because its config has no row for them.
+        """
+        c = self.c
+        if not c.indexing_filters:
+            return False
+        return c.indexing_filters.is_enabled(IndexingFilterKey.TEST_FILES, default=False)
 
     # ------------------------------------------------------------------
     # 6. Content streaming (index time)

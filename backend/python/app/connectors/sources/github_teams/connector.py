@@ -157,6 +157,11 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
             display_name="Index Code Files",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
         ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.TEST_FILES.value,
+            display_name="Index Test Files",
+            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=False,
+        ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_admin_access_required(True, personal_connector_type="Github")
         .with_agent_support(False)

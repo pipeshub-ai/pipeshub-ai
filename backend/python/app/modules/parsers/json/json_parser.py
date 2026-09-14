@@ -50,16 +50,23 @@ from app.utils.logger import create_logger
 logger = create_logger("json_parser")
 
 
+class _ParseContext:
+    """Per-parse mutable state, kept off the shared ``JSONParser`` instance
+    so concurrent ``asyncio.to_thread`` calls don't corrupt each other."""
+
+    __slots__ = ("blocks", "groups", "fmt")
+
+    def __init__(self, fmt: DataFormat) -> None:
+        self.blocks: List[Block] = []
+        self.groups: List[BlockGroup] = []
+        self.fmt: DataFormat = fmt
+
+
 class JSONParser:
     """Parser for JSON bytes -> BlocksContainer."""
 
     MAX_DEPTH = MAX_FLATTEN_DEPTH
     LONG_TEXT_THRESHOLD = LONG_TEXT_THRESHOLD
-
-    def __init__(self) -> None:
-        self._blocks: List[Block] = []
-        self._groups: List[BlockGroup] = []
-        self._format: DataFormat = DataFormat.JSON
 
     async def parse(
         self,
@@ -71,8 +78,6 @@ class JSONParser:
             raise ParseError(ParseErrorCode.EMPTY_CONTENT, "JSON content is empty")
 
         try:
-            # json.loads + the tree walk below are synchronous CPU work; keep
-            # large payloads off the event loop.
             data = await asyncio.to_thread(json.loads, content.decode("utf-8"))
         except Exception as e:
             raise ParseError(
@@ -101,17 +106,15 @@ class JSONParser:
         record_name: str,
         data_format: DataFormat = DataFormat.JSON,
     ) -> BlocksContainer:
-        self._blocks = []
-        self._groups = []
-        self._format = data_format
+        ctx = _ParseContext(data_format)
 
-        root_group = self._new_root_group(record_name)
-        self._process_container(data, root_group, path="", depth=0)
+        root_group = self._new_root_group(ctx, record_name)
+        self._process_container(ctx, data, root_group, path="", depth=0)
 
-        root_group.data = {"summary": self._build_root_summary(data, record_name)}
+        root_group.data = {"summary": self._build_root_summary(data, record_name, ctx.fmt)}
         root_group.content_hash = self._hash(self._safe_dumps(data))
 
-        return BlocksContainer(blocks=self._blocks, block_groups=self._groups)
+        return BlocksContainer(blocks=ctx.blocks, block_groups=ctx.groups)
 
     # ------------------------------------------------------------------
     # Tree walker
@@ -119,6 +122,7 @@ class JSONParser:
 
     def _process_container(
         self,
+        ctx: _ParseContext,
         value: Any,
         parent_group: BlockGroup,
         path: str,
@@ -126,19 +130,19 @@ class JSONParser:
     ) -> None:
         """Dispatch *value* (the payload owned by *parent_group*) by shape."""
         if isinstance(value, dict):
-            self._process_dict(value, parent_group, path, depth)
+            self._process_dict(ctx, value, parent_group, path, depth)
             return
 
         if isinstance(value, list):
-            self._process_top_level_list(value, parent_group, path, depth)
+            self._process_top_level_list(ctx, value, parent_group, path, depth)
             return
 
-        # Bare scalar document (rare, e.g. a JSON file containing just `"hello"`)
-        idx = self._add_text_block(str(value), parent_group, path, self._format)
+        idx = self._add_text_block(ctx, str(value), parent_group, path, ctx.fmt)
         parent_group.children = BlockGroupChildren.from_indices([idx], [])
 
     def _process_top_level_list(
         self,
+        ctx: _ParseContext,
         items: list,
         parent_group: BlockGroup,
         path: str,
@@ -151,22 +155,23 @@ class JSONParser:
         kind = classify_value(items)
         if kind == "object_array" and depth < self.MAX_DEPTH:
             table_group = self._build_table_group(
-                items, name=parent_group.name or "items", parent_group=parent_group, path=path
+                ctx, items, name=parent_group.name or "items", parent_group=parent_group, path=path
             )
             parent_group.children = BlockGroupChildren.from_indices([], [table_group.index])
         elif kind == "scalar_array":
             idx = self._add_text_block(
-                stringify_scalar_array(items), parent_group, path, self._format
+                ctx, stringify_scalar_array(items), parent_group, path, ctx.fmt
             )
             parent_group.children = BlockGroupChildren.from_indices([idx], [])
         else:
             idx = self._add_text_block(
-                self._safe_dumps(items), parent_group, path, DataFormat.JSON
+                ctx, self._safe_dumps(items), parent_group, path, DataFormat.JSON
             )
             parent_group.children = BlockGroupChildren.from_indices([idx], [])
 
     def _process_dict(
         self,
+        ctx: _ParseContext,
         obj: dict,
         parent_group: BlockGroup,
         path: str,
@@ -182,7 +187,7 @@ class JSONParser:
 
             if kind == "scalar":
                 if isinstance(value, str) and len(value) > self.LONG_TEXT_THRESHOLD:
-                    idx = self._add_text_block(value, parent_group, key_path, DataFormat.TXT)
+                    idx = self._add_text_block(ctx, value, parent_group, key_path, DataFormat.TXT)
                     child_block_indices.append(idx)
                 else:
                     flat_fields[key_path] = value
@@ -201,9 +206,9 @@ class JSONParser:
                     flat_fields[key_path] = self._safe_dumps(value)
                 else:
                     child_group = self._new_group(
-                        GroupType.KEY_VALUE_AREA, name=str(key), parent_group=parent_group
+                        ctx, GroupType.KEY_VALUE_AREA, name=str(key), parent_group=parent_group
                     )
-                    self._process_dict(value, child_group, key_path, depth + 1)
+                    self._process_dict(ctx, value, child_group, key_path, depth + 1)
                     child_group_indices.append(child_group.index)
 
             elif kind == "object_array":
@@ -211,7 +216,7 @@ class JSONParser:
                     flat_fields[key_path] = self._safe_dumps(value)
                 else:
                     table_group = self._build_table_group(
-                        value, name=str(key), parent_group=parent_group, path=key_path
+                        ctx, value, name=str(key), parent_group=parent_group, path=key_path
                     )
                     child_group_indices.append(table_group.index)
 
@@ -219,7 +224,7 @@ class JSONParser:
                 flat_fields[key_path] = self._safe_dumps(value)
 
         if flat_fields:
-            idx = self._add_flat_fields_block(flat_fields, parent_group, path)
+            idx = self._add_flat_fields_block(ctx, flat_fields, parent_group, path)
             child_block_indices.append(idx)
 
         parent_group.children = BlockGroupChildren.from_indices(
@@ -230,73 +235,78 @@ class JSONParser:
     # Block / group builders
     # ------------------------------------------------------------------
 
-    def _new_root_group(self, record_name: str) -> BlockGroup:
+    @staticmethod
+    def _new_root_group(ctx: _ParseContext, record_name: str) -> BlockGroup:
         group = BlockGroup(
             index=0,
             type=GroupType.KEY_VALUE_AREA,
             sub_type=GroupSubType.RECORD,
             name=record_name,
-            format=self._format,
+            format=ctx.fmt,
         )
-        self._groups.append(group)
+        ctx.groups.append(group)
         return group
 
+    @staticmethod
     def _new_group(
-        self,
+        ctx: _ParseContext,
         group_type: GroupType,
         name: str,
         parent_group: BlockGroup,
         sub_type: Optional[GroupSubType] = None,
     ) -> BlockGroup:
-        idx = len(self._groups)
+        idx = len(ctx.groups)
         group = BlockGroup(
             index=idx,
             type=group_type,
             sub_type=sub_type,
             name=name,
-            format=self._format,
+            format=ctx.fmt,
             parent_index=parent_group.index,
         )
-        self._groups.append(group)
+        ctx.groups.append(group)
         return group
 
+    @staticmethod
     def _add_text_block(
-        self,
+        ctx: _ParseContext,
         text: str,
         parent_group: BlockGroup,
         path: str,
         data_format: DataFormat,
     ) -> int:
-        idx = len(self._blocks)
+        idx = len(ctx.blocks)
         block = Block(
             index=idx,
             type=BlockType.TEXT,
             format=data_format,
             data=text,
             parent_index=parent_group.index,
-            content_hash=self._hash(text),
+            content_hash=JSONParser._hash(text),
             citation_metadata=CitationMetadata(section_title=path or parent_group.name),
         )
-        self._blocks.append(block)
+        ctx.blocks.append(block)
         return idx
 
     def _add_flat_fields_block(
         self,
+        ctx: _ParseContext,
         flat_fields: Dict[str, Any],
         parent_group: BlockGroup,
         path: str,
     ) -> int:
         text = flatten_to_text(flat_fields)
-        return self._add_text_block(text, parent_group, path, self._format)
+        return self._add_text_block(ctx, text, parent_group, path, ctx.fmt)
 
     def _build_table_group(
         self,
+        ctx: _ParseContext,
         items: List[Any],
         name: str,
         parent_group: BlockGroup,
         path: str,
     ) -> BlockGroup:
-        table_group = self._new_group(GroupType.TABLE, name=name, parent_group=parent_group)
+        table_group = self._new_group(ctx, GroupType.TABLE, name=name, parent_group=parent_group)
 
         column_names: List[str] = []
         seen: set = set()
@@ -304,8 +314,6 @@ class JSONParser:
 
         for item in items:
             if not isinstance(item, dict):
-                # Stray non-dict entry in an otherwise homogeneous array — skip
-                # rather than corrupt the table's row shape.
                 continue
 
             flat_row = flatten_leaf_dict(item)
@@ -315,8 +323,8 @@ class JSONParser:
                     column_names.append(column)
 
             row_text = object_to_sentence(item)
-            idx = len(self._blocks)
-            self._blocks.append(
+            idx = len(ctx.blocks)
+            ctx.blocks.append(
                 Block(
                     index=idx,
                     type=BlockType.TABLE_ROW,
@@ -356,14 +364,15 @@ class JSONParser:
     # Misc helpers
     # ------------------------------------------------------------------
 
-    def _build_root_summary(self, data: Any, record_name: str) -> str:
+    @staticmethod
+    def _build_root_summary(data: Any, record_name: str, fmt: DataFormat) -> str:
         if isinstance(data, list):
             shape, count = "array", len(data)
         elif isinstance(data, dict):
             shape, count = "object", len(data)
         else:
             shape, count = "scalar", 1
-        format_label = self._format.value.upper()
+        format_label = fmt.value.upper()
         return (
             f"{format_label} record '{record_name}' containing a top-level "
             f"{shape} with {count} entr{'y' if count == 1 else 'ies'}."

@@ -449,10 +449,14 @@ class TestParseMetadataAndHelpers:
 
     def test_root_summary_shapes(self, parser):
         assert "top-level object with 2 entries" in parser._build_root_summary(
-            {"a": 1, "b": 2}, "x.json"
+            {"a": 1, "b": 2}, "x.json", DataFormat.JSON
         )
-        assert "top-level array with 1 entry" in parser._build_root_summary([1], "x.json")
-        assert "top-level scalar with 1 entry" in parser._build_root_summary("hi", "x.json")
+        assert "top-level array with 1 entry" in parser._build_root_summary(
+            [1], "x.json", DataFormat.JSON
+        )
+        assert "top-level scalar with 1 entry" in parser._build_root_summary(
+            "hi", "x.json", DataFormat.JSON
+        )
 
     def test_safe_dumps_fallback_on_error(self, parser):
         from unittest.mock import patch

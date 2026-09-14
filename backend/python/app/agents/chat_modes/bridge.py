@@ -194,13 +194,14 @@ def _apply_policy_to_chat_state(
 ) -> None:
     """Forces the tool-availability flags `PipesHubToolLoader`/`AgentContext.
     from_chat_state` read, per `policy.py`'s module docstring. Chat modes
-    have no per-agent "knowledge scope" the way agents do, so SQL/Slack
+    have no per-agent "knowledge scope" the way agents do, so SQL/Slack/code
     tool availability mirrors connector PRESENCE (`has_sql_connector`/
-    `has_slack_connector`, already resolved by the caller), not a
-    knowledge-attachment concept that doesn't exist here."""
+    `has_slack_connector`/`has_code_connector`, already resolved by the
+    caller), not a knowledge-attachment concept that doesn't exist here."""
     chat_state["has_knowledge"] = policy.has_knowledge
     chat_state["has_sql_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_sql_connector"))
     chat_state["has_slack_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_slack_connector"))
+    chat_state["has_code_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_code_connector"))
     chat_state["web_search_config"] = web_search_config if policy.include_web_search else None
     chat_state["chat_mode"] = policy.name
 
@@ -320,6 +321,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     """Entry point `chatbot.py::askAIStream()` calls for every `/chat/stream`
     request, regardless of mode. See module docstring."""
     from app.modules.agents.qna.chat_state import build_initial_state
+    from app.modules.code_graph.connectors import connector_instances_have_code
     from app.utils.execute_query import connector_instances_have_sql
     from app.utils.fetch_slack_thread import connector_instances_have_slack
     from app.modules.transformers.blob_storage import BlobStorage
@@ -369,6 +371,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         )
         has_sql_connector = connector_instances_have_sql(connector_instances)
         has_slack_connector = connector_instances_have_slack(connector_instances)
+        has_code_connector = connector_instances_have_code(connector_instances)
         filters = dict(query_info.get("filters") or {})
         if resolved_attachments.virtual_record_ids:
             # Widened, never narrowed: an attachment scoped search must not
@@ -382,7 +385,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             query_info, user_info, llm, log, retrieval_service, graph_provider,
             reranker_service, config_service, model_name or "", model_key or "", org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
-            has_slack_connector=has_slack_connector, client_name=client_name,
+            has_slack_connector=has_slack_connector,
+            has_code_connector=has_code_connector, client_name=client_name,
         )
         _apply_policy_to_chat_state(chat_state, policy, web_search_config)
         chat_state["instructions"] = _with_mode_instructions(chat_state.get("instructions"), policy)
