@@ -1076,7 +1076,7 @@ describe('UserController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal(
-        'There are already 5 admins in this organization. You cannot add another.',
+        'An organization can have at most 5 admins.',
       );
       expect(mockUser.save.called).to.be.false;
       expect(res.json.called).to.be.false;
@@ -2839,7 +2839,7 @@ describe('UserController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal(
-        'There are already 5 admins in this organization. You cannot add another.',
+        'An organization can have at most 5 admins.',
       );
       expect(createStub.called).to.be.false;
     });
