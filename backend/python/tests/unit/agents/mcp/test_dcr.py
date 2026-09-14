@@ -336,6 +336,18 @@ class TestAssertDiscoveryTargetAllowed:
     async def test_allows_cgnat_literal_without_network_access(self) -> None:
         await assert_discovery_target_allowed("http://100.64.1.1:8080/register")
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://100.100.100.200/latest/meta-data",
+            "http://168.63.129.16/machine?comp=goalstate",
+        ],
+    )
+    async def test_rejects_cloud_metadata_despite_the_cgnat_exception(self, url: str) -> None:
+        with pytest.raises(DiscoveryBlockedError):
+            await assert_discovery_target_allowed(url)
+
 
 class TestRegisterDynamicClient:
     @pytest.mark.asyncio

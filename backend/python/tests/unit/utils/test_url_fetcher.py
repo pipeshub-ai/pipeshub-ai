@@ -973,6 +973,25 @@ class TestResolvePublicHttpTarget:
         with pytest.raises(FetchError, match="Blocked unsafe URL"):
             validate_public_http_url("http://10.0.0.1/", block_non_global=False)
 
+    @pytest.mark.parametrize("block_non_global", [True, False])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://100.100.100.200/latest/meta-data",  # Alibaba Cloud metadata (CGNAT space)
+            "http://168.63.129.16/machine?comp=goalstate",  # Azure WireServer (public space)
+            "http://[64:ff9b::6464:64c8]/latest/meta-data",  # NAT64-wrapped 100.100.100.200
+        ],
+    )
+    def test_cloud_metadata_addresses_always_blocked(self, url: str, block_non_global: bool) -> None:
+        with pytest.raises(FetchError, match="Blocked unsafe URL"):
+            resolve_public_http_target(url, block_non_global=block_non_global)
+
+    def test_hostname_resolving_to_metadata_blocked_when_non_global_allowed(self) -> None:
+        infos = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("168.63.129.16", 0))]
+        with patch("socket.getaddrinfo", return_value=infos):
+            with pytest.raises(FetchError, match="Blocked unsafe URL"):
+                resolve_public_http_target("http://wireserver.example/", block_non_global=False)
+
     def test_target_has_default_port_and_deduplicated_addresses(self) -> None:
         infos = [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0)),

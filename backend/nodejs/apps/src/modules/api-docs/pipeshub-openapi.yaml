@@ -9540,12 +9540,12 @@ components:
               items: {}
 
     AgentCreateWebSearch:
-      nullable: true
       description: |
-        Web-search attachment for an agent. Accepts either a provider string
-        or an object with at least a `provider` field.
+        Web-search attachment for an agent. Accepts a provider string, an object
+        with at least a `provider` field, or `null`.
       anyOf:
         - type: string
+          nullable: true
         - type: object
           additionalProperties: false
           properties:
@@ -9819,9 +9819,9 @@ components:
           items:
             type: string
         webSearch:
-          nullable: true
           anyOf:
             - type: object
+              nullable: true
               additionalProperties: false
               properties:
                 provider:
@@ -10541,9 +10541,12 @@ components:
           enum:
             - Conversation deleted successfully
         conversation:
-          nullable: true
-          allOf:
+          anyOf:
             - $ref: '#/components/schemas/StoredAgentConversation'
+            # OAS 3.0 has no null type and nullable needs a sibling type: admits only null.
+            - type: object
+              nullable: true
+              enum: [null]
 
     AgentConversationDetailMessageCitation:
       type: object

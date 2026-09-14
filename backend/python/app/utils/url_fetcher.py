@@ -89,6 +89,18 @@ class PublicTarget:
     addresses: tuple[IPAddress, ...]
 
 
+# Cloud metadata / platform endpoints that no range rule catches: Alibaba Cloud's metadata
+# service sits in CGNAT space (allowed when block_non_global is False) and Azure's WireServer
+# uses a public address. Link-local metadata (169.254.169.254, ...) and AWS's IPv6 IMDS
+# (fd00:ec2::254) are already covered by is_link_local / is_private.
+_CLOUD_METADATA_ADDRESSES = frozenset(
+    {
+        ipaddress.ip_address("100.100.100.200"),
+        ipaddress.ip_address("168.63.129.16"),
+    }
+)
+
+
 def _ip_is_blocked(ip: IPAddress, *, block_non_global: bool = True) -> bool:
     """True if the address must not be contacted by the generic HTTP fetcher.
 
@@ -98,12 +110,14 @@ def _ip_is_blocked(ip: IPAddress, *, block_non_global: bool = True) -> bool:
     (e.g. a legitimate SaaS host resolved from an IPv6-only network) is not.
 
     ``block_non_global`` also rejects addresses that are not globally routable but are not
-    flagged private either, e.g. CGNAT ``100.64.0.0/10`` (Alibaba Cloud metadata lives at
-    ``100.100.100.200``).
+    flagged private either, e.g. CGNAT ``100.64.0.0/10``. Known cloud metadata addresses are
+    rejected regardless of it.
     """
     if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_WELL_KNOWN_PREFIX:
         embedded_ipv4 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
         return _ip_is_blocked(embedded_ipv4, block_non_global=block_non_global)
+    if ip in _CLOUD_METADATA_ADDRESSES:
+        return True
     return bool(
         ip.is_private
         or ip.is_loopback
