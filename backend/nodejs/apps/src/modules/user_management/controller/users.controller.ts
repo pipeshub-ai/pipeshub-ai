@@ -2494,28 +2494,36 @@ export class UserController {
       // has the user's session is not moved silently. Best effort: the
       // verification mail is what matters, and the change still needs the
       // link at the new address to be opened.
+      const currentEmail = typeof user.email === 'string' ? user.email : '';
+      const userIdForLog = String(user._id ?? '');
       try {
         const notice = await this.mailService.sendMail({
           emailTemplateType: 'emailChangeNotice',
-          initiator: { jwtAuthToken: mailAuthToken, orgId: user.orgId?.toString() },
-          usersMails: [user.email],
+          initiator: {
+            jwtAuthToken: mailAuthToken,
+            orgId: String(user.orgId ?? ''),
+          },
+          usersMails: [currentEmail],
           subject: 'PipesHub | Your email address is being changed',
           templateData: {
-            orgName: org?.shortName || org?.registeredName,
+            orgName: org?.shortName ?? org?.registeredName,
             name: user.fullName,
             newEmail,
           },
         });
         if (notice.statusCode !== 200) {
-          this.logger.warn('Email-change notice to the current address was not sent', {
-            userId: user._id?.toString(),
-            statusCode: notice.statusCode,
-          });
+          this.logger.warn(
+            'Email-change notice to the current address was not sent',
+            { userId: userIdForLog, statusCode: notice.statusCode },
+          );
         }
       } catch (noticeError) {
         this.logger.warn('Email-change notice to the current address failed', {
-          userId: user._id?.toString(),
-          error: noticeError instanceof Error ? noticeError.message : String(noticeError),
+          userId: userIdForLog,
+          error:
+            noticeError instanceof Error
+              ? noticeError.message
+              : String(noticeError),
         });
       }
 
