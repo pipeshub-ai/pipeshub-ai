@@ -205,7 +205,13 @@ class LLMInitializationError(AgentError):
 # ============================================================================
 
 async def get_services(request: Request) -> dict[str, Any]:
-    """Get all required services from container"""
+    """Get all required services from container.
+
+    Deliberately resolves no LLM: listing, reading and templating agents never
+    use one, and requiring it here made every agent route a 500 until a model
+    was configured. Routes that need a model resolve it themselves
+    (get_llm_for_chat) and raise LLMInitializationError there.
+    """
     container = request.app.container
 
     retrieval_service = await container.retrieval_service()
@@ -214,20 +220,12 @@ async def get_services(request: Request) -> dict[str, Any]:
     config_service = container.config_service()
     logger = container.logger()
 
-    # Get and verify LLM
-    llm = retrieval_service.llm
-    if llm is None:
-        llm = await retrieval_service.get_llm_instance()
-        if llm is None:
-            raise LLMInitializationError()
-
     return {
         "retrieval_service": retrieval_service,
         "graph_provider": graph_provider,
         "reranker_service": reranker_service,
         "config_service": config_service,
         "logger": logger,
-        "llm": llm,
     }
 
 
@@ -3165,7 +3163,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         graph_provider = services["graph_provider"]
         retrieval_service = services["retrieval_service"]
-        # llm = services["llm"]
         reranker_service = services["reranker_service"]
         config_service = services["config_service"]
         user_context = _get_user_context(request)

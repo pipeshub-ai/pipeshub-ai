@@ -1323,6 +1323,9 @@ class IGraphDBProvider(ABC):
         the record at QUEUED forever, so the write has to be conditional rather than
         merely ordered.
 
+        A swap into QUEUED also stamps queuedAtTimestamp, the platform-owned clock
+        the stranded-record sweep ages rows on.
+
         Args:
             record_ids: Record keys to attempt the swap on. Pass a one-element list
                         for a single record.

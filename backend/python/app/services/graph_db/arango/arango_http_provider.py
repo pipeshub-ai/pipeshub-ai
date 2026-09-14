@@ -1658,20 +1658,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return []
         coll = CollectionNames.RECORDS.value
         try:
-            # FILTER + UPDATE in one statement; a read-then-write would let the
-            # indexing service advance a record in between and get clobbered.
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._key IN @keys AND doc.indexingStatus == @expected
-                UPDATE doc WITH { indexingStatus: @new_status } IN @@collection
-                RETURN NEW._key
-            """
             bind_vars = {
                 "@collection": coll,
                 "keys": unique_ids,
                 "expected": expected,
                 "new_status": new_status,
             }
+            update_fields = "{ indexingStatus: @new_status }"
+            if new_status == ProgressStatus.QUEUED.value:
+                # AQL rejects a declared-but-unused bind var, so only bind it here.
+                update_fields = "{ indexingStatus: @new_status, queuedAtTimestamp: @now }"
+                bind_vars["now"] = get_epoch_timestamp_in_ms()
+            # FILTER + UPDATE in one statement; a read-then-write would let the
+            # indexing service advance a record in between and get clobbered.
+            query = f"""
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys AND doc.indexingStatus == @expected
+                UPDATE doc WITH {update_fields} IN @@collection
+                RETURN NEW._key
+            """
             updated = await self.http_client.execute_aql(query, bind_vars, transaction)
             updated_keys = [k for k in (updated or []) if isinstance(k, str)]
             self.logger.debug(

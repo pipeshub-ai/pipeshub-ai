@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextFunction, Response } from 'express';
 import mongoose from 'mongoose';
 import path from 'path';
@@ -9,9 +10,9 @@ import {
   StorageServiceResponse,
   StorageVendor,
 } from '../types/storage.service.types';
-import { DocumentModel } from '../schema/document.schema';
 import {
   BadRequestError,
+  ConflictError,
   InternalServerError,
 } from '../../../libs/errors/http.errors';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
@@ -36,6 +37,16 @@ import {
   normalizeExtension,
   validateFileAndDocumentName,
 } from '../utils/utils';
+import {
+  UPLOAD_LEASE_MS,
+  claimUpload,
+  createDocumentOnce,
+  getIdempotencyKey,
+  holdLeaseOnSave,
+  releaseUpload,
+  requestFingerprint,
+} from '../utils/idempotency';
+import type { DocumentModel } from '../schema/document.schema';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import {
   maxFileSizeForPipesHubService,
@@ -236,14 +247,107 @@ export class UploadDocumentService {
       storageVendor: this.storageVendor,
     };
 
-    const savedDocument = await DocumentModel.create(documentInfo);
+    const idempotencyKey = getIdempotencyKey(req);
+    // This attempt's claim on a keyed upload until the file is stored.
+    const leaseToken = idempotencyKey === undefined ? undefined : randomUUID();
+    const created = await createDocumentOnce(
+      documentInfo,
+      idempotencyKey === undefined
+        ? undefined
+        : {
+            key: idempotencyKey,
+            fingerprint: requestFingerprint(
+              {
+                documentName,
+                documentPath,
+                isVersionedFile: isVersioned,
+                extension: fileExtension,
+                customMetadata,
+              },
+              buffer,
+            ),
+          },
+      {
+        uploadLeaseToken: leaseToken,
+        uploadLeaseExpiresAt: Date.now() + UPLOAD_LEASE_MS,
+      },
+    );
+    let savedDocument = created.document;
+    if (created.replayed && leaseToken !== undefined) {
+      // A retry of an upload that already finished gets its result.
+      if (savedDocument[this.storageVendor]) {
+        res.status(200).json(savedDocument);
+        return;
+      }
+      // Unfinished: take it over, unless another attempt still holds it.
+      const claimed = await claimUpload(
+        savedDocument,
+        this.storageVendor,
+        leaseToken,
+      );
+      if (!claimed) {
+        throw new ConflictError(
+          'An upload with this Idempotency-Key is still in progress',
+        );
+      }
+      savedDocument = claimed;
+    }
 
+    try {
+      await this.storeUpload(savedDocument, leaseToken, res, {
+        documentName,
+        documentPath,
+        orgId: String(orgId),
+        isVersioned,
+        fileExtension,
+        buffer,
+        mimeType,
+      });
+    } catch (error) {
+      if (leaseToken !== undefined) {
+        // Failed, not abandoned: the next retry need not wait out the lease.
+        await releaseUpload(savedDocument._id, leaseToken).catch(
+          (releaseError: unknown) => {
+            logger.warn('Failed to release upload lease', {
+              documentId: String(savedDocument._id),
+              error: String(releaseError),
+            });
+          },
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async storeUpload(
+    savedDocument: DocumentModel,
+    leaseToken: string | undefined,
+    res: Response,
+    upload: {
+      documentName: string | undefined;
+      documentPath: string | undefined;
+      orgId: string;
+      isVersioned: boolean;
+      fileExtension: string;
+      buffer: Buffer;
+      mimeType: string;
+    },
+  ): Promise<void> {
+    const {
+      documentName,
+      documentPath,
+      orgId,
+      isVersioned,
+      fileExtension,
+      buffer,
+      mimeType,
+    } = upload;
     const rootPath = getDocumentRootPath(
-      String(orgId),
+      orgId,
       String(savedDocument._id),
       documentPath,
     );
-    const fullDocumentPath = getFullDocumentPath(String(orgId), documentPath);
+    const fullDocumentPath = getFullDocumentPath(orgId, documentPath);
     const concatenatedPath = getCurrentFilePath(
       rootPath,
       documentName ?? '',
@@ -259,88 +363,112 @@ export class UploadDocumentService {
         isVersioned,
       });
 
-    if (uploadResult.statusCode === HTTP_STATUS.OK && uploadResult.data) {
-      savedDocument.documentPath = fullDocumentPath;
+    if (uploadResult.statusCode !== HTTP_STATUS.OK || !uploadResult.data) {
+      // Previously fell through without answering, leaving the request hanging.
+      throw new InternalServerError(
+        `Failed to store the document: ${uploadResult.msg ?? 'storage error'}`,
+      );
+    }
+    savedDocument.documentPath = fullDocumentPath;
 
-      const storageTypeKey = this.storageVendor;
-      let normalizedUrl = '';
-      let localPath = '';
-      // Type-safe storage assignment
-      if (isValidStorageVendor(storageTypeKey)) {
-        // TODO : Move this to the local storage provider
-        if (storageTypeKey === StorageVendor.Local) {
-          const url =
-            (await this.keyValueStoreService.get<string>(endpoint)) || '{}';
+    const storageTypeKey = this.storageVendor;
+    let normalizedUrl = '';
+    let localPath = '';
+    // Type-safe storage assignment
+    if (isValidStorageVendor(storageTypeKey)) {
+      // TODO : Move this to the local storage provider
+      if (storageTypeKey === StorageVendor.Local) {
+        const url =
+          (await this.keyValueStoreService.get<string>(endpoint)) || '{}';
 
-          const storageServiceEndpoint =
-            JSON.parse(url).storage.endpoint || this.defaultConfig.endpoint;
-          localPath = uploadResult.data;
-          // normalize the url to the local storage
-          const baseUrl = uploadResult.data.replace(
-            'file://',
-            `${storageServiceEndpoint}/api/v1/document/${savedDocument._id}/download`,
-          );
-          // Remove everything after "download" if it exists
-          normalizedUrl = baseUrl.split('/download')[0] + '/download';
-          const storageInfo: StorageInfo = {
-            url: normalizedUrl,
-            localPath: localPath,
-          };
-          savedDocument[storageTypeKey] = storageInfo;
-        } else {
-          const storageInfo: StorageInfo = { url: uploadResult.data };
-          savedDocument[storageTypeKey] = storageInfo;
-        }
-      } else {
-        throw new InternalServerError(
-          `Invalid storage type: ${storageTypeKey}`,
-        );
-      }
-
-      if (isVersioned === false) {
-        await savedDocument.save();
-        res.status(200).json(savedDocument);
-        return;
-      }
-
-      if (savedDocument.versionHistory?.length === 0) {
-        const nextVersion = savedDocument.versionHistory.length;
-        const newDocumentFilePath = getVersionFilePath(
-          rootPath,
-          nextVersion,
-          fileExtension,
-        );
-
-        const cloneResponse = await this.cloneDocument(
-          savedDocument,
-          buffer,
-          newDocumentFilePath,
-        );
-        const versionLocalPath =
-          storageTypeKey === StorageVendor.Local ? cloneResponse.data ?? '' : '';
+        const storageServiceEndpoint =
+          JSON.parse(url).storage.endpoint || this.defaultConfig.endpoint;
+        localPath = uploadResult.data;
         // normalize the url to the local storage
-        if (storageTypeKey === StorageVendor.Local) {
-          cloneResponse.data = normalizedUrl;
-        }
-
-        if (cloneResponse.statusCode === HTTP_STATUS.OK && cloneResponse.data) {
-          savedDocument.versionHistory.push({
-            version: nextVersion,
-            [`${storageTypeKey}`]: {
-              url: cloneResponse.data,
-              localPath:
-                storageTypeKey === StorageVendor.Local
-                  ? versionLocalPath
-                  : localPath,
-            },
-            createdAt: Date.now(),
-            size: savedDocument.sizeInBytes,
-            extension: savedDocument.extension,
-          });
-        }
+        const baseUrl = uploadResult.data.replace(
+          'file://',
+          `${storageServiceEndpoint}/api/v1/document/${savedDocument._id}/download`,
+        );
+        // Remove everything after "download" if it exists
+        normalizedUrl = baseUrl.split('/download')[0] + '/download';
+        const storageInfo: StorageInfo = {
+          url: normalizedUrl,
+          localPath: localPath,
+        };
+        savedDocument[storageTypeKey] = storageInfo;
+      } else {
+        const storageInfo: StorageInfo = { url: uploadResult.data };
+        savedDocument[storageTypeKey] = storageInfo;
       }
-      await savedDocument.save();
+    } else {
+      throw new InternalServerError(`Invalid storage type: ${storageTypeKey}`);
+    }
+
+    if (isVersioned === false) {
+      await this.saveUpload(savedDocument, leaseToken);
       res.status(200).json(savedDocument);
+      return;
+    }
+
+    if (savedDocument.versionHistory?.length === 0) {
+      const nextVersion = savedDocument.versionHistory.length;
+      const newDocumentFilePath = getVersionFilePath(
+        rootPath,
+        nextVersion,
+        fileExtension,
+      );
+
+      const cloneResponse = await this.cloneDocument(
+        savedDocument,
+        buffer,
+        newDocumentFilePath,
+      );
+      const versionLocalPath =
+        storageTypeKey === StorageVendor.Local
+          ? (cloneResponse.data ?? '')
+          : '';
+      // normalize the url to the local storage
+      if (storageTypeKey === StorageVendor.Local) {
+        cloneResponse.data = normalizedUrl;
+      }
+
+      if (cloneResponse.statusCode === HTTP_STATUS.OK && cloneResponse.data) {
+        savedDocument.versionHistory.push({
+          version: nextVersion,
+          [`${storageTypeKey}`]: {
+            url: cloneResponse.data,
+            localPath:
+              storageTypeKey === StorageVendor.Local
+                ? versionLocalPath
+                : localPath,
+          },
+          createdAt: Date.now(),
+          size: savedDocument.sizeInBytes,
+          extension: savedDocument.extension,
+        });
+      }
+    }
+    await this.saveUpload(savedDocument, leaseToken);
+    res.status(200).json(savedDocument);
+  }
+
+  /** The upload's final write; for a keyed one, only while it holds the lease. */
+  private async saveUpload(
+    document: DocumentModel,
+    leaseToken: string | undefined,
+  ): Promise<void> {
+    if (leaseToken !== undefined) {
+      holdLeaseOnSave(document, leaseToken);
+    }
+    try {
+      await document.save();
+    } catch (error) {
+      if (error instanceof mongoose.Error.DocumentNotFoundError) {
+        throw new ConflictError(
+          'A later attempt with the same Idempotency-Key took this upload over',
+        );
+      }
+      throw error;
     }
   }
 

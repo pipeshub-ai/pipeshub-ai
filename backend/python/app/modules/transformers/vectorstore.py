@@ -38,6 +38,7 @@ from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactor
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.services.messaging.error_classifier import format_exception_chain
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
@@ -1176,17 +1177,21 @@ class VectorStore(Transformer):
             if attempt >= _EMBEDDING_BATCH_MAX_ATTEMPTS:
                 break
             delay = retry_delay_seconds(attempt)
+            # The chain, not str(): the OpenAI SDK reports every transport
+            # failure as "Connection error." and keeps the httpx exception that
+            # says which one as __cause__; a bare timeout's message is empty.
             self.logger.warning(
                 f"Dense embedding attempt {attempt}/{_EMBEDDING_BATCH_MAX_ATTEMPTS} "
                 f"failed for batch of {len(texts)} texts / {total_chars} chars "
-                f"(record {record_id}): {last_error}; retrying in {delay:.1f}s"
+                f"(record {record_id}); retrying in {delay:.1f}s: "
+                f"{format_exception_chain(last_error)}"
             )
             await asyncio.sleep(delay)
 
         raise EmbeddingError(
             f"Dense embedding failed after {_EMBEDDING_BATCH_MAX_ATTEMPTS} attempts "
             f"({attempt_timeout}s each) for batch of {len(texts)} texts / "
-            f"{total_chars} chars (record {record_id}): {last_error}"
+            f"{total_chars} chars (record {record_id}): {format_exception_chain(last_error)}"
         ) from last_error
 
     async def _embed_and_upsert_documents(

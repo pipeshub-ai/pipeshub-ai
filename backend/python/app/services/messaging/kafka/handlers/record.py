@@ -51,6 +51,7 @@ from app.services.vector_db.strategy_resolver import reset_strategy_cache
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class RecordEventHandler(BaseEventService):
@@ -1205,6 +1206,7 @@ class RecordEventHandler(BaseEventService):
                                 updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
                             if current.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value:
                                 updates["indexingStatus"] = ProgressStatus.QUEUED.value
+                                updates["queuedAtTimestamp"] = get_epoch_timestamp_in_ms()
                                 if current.get("extractionStatus") != ProgressStatus.COMPLETED.value:
                                     updates["extractionStatus"] = ProgressStatus.NOT_STARTED.value
                         if updates:

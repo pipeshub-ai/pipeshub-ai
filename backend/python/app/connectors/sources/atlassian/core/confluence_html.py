@@ -304,9 +304,11 @@ async def inline_authenticated_images_in_html(
         try:
             result = await download(absolute_src, image_context)
             if result is None:
-                # Download failed, leave src unchanged
+                # Usually deliberate, not a failure: the downloader declines
+                # static icons and thumbnails of non-image attachments (PDFs).
+                # Leave src unchanged.
                 if logger:
-                    logger.warning(f"Failed to download image: {absolute_src[:100]}")
+                    logger.debug(f"Image not inlined: {absolute_src[:100]}")
                 continue
             
             content, content_type = result

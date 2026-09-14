@@ -11080,12 +11080,17 @@ class Neo4jProvider(IGraphDBProvider):
             return []
         try:
             label = collection_to_label(CollectionNames.RECORDS.value)
+            queued_stamp = (
+                ", n.queuedAtTimestamp = $now"
+                if new_status == ProgressStatus.QUEUED.value
+                else ""
+            )
             # MATCH + SET in one statement; a read-then-write would let the
             # indexing service advance a record in between and get clobbered.
             query = f"""
             MATCH (n:{label})
             WHERE n.id IN $keys AND n.indexingStatus = $expected
-            SET n.indexingStatus = $new_status
+            SET n.indexingStatus = $new_status{queued_stamp}
             RETURN n.id AS id
             """
             results = await self.client.execute_query(
@@ -11094,6 +11099,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "keys": unique_ids,
                     "expected": expected,
                     "new_status": new_status,
+                    "now": get_epoch_timestamp_in_ms(),
                 },
                 txn_id=transaction,
             )
