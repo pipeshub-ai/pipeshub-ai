@@ -82,7 +82,6 @@ from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     MAX_DIRECT_GRANT_RECORDS,
-    MAX_RECORD_CANDIDATES_PER_VRID,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
     dedupe_agents_by_id,
@@ -416,6 +415,20 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_web_url IF NOT EXISTS "
             "FOR (n:Record) ON (n.webUrl, n.orgId)"
+        )
+
+        # SINGLE: virtualRecordId. Every search adjudicates the VRIDs the vector
+        # DB returned with MATCH (r:Record {virtualRecordId, orgId}), once per
+        # VRID; unindexed that is a label scan per VRID, measured at 867 ms for
+        # 47 VRIDs over 12.8k records. Deliberately NOT composite with orgId:
+        # Neo4j only uses a composite when every indexed property is in the
+        # predicate, and get_records_by_virtual_record_id filters on
+        # virtualRecordId alone, so a composite leaves that path (the orphan
+        # sweeper, per-record ingest and delete) on a label scan. A VRID seek
+        # returns one or two rows, so filtering orgId afterwards is free.
+        indexes.append(
+            "CREATE INDEX record_virtual_record_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.virtualRecordId)"
         )
 
         # SINGLE: connectorId (queried independently in many patterns)
@@ -5133,8 +5146,7 @@ class Neo4jProvider(IGraphDBProvider):
         WITH u, app_docs,
              [a IN app_docs | a.id] AS reachable_apps,
              [a IN app_docs
-                WHERE coalesce(a.type, '') <> $kb_type
-                  AND a.permissionModel = $app_level
+                WHERE a.permissionModel = $app_level
                 | a.id] AS app_level_ids,
              [a IN app_docs
                 WHERE a.type = $kb_type AND a.orgId = $org_id
@@ -5259,6 +5271,12 @@ class Neo4jProvider(IGraphDBProvider):
 
         RETURN
             app_level_ids + kb_app_ids AS appIds,
+            // Only what declared APP_LEVEL. kb_app_ids is a wider set, admitted
+            // on type alone so records carrying no recordGroupIds still have a
+            // term to match on; a KB app that has not been backfilled with its
+            // permissionModel yet is in appIds but not here, and falls through
+            // to full adjudication.
+            app_level_ids AS trustedApps,
             [rg IN all_rgs
                WHERE rg.id IS NOT NULL AND rg.permissionModel = $group_level
                | rg.id] AS trusted,
@@ -14365,6 +14383,8 @@ class Neo4jProvider(IGraphDBProvider):
         user_id: str,
         org_id: str,
         *,
+        trusted_app_ids: frozenset[str] | None = None,
+        trusted_group_ids: frozenset[str] | None = None,
         transaction: str | None = None,
     ) -> dict[str, str]:
         """Which of ``virtual_record_ids`` the user may read, and which record to cite.
@@ -14424,45 +14444,113 @@ class Neo4jProvider(IGraphDBProvider):
         WITH u, a1 + a2 + a3 + a4 AS reachable_apps
         """
 
-        candidates_cypher = """
+        trusted_apps = frozenset(trusted_app_ids or ())
+        trusted_groups = frozenset(trusted_group_ids or ())
+
+        # Membership of a container the user wholly owns is itself the proof, so
+        # these records skip the 10-path role resolution. Deliberately keyed on
+        # INHERIT_PERMISSIONS and not on recordGroupId/BELONGS_TO: group
+        # membership is always written, inheritance is conditional, so a record
+        # with inherit_permissions=False sits in a trusted group without
+        # inheriting from it and must still be adjudicated.
+        # coalesce because Cypher's IN is three-valued: a null connectorId makes
+        # the predicate NULL, and the two legs are `AND p` / `AND NOT p`, so
+        # NULL drops the row from BOTH and the record is silently denied —
+        # while Arango's two-valued IN grants it.
+        trusted_app_clause = (
+            "coalesce(candidate.connectorId, '') IN $trusted_app_ids"
+            if trusted_apps
+            else "false"
+        )
+        # Only build the ancestor walk when there is something to find: the plan
+        # is cached per parameterised form, so an empty list still expands
+        # INHERIT_PERMISSIONS*1..20 for every candidate on the adjudicated leg.
+        trusted_group_clause = (
+            """
+               OR EXISTS {
+                   MATCH (candidate)-[:INHERIT_PERMISSIONS*1..__INHERIT_DEPTH__]->(anc:RecordGroup)
+                   WHERE anc.id IN $trusted_group_ids
+               }"""
+            if trusted_groups
+            else ""
+        )
+        trusted_predicate = f"""
+              ({trusted_app_clause}{trusted_group_clause})
+        """
+
+        def candidates_cypher(extra: str = "") -> str:
+            # Every gate except permission stays here: orgId is a tenant
+            # boundary (a VRID is content identity and is not unique across
+            # orgs), and soft-delete, indexing state and app reachability are
+            # not things container membership can vouch for.
+            return f"""
         UNWIND $virtual_record_ids AS vid
-        CALL {
+        CALL {{
             WITH vid, reachable_apps
-            MATCH (candidate:Record {virtualRecordId: vid, orgId: $org_id})
+            MATCH (candidate:Record {{virtualRecordId: vid, orgId: $org_id}})
             WHERE (candidate.isDeleted IS NULL OR candidate.isDeleted = false)
               AND candidate.indexingStatus = $completed
               AND (candidate.origin <> $connector_origin
                    OR candidate.connectorId IN reachable_apps)
+              {extra}
             RETURN candidate AS record
-            LIMIT $max_candidates
-        }
+        }}
         """
 
-        query = f"""
+        adjudicated_leg = f"""
         {reachable_apps_cypher}
-        {candidates_cypher}
+        {candidates_cypher("AND NOT " + trusted_predicate if (trusted_apps or trusted_groups) else "")}
         {record_perm}
         WITH vid, record, permission_role
         WHERE permission_role IS NOT NULL AND permission_role <> ''
-        WITH vid, collect(record.id)[0] AS rid
-        RETURN vid AS vid, rid AS rid
+        WITH vid, min(record.id) AS rid
+        RETURN vid AS vid, rid AS rid, 'adjudicated' AS via
         """
+
+        if trusted_apps or trusted_groups:
+            # Two legs rather than one pass: a CALL subquery runs per row, so the
+            # only way to actually not pay for the role resolution is to keep
+            # trusted candidates out of the leg that performs it.
+            query = f"""
+        {reachable_apps_cypher}
+        {candidates_cypher("AND " + trusted_predicate)}
+        WITH vid, min(record.id) AS rid
+        RETURN vid AS vid, rid AS rid, 'trusted' AS via
+        UNION
+        {adjudicated_leg}
+        """
+        else:
+            # No trusted sets: one leg, byte-identical to the pre-shortcut query.
+            query = adjudicated_leg
+        query = query.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH))
         params = {
             "user_id": user_id,
             "org_id": org_id,
             "virtual_record_ids": list(virtual_record_ids),
             "completed": ProgressStatus.COMPLETED.value,
             "connector_origin": OriginTypes.CONNECTOR.value,
-            "max_candidates": MAX_RECORD_CANDIDATES_PER_VRID,
+            "trusted_app_ids": sorted(trusted_apps),
+            "trusted_group_ids": sorted(trusted_groups),
         }
         try:
             rows = await self.client.execute_query(query, params, txn_id=transaction)
-            granted = {
-                str(row["vid"]): str(row["rid"])
-                for row in (rows or [])
-                if row and row.get("vid") and row.get("rid")
-            }
-
+            # A VRID with one candidate in a trusted container and another that
+            # had to be adjudicated returns a row on each leg, and UNION does not
+            # order them. Both rows cite a record the user may read, but picking
+            # by arrival makes the citation vary run to run; preferring the
+            # trusted row makes it deterministic and matches Arango, whose
+            # ternary resolves the same tie the same way.
+            granted: dict[str, str] = {}
+            trusted_vids: set[str] = set()
+            for row in rows or []:
+                if not row or not row.get("vid") or not row.get("rid"):
+                    continue
+                vid = str(row["vid"])
+                if vid in trusted_vids:
+                    continue
+                granted[vid] = str(row["rid"])
+                if row.get("via") == "trusted":
+                    trusted_vids.add(vid)
             return granted
         except Exception as exc:
             # Fail closed: an empty map denies everything the search returned.

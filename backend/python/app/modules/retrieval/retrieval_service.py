@@ -879,14 +879,20 @@ class RetrievalService:
         """Whether searches scope by container instead of by record id.
 
         Read per request, uncached, so an admin toggling it in Labs takes
-        effect on the next search rather than after a restart. Defaults on, and
-        an unreadable setting keeps it on: the container path adjudicates every
-        vid it returns, so falling back to it is the stricter of the two.
+        effect on the next search rather than after a restart.
+
+        Defaults OFF, and an unreadable setting keeps it off. This path now
+        grants records in an APP_LEVEL or RECORD_GROUP_LEVEL container without
+        resolving a per-record role, so it is no longer the stricter of the
+        two and must not be what a failed config read falls back to: a missing
+        settings blob, a non-dict featureFlags, or a KV outage all look alike
+        here, and an operator who turned this off to stop the shortcut would
+        otherwise have it silently turned back on.
         """
         return await read_platform_feature_flag(
             CONFIG.ENABLE_CONTAINER_PERMISSION_FILTER,
             self.config_service,
-            default=True,
+            default=False,
         )
 
     async def _resolve_search_scope(
@@ -999,13 +1005,24 @@ class RetrievalService:
 
         Sized from the trusted/verify split, which is known before querying, so
         the retry stays the exception rather than a routine second round trip.
-        When nothing needs verifying — an all-Collections or all-app-level
-        tenant — this returns exactly ``limit`` and the change costs nothing.
+        When nothing needs verifying — an all-app-level tenant — this returns
+        exactly ``limit`` and the change costs nothing.
+
+        Counts the same containers the adjudicator actually trusts. ``app_ids``
+        is wider than ``app_ids_trusted`` — it admits apps on type alone so
+        records carrying no recordGroupIds still have a term to match on — so
+        sizing from it would call a tenant fully trusted whose apps have not
+        declared a permission model, hand it zero headroom, and then pay for a
+        second vector fan-out on every search once a per-record check denied
+        anything.
         """
-        checked = len(containers.record_group_ids_verify)
+        untrusted_apps = len(containers.app_ids) - len(containers.app_ids_trusted)
+        checked = len(containers.record_group_ids_verify) + untrusted_apps
         if checked == 0:
             return limit
-        trusted = len(containers.app_ids) + len(containers.record_group_ids_trusted)
+        trusted = (
+            len(containers.app_ids_trusted) + len(containers.record_group_ids_trusted)
+        )
         p_verify = checked / (trusted + checked)
         survival = max(
             1.0 - p_verify * _ASSUMED_DENY_RATE, 1.0 / _OVERFETCH_MAX_MULTIPLIER
@@ -1119,7 +1136,11 @@ class RetrievalService:
                 break
 
             accessible = await self.graph_provider.filter_accessible_virtual_record_ids(
-                list(returned_vids), user_id, org_id
+                list(returned_vids),
+                user_id,
+                org_id,
+                trusted_app_ids=containers.app_ids_trusted,
+                trusted_group_ids=containers.record_group_ids_trusted,
             )
             surviving = sum(
                 1
@@ -1141,16 +1162,9 @@ class RetrievalService:
                     len(returned_vids), user_id, org_id,
                 )
 
-            self.logger.info(
-                "container_search attempt=%d limit=%d fetch_limit=%d raw=%d "
-                "vids=%d granted=%d denied=%d surviving=%d "
-                "apps=%d trusted_groups=%d verify_groups=%d direct=%d",
-                attempt + 1, limit, fetch_limit, len(search_results),
-                len(returned_vids), len(accessible), denied, surviving,
-                len(containers.app_ids),
-                len(containers.record_group_ids_trusted),
-                len(containers.record_group_ids_verify),
-                len(containers.direct_records),
+            self.logger.debug(
+                "container_search attempt=%d vids=%d granted=%d surviving=%d",
+                attempt + 1, len(returned_vids), len(accessible), surviving,
             )
 
             if surviving > best_surviving:

@@ -372,6 +372,40 @@ class TestAdjudication:
         asked = mock_graph_provider.filter_accessible_virtual_record_ids.await_args.args[0]
         assert sorted(asked) == ["v1", "v2"]
 
+    async def test_verifier_is_told_which_containers_are_trusted(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """The shortcut lives in the query, so the sets have to reach it. Without
+        them the verifier resolves every role by hand and the whole change is a
+        no-op that still looks wired up from the outside."""
+        mock_graph_provider.get_accessible_containers = AsyncMock(
+            return_value=_containers(
+                app_ids=frozenset({"app-level", "kb-1"}),
+                app_ids_trusted=frozenset({"app-level"}),
+                record_group_ids_trusted=frozenset({"rg-trusted"}),
+                record_group_ids_verify=frozenset({"rg-verify"}),
+            )
+        )
+        retrieval_service._execute_parallel_searches = AsyncMock(
+            return_value=[_hit("v1")]
+        )
+        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
+            return_value={}
+        )
+
+        await retrieval_service.search_with_filters(
+            queries=["q"], user_id="u1", org_id="o1"
+        )
+
+        kwargs = mock_graph_provider.filter_accessible_virtual_record_ids.await_args.kwargs
+        assert kwargs["trusted_app_ids"] == frozenset({"app-level"})
+        assert kwargs["trusted_group_ids"] == frozenset({"rg-trusted"})
+        # The KB app is reachable and belongs in the vector filter, but trusting
+        # it would hand a folder-scoped user the whole Collection.
+        assert "kb-1" not in kwargs["trusted_app_ids"]
+        # A verify-bucket group is not a shortcut; it is the slow path.
+        assert "rg-verify" not in kwargs["trusted_group_ids"]
+
 
 # ---------------------------------------------------------------------------
 # Over-fetch sizing and the retry
@@ -380,12 +414,24 @@ class TestAdjudication:
 
 class TestOverfetchSizing:
     def test_no_verify_groups_costs_nothing(self, retrieval_service):
-        """The common case — an all-Collections or all-app-level tenant — must
-        not pay for a change it cannot benefit from."""
+        """An all-app-level tenant must not pay for a change it cannot benefit
+        from. `app_ids_trusted` has to cover `app_ids` for that to hold."""
         c = _containers(
-            app_ids=frozenset({"a"}), record_group_ids_trusted=frozenset({"t"})
+            app_ids=frozenset({"a"}),
+            app_ids_trusted=frozenset({"a"}),
+            record_group_ids_trusted=frozenset({"t"}),
         )
         assert retrieval_service._overfetch_limit(20, c) == 20
+
+    def test_undeclared_apps_are_sized_as_checked_not_trusted(self, retrieval_service):
+        """An app reachable but not declared APP_LEVEL has no verify groups and
+        is still adjudicated per record. Sizing it as trusted hands the tenant
+        zero headroom and buys a second vector fan-out on every search the
+        moment anything is denied."""
+        c = _containers(
+            app_ids=frozenset({"not-declared-1"}), app_ids_trusted=frozenset()
+        )
+        assert retrieval_service._overfetch_limit(20, c) > 20
 
     def test_mixed_buckets_overfetch_within_the_cap(self, retrieval_service):
         c = _containers(
@@ -417,7 +463,7 @@ class TestOverfetchSizing:
         assert retrieval_service._overfetch_limit(10_000, c) >= 10_000
 
     def test_never_returns_less_than_limit_with_no_verify_groups(self, retrieval_service):
-        c = _containers(app_ids=frozenset({"a"}))
+        c = _containers(app_ids=frozenset({"a"}), app_ids_trusted=frozenset({"a"}))
         assert retrieval_service._overfetch_limit(10_000, c) == 10_000
 
 
@@ -901,14 +947,19 @@ class TestTheFeatureFlagGatesTheWholeChange:
         )
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_setting_keeps_the_container_path(
+    async def test_an_unreadable_setting_falls_back_to_record_ids(
         self, retrieval_service, mock_graph_provider
     ):
-        """Defaults on, including when the setting cannot be read. Failing to
-        the container path is the safe direction: it adjudicates every vid it
-        returns through the verifier, so it is the stricter of the two. Runs the
-        real flag reader over a config service that raises, so the fallback
-        under test is the shipped one and not the fixture's stand-in."""
+        """Defaults off, including when the setting cannot be read.
+
+        The container path grants records in an APP_LEVEL or RECORD_GROUP_LEVEL
+        container without resolving a per-record role, so it is NOT the stricter
+        of the two and must not be where a failed read lands. A missing settings
+        blob, a non-dict featureFlags and a KV outage are indistinguishable to
+        the reader, so an operator who turned this off to stop the shortcut
+        would otherwise have it silently turned back on. Runs the real flag
+        reader over a config service that raises, so the fallback under test is
+        the shipped one and not the fixture's stand-in."""
         from app.services.featureflag import platform_settings
 
         retrieval_service.config_service.get_config = AsyncMock(
@@ -931,8 +982,9 @@ class TestTheFeatureFlagGatesTheWholeChange:
                 queries=["q"], user_id="u1", org_id="o1"
             )
 
-        mock_graph_provider.get_accessible_containers.assert_awaited()
-        mock_graph_provider.get_accessible_virtual_record_ids.assert_not_awaited()
+        mock_graph_provider.get_accessible_virtual_record_ids.assert_awaited()
+        mock_graph_provider.get_accessible_containers.assert_not_awaited()
+
 
 class TestTheContainerPathReturnsAsMuchAsTheRecordIdPath:
     """`limit` is per-query: `_run_searches` issues one request per expanded

@@ -16,6 +16,8 @@ import ast
 import re
 import textwrap
 
+import logging
+
 import pytest
 
 from app.services.graph_db.common.utils import (
@@ -353,6 +355,105 @@ class TestCollectionsAreServedByAppIds:
             assert (
                 "UNION_DISTINCT(app_level_ids, kb_app_ids)" in body
             ), "covered_app_ids must include the KB apps"
+
+
+class TestOnlyAppLevelAppsAreTrusted:
+    """`app_ids` is what the vector filter matches on; `app_ids_trusted` is what
+    may skip per-record adjudication. They are deliberately different sets."""
+
+    @pytest.mark.parametrize("backend", sorted(QUERY_SOURCES))
+    def test_trusted_apps_is_the_declared_app_level_set(self, backend):
+        """`kb_app_ids` is the wider set: admitted on type alone so records
+        carrying no recordGroupIds still have a term to match on. Trust follows
+        the declaration, not the type — a KB app whose permissionModel has not
+        been written yet is reachable but not trusted."""
+        body = _method_body(*QUERY_SOURCES[backend])
+        expected = {
+            "arango": "trustedApps: app_level_ids",
+            "neo4j": "app_level_ids AS trustedApps",
+        }[backend]
+        assert expected in body
+        assert "trustedApps: covered_app_ids" not in body
+        assert "kb_app_ids AS trustedApps" not in body
+
+    @pytest.mark.parametrize("backend", sorted(QUERY_SOURCES))
+    def test_app_level_ids_is_gated_on_the_declared_permission_model(self, backend):
+        """The projection above pins which *list* is trusted; this pins what
+        that list means. Without the permissionModel filter, `app_level_ids`
+        becomes every reachable app and the shortcut stops checking records for
+        connectors that never declared APP_LEVEL — the over-share the flag's own
+        comment warns about, and it passed the whole suite."""
+        body = _method_body(*QUERY_SOURCES[backend])
+        at = body.index("app_level_ids")
+        clause = body[max(0, at - 400):at + 200]
+        marker = {"arango": "@app_level", "neo4j": "$app_level"}[backend]
+        assert marker in clause, (
+            "app_level_ids must be filtered on the declared permission model"
+        )
+
+    def test_an_undeclared_app_is_reachable_but_not_trusted(self):
+        """The projections above are only half the guarantee — this pins the
+        resulting object, which is what the retrieval path actually consumes.
+        An app that has not had its permissionModel backfilled yet reaches the
+        filter without reaching the shortcut."""
+        from app.services.graph_db.interface.graph_db_provider import (
+            _containers_from_row,
+        )
+
+        containers = _containers_from_row(
+            {
+                "appIds": ["app-level-1", "not-declared-1"],
+                "trustedApps": ["app-level-1"],
+                "trusted": [],
+                "verify": [],
+                "rootGroups": [],
+                "direct": [],
+                "unsafeApps": [],
+            },
+            logger=logging.getLogger("test"),
+        )
+        assert containers.app_ids == frozenset({"app-level-1", "not-declared-1"})
+        assert containers.app_ids_trusted == frozenset({"app-level-1"})
+
+    def test_trusted_is_bounded_by_reachable(self):
+        """A backend that forgets the key, or returns a stale one, must not be
+        able to widen trust beyond what the user actually reaches."""
+        from app.services.graph_db.interface.graph_db_provider import (
+            _containers_from_row,
+        )
+
+        containers = _containers_from_row(
+            {
+                "appIds": ["app-1"],
+                "trustedApps": ["app-1", "app-not-reachable"],
+                "trusted": [],
+                "verify": [],
+                "rootGroups": [],
+                "direct": [],
+                "unsafeApps": [],
+            },
+            logger=logging.getLogger("test"),
+        )
+        assert containers.app_ids_trusted == frozenset({"app-1"})
+
+    def test_a_backend_without_the_key_trusts_nothing(self):
+        from app.services.graph_db.interface.graph_db_provider import (
+            _containers_from_row,
+        )
+
+        containers = _containers_from_row(
+            {
+                "appIds": ["app-1"],
+                "trusted": [],
+                "verify": [],
+                "rootGroups": [],
+                "direct": [],
+                "unsafeApps": [],
+            },
+            logger=logging.getLogger("test"),
+        )
+        assert containers.app_ids == frozenset({"app-1"})
+        assert containers.app_ids_trusted == frozenset()
 
 
 class TestBackfillGate:

@@ -129,7 +129,6 @@ from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     MAX_DIRECT_GRANT_RECORDS,
-    MAX_RECORD_CANDIDATES_PER_VRID,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
     dedupe_agents_by_id,
@@ -15298,6 +15297,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_id: str,
         org_id: str,
         *,
+        trusted_app_ids: frozenset[str] | None = None,
+        trusted_group_ids: frozenset[str] | None = None,
         transaction: str | None = None,
     ) -> dict[str, str]:
         """Which of ``virtual_record_ids`` the user may read, and which record to cite.
@@ -15367,20 +15368,51 @@ class ArangoHTTPProvider(IGraphDBProvider):
                            AND record.indexingStatus == @completed
                            AND (record.origin != @connector_origin
                                 OR record.connectorId IN reachable_apps)
-                        LIMIT @max_candidates
                         RETURN record
                 )
-                LET granted = FIRST(
+                // Membership of a container the user wholly owns is itself the
+                // proof, so these skip the 10-path role resolution. Keyed on
+                // inheritPermissions, not belongsTo: group membership is always
+                // written while inheritance is conditional, so a record with
+                // inherit_permissions=false sits in a trusted group without
+                // inheriting from it and must still be adjudicated.
+                LET trusted = FIRST(
                     FOR record IN candidates
+                        FILTER record.connectorId IN @trusted_app_ids
+                            OR LENGTH(
+                                FOR anc IN 1..@inherit_max_depth
+                                    OUTBOUND record._id inheritPermissions
+                                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", anc)
+                                    FILTER anc._key IN @trusted_group_ids
+                                    LIMIT 1
+                                    RETURN 1
+                            ) > 0
+                        SORT record._key
+                        LIMIT 1
+                        RETURN record._key
+                )
+                // Gate the subquery's INPUT, not its result: AQL splices a
+                // subquery into the pipeline and runs it before the ternary
+                // chooses a branch, so `trusted != null ? ... : FIRST(...)`
+                // alone would still pay for the role resolution every time.
+                LET granted = trusted != null ? trusted : FIRST(
+                    FOR record IN candidates
+                        FILTER trusted == null
                         {record_permission_role_aql}
                         LET r_norm = IS_ARRAY(permission_role)
                             ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
                             : permission_role
                         FILTER (r_norm != null AND r_norm != "")
+                        SORT record._key
+                        LIMIT 1
                         RETURN record._key
                 )
                 FILTER granted != null
-                RETURN {{ vid: vid, rid: granted }}
+                RETURN {{
+                    vid: vid,
+                    rid: granted,
+                    via: trusted != null ? "trusted" : "adjudicated"
+                }}
         """
         try:
             rows = await self.http_client.execute_aql(
@@ -15391,7 +15423,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "virtual_record_ids": list(virtual_record_ids),
                     "completed": ProgressStatus.COMPLETED.value,
                     "connector_origin": OriginTypes.CONNECTOR.value,
-                    "max_candidates": MAX_RECORD_CANDIDATES_PER_VRID,
+                    "trusted_app_ids": sorted(frozenset(trusted_app_ids or ())),
+                    "trusted_group_ids": sorted(frozenset(trusted_group_ids or ())),
+                    "inherit_max_depth": CONTAINER_INHERIT_MAX_DEPTH,
                 },
                 txn_id=transaction,
             )
@@ -19346,7 +19380,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             LET app_level_ids = (
                 FOR a IN reachable_app_docs
-                    FILTER a.type != @kb_type AND a.permissionModel == @app_level
+                    FILTER a.permissionModel == @app_level
                     RETURN a._key
             )
 
@@ -19488,6 +19522,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             RETURN {{
                 appIds: covered_app_ids,
+                // Only the APP_LEVEL half. KB apps are in appIds because their
+                // records carry no recordGroupIds, not because reaching the app
+                // proves reaching every record — so they must never be trusted.
+                trustedApps: app_level_ids,
                 trusted: (FOR rg IN all_rgs
                             FILTER rg.permissionModel == @group_level
                             RETURN rg._key),

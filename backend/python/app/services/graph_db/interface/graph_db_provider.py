@@ -50,6 +50,8 @@ class AccessibleContainers:
     """
 
     app_ids: frozenset[str] = frozenset()
+    #: The subset of ``app_ids`` whose connector declares ``APP_LEVEL``
+    app_ids_trusted: frozenset[str] = frozenset()
     record_group_ids_trusted: frozenset[str] = frozenset()
     record_group_ids_verify: frozenset[str] = frozenset()
     direct_records: Mapping[str, str] = field(default_factory=dict)
@@ -150,6 +152,12 @@ def _containers_from_row(row: "dict | None", *, logger: Any) -> AccessibleContai
         )
 
     app_ids = frozenset(str(a) for a in (row.get("appIds") or []) if a)
+    # Intersected with app_ids rather than taken at face value: a backend that
+    # forgets the new key yields an empty set and simply verifies everything,
+    # which is the safe direction.
+    app_ids_trusted = frozenset(
+        str(a) for a in (row.get("trustedApps") or []) if a
+    ) & app_ids
     trusted = frozenset(str(g) for g in (row.get("trusted") or []) if g)
     verify = frozenset(str(g) for g in (row.get("verify") or []) if g)
     root_groups = frozenset(str(g) for g in (row.get("rootGroups") or []) if g)
@@ -171,6 +179,7 @@ def _containers_from_row(row: "dict | None", *, logger: Any) -> AccessibleContai
 
     return AccessibleContainers(
         app_ids=app_ids,
+        app_ids_trusted=app_ids_trusted,
         record_group_ids_trusted=trusted,
         record_group_ids_verify=verify,
         root_group_ids=root_groups,
@@ -4933,6 +4942,8 @@ class IGraphDBProvider(ABC):
         user_id: str,
         org_id: str,
         *,
+        trusted_app_ids: frozenset[str] | None = None,
+        trusted_group_ids: frozenset[str] | None = None,
         transaction: str | None = None,
     ) -> dict[str, str]:
         """Adjudicate retrieved virtual record ids, returning the record to cite for each.
@@ -4959,6 +4970,17 @@ class IGraphDBProvider(ABC):
             user_id: The ``userId`` field value, not the graph key.
             org_id: Organization scope. A VRID is content identity and is not
                 unique across orgs, so this is a tenant boundary, not a filter.
+            trusted_app_ids: Connector instances declaring ``APP_LEVEL``, where
+                reaching the app proves reaching every record it syncs. Records
+                under these skip the role resolution — every other gate still
+                applies. Must not include Collections/KBs: those are in
+                ``AccessibleContainers.app_ids`` because their records carry no
+                record groups, which says nothing about permission.
+            trusted_group_ids: Groups declaring ``RECORD_GROUP_LEVEL``. A record
+                qualifies only by reaching one through ``INHERIT_PERMISSIONS`` —
+                not by ``belongsTo`` membership, which is written unconditionally
+                and so would admit a record with ``inherit_permissions=False``.
+                Both default to empty, which reproduces full adjudication.
 
         Returns:
             ``{virtualRecordId: recordId}`` for the readable subset. VRIDs the

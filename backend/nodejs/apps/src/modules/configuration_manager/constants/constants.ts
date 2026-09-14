@@ -111,7 +111,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     key: 'ENABLE_CONTAINER_PERMISSION_FILTER',
     label: 'Enable Container Permission Filter',
     description:
-      'Scope searches by the containers a user can reach (connector, record group) instead of sending every accessible record id to the vector database. Bounds the filter sent to the vector database on large workspaces. Disable to fall back to the record-id path.',
-    defaultEnabled: true,
+      'Scope searches by the containers a user can reach (connector, record group) instead of sending every accessible record id to the vector database. Bounds the filter sent to the vector database on large workspaces. Records in an APP_LEVEL connector or a RECORD_GROUP_LEVEL record group are granted on container membership, without a per-record permission check. Disable to fall back to the record-id path.',
+    defaultEnabled: false,
   },
 ];

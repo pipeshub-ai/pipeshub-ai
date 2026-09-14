@@ -668,14 +668,22 @@ class ConnectorRegistry:
             for document in all_documents:
                 connector_type = document.get('type')
                 is_active = document.get('isActive', False)
-                if connector_type == Connectors.KNOWLEDGE_BASE.value:
-                    continue
                 doc_key = document.get('_key') or document.get('id')
+                is_kb = connector_type == Connectors.KNOWLEDGE_BASE.value
 
-                if connector_type not in self._connectors and is_active:
+                # KB instances are registered under their display name, so a
+                # lookup keyed on the doc's own type misses them — which is why
+                # they are exempt from deactivation rather than being treated as
+                # an unknown type. They still need their permissionModel
+                # written: search reads it off the app doc to decide whether a
+                # Collection's records can skip per-record adjudication, and
+                # skipping the whole document here left that permanently unset.
+                if not is_kb and connector_type not in self._connectors and is_active:
                     keys_to_deactivate.append(doc_key)
 
-                registered = self._connectors.get(connector_type)
+                registered = self._connectors.get(
+                    _KB_REGISTRY_KEY if is_kb else connector_type
+                )
                 if registered and doc_key:
                     expected = self._permission_model_for(registered)
                     if document.get('permissionModel') != expected:
@@ -687,7 +695,8 @@ class ConnectorRegistry:
                     # rewrite them once. Until it finishes the instance counts as
                     # un-backfilled and search falls back to record ids.
                     if (
-                        str(connector_type).upper() in ROOT_SCOPED_CONNECTOR_TYPES
+                        not is_kb
+                        and str(connector_type).upper() in ROOT_SCOPED_CONNECTOR_TYPES
                         and not document.get(
                             ConnectorStateKeys.ROOT_MEMBERSHIP_REQUESTED
                         )

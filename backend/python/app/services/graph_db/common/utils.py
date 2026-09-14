@@ -12,14 +12,6 @@ ROOT_SCOPED_CONNECTOR_TYPES = frozenset(
     for value in (Connectors.SLACK.value, Connectors.SLACK_WORKSPACE.value)
 )
 
-# A virtualRecordId is a content identity, so several records can share one —
-# the same file synced from two connectors, say. Adjudicating a VRID only needs
-# enough candidates to find one the user may read; a pathological VRID
-# (boilerplate duplicated across a corpus) must not turn one search into an
-# unbounded scan. Shared so both providers cap identically — a difference here
-# would show up as one backend returning results the other does not.
-MAX_RECORD_CANDIDATES_PER_VRID = 20
-
 # Records granted directly to a user with no container covering them. Expected
 # near-empty: app-level connectors write a blanket ORG grant and land in
 # app_ids, Drive shared-with-me files get a synthetic group, KB uploads land in
