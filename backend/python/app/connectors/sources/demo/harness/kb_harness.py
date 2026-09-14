@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -34,7 +35,6 @@ from pathlib import Path
 
 import httpx
 import yaml
-from pipeshub_sdk import Pipeshub, models
 
 SYSTEM_LABEL = {"GITHUB": "GitHub", "JIRA": "Jira", "SLACK": "Slack", "DRIVE": "Google Drive", "SERVICENOW": "ServiceNow"}
 TYPE_LABEL = {"PULL_REQUEST": "Pull request", "TICKET": "Ticket", "MESSAGE": "Chat message", "FILE": "Document", "COMMENT": "Review comment"}
@@ -103,6 +103,8 @@ def ensure_kb(ph: Pipeshub, name: str) -> str:
 
 
 def upload(ph: Pipeshub, kb_id: str, files: list[tuple[str, str]]) -> None:
+    from pipeshub_sdk import models  # noqa: PLC0415 - only the KB-upload path needs the SDK
+
     payload = [models.UploadRecordsFile(file_name=n, content=b.encode(), content_type="text/markdown") for n, b in files]
     ok = fail = 0
     with ph.knowledge_base.upload_records(kb_id=kb_id, files=payload, record_type="FILE") as stream:
@@ -138,6 +140,58 @@ def iter_sse(resp: httpx.Response):
             event = line[6:].strip()
         elif line.startswith("data:"):
             data.append(line[5:].lstrip())
+
+
+def build_name_index(fx: dict) -> tuple[dict[str, str], dict[str, str]]:
+    """Record title -> fixture id, and message id -> thread id, for scoring citations.
+
+    KB uploads carry the sanitised filename; connector records carry the exact title.
+    """
+    name_to_id: dict[str, str] = {}
+    thread_of: dict[str, str] = {}
+    for r in fx["records"]:
+        name_to_id[safe_name(r["title"])] = r["id"]
+        name_to_id[r["title"]] = r["id"]
+        if r.get("thread"):
+            thread_of[r["id"]] = r["thread"]
+    for t in fx.get("threads", []):
+        name_to_id[safe_name(t["title"])] = t["id"]
+        name_to_id[t["title"]] = t["id"]
+    return name_to_id, thread_of
+
+
+def cited_fixture_ids(cited_names: list[str], name_to_id: dict[str, str], thread_of: dict[str, str]) -> set[str]:
+    ids: set[str] = set()
+    for n in cited_names:
+        rid = name_to_id.get(re.sub(r"\.md$", "", n))
+        if rid:
+            ids.add(rid)
+            ids.add(thread_of.get(rid, rid))
+    return ids
+
+
+def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool, str]:
+    """Score one answer against a golden question's must/must-not lists.
+
+    ``expect`` is "cites" or "none" (the persona must not see the restricted
+    material). Returns (passed, verdict text).
+    """
+    must = q.get("must_cite", [])
+    missing = [x for x in must if x not in cited_ids]
+    enough = (len(must) - len(missing)) >= q.get("min_cite", len(must))
+    any_of = q.get("must_cite_any_of")
+    any_of2 = q.get("must_cite_any_of_2")
+    any_ok = ((not any_of) or any(x in cited_ids for x in any_of)) and ((not any_of2) or any(x in cited_ids for x in any_of2))
+    forbidden = [x for x in q.get("must_not_cite", []) if x in cited_ids]
+    mention = q.get("answer_must_mention", [])
+    unmentioned = [m for m in mention if m.lower() not in answer.lower()]
+    if expect == "none":
+        leaked = [x for x in q.get("restricted", must) if x in cited_ids]
+        return (not leaked), ("PASS" if not leaked else f"FAIL (leaked restricted: {leaked})")
+    ok = enough and any_ok and not forbidden and not unmentioned
+    full = "full" if not missing else f"{len(must)-len(missing)}/{len(must)}"
+    verdict = f"PASS ({full})" if ok else f"FAIL (missing={missing} any_of_ok={any_ok} forbidden={forbidden} unmentioned={unmentioned})"
+    return ok, verdict
 
 
 def ask(origin: str, jwt: str, question: str) -> tuple[str, list[str]]:
@@ -192,20 +246,18 @@ def main() -> None:
     else:
         jwt = login(origin, env["PIPESHUB_ACCOUNT_EMAIL"], env["PIPESHUB_ACCOUNT_PASSWORD"])
 
-    # name -> fixture id (and thread id), for scoring citations. KB uploads
-    # carry the sanitised filename; connector records carry the exact title.
-    name_to_id: dict[str, str] = {}
-    thread_of: dict[str, str] = {}
-    for r in fx["records"]:
-        name_to_id[safe_name(r["title"])] = r["id"]
-        name_to_id[r["title"]] = r["id"]
-        if r.get("thread"): thread_of[r["id"]] = r["thread"]
-    for t in fx.get("threads", []):
-        name_to_id[safe_name(t["title"])] = t["id"]
-        name_to_id[t["title"]] = t["id"]
+    name_to_id, thread_of = build_name_index(fx)
 
-    with Pipeshub(server_url=f"{origin}/api/v1", security=models.Security(bearer_auth=jwt)) as ph:
-        if not args.skip_upload and not args.persona:
+    uploading = not args.skip_upload and not args.persona
+    if uploading:
+        from pipeshub_sdk import Pipeshub, models  # noqa: PLC0415 - only the KB-upload path needs the SDK
+
+        sdk = Pipeshub(server_url=f"{origin}/api/v1", security=models.Security(bearer_auth=jwt))
+    else:
+        sdk = contextlib.nullcontext()
+
+    with sdk as ph:
+        if uploading:
             shared, restricted = [], []
             threads = {t["id"]: t for t in fx.get("threads", [])}
             by_thread: dict[str, list[dict]] = defaultdict(list)
@@ -243,29 +295,8 @@ def main() -> None:
             for i in range(args.runs):
                 t0 = time.time()
                 answer, cited_names = ask(origin, jwt, q["ask"])
-                cited_ids = set()
-                for n in cited_names:
-                    key = re.sub(r"\.md$", "", n)
-                    rid = name_to_id.get(key)
-                    if rid:
-                        cited_ids.add(rid); cited_ids.add(thread_of.get(rid, rid))
-                must = q.get("must_cite", [])
-                missing = [x for x in must if x not in cited_ids]
-                enough = (len(must) - len(missing)) >= q.get("min_cite", len(must))
-                any_of = q.get("must_cite_any_of")
-                any_of2 = q.get("must_cite_any_of_2")
-                any_ok = ((not any_of) or any(x in cited_ids for x in any_of)) and ((not any_of2) or any(x in cited_ids for x in any_of2))
-                forbidden = [x for x in q.get("must_not_cite", []) if x in cited_ids]
-                mention = q.get("answer_must_mention", [])
-                unmentioned = [m for m in mention if m.lower() not in answer.lower()]
-                if expect == "none":
-                    leaked = [x for x in q.get("restricted", must) if x in cited_ids]
-                    ok = not leaked
-                    verdict = "PASS" if ok else f"FAIL (leaked restricted: {leaked})"
-                else:
-                    ok = enough and any_ok and not forbidden and not unmentioned
-                    full = "full" if not missing else f"{len(must)-len(missing)}/{len(must)}"
-                    verdict = f"PASS ({full})" if ok else f"FAIL (missing={missing} any_of_ok={any_ok} forbidden={forbidden} unmentioned={unmentioned})"
+                cited_ids = cited_fixture_ids(cited_names, name_to_id, thread_of)
+                ok, verdict = score(q, expect, cited_ids, answer)
                 passes += ok
                 print(f"   run {i+1}: {verdict}  [{time.time()-t0:.0f}s]  cited={sorted(cited_ids - set(thread_of.values()))}")
                 if not ok:
