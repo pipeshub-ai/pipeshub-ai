@@ -93,7 +93,7 @@ class TestFetchCallerRole:
             result = await fetch_caller_role(_request(_BEARER), _config_service())
         assert result == CallerRole(CallerRoleStatus.UNKNOWN)
 
-    async def test_forwards_only_identity_headers(self):
+    async def test_forwards_only_the_authorization_header(self):
         seen = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -103,7 +103,7 @@ class TestFetchCallerRole:
         headers = {
             "Authorization": "Bearer caller-token",
             "X-Organization-Id": "org-1",
-            "Cookie": "session=abc",
+            "Cookie": "refreshToken=long-lived",
             "X-Is-Admin": "true",
             "Host": "attacker.example",
         }
@@ -112,15 +112,20 @@ class TestFetchCallerRole:
 
         sent = seen[0].headers
         assert sent["authorization"] == "Bearer caller-token"
-        assert sent["x-organization-id"] == "org-1"
-        assert sent["cookie"] == "session=abc"
+        assert "cookie" not in sent
+        assert "x-organization-id" not in sent
         assert "x-is-admin" not in sent
         assert sent["host"] == "nodejs:3000"
 
-    async def test_without_credentials_node_is_not_called(self):
+    @pytest.mark.parametrize(
+        "headers",
+        [{}, {"Cookie": "refreshToken=long-lived"}],
+        ids=["no-headers", "cookie-only"],
+    )
+    async def test_without_a_bearer_token_node_is_not_called(self, headers):
         handler = MagicMock()
         with _node(handler):
-            result = await fetch_caller_role(_request({}), _config_service())
+            result = await fetch_caller_role(_request(headers), _config_service())
         assert result == CallerRole(CallerRoleStatus.UNKNOWN)
         handler.assert_not_called()
 

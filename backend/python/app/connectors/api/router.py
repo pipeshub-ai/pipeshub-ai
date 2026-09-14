@@ -1004,9 +1004,10 @@ async def stream_record_internal(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         # Same response as a missing record, so a token for one org cannot probe another's.
-        if record.org_id and record.org_id != org_id:
+        # A record with no org cannot be confined to one, so it is refused as well.
+        if not record.org_id or record.org_id != org_id:
             logger.warning(
-                "stream_record_internal: org mismatch record=%s record_org=%s token_org=%s",
+                "stream_record_internal: org mismatch record=%s record_org=%r token_org=%s",
                 record_id, record.org_id, org_id,
             )
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")

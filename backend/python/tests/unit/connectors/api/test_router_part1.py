@@ -2891,6 +2891,21 @@ class TestStreamRecordInternal:
         # Only the org lookup ran; no connector was resolved for the foreign record.
         assert gp.get_document.await_count == 1
 
+    async def test_record_without_org_raises_404(self):
+        """A record with no org cannot be confined to the token's org, so it is refused."""
+        from app.connectors.api.router import stream_record_internal
+
+        gp = AsyncMock()
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id=""))
+        gp.get_document = AsyncMock(return_value={"_key": "org-1"})
+
+        with pytest.raises(HTTPException) as exc_info:
+            await stream_record_internal(
+                _mock_request(), "rec-1", gp, AsyncMock(), claims=self._CLAIMS
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        assert gp.get_document.await_count == 1
+
     async def test_org_not_found_raises_404(self):
         from app.connectors.api.router import stream_record_internal
 

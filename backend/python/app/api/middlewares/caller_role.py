@@ -29,7 +29,9 @@ logger = create_logger(__name__)
 
 CALLER_ROLE_PATH = "/api/v1/users/me/role"
 _TIMEOUT_SECONDS = 5.0
-_FORWARDED_HEADERS = ("authorization", "x-organization-id", "cookie")
+# Node authenticates the caller from the Authorization header alone, so nothing else is
+# sent; cookies in particular can carry a long-lived refresh token.
+_FORWARDED_HEADERS = ("authorization",)
 
 Role = Literal["admin", "member"]
 
@@ -92,7 +94,7 @@ async def fetch_caller_role(
 ) -> CallerRole:
     """Ask Node for the role of whoever the request's credentials identify."""
     headers = _forwarded_headers(request.headers)
-    if not headers.get("authorization") and not headers.get("cookie"):
+    if not headers.get("authorization"):
         return _UNKNOWN
 
     url = f"{await _nodejs_endpoint(config_service)}{CALLER_ROLE_PATH}"
@@ -100,23 +102,17 @@ async def fetch_caller_role(
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
             response = await client.get(url, headers=headers)
     except httpx.HTTPError as exc:
-        logger.warning(
-            "Caller role lookup failed (%s); treating the caller as a member",
-            type(exc).__name__,
-        )
+        logger.warning("Caller role lookup failed: %s", type(exc).__name__)
         return _UNKNOWN
 
     if response.status_code == HttpStatusCode.UNAUTHORIZED.value:
         return CallerRole(CallerRoleStatus.REJECTED)
     if response.status_code != HttpStatusCode.OK.value:
-        logger.warning(
-            "Caller role lookup returned HTTP %s; treating the caller as a member",
-            response.status_code,
-        )
+        logger.warning("Caller role lookup returned HTTP %s", response.status_code)
         return _UNKNOWN
     try:
         body: object = response.json()
     except ValueError:
-        logger.warning("Caller role lookup returned a non-JSON body; treating the caller as a member")
+        logger.warning("Caller role lookup returned a non-JSON body")
         return _UNKNOWN
     return CallerRole(CallerRoleStatus.VALID, normalize_auth_role(_str_field(body, "role")))

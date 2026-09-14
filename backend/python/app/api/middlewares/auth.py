@@ -261,8 +261,8 @@ async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str
     """Org role for the authenticated caller.
 
     Session JWTs carry a role claim. OAuth/PAT tokens do not, and only Node knows
-    whether one has been revoked or its user deleted, so their role comes from Node and
-    a token Node refuses is refused here too.
+    whether one has been revoked or its user deleted, so their role comes from Node. A
+    token Node refuses is refused here, and so is one Node could not confirm.
     """
     if not payload.get("isOAuth"):
         return normalize_auth_role(payload.get("role"))
@@ -274,7 +274,13 @@ async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str
             detail="Token is no longer valid",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return caller.role if caller.status is CallerRoleStatus.VALID else "member"
+    if caller.status is CallerRoleStatus.UNKNOWN:
+        # Without Node's answer a revoked token looks exactly like a valid one.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not verify the access token; try again shortly",
+        )
+    return caller.role
 
 
 @dataclass(frozen=True)

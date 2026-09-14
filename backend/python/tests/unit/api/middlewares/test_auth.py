@@ -873,18 +873,22 @@ class TestAuthMiddleware:
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
     @patch("app.api.middlewares.auth.isJwtTokenValid")
-    async def test_oauth_role_fails_closed_when_node_is_unavailable(
+    async def test_oauth_token_refused_when_node_cannot_confirm_it(
         self, mock_validate, mock_role
     ):
-        payload = {"userId": "user-1", "isOAuth": True, "token_type": "regular"}
-        mock_validate.return_value = payload
+        """A revoked token must not slip through while Node is unreachable or throttled."""
+        from types import SimpleNamespace
+
+        mock_validate.return_value = {"userId": "user-1", "isOAuth": True, "token_type": "regular"}
         mock_role.return_value = CallerRole(CallerRoleStatus.UNKNOWN)
 
         request = _make_fake_request(authorization="Bearer oauth.token")
-        await authMiddleware(request)
+        request.state = SimpleNamespace()
+        with pytest.raises(HTTPException) as exc_info:
+            await authMiddleware(request)
 
-        assert request.state.user["role"] == "member"
-        assert is_request_admin(request) is False
+        assert exc_info.value.status_code == 503
+        assert not hasattr(request.state, "user")
 
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
