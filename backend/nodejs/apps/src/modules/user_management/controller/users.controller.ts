@@ -2490,6 +2490,35 @@ export class UserController {
         };
       }
 
+      // Tell the current address too, so an account moved by someone who
+      // has the user's session is not moved silently. Best effort: the
+      // verification mail is what matters, and the change still needs the
+      // link at the new address to be opened.
+      try {
+        const notice = await this.mailService.sendMail({
+          emailTemplateType: 'emailChangeNotice',
+          initiator: { jwtAuthToken: mailAuthToken, orgId: user.orgId?.toString() },
+          usersMails: [user.email],
+          subject: 'PipesHub | Your email address is being changed',
+          templateData: {
+            orgName: org?.shortName || org?.registeredName,
+            name: user.fullName,
+            newEmail,
+          },
+        });
+        if (notice.statusCode !== 200) {
+          this.logger.warn('Email-change notice to the current address was not sent', {
+            userId: user._id?.toString(),
+            statusCode: notice.statusCode,
+          });
+        }
+      } catch (noticeError) {
+        this.logger.warn('Email-change notice to the current address failed', {
+          userId: user._id?.toString(),
+          error: noticeError instanceof Error ? noticeError.message : String(noticeError),
+        });
+      }
+
       return {
         statusCode: 200,
         data: 'mail sent',

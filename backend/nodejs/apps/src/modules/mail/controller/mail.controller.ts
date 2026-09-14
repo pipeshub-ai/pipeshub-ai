@@ -12,6 +12,7 @@ import {
   loginWithOTPRequest,
   orgEmailVerification,
   resetEmail,
+  emailChangeNotice,
   resetPassword,
   suspiciousLoginAttempt,
   joinRequestNotify,
@@ -74,6 +75,9 @@ export class MailController {
         return emailContent;
       case EmailTemplateType.ResetEmail:
         emailContent = resetEmail(templateData);
+        return emailContent;
+      case EmailTemplateType.EmailChangeNotice:
+        emailContent = emailChangeNotice(templateData);
         return emailContent;
 
       case EmailTemplateType.AppuserInvite:

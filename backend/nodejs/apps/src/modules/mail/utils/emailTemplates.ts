@@ -8,6 +8,7 @@ const loginTemplate = loadTemplate('src/modules/mail/views/layouts/user/login.hb
 const suspiciousLoginTemplate = loadTemplate('src/modules/mail/views/layouts/user/suspiciousLogin.hbs');
 const resetPasswordTemplate = loadTemplate('src/modules/mail/views/layouts/user/resetPassword.hbs');
 const resetEmailTemplate = loadTemplate('src/modules/mail/views/layouts/user/resetEmail.hbs');
+const emailChangeNoticeTemplate = loadTemplate('src/modules/mail/views/layouts/user/emailChangeNotice.hbs');
 const accountCreationTemplate = loadTemplate('src/modules/mail/views/layouts/org/accountCreation.hbs');
 const domainLimitReachedTemplate = loadTemplate('src/modules/mail/views/layouts/org/domainLimitReached.hbs');
 const appUsersInviteTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/invite.hbs');
@@ -65,6 +66,7 @@ export const loginWithOTPRequest = (templateData: Record<string,any>): string =>
 export const suspiciousLoginAttempt = (templateData: Record<string,any>): string => compileTemplate(suspiciousLoginTemplate, templateData);
 export const resetPassword = (templateData: Record<string,any>): string => compileTemplate(resetPasswordTemplate, templateData);
 export const resetEmail = (templateData: Record<string,any>): string => compileTemplate(resetEmailTemplate, templateData);
+export const emailChangeNotice = (templateData: Record<string,any>): string => compileTemplate(emailChangeNoticeTemplate, templateData);
 export const accountCreation = (templateData: Record<string,any>): string => compileTemplate(accountCreationTemplate, templateData);
 export const appUserInvite = (templateData: Record<string,any>): string => compileTemplate(appUsersInviteTemplate, templateData);
 export const orgEmailVerification = (templateData: Record<string,any>): string => compileTemplate(orgEmailVerificationTemplate, templateData);

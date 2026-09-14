@@ -3938,6 +3938,48 @@ describe('UserController', () => {
     });
   });
 
+  describe('sendValidateEmailIdEmail', () => {
+    const user = () => ({ _id: '507f1f77bcf86cd799439011', orgId: '507f1f77bcf86cd799439012', email: 'alice@old.example', fullName: 'Alice' });
+
+    it('sends the verification to the new address and a notice to the current one', async () => {
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'Acme' } as any);
+
+      const result = await controller.sendValidateEmailIdEmail(user(), 'alice@new.example');
+
+      expect(result.statusCode).to.equal(200);
+      expect(mockMailService.sendMail.calledTwice).to.be.true;
+      const [verification, notice] = mockMailService.sendMail.args.map((a: any[]) => a[0]);
+      expect(verification.emailTemplateType).to.equal('resetEmail');
+      expect(verification.usersMails).to.deep.equal(['alice@new.example']);
+      expect(notice.emailTemplateType).to.equal('emailChangeNotice');
+      expect(notice.usersMails).to.deep.equal(['alice@old.example']);
+      expect(notice.templateData.newEmail).to.equal('alice@new.example');
+      // The notice carries no link: nothing in it can be used to complete or undo the change.
+      expect(notice.templateData.link).to.be.undefined;
+    });
+
+    it('still succeeds when the notice to the current address cannot be sent', async () => {
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'Acme' } as any);
+      mockMailService.sendMail.onFirstCall().resolves({ statusCode: 200, data: {} });
+      mockMailService.sendMail.onSecondCall().rejects(new Error('smtp down'));
+
+      const result = await controller.sendValidateEmailIdEmail(user(), 'alice@new.example');
+
+      expect(result.statusCode).to.equal(200);
+      expect(mockLogger.warn.calledOnce).to.be.true;
+    });
+
+    it('does not send the notice when the verification mail itself failed', async () => {
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'Acme' } as any);
+      mockMailService.sendMail.onFirstCall().resolves({ statusCode: 500, data: 'no' });
+
+      const result = await controller.sendValidateEmailIdEmail(user(), 'alice@new.example');
+
+      expect(result.statusCode).to.equal(400);
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+    });
+  });
+
   describe('updateEmail - verification failures', () => {
     it('surfaces a failure to send the verification mail without touching the account', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
