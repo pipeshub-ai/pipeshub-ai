@@ -1,8 +1,14 @@
 import { injectable, inject } from 'inversify';
 import mongoose, { Types } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
-import { OAuthRefreshToken, IOAuthRefreshToken } from '../schema/oauth.refresh_token.schema';
-import { OAuthAccessToken, IOAuthAccessToken } from '../schema/oauth.access_token.schema';
+import {
+  OAuthRefreshToken,
+  IOAuthRefreshToken,
+} from '../schema/oauth.refresh_token.schema';
+import {
+  OAuthAccessToken,
+  IOAuthAccessToken,
+} from '../schema/oauth.access_token.schema';
 import { OAuthApp } from '../schema/oauth.app.schema';
 import { Users } from '../../user_management/schema/users.schema';
 import { PAT_APP_CLIENT_ID_PREFIX } from '../constants/constants';
@@ -80,7 +86,7 @@ export class OAuthGrantService {
     const appsByClientId = new Map(apps.map((a) => [a.clientId, a]));
 
     const activeRefreshTokenIds = refreshTokens.map(
-      (rt) => rt._id as Types.ObjectId,
+      (rt) => rt.familyId || (rt._id as Types.ObjectId),
     );
 
     // Find latest lastUsedAt for each active grant
@@ -123,7 +129,9 @@ export class OAuthGrantService {
         scopes: rt.scopes,
         createdAt: rt.createdAt,
         expiresAt: rt.expiresAt,
-        lastUsedAt: lastUsedByTokenId.get((rt._id as Types.ObjectId).toString()),
+        lastUsedAt: lastUsedByTokenId.get(
+          (rt._id as Types.ObjectId).toString(),
+        ),
       });
     }
 
@@ -187,7 +195,7 @@ export class OAuthGrantService {
         userId: { $eq: userObjId },
         orgId: { $eq: orgObjId },
         clientId: { $eq: refreshToken.clientId },
-        parentRefreshTokenId: { $eq: grantObjId },
+        parentRefreshTokenId: { $eq: refreshToken.familyId || grantObjId },
         isRevoked: { $eq: false },
       };
       const updateDoc = {
@@ -262,6 +270,7 @@ export class OAuthGrantService {
         createdAt: Date;
         expiresAt: Date;
         lastUsedAt?: Date;
+        familyId?: Types.ObjectId;
         type: 'refresh' | 'access';
       }>;
     }>([
@@ -281,6 +290,7 @@ export class OAuthGrantService {
           scopes: 1,
           createdAt: 1,
           expiresAt: 1,
+          familyId: 1,
           type: { $literal: 'refresh' },
         },
       },
@@ -381,10 +391,14 @@ export class OAuthGrantService {
     );
     const appsByClientId = new Map(apps.map((a) => [a.clientId, a]));
 
-    const refreshItems = paginatedItems.filter((item) => item.type === 'refresh');
+    const refreshItems = paginatedItems.filter(
+      (item) => item.type === 'refresh',
+    );
     let lastUsedMap = new Map<string, Date | undefined>();
     if (refreshItems.length > 0) {
-      const refreshItemIds = refreshItems.map((r) => r._id as Types.ObjectId);
+      const refreshItemIds = refreshItems.map(
+        (r) => r.familyId || (r._id as Types.ObjectId),
+      );
       const latestAccessTokens =
         await OAuthAccessToken.aggregate<LatestTokenGroup>([
           {
@@ -404,10 +418,7 @@ export class OAuthGrantService {
           },
         ]);
       lastUsedMap = new Map(
-        latestAccessTokens.map((t) => [
-          t._id.toString(),
-          t.lastUsedAt,
-        ]),
+        latestAccessTokens.map((t) => [t._id.toString(), t.lastUsedAt]),
       );
     }
 
@@ -415,7 +426,6 @@ export class OAuthGrantService {
       const userStr = item.userId ? item.userId.toString() : '';
       const owner = item.userId ? ownersById.get(userStr) : undefined;
       const app = appsByClientId.get(item.clientId);
-
 
       const lastUsedAt =
         item.type === 'access'
@@ -487,7 +497,7 @@ export class OAuthGrantService {
         userId: { $eq: refreshToken.userId },
         orgId: { $eq: orgObjId },
         clientId: { $eq: refreshToken.clientId },
-        parentRefreshTokenId: { $eq: grantObjId },
+        parentRefreshTokenId: { $eq: refreshToken.familyId || grantObjId },
         isRevoked: { $eq: false },
       };
       const updateDoc = {
@@ -544,7 +554,9 @@ export class OAuthGrantService {
       try {
         await session.withTransaction(async () => {
           await refreshToken.save({ session });
-          await OAuthAccessToken.updateMany(updateFilter, updateDoc, { session });
+          await OAuthAccessToken.updateMany(updateFilter, updateDoc, {
+            session,
+          });
         });
       } finally {
         await session.endSession();
