@@ -196,6 +196,102 @@ def _min_words_for_sentence_embeddings() -> int:
         return _DEFAULT_SENTENCE_EMBED_MIN_WORDS
 
 
+# Token-aware sizing for the embedder's context limit.
+#
+# Every character constant above bounds *characters*, but the limit that
+# actually rejects input is the embedding model's, in *tokens*. The two are not
+# proportional: English prose runs ~4 chars/token while base64 or dense code can
+# run under 2, so no single characters-per-token constant is correct for both.
+# These helpers make the decision in the unit the limit is expressed in.
+_EMBED_TOKEN_LIMIT_DEFAULT = 8191  # text-embedding-3-{small,large}; ada-002 is 2048
+_EMBED_TOKEN_ENV = "PIPESHUB_EMBED_TOKEN_LIMIT"
+# Used only when no tokenizer resolves. Deliberately pessimistic: it
+# over-estimates the token count, so the fallback errs toward splitting rather
+# than toward emitting something the provider will reject.
+_CHARS_PER_TOKEN_FALLBACK = 3
+
+
+def _embed_token_ceiling() -> int:
+    """Maximum tokens the embedding model accepts in one input.
+
+    Overridable so a deployment on a smaller model can lower it. A malformed
+    value falls back to the default rather than disabling the ceiling.
+    """
+    raw = os.getenv(_EMBED_TOKEN_ENV)
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return _EMBED_TOKEN_LIMIT_DEFAULT
+
+
+def _token_encoder() -> object | None:
+    """A tiktoken encoding, or None when tiktoken is unavailable.
+
+    Cached, so indexing a corpus does not re-resolve it per block. None is a
+    supported state rather than an error -- callers fall back to a character
+    estimate.
+    """
+    cached = getattr(_token_encoder, "_cached", False)
+    if cached is not False:
+        return cached
+    encoder = None
+    try:
+        import tiktoken
+
+        encoder = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        # tiktoken absent or the encoding unavailable; the character estimate
+        # below is the documented fallback.
+        encoder = None
+    _token_encoder._cached = encoder
+    return encoder
+
+
+def _token_len(text: str) -> int:
+    """Token count, or a deliberately high character-based estimate."""
+    encoder = _token_encoder()
+    if encoder is None:
+        return -(-len(text) // _CHARS_PER_TOKEN_FALLBACK)
+    return len(encoder.encode(text))
+
+
+def _exceeds_token_ceiling(text: str, ceiling: int) -> bool:
+    """True when *text* will not embed as a single input.
+
+    The length check first is a cheap guard, not an approximation: at
+    _CHARS_PER_TOKEN_FALLBACK characters per token a shorter string cannot
+    exceed the ceiling, so the common case never pays for tokenization.
+    """
+    if len(text) <= ceiling * _CHARS_PER_TOKEN_FALLBACK:
+        return False
+    return _token_len(text) > ceiling
+
+
+def _split_to_token_ceiling(text: str, ceiling: int) -> List[str]:
+    """Split *text* so every piece embeds. Last line of defence.
+
+    Applies to input the sentence splitter could not break up -- a table row, a
+    base64 payload, a minified line, or text in a script whose delimiters it
+    does not recognise. Splitting mid-token is acceptable here because the
+    alternative is a rejected record or a clipped tail that is not retrievable.
+    """
+    if not _exceeds_token_ceiling(text, ceiling):
+        return [text]
+    encoder = _token_encoder()
+    if encoder is None:
+        cap = ceiling * _CHARS_PER_TOKEN_FALLBACK
+        return [text[i : i + cap] for i in range(0, len(text), cap)] or [text]
+    tokens = encoder.encode(text)
+    return [
+        encoder.decode(tokens[i : i + ceiling])
+        for i in range(0, len(tokens), ceiling)
+    ] or [text]
+
+
 def _word_count(text: str) -> int:
     return len(text.split()) if text else 0
 
@@ -272,21 +368,33 @@ def _build_text_documents(
             "blockType": BlockType.TEXT.value,
         }
 
-        if len(block_text) > _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT:
+        # The character cap stays as a cheap upper guard for pathological
+        # blocks; the ceiling that decides whether this can embed as one
+        # document is the model's, in tokens.
+        if (
+            len(block_text) > _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT
+            or _exceeds_token_ceiling(block_text, _embed_token_ceiling())
+        ):
             # Too large to also embed as one whole-block document (would be a
             # useless retrieval unit) — pack into overlapping windows instead.
+            ceiling = _embed_token_ceiling()
             documents.extend(
-                Document(page_content=chunk, metadata={**metadata, "isBlock": False})
+                Document(page_content=piece, metadata={**metadata, "isBlock": False})
                 for chunk in _chunk_oversized_text(block_text, language)
+                # A sentence longer than the window is emitted whole by
+                # _chunk_oversized_text; bound it rather than let it be rejected.
+                for piece in _split_to_token_ceiling(chunk, ceiling)
             )
             continue
 
         if _word_count(block_text) > _min_words_for_sentence_embeddings():
             sentences = split_into_sentences(block_text, language=language)
             if len(sentences) > 1:
+                ceiling = _embed_token_ceiling()
                 documents.extend(
-                    Document(page_content=sentence, metadata={**metadata, "isBlock": False})
+                    Document(page_content=piece, metadata={**metadata, "isBlock": False})
                     for sentence in sentences
+                    for piece in _split_to_token_ceiling(sentence, ceiling)
                 )
         documents.append(
             Document(
