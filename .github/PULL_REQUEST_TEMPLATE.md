@@ -1,42 +1,148 @@
 ## Description
 
-What does this change, and why?
+[Provide a brief description of the changes in this PR]
 
-If you used an AI coding assistant, say so here. You still need to be able to explain every hunk.
+If this pull request only changes documentation, markdown, comments, or tests, fill in **Description**, **Type of Change**, and **How Has This Been Tested**, then skip the product, staging, and deployment checklists below.
 
 ### Type of Change
 
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Breaking change
-- [ ] Documentation
-- [ ] Tests
-- [ ] Refactor
-- [ ] Performance
-- [ ] Security
+- [ ] Bug fix (non-breaking change which fixes an issue)
+- [ ] New feature (non-breaking change which adds functionality)
+- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
+- [ ] Documentation update (Is there an addition/change in API Request, Response? If yes, documentation is required)
+- [ ] Performance improvement
+- [ ] Code refactoring
+- [ ] Security fix
 
 ## Related Issues
 
-- Fixes #
-- Related to #
+- Fixes #[issue number]
+- Closes #[issue number]
+- Related to #[issue number]
 
-PRs without a linked issue may be closed. Comment on the issue before you start.
+## How Has This Been Tested?
 
-## How this was tested
+[Describe the tests you ran to verify your changes. Provide instructions so we can reproduce.]
 
-What you ran, and what you observed. Docs-only: the page or file you checked.
+### Test Configuration
 
-## Docs or tests only
+- [ ] Unit tests pass
+- [ ] Integration tests pass
+- [ ] Manual testing completed
+- [ ] Cross-browser testing (if applicable)
+- [ ] Mobile responsiveness tested (if applicable)
 
-If this PR only changes markdown, docs, comments, or tests, you can stop here.
+## Core Functionality Testing
 
-## Code changes
+Please confirm that the following core functionalities are working as expected:
 
-- [ ] Tests cover the behaviour I changed (or I explain why not)
-- [ ] No secrets, and no client-supplied org/user IDs trusted for authz
-- [ ] Screenshots for UI changes (before / after)
+- [ ] **Search capabilities** are working correctly
+- [ ] **Knowledge search** is functioning properly
+- [ ] **Connector indexing** is working as expected
+- [ ] **Citations** are displaying and linking correctly
+- [ ] **Documentation** is updated at https://docs.pipeshub.com/introduction
 
-## Checklist
+## What You Have Tested
 
-- [ ] I can explain this diff in review
-- [ ] I did not bump dependencies or regenerate lockfiles unless that is the point of the PR
+Please describe what you have specifically tested:
+
+- [ ] Feature works in development environment
+- [ ] Feature works in staging environment
+- [ ] Error handling scenarios tested
+- [ ] Edge cases considered and tested
+- [ ] Performance impact assessed
+- [ ] Security implications reviewed
+
+### Test Results
+
+[Provide details of your test results here]
+
+## Screenshots/Videos
+
+**Before:**
+[Attach screenshots/videos showing the current behavior]
+
+**After:**
+[Attach screenshots/videos showing the new behavior]
+
+**Note:** Screenshots are required before merge for UI changes.
+
+## Code Quality Checklist
+
+- [ ] My code follows the project's coding standards
+- [ ] I have performed a self-review of my own code
+- [ ] I have commented my code, particularly in hard-to-understand areas
+- [ ] I have made corresponding changes to the documentation
+- [ ] My changes generate no new warnings
+- [ ] I have added tests that prove my fix is effective or that my feature works
+- [ ] New and existing unit tests pass locally with my changes
+
+## Documentation
+
+- [ ] Documentation has been updated (if applicable)
+- [ ] API documentation updated (if applicable)
+- [ ] README updated (if applicable)
+- [ ] Changelog updated (if applicable)
+
+## Security Considerations
+
+- [ ] No sensitive data is exposed
+- [ ] Input validation is implemented where necessary
+- [ ] Authentication/authorization is properly handled
+- [ ] No security vulnerabilities introduced
+
+## Breaking Changes
+
+- [ ] This PR introduces breaking changes
+- [ ] Migration guide provided (if applicable)
+- [ ] Version bump required
+
+If breaking changes are introduced, please describe them here:
+
+[Describe any breaking changes and how users should adapt]
+
+## Performance Impact
+
+- [ ] No performance impact
+- [ ] Performance improved
+- [ ] Performance impact assessed and acceptable
+
+[Describe any performance implications]
+
+## Dependencies
+
+- [ ] No new dependencies added
+- [ ] New dependencies are necessary and approved
+- [ ] Dependencies updated and tested
+
+List any new dependencies:
+- [Dependency name and version]
+
+## Deployment Notes
+
+[Any special deployment considerations or steps]
+
+## Checklist Before Merge
+
+- [ ] All tests are passing
+- [ ] Code review completed and approved
+- [ ] Documentation updated and reviewed
+- [ ] Screenshots/videos attached for UI changes
+- [ ] Core functionality verified
+- [ ] Security review completed (if applicable)
+- [ ] Performance impact assessed
+- [ ] Ready for production deployment
+
+## Additional Notes
+
+[Any additional information that would be helpful for reviewers]
+
+---
+
+**For Reviewers:**
+
+Please ensure all checklist items are completed before approving this PR. Pay special attention to:
+- Core functionality testing
+- Security implications
+- Performance impact
+- Documentation completeness

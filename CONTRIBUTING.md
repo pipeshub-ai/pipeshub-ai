@@ -6,19 +6,19 @@
 
 </div>
 
-Welcome. You do not need to run the full stack to contribute. Read **How to pick work** first. Local Docker setup is further down, for people changing services.
+Welcome to our open source project! We're excited that you're interested in contributing. You do not need to run the full local stack for documentation or small fixes. Local Docker setup is further down, for people changing services.
 
-Questions: [Discord](https://discord.com/invite/K5RskzJBm2) or [GitHub Discussions](https://github.com/pipeshub-ai/pipeshub-ai/discussions). We may host an in-person Fest in October; it is not a pull-request contest.
+Questions: [Discord](https://discord.com/invite/K5RskzJBm2), [GitHub Discussions](https://github.com/pipeshub-ai/pipeshub-ai/discussions), or open an issue.
 
-## How to pick work
+## Finding something to work on
 
-1. [`first-timers-only`](https://github.com/pipeshub-ai/pipeshub-ai/labels/first-timers-only) — reserved for people who have never had an open-source PR merged. Highly scoped; the issue names files and how to verify.
+Labeled issues are a good place to start, but other useful changes are welcome too.
+
+1. [`first-timers-only`](https://github.com/pipeshub-ai/pipeshub-ai/labels/first-timers-only) — small and scoped; a good first open-source PR.
 2. [`good first issue`](https://github.com/pipeshub-ai/pipeshub-ai/labels/good%20first%20issue) — one evening, one area.
-3. [`help wanted`](https://github.com/pipeshub-ai/pipeshub-ai/labels/help%20wanted) — a few days of independent work. Not a first contribution.
+3. [`help wanted`](https://github.com/pipeshub-ai/pipeshub-ai/labels/help%20wanted) — a few days of independent work.
 
-Comment on the issue before you start. Wait to be assigned. One person per issue.
-
-Do not open a PR for a random typo, lockfile churn, or an unsolicited dependency bump. A new connector is not beginner work; read [`CONNECTOR_INTEGRATION_PLAYBOOK.md`](CONNECTOR_INTEGRATION_PLAYBOOK.md) and talk to us on Discord first.
+Comment on the issue so others know you are on it. If you already have a fix, open a pull request and link the issue, or describe the problem in the PR.
 
 ## Docs-only contributions
 
@@ -26,19 +26,13 @@ No Docker. Edit markdown in this repository (`README.md`, `docs/`, this file) or
 
 1. Fork the repo that holds the file.
 2. Change the page. Keep the wording consistent with `main` (Python 3.12, `backend/nodejs`, installer at `https://get.pipeshub.com/install`).
-3. Open a PR that links the issue.
+3. Open a pull request.
 
-## Quality bar
-
-- Behaviour changes need tests, or a sentence in the PR explaining why not.
-- Say if an AI assistant wrote part of the diff. You still need to explain every hunk in review.
-- PRs that do not link an issue may be closed.
-- Empty, unsolicited, or AI-slop PRs are labeled `spam` or `invalid`.
+A new connector is a large piece of work. The [connector playbook](CONNECTOR_INTEGRATION_PLAYBOOK.md) is the starting point; Discord is a good place to talk it through.
 
 ## Table of Contents
-- [How to pick work](#how-to-pick-work)
+- [Finding something to work on](#finding-something-to-work-on)
 - [Docs-only contributions](#docs-only-contributions)
-- [Quality bar](#quality-bar)
 - [Setting Up the Development Environment](#setting-up-the-development-environment)
 - [Project Architecture](#project-architecture)
 - [Contribution Workflow](#contribution-workflow)
@@ -324,11 +318,26 @@ When running services locally with `make`, start **embedding** before **indexing
 
 ## Contribution Workflow
 
-1. **Find an issue** with `first-timers-only`, `good first issue`, or `help wanted`. Comment and wait to be assigned.
-2. **Fork** the repository and create a branch: `git checkout -b feature/your-feature-name`
-3. **Make the change** described in the issue. Docs-only work does not need a local stack.
-4. **Test** what you touched. See [Testing](#testing) for unit and e2e commands.
-5. **Open a Pull Request** against `main`. Link the issue (`Fixes #123`). Use the PR template; skip the code-change section for markdown-only PRs.
+1. **Fork the repository** to your GitHub account
+2. **Clone your fork** to your local machine
+3. **Create a new branch** for your feature or bug fix:
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+4. **Make your changes** following our code style guidelines. Docs-only work does not need a local stack.
+5. **Test your changes** thoroughly
+6. **Commit your changes** with meaningful commit messages:
+   ```bash
+   git commit -m "Add feature: brief description of changes"
+   ```
+7. **Push your branch** to your GitHub fork:
+   ```bash
+   git push origin feature/your-feature-name
+   ```
+8. **Open a Pull Request** against our main repository
+   - Provide a clear description of the changes
+   - Reference any related issues
+   - Add screenshots if applicable
 
 ## Code Style Guidelines
 
@@ -564,8 +573,18 @@ The following are generated during test runs and are gitignored:
 
 ## Documentation
 
-Published docs live in [`pipeshub-ai/documentation`](https://github.com/pipeshub-ai/documentation) and appear at [docs.pipeshub.com](https://docs.pipeshub.com). Keep that site in sync with `main`; do not copy setup instructions into it in a way that can rot. Update OpenAPI (`backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml`) when you change HTTP routes.
+- Update documentation for any new features or changes
+- Document APIs with appropriate comments and examples
+- Keep README and other guides up to date
+- Published docs live in [`pipeshub-ai/documentation`](https://github.com/pipeshub-ai/documentation) and appear at [docs.pipeshub.com](https://docs.pipeshub.com). Update OpenAPI (`backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml`) when you change HTTP routes.
 
 ## Community Guidelines
 
-Follow the [Code of Conduct](CODE_OF_CONDUCT.md). Ask for help in [Discord](https://discord.com/invite/K5RskzJBm2) or [Discussions](https://github.com/pipeshub-ai/pipeshub-ai/discussions/categories/q-a), not by opening an unlabelled issue.
+- Be respectful and inclusive in all interactions
+- Provide constructive feedback on pull requests
+- Help new contributors get started
+- Report any inappropriate behavior to the project maintainers
+
+---
+
+Thank you for contributing to our project! If you have any questions or need help, please open an issue, ask in [Discord](https://discord.com/invite/K5RskzJBm2), or reach out to the maintainers.

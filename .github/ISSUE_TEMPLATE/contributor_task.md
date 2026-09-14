@@ -6,7 +6,7 @@ labels: ''
 assignees: ''
 ---
 
-**For maintainers.** Pick one label: `first-timers-only`, `good first issue`, or `help wanted`. Fill every section before publishing. Commenters: claim the issue before opening a PR. One assignee.
+**For maintainers.** Pick one label: `first-timers-only`, `good first issue`, or `help wanted`. Fill every section before publishing. Commenters: a short “I’ll take this” is enough so others know you are on it.
 
 **Label**
 - [ ] `first-timers-only` (no prior merged OSS PR)
@@ -29,4 +29,4 @@ Commands to run, or the page to reload. Docs-only work does not need Docker.
 What this issue is not.
 
 **Claim**
-Comment here to take it. Maintainers will assign you. `first-timers-only` issues are reserved for people who have not yet had an OSS PR merged.
+Comment here if you are working on it. `first-timers-only` issues are a good first open-source PR.
