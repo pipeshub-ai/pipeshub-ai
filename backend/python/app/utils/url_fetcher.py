@@ -17,7 +17,7 @@ import random
 import re
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Literal, override
 from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
@@ -626,13 +626,42 @@ def fetch_url(
     # (rebinding) cannot move the connection somewhere the check never saw.
     current_url = url
     for _ in range(_MAX_REDIRECTS + 1):
+        _reject_http_userinfo(current_url)
         target = resolve_public_http_target(current_url)
-        result = run(current_url, follow_redirects=False, pin=target)
+        result = _run_pinned_with_failover(run, current_url, target)
         location = _redirect_location(result)
         if location is None:
             return result
         current_url = urljoin(current_url, location)
     raise FetchError(f"Too many redirects (more than {_MAX_REDIRECTS})")
+
+
+def _reject_http_userinfo(url: str) -> None:
+    """Refuse ``user:pass@`` in a plain-HTTP URL: basic-auth credentials would cross the
+    network in the clear. https keeps them (TLS-encrypted). Applies only to the untrusted
+    (SSRF-guarded) fetch path."""
+    parts = urlsplit(url)
+    if parts.scheme == "http" and (parts.username or parts.password):
+        raise FetchError("Credentials in the URL are not allowed over plain HTTP")
+
+
+def _run_pinned_with_failover(
+    run: "partial[FetchResult]", url: str, target: PublicTarget
+) -> FetchResult:
+    """Run the strategy chain against each validated address until one answers.
+
+    A dual-stack host can return an unreachable address first (e.g. IPv6 with no route);
+    the check validated every address, so any is safe to try. Retry only covers transport
+    failure (the chain raising ``FetchError`` with no HTTP response); once any address
+    returns a response it is used, per the redirect/response contract.
+    """
+    last_error: FetchError | None = None
+    for address in target.addresses:
+        try:
+            return run(url, follow_redirects=False, pin=replace(target, addresses=(address,)))
+        except FetchError as e:
+            last_error = e
+    raise last_error or FetchError(f"No reachable address for {url}")
 
 
 def _run_strategies(

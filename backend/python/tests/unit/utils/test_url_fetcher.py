@@ -18,6 +18,7 @@ from app.utils.url_fetcher import (
     _curl_pinned_request,
     _get_profiles,
     _get_supported_profiles,
+    _run_pinned_with_failover,
     _try_cloudscraper,
     _try_curl_cffi,
     _try_requests,
@@ -1197,14 +1198,16 @@ class TestCurlPinnedRequest:
         assert url == "https://xn--bcher-kva.example/x"
         assert curl_options[CurlOpt.RESOLVE] == ["xn--bcher-kva.example:443:8.8.8.8"]
 
-    def test_explicit_port_and_credentials_are_kept(self) -> None:
+    def test_explicit_port_and_https_credentials_are_kept(self) -> None:
+        # Plain-HTTP userinfo is refused upstream (see TestUserinfoOverHttp); over https,
+        # where TLS protects it, basic-auth userinfo is preserved.
         from curl_cffi import CurlOpt
 
         url, curl_options = _curl_pinned_request(
-            "http://u:p%40ss@example.com:8080/x", _pin(scheme="http", port=8080)
+            "https://u:p%40ss@example.com:8443/x", _pin(scheme="https", port=8443)
         )
-        assert url == "http://u:p%40ss@example.com:8080/x"
-        assert curl_options[CurlOpt.RESOLVE] == ["example.com:8080:8.8.8.8"]
+        assert url == "https://u:p%40ss@example.com:8443/x"
+        assert curl_options[CurlOpt.RESOLVE] == ["example.com:8443:8.8.8.8"]
 
     def test_ip_literal_is_its_own_pin(self) -> None:
         from curl_cffi import CurlOpt
@@ -1226,6 +1229,61 @@ class TestCurlPinnedRequest:
     def test_urls_curl_could_read_differently_are_refused(self, url: str, host: str) -> None:
         with pytest.raises(FetchError):
             _curl_pinned_request(url, _pin(host))
+
+
+class TestUserinfoOverHttp:
+    def test_http_url_with_credentials_is_rejected(self) -> None:
+        with pytest.raises(FetchError, match="plain HTTP"):
+            fetch_url("http://user:pass@example.com/x", strategy="requests")
+
+    def test_https_url_with_credentials_is_allowed(self) -> None:
+        ok = _fetch_result(200, "https://example.com/x")
+        with patch("app.utils.url_fetcher._try_requests", return_value=ok):
+            assert fetch_url("https://user:pass@example.com/x", strategy="requests").status_code == 200
+
+    def test_unblocked_fetch_still_allows_http_userinfo(self) -> None:
+        # Operator-configured URLs (block_private_hosts=False) keep their credentials.
+        ok = _fetch_result(200, "http://10.0.0.1/x")
+        with patch("app.utils.url_fetcher._try_requests", return_value=ok):
+            r = fetch_url("http://u:p@10.0.0.1/x", strategy="requests", block_private_hosts=False)
+        assert r.status_code == 200
+
+
+class TestAddressFailover:
+    _TARGET = PublicTarget(
+        "https", "example.com", 443,
+        (ipaddress.ip_address("2606:4700::1"), ipaddress.ip_address("8.8.8.8")),
+    )
+
+    def test_next_address_is_tried_after_a_transport_failure(self) -> None:
+        seen: list[str] = []
+
+        def fake_run(url: str, *, follow_redirects: bool, pin: PublicTarget) -> FetchResult:
+            seen.append(str(pin.pinned_address))
+            if str(pin.pinned_address) == "2606:4700::1":
+                raise FetchError("no route to host")
+            return _fetch_result(200, url)
+
+        result = _run_pinned_with_failover(fake_run, "https://example.com/", self._TARGET)  # type: ignore[arg-type]
+        assert result.status_code == 200
+        assert seen == ["2606:4700::1", "8.8.8.8"]
+
+    def test_a_response_stops_further_addresses(self) -> None:
+        seen: list[str] = []
+
+        def fake_run(url: str, *, follow_redirects: bool, pin: PublicTarget) -> FetchResult:
+            seen.append(str(pin.pinned_address))
+            return _fetch_result(404, url)
+
+        assert _run_pinned_with_failover(fake_run, "https://example.com/", self._TARGET).status_code == 404  # type: ignore[arg-type]
+        assert seen == ["2606:4700::1"]
+
+    def test_all_addresses_failing_raises_the_last_error(self) -> None:
+        def fake_run(url: str, *, follow_redirects: bool, pin: PublicTarget) -> FetchResult:
+            raise FetchError(f"down: {pin.pinned_address}")
+
+        with pytest.raises(FetchError, match="down: 8.8.8.8"):
+            _run_pinned_with_failover(fake_run, "https://example.com/", self._TARGET)  # type: ignore[arg-type]
 
 
 class TestTryCurlCffiPinned:

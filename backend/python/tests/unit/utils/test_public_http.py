@@ -28,6 +28,7 @@ _DNS: dict[str, list[str]] = {
     "internal.example.com": ["10.0.0.5"],
     "mixed.example.com": ["8.8.8.8", "10.0.0.1"],
     "v6.example.com": ["2606:4700::1"],
+    "dual.example.com": ["2606:4700::1", "8.8.8.8"],  # two public addresses
 }
 _LIMITS = PublicFetchLimits(max_bytes=1024)
 
@@ -109,6 +110,14 @@ class TestPlanHop:
     def test_host_mismatch_between_parsers_is_rejected(self) -> None:
         with pytest.raises(UnsafeUrlError):
             plan_hop("https://other.example/", _target())
+
+    def test_http_url_with_credentials_is_rejected(self) -> None:
+        with pytest.raises(UnsafeUrlError, match="plain HTTP"):
+            plan_hop("http://user:pass@example.com/x", _target(scheme="http", port=80))
+
+    def test_https_url_with_credentials_is_allowed(self) -> None:
+        plan = plan_hop("https://user:pass@example.com/x", _target())
+        assert plan.request_url.username == "user"
 
 
 class TestPublicUrlFetcher:
@@ -222,6 +231,24 @@ class TestPublicUrlFetcher:
         with pytest.raises(PublicFetchError) as exc_info:
             await PublicUrlFetcher(transport).get("https://example.com/", _LIMITS)
         assert not isinstance(exc_info.value, UnsafeUrlError)
+
+    async def test_fails_over_to_the_next_validated_address(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "2606:4700::1":
+                raise httpx.ConnectError("no route to host")
+            return httpx.Response(200, content=b"ok")
+
+        transport, seen = _recording_transport(handler)
+        response = await PublicUrlFetcher(transport).get("https://dual.example.com/x", _LIMITS)
+        assert (response.status_code, response.content) == (200, b"ok")
+        assert [r.url.host for r in seen] == ["2606:4700::1", "8.8.8.8"]
+        assert all(r.headers["host"] == "dual.example.com" for r in seen)
+
+    async def test_all_addresses_unreachable_raises(self) -> None:
+        transport, seen = _recording_transport(_raise_connect_error)
+        with pytest.raises(PublicFetchError):
+            await PublicUrlFetcher(transport).get("https://dual.example.com/x", _LIMITS)
+        assert len(seen) == 2
 
     async def test_errors_do_not_carry_url_credentials(self) -> None:
         transport, _ = _recording_transport(_raise_connect_error)
