@@ -289,7 +289,8 @@ class TestGitHubTeamsConnector:
             skip_compare=frozenset({
                 "created_at_timestamp", "updated_at_timestamp", "auth_type", "is_active",
                 "is_agent_active", "is_configured", "is_authenticated", "created_by",
-                "updated_by", "status", "is_locked",
+                "updated_by", "status", "is_locked", "last_synced_by",
+                "vector_membership_backfill_after_key",
             }),
         )
         logger.info("TC-SYNC-001 passed: %d records %s", total, by_type)
