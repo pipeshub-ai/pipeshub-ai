@@ -14,6 +14,7 @@ way the Slack connector groups message bursts.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
@@ -94,6 +95,12 @@ _TYPE_LABEL = {
     "COMMENT": "Review comment",
 }
 _MARKDOWN = "text/markdown"
+
+
+def _revision_of(body: str) -> str:
+    """A content hash the entity processor compares on resync, so an edited
+    fixture body re-indexes without deleting and recreating the connector."""
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
 
 def _epoch_ms(value: Any) -> int | None:
@@ -369,6 +376,7 @@ class DemoConnector(BaseConnector):
                 record_type=RecordType.MESSAGE,
                 record_group_type=RecordGroupType.SLACK_THREAD,
                 external_record_id=tid,
+                external_revision_id=_revision_of(self._bodies[tid]),
                 external_record_group_id=c["id"],
                 record_group_id=record_groups[c["id"]].id,
                 version=1,
@@ -425,6 +433,7 @@ class DemoConnector(BaseConnector):
             org_id=self.data_entities_processor.org_id,
             record_name=rec["title"],
             external_record_id=rec["id"],
+            external_revision_id=_revision_of(self._bodies[rec["id"]]),
             external_record_group_id=container["id"],
             record_group_id=rg.id,
             version=1,
