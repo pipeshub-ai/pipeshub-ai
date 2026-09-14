@@ -816,7 +816,7 @@
         "changeRoleSuccessDescription": "{{name}} ahora es {{role}}",
         "changeRoleError": "Error al cambiar el rol",
         "maxAdminsReachedTitle": "No se puede añadir otro administrador",
-        "maxAdminsReached": "Ya hay 5 administradores en esta organización. No se puede añadir otro.",
+        "maxAdminsReached": "Una organización puede tener como máximo 5 administradores.",
         "removeFromWorkspace": "Eliminar del espacio de trabajo",
         "removeUserTitle": "¿Eliminar usuario?",
         "removeUserMessage": "¿Está seguro de que desea eliminar a {{email}} del espacio de trabajo {{workspace}}?",

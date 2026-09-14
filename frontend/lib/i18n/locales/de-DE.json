@@ -814,7 +814,7 @@
         "changeRoleSuccessDescription": "{{name}} ist jetzt {{role}}",
         "changeRoleError": "Rolle konnte nicht geändert werden",
         "maxAdminsReachedTitle": "Weiterer Admin nicht möglich",
-        "maxAdminsReached": "In dieser Organisation gibt es bereits 5 Admins. Sie können keinen weiteren hinzufügen.",
+        "maxAdminsReached": "Eine Organisation kann höchstens 5 Admins haben.",
         "removeFromWorkspace": "Aus dem Arbeitsbereich entfernen",
         "removeUserTitle": "Benutzer entfernen?",
         "removeUserMessage": "Sind Sie sicher, dass Sie {{email}} aus dem {{workspace}} Arbeitsbereich entfernen möchten?",

@@ -9,7 +9,7 @@ const LAST_ADMIN_DEMOTION_MESSAGE =
 export const MAX_ORG_ADMINS = 5;
 
 export const MAX_ORG_ADMINS_MESSAGE =
-  'There are already 5 admins in this organization. You cannot add another.';
+  'An organization can have at most 5 admins.';
 
 /** Normalize API/UI role labels to the stored enum. */
 export function normalizeUserRole(role: string | undefined | null): UserRole | null {

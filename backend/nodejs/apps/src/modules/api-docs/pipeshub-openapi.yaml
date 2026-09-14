@@ -17579,7 +17579,7 @@ paths:
         `notNeeded` | `sent` | `failed`.
 
         **Role:** Only org admins can set `role`. Promoting a member to `admin` is rejected
-        with `400` when the organization already has 5 non-deleted admins (including pending
+        with `400` when the change would exceed 5 non-deleted admins (including pending
         admin invites). Demoting the last remaining admin is also rejected.
 
         **Authorization:** Admin can update any user; non-admin can only update themselves
