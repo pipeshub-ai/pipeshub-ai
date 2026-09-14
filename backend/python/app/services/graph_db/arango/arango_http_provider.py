@@ -19197,9 +19197,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if k not in ["kb", "apps"] and v
             }
 
-            has_kb_filter = bool(kb_ids)
-            has_app_filter = bool(connector_ids_filter)
-
             tasks = []
 
             # Fetch app types once to distinguish KB apps (type == "KB") from connector apps
@@ -19222,6 +19219,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     kb_app_ids = set(kb_app_keys or [])
                 except Exception as e:
                     self.logger.warning(f"⚠️ Failed to fetch KB app types for filtering, treating all apps as connectors: {e}")
+
+            # Reclassify: move KB app IDs that arrived in the apps filter
+            # to the kb filter. MCP and some clients send all source IDs
+            # (connectors + KB) in a single `apps` array; the backend must
+            # route them to the correct query path.
+            if connector_ids_filter and kb_app_ids:
+                kb_in_apps = [
+                    cid for cid in connector_ids_filter
+                    if cid in kb_app_ids and cid in user_apps_ids
+                ]
+                if kb_in_apps:
+                    self.logger.debug(
+                        f"Reclassifying {len(kb_in_apps)} KB app ID(s) from apps to kb filter: {kb_in_apps}"
+                    )
+                    connector_ids_filter = [cid for cid in connector_ids_filter if cid not in kb_app_ids]
+                    kb_ids = list(dict.fromkeys((kb_ids or []) + kb_in_apps))
+
+            has_kb_filter = bool(kb_ids)
+            has_app_filter = bool(connector_ids_filter)
 
             if has_app_filter and has_kb_filter:
                 connectors_to_query = [

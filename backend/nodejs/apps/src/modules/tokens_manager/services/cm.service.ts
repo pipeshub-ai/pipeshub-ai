@@ -1,6 +1,7 @@
-import { randomInt } from 'crypto';
+import { randomBytes } from 'crypto';
 
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
+import { Logger } from '../../../libs/services/logger.service';
 import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { loadConfigurationManagerConfig } from '../../configuration_manager/config/config';
@@ -17,15 +18,11 @@ export interface SmtpConfig {
   fromEmail: string;
 }
 
-export const randomKeyGenerator = () => {
-  const chars =
-    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < 20; i++) {
-    result += chars.charAt(randomInt(chars.length));
-  }
-  return result;
-};
+export const SIGNING_SECRET_BYTES = 32;
+export const SIGNING_SECRETS_ROTATE_ID_FIELD = 'signingSecretsRotateId';
+
+export const randomKeyGenerator = () =>
+  randomBytes(SIGNING_SECRET_BYTES).toString('hex');
 
 export interface KafkaConfig {
   brokers: string[];
@@ -592,33 +589,33 @@ export class ConfigService {
     return { storageType, endpoint: parsedUrl.storage.endpoint };
   }
 
-  // Get JWT Secret
-  public async getJwtSecret(): Promise<string> {
-    const encryptedSecretKeys = await this.keyValueStoreService.get<string>(
-      configPaths.secretKeys,
-    );
-    let parsedKeys: Record<string, string> = {};
-    if (encryptedSecretKeys) {
-      parsedKeys = JSON.parse(
-        this.encryptionService.decrypt(encryptedSecretKeys),
-      );
-    }
-
-    if (!parsedKeys || !parsedKeys.jwtSecret) {
-      parsedKeys.jwtSecret = randomKeyGenerator();
-      const encryptedKeys = this.encryptionService.encrypt(
-        JSON.stringify(parsedKeys),
-      );
-      await this.keyValueStoreService.set(
-        configPaths.secretKeys,
-        encryptedKeys,
-      );
-    }
-    return parsedKeys.jwtSecret;
+  // Stored secrets are never overwritten on upgrade. install.sh
+  // --rotate-signing-secrets writes a new ROTATE_SIGNING_SECRETS id; that is
+  // the only path that replaces jwtSecret / scopedJwtSecret / cookieSecret.
+  private secretFromEnvOrGenerated(envName: string): string {
+    const seeded = process.env[envName]?.trim();
+    return seeded || randomKeyGenerator();
   }
 
-  // Get Scoped JWT Secret
-  public async getScopedJwtSecret(): Promise<string> {
+  private applySigningSecretsRotation(parsedKeys: Record<string, string>): boolean {
+    const rotateId = process.env.ROTATE_SIGNING_SECRETS?.trim();
+    if (!rotateId || parsedKeys[SIGNING_SECRETS_ROTATE_ID_FIELD] === rotateId) {
+      return false;
+    }
+    parsedKeys.jwtSecret = this.secretFromEnvOrGenerated('JWT_SECRET');
+    parsedKeys.scopedJwtSecret = this.secretFromEnvOrGenerated('SCOPED_JWT_SECRET');
+    parsedKeys.cookieSecret = this.secretFromEnvOrGenerated('COOKIE_SECRET');
+    parsedKeys[SIGNING_SECRETS_ROTATE_ID_FIELD] = rotateId;
+    Logger.getInstance({ service: 'ConfigService' }).warn(
+      'Rotated JWT/cookie signing secrets (ROTATE_SIGNING_SECRETS). Existing sessions and service tokens are now invalid.',
+    );
+    return true;
+  }
+
+  private async getOrCreateSecret(
+    field: 'jwtSecret' | 'scopedJwtSecret' | 'cookieSecret',
+    envName: string,
+  ): Promise<string> {
     const encryptedSecretKeys = await this.keyValueStoreService.get<string>(
       configPaths.secretKeys,
     );
@@ -628,8 +625,13 @@ export class ConfigService {
         this.encryptionService.decrypt(encryptedSecretKeys),
       );
     }
-    if (!parsedKeys.scopedJwtSecret) {
-      parsedKeys.scopedJwtSecret = randomKeyGenerator();
+
+    let dirty = this.applySigningSecretsRotation(parsedKeys);
+    if (!parsedKeys[field]) {
+      parsedKeys[field] = this.secretFromEnvOrGenerated(envName);
+      dirty = true;
+    }
+    if (dirty) {
       const encryptedKeys = this.encryptionService.encrypt(
         JSON.stringify(parsedKeys),
       );
@@ -638,32 +640,19 @@ export class ConfigService {
         encryptedKeys,
       );
     }
+    return parsedKeys[field];
+  }
 
-    return parsedKeys.scopedJwtSecret;
+  public async getJwtSecret(): Promise<string> {
+    return this.getOrCreateSecret('jwtSecret', 'JWT_SECRET');
+  }
+
+  public async getScopedJwtSecret(): Promise<string> {
+    return this.getOrCreateSecret('scopedJwtSecret', 'SCOPED_JWT_SECRET');
   }
 
   public async getCookieSecret(): Promise<string> {
-    const encryptedSecretKeys = await this.keyValueStoreService.get<string>(
-      configPaths.secretKeys,
-    );
-    let parsedKeys: Record<string, string> = {};
-    if (encryptedSecretKeys) {
-      parsedKeys = JSON.parse(
-        this.encryptionService.decrypt(encryptedSecretKeys),
-      );
-    }
-    if (!parsedKeys.cookieSecret) {
-      parsedKeys.cookieSecret = randomKeyGenerator();
-      const encryptedKeys = this.encryptionService.encrypt(
-        JSON.stringify(parsedKeys),
-      );
-      await this.keyValueStoreService.set(
-        configPaths.secretKeys,
-        encryptedKeys,
-      );
-    }
-
-    return parsedKeys.cookieSecret;
+    return this.getOrCreateSecret('cookieSecret', 'COOKIE_SECRET');
   }
 
   public async getOAuthBackendUrl(): Promise<string> {
