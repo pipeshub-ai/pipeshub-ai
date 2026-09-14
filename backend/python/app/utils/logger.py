@@ -4,7 +4,10 @@ import os
 import sys
 from collections.abc import Callable
 
+from httpx import URL
+
 from app.utils.request_context import NO_CONTEXT, current_display_id, get_context
+from app.utils.url_redaction import redact_url
 
 # ``%(trace)s`` expands to ``[req:<id> thr:<thread> task:<task>] `` only when a
 # context is in flight, so startup/background lines stay clean.
@@ -91,6 +94,9 @@ class HttpxSuccessFilter(logging.Filter):
 
     The status is read from ``record.args`` rather than the formatted message:
     httpx passes it as an int, so this does not depend on message wording.
+
+    Lines that are kept have their request URL redacted: the query string of a
+    signed URL, or the userinfo of any URL, is a credential.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -103,7 +109,12 @@ class HttpxSuccessFilter(logging.Filter):
             if isinstance(arg, bool):
                 continue
             if isinstance(arg, int) and 100 <= arg <= 599:
-                return not (200 <= arg < 300)
+                if 200 <= arg < 300:
+                    return False
+                break
+        record.args = tuple(
+            redact_url(str(arg)) if isinstance(arg, URL) else arg for arg in record.args
+        )
         return True
 
 

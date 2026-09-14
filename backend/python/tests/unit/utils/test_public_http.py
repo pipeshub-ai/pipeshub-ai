@@ -5,7 +5,6 @@ DNS is faked and every request goes to an ``httpx.MockTransport``; nothing touch
 
 import ipaddress
 import socket
-import urllib.request
 from collections.abc import AsyncIterator, Callable
 
 import httpx
@@ -44,11 +43,6 @@ def _fake_dns(monkeypatch: pytest.MonkeyPatch) -> None:
         ]
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-
-
-@pytest.fixture(autouse=True)
-def _no_system_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(urllib.request, "getproxies", lambda: {})
 
 
 def _recording_transport(
@@ -90,43 +84,31 @@ class _UnreadableStream(httpx.AsyncByteStream):
         yield b""  # pragma: no cover
 
 
+def _raise_connect_error(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("connection refused")
+
+
 class TestPlanHop:
     def test_direct_hop_pins_ip_and_keeps_host_for_tls(self) -> None:
-        plan = plan_hop("https://example.com:8443/a?b=1", _target(port=8443), proxies={})
+        plan = plan_hop("https://example.com:8443/a?b=1", _target(port=8443))
         assert str(plan.request_url) == "https://93.184.215.14:8443/a?b=1"
         assert plan.headers == {"Host": "example.com:8443"}
         assert plan.extensions == {"sni_hostname": "example.com"}
-        assert plan.proxy is None
 
     def test_plain_http_hop_has_no_sni_extension(self) -> None:
-        plan = plan_hop("http://example.com/", _target(scheme="http", port=80), proxies={})
+        plan = plan_hop("http://example.com/", _target(scheme="http", port=80))
         assert plan.request_url.host == "93.184.215.14"
         assert plan.headers == {"Host": "example.com"}
         assert plan.extensions == {}
 
     def test_ipv6_address_is_pinned_with_brackets(self) -> None:
-        plan = plan_hop("https://v6.example.com/x", _target("v6.example.com", "2606:4700::1"), proxies={})
+        plan = plan_hop("https://v6.example.com/x", _target("v6.example.com", "2606:4700::1"))
         assert str(plan.request_url) == "https://[2606:4700::1]/x"
         assert plan.headers == {"Host": "v6.example.com"}
 
-    def test_configured_proxy_sends_hostname_url_unpinned(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
-        plan = plan_hop("https://example.com/a", _target(), proxies={"https": "http://proxy.corp:3128"})
-        assert plan.proxy == "http://proxy.corp:3128"
-        assert str(plan.request_url) == "https://example.com/a"
-        assert plan.headers == {}
-        assert plan.extensions == {}
-
-    def test_no_proxy_bypass_pins_the_hop(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("https_proxy", "http://proxy.corp:3128")
-        monkeypatch.setenv("no_proxy", "example.com")
-        plan = plan_hop("https://example.com/a", _target(), proxies={"https": "http://proxy.corp:3128"})
-        assert plan.proxy is None
-        assert plan.request_url.host == "93.184.215.14"
-
     def test_host_mismatch_between_parsers_is_rejected(self) -> None:
         with pytest.raises(UnsafeUrlError):
-            plan_hop("https://other.example/", _target(), proxies={})
+            plan_hop("https://other.example/", _target())
 
 
 class TestPublicUrlFetcher:
@@ -201,6 +183,19 @@ class TestPublicUrlFetcher:
         assert seen[1].headers["host"] == "cdn.example.com"
         assert seen[1].extensions["sni_hostname"] == "cdn.example.com"
 
+    @pytest.mark.parametrize(
+        ("status", "headers"),
+        [(304, {}), (300, {"location": "/elsewhere"}), (302, {})],
+        ids=["not-modified", "multiple-choices", "redirect-without-location"],
+    )
+    async def test_3xx_without_a_usable_location_is_a_final_response(
+        self, status: int, headers: dict[str, str]
+    ) -> None:
+        transport, seen = _recording_transport(lambda r: httpx.Response(status, headers=headers))
+        response = await PublicUrlFetcher(transport).get("https://example.com/pack.zip", _LIMITS)
+        assert response.status_code == status
+        assert len(seen) == 1
+
     async def test_too_many_redirects_raise(self) -> None:
         transport, seen = _recording_transport(lambda r: httpx.Response(302, headers={"location": "/again"}))
         limits = PublicFetchLimits(max_bytes=1024, max_redirects=2)
@@ -223,34 +218,42 @@ class TestPublicUrlFetcher:
         assert stream.yielded == 2
 
     async def test_transport_error_becomes_public_fetch_error(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("connection refused")
-
-        transport, _ = _recording_transport(handler)
+        transport, _ = _recording_transport(_raise_connect_error)
         with pytest.raises(PublicFetchError) as exc_info:
             await PublicUrlFetcher(transport).get("https://example.com/", _LIMITS)
         assert not isinstance(exc_info.value, UnsafeUrlError)
 
-    async def test_proxied_hop_goes_through_explicit_proxy_unpinned(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "http://proxy.corp:3128"})
-        monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
+    async def test_errors_do_not_carry_url_credentials(self) -> None:
+        transport, _ = _recording_transport(_raise_connect_error)
+        with pytest.raises(PublicFetchError) as exc_info:
+            await PublicUrlFetcher(transport).get("https://user:hunter2@example.com/p?sig=SECRET", _LIMITS)
+        message = str(exc_info.value)
+        assert "https://example.com/p" in message
+        assert "SECRET" not in message
+        assert "hunter2" not in message
+
+    async def test_too_many_redirects_error_does_not_carry_the_query(self) -> None:
+        transport, _ = _recording_transport(lambda r: httpx.Response(302, headers={"location": "/again"}))
+        limits = PublicFetchLimits(max_bytes=1024, max_redirects=1)
+        with pytest.raises(TooManyRedirectsError) as exc_info:
+            await PublicUrlFetcher(transport).get("https://example.com/p?sig=SECRET", limits)
+        assert "SECRET" not in str(exc_info.value)
+
+    async def test_environment_proxies_are_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+            monkeypatch.setenv(var, "http://proxy.corp:3128")
         client_kwargs: dict[str, object] = {}
         real_client = httpx.AsyncClient
 
         def client_factory(**kwargs: object) -> httpx.AsyncClient:
             client_kwargs.update(kwargs)
-            # Keep the request on the mock transport instead of a real proxy connection.
-            return real_client(**{**kwargs, "proxy": None})  # type: ignore[arg-type]
+            return real_client(**kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(public_http.httpx, "AsyncClient", client_factory)
         transport, seen = _recording_transport(lambda r: httpx.Response(200))
         await PublicUrlFetcher(transport).get("https://example.com/pack.zip", _LIMITS)
 
-        assert client_kwargs["proxy"] == "http://proxy.corp:3128"
         assert client_kwargs["trust_env"] is False
-        assert client_kwargs["follow_redirects"] is False
+        assert "proxy" not in client_kwargs
         (request,) = seen
-        assert request.url.host == "example.com"
-        assert "sni_hostname" not in request.extensions
+        assert request.url.host == "93.184.215.14"

@@ -5,6 +5,7 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from app.utils.logger import (
@@ -465,3 +466,21 @@ class TestHttpxSuccessFilter:
         )
         record.args = ("GET", "https://x", "HTTP/1.1", True, 503, "err")
         assert self.filter.filter(record) is True
+
+    def test_kept_line_carries_no_url_credentials(self):
+        record = _httpx_record(403)
+        signed = httpx.URL("https://user:hunter2@bucket.example/pack.zip?X-Amz-Signature=SECRET")
+        record.args = ("GET", signed, "HTTP/1.1", 403, "Forbidden")
+        assert self.filter.filter(record) is True
+        message = record.getMessage()
+        assert "https://bucket.example/pack.zip" in message
+        assert "SECRET" not in message
+        assert "hunter2" not in message
+
+    def test_real_httpx_request_log_is_redacted(self, caplog):
+        client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(403)))
+        with caplog.at_level(logging.INFO, logger="httpx"):
+            client.get("https://bucket.example/pack.zip?X-Amz-Signature=SECRET")
+        messages = [r.getMessage() for r in caplog.records if r.name == "httpx"]
+        assert messages
+        assert all("SECRET" not in m for m in messages)

@@ -1,7 +1,10 @@
 """Tests for app.utils.url_fetcher — robust multi-strategy URL fetcher."""
 
+import http.server
 import ipaddress
 import socket
+import threading
+from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +15,7 @@ from app.utils.url_fetcher import (
     FetchResult,
     PublicTarget,
     _build_headers,
+    _curl_pinned_request,
     _get_profiles,
     _get_supported_profiles,
     _try_cloudscraper,
@@ -21,6 +25,9 @@ from app.utils.url_fetcher import (
     resolve_public_http_target,
     validate_public_http_url,
 )
+
+# The autouse stub below replaces DNS; the loopback socket tests need the real resolver back.
+_REAL_GETADDRINFO = socket.getaddrinfo
 
 
 @pytest.fixture(autouse=True)
@@ -593,7 +600,7 @@ class TestFetchUrl:
     def test_cloudscraper_strategy(self) -> None:
         ok = self._make_ok_result("cloudscraper")
         with patch("app.utils.url_fetcher._try_cloudscraper", return_value=ok):
-            result = fetch_url("https://example.com", strategy="cloudscraper")
+            result = fetch_url("https://example.com", strategy="cloudscraper", block_private_hosts=False)
         assert result.status_code == 200
 
     def test_extra_headers_forwarded(self) -> None:
@@ -1120,3 +1127,196 @@ class TestFetchUrlRedirects:
         with patch("app.utils.url_fetcher._try_requests", return_value=ok) as mock_requests:
             fetch_url("http://10.0.0.1/", strategy="requests", block_private_hosts=False)
         assert mock_requests.call_args.kwargs["follow_redirects"] is True
+
+
+def _pin(
+    host: str = "example.com", address: str = "8.8.8.8", *, scheme: str = "https", port: int = 443
+) -> PublicTarget:
+    return PublicTarget(scheme, host, port, (ipaddress.ip_address(address),))
+
+
+class TestFetchUrlPinsEachHop:
+    @pytest.mark.parametrize("strategy", ["curl_cffi_h2", "curl_cffi_h1", "requests"])
+    def test_strategy_receives_the_validated_target(self, strategy: str) -> None:
+        name = "_try_requests" if strategy == "requests" else "_try_curl_cffi"
+        ok = _fetch_result(200, "https://example.com/")
+        with patch(f"app.utils.url_fetcher.{name}", return_value=ok) as mock_strategy:
+            fetch_url("https://example.com/", strategy=strategy)  # type: ignore[arg-type]
+        pin = mock_strategy.call_args.kwargs["pin"]
+        assert (pin.host, str(pin.pinned_address)) == ("example.com", "8.8.8.8")
+
+    def test_each_redirect_hop_gets_its_own_pin(self) -> None:
+        responses = [
+            _fetch_result(302, "https://example.com/start", {"Location": "https://cdn.example.com/final"}),
+            _fetch_result(200, "https://cdn.example.com/final"),
+        ]
+        with patch("app.utils.url_fetcher._try_requests", side_effect=responses) as mock_requests:
+            fetch_url("https://example.com/start", strategy="requests")
+        hosts = [c.kwargs["pin"].host for c in mock_requests.call_args_list]
+        assert hosts == ["example.com", "cdn.example.com"]
+
+    def test_unblocked_fetch_is_not_pinned(self) -> None:
+        ok = _fetch_result(200, "http://10.0.0.1/")
+        with patch("app.utils.url_fetcher._try_requests", return_value=ok) as mock_requests:
+            fetch_url("http://10.0.0.1/", strategy="requests", block_private_hosts=False)
+        assert mock_requests.call_args.kwargs["pin"] is None
+
+    def test_cloudscraper_is_skipped_for_untrusted_urls(self) -> None:
+        with patch("app.utils.url_fetcher._try_curl_cffi", return_value=None), \
+             patch("app.utils.url_fetcher._try_cloudscraper") as mock_cloudscraper, \
+             patch("app.utils.url_fetcher._try_requests", return_value=None):
+            with pytest.raises(FetchError):
+                fetch_url("https://example.com/")
+        mock_cloudscraper.assert_not_called()
+
+    def test_cloudscraper_strategy_is_refused_for_untrusted_urls(self) -> None:
+        with patch("app.utils.url_fetcher._try_cloudscraper") as mock_cloudscraper:
+            with pytest.raises(FetchError, match="cloudscraper"):
+                fetch_url("https://example.com/", strategy="cloudscraper")
+        mock_cloudscraper.assert_not_called()
+
+
+class TestCurlPinnedRequest:
+    def test_pins_the_host_and_clears_proxies(self) -> None:
+        from curl_cffi import CurlOpt
+
+        url, curl_options = _curl_pinned_request("https://example.com/a?b=1#frag", _pin())
+        assert url == "https://example.com/a?b=1"
+        assert curl_options == {CurlOpt.PROXY: "", CurlOpt.RESOLVE: ["example.com:443:8.8.8.8"]}
+
+    def test_ipv6_address_is_bracketed(self) -> None:
+        from curl_cffi import CurlOpt
+
+        _, curl_options = _curl_pinned_request("https://example.com/", _pin(address="2606:4700::1"))
+        assert curl_options[CurlOpt.RESOLVE] == ["example.com:443:[2606:4700::1]"]
+
+    def test_idn_host_is_sent_in_the_ascii_form_the_entry_uses(self) -> None:
+        from curl_cffi import CurlOpt
+
+        url, curl_options = _curl_pinned_request("https://bücher.example/x", _pin("bücher.example"))
+        assert url == "https://xn--bcher-kva.example/x"
+        assert curl_options[CurlOpt.RESOLVE] == ["xn--bcher-kva.example:443:8.8.8.8"]
+
+    def test_explicit_port_and_credentials_are_kept(self) -> None:
+        from curl_cffi import CurlOpt
+
+        url, curl_options = _curl_pinned_request(
+            "http://u:p%40ss@example.com:8080/x", _pin(scheme="http", port=8080)
+        )
+        assert url == "http://u:p%40ss@example.com:8080/x"
+        assert curl_options[CurlOpt.RESOLVE] == ["example.com:8080:8.8.8.8"]
+
+    def test_ip_literal_is_its_own_pin(self) -> None:
+        from curl_cffi import CurlOpt
+
+        url, curl_options = _curl_pinned_request(
+            "https://[2606:4700::1]/x", _pin("2606:4700::1", "2606:4700::1")
+        )
+        assert url == "https://[2606:4700::1]/x"
+        assert CurlOpt.RESOLVE not in curl_options
+
+    @pytest.mark.parametrize(
+        ("url", "host"),
+        [
+            ("https://exa%6Dple.com/", "exa%6dple.com"),
+            ("https://evil.example\\@example.com/", "example.com"),
+        ],
+        ids=["percent-escaped-host", "backslash-in-userinfo"],
+    )
+    def test_urls_curl_could_read_differently_are_refused(self, url: str, host: str) -> None:
+        with pytest.raises(FetchError):
+            _curl_pinned_request(url, _pin(host))
+
+
+class TestTryCurlCffiPinned:
+    @staticmethod
+    def _session(primary_ip: str) -> MagicMock:
+        response = MagicMock(
+            status_code=200,
+            text="ok",
+            content=b"ok",
+            headers={},
+            url="https://example.com/",
+            primary_ip=primary_ip,
+        )
+        session = MagicMock()
+        session.__enter__ = MagicMock(return_value=session)
+        session.__exit__ = MagicMock(return_value=False)
+        session.get = MagicMock(return_value=response)
+        return session
+
+    def test_session_is_pinned_and_ignores_environment_proxies(self) -> None:
+        from curl_cffi import CurlOpt
+
+        session = self._session("8.8.8.8")
+        with patch("curl_cffi.requests.Session", return_value=session) as session_cls:
+            result = _try_curl_cffi(
+                "https://example.com/", {}, 10, profiles=["chrome131"], follow_redirects=False, pin=_pin()
+            )
+        assert result is not None
+        kwargs = session_cls.call_args.kwargs
+        assert kwargs["trust_env"] is False
+        assert kwargs["curl_options"][CurlOpt.RESOLVE] == ["example.com:443:8.8.8.8"]
+
+    def test_response_from_another_address_is_refused(self) -> None:
+        session = self._session("10.0.0.5")
+        with patch("curl_cffi.requests.Session", return_value=session):
+            with pytest.raises(FetchError, match="validated address"):
+                _try_curl_cffi(
+                    "https://example.com/",
+                    {},
+                    10,
+                    profiles=["chrome131", "chrome124"],
+                    follow_redirects=False,
+                    pin=_pin(),
+                )
+        session.get.assert_called_once()
+
+
+@pytest.fixture
+def loopback_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[int, list[str]]]:
+    """A local HTTP server, the real resolver, and a dead proxy in the environment."""
+    monkeypatch.setattr(socket, "getaddrinfo", _REAL_GETADDRINFO)
+    for var in ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(var, "http://127.0.0.1:9")
+    hosts: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            hosts.append(self.headers["Host"])
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield int(server.server_address[1]), hosts
+    server.shutdown()
+    server.server_close()
+
+
+class TestPinnedTransportsOnTheWire:
+    """Loopback only. ``pinned.invalid`` never resolves and the environment points at a dead
+    proxy, so a request arrives only if the transport used the pin and ignored the proxy."""
+
+    def test_requests(self, loopback_server: tuple[int, list[str]]) -> None:
+        port, hosts = loopback_server
+        pin = _pin("pinned.invalid", "127.0.0.1", scheme="http", port=port)
+        result = _try_requests(f"http://pinned.invalid:{port}/x", {}, 5, follow_redirects=False, pin=pin)
+        assert result is not None
+        assert result.status_code == 200
+        assert hosts == [f"pinned.invalid:{port}"]
+
+    def test_curl_cffi(self, loopback_server: tuple[int, list[str]]) -> None:
+        port, hosts = loopback_server
+        pin = _pin("pinned.invalid", "127.0.0.1", scheme="http", port=port)
+        result = _try_curl_cffi(
+            f"http://pinned.invalid:{port}/x", {}, 5, profiles=["chrome120"], follow_redirects=False, pin=pin
+        )
+        assert result is not None
+        assert result.status_code == 200
+        assert hosts == [f"pinned.invalid:{port}"]

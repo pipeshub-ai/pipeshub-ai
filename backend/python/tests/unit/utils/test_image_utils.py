@@ -269,7 +269,7 @@ class TestFetchImageAsBase64:
              patch("app.utils.image_utils.fetch_url", return_value=mock_result) as mock_fetch:
             asyncio.run(_fetch_image_as_base64("https://example.com/img.png"))
 
-        assert mock_fetch.call_args.kwargs.get("block_private_hosts", True) is True
+        assert mock_fetch.call_args.kwargs["block_private_hosts"] is True
 
 
 # ---------------------------------------------------------------------------

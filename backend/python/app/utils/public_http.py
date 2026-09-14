@@ -3,14 +3,13 @@
 Every hop, redirects included, is resolved and checked against the shared policy in
 ``app.utils.url_fetcher`` and then connected to the validated address, so a DNS answer
 that changes between the check and the connect cannot steer the request into the
-network. When a configured proxy applies to the host, the hop goes through that proxy
-unpinned instead: the proxy resolves DNS itself, so the check is advisory on that route.
+network. Environment proxies are never used: a proxy resolves the hostname again itself,
+which would undo the pin.
 """
 
 from __future__ import annotations
 
 import asyncio
-import urllib.request
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin
@@ -18,6 +17,7 @@ from urllib.parse import urljoin
 import httpx
 
 from app.utils.url_fetcher import FetchError, PublicTarget, resolve_public_http_target
+from app.utils.url_redaction import redact_url
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -71,19 +71,13 @@ class HopPlan:
     request_url: httpx.URL
     headers: Mapping[str, str] = field(default_factory=dict[str, str])
     extensions: Mapping[str, str] = field(default_factory=dict[str, str])
-    proxy: str | None = None
 
 
-def plan_hop(
-    url: str, target: PublicTarget, proxies: Mapping[str, str] | None = None
-) -> HopPlan:
+def plan_hop(url: str, target: PublicTarget) -> HopPlan:
     """Decide how to send one request to the already-validated ``target``.
 
-    Direct: the URL host becomes the first validated address, while the original host is
-    kept for the ``Host`` header and, for https, for SNI and certificate verification.
-    Proxied (a proxy is configured for the scheme and ``no_proxy`` does not bypass the
-    host): the hostname URL is sent through that proxy. ``proxies`` defaults to
-    ``urllib.request.getproxies()``.
+    The URL host becomes the pinned address, while the original host is kept for the
+    ``Host`` header and, for https, for SNI and certificate verification.
     """
     try:
         request_url = httpx.URL(url)
@@ -96,17 +90,11 @@ def plan_hop(
             f"URL host {request_url.host!r} does not match validated host {target.host!r}"
         )
 
-    if proxies is None:
-        proxies = urllib.request.getproxies()
-    proxy = proxies.get(target.scheme) or proxies.get("all")
-    if proxy and not urllib.request.proxy_bypass(target.host):
-        return HopPlan(request_url=request_url, proxy=proxy)
-
     extensions: dict[str, str] = {}
     if target.scheme == "https":
         extensions["sni_hostname"] = request_url.raw_host.decode("ascii")
     return HopPlan(
-        request_url=request_url.copy_with(host=str(target.addresses[0])),
+        request_url=request_url.copy_with(host=str(target.pinned_address)),
         headers={"Host": request_url.netloc.decode("ascii")},
         extensions=extensions,
     )
@@ -151,7 +139,6 @@ class PublicUrlFetcher:
                     trust_env=False,
                     follow_redirects=False,
                     timeout=limits.timeout_s,
-                    proxy=plan.proxy,
                     transport=self._transport,
                 ) as client:
                     request = client.build_request(
@@ -162,7 +149,8 @@ class PublicUrlFetcher:
                     )
                     response = await client.send(request, stream=True)
                     try:
-                        if response.is_redirect:
+                        # A 3xx without a usable Location (300, 304, ...) is a final response.
+                        if response.has_redirect_location:
                             current_url = urljoin(current_url, response.headers["location"])
                             continue
                         content = await _read_capped(response, limits.max_bytes)
@@ -170,7 +158,7 @@ class PublicUrlFetcher:
                         await response.aclose()
             except httpx.HTTPError as e:
                 raise PublicFetchError(
-                    f"GET {current_url} failed: {type(e).__name__}: {e}"
+                    f"GET {redact_url(current_url)} failed: {type(e).__name__}: {e}"
                 ) from e
             return PublicFetchResponse(
                 url=current_url,
@@ -178,4 +166,6 @@ class PublicUrlFetcher:
                 headers=response.headers,
                 content=content,
             )
-        raise TooManyRedirectsError(f"More than {limits.max_redirects} redirects from {url}")
+        raise TooManyRedirectsError(
+            f"More than {limits.max_redirects} redirects from {redact_url(url)}"
+        )

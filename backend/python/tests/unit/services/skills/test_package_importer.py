@@ -8,6 +8,7 @@ import io
 import json
 import tarfile
 import zipfile
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -333,3 +334,49 @@ class TestPreviewUrl:
         with pytest.raises(PackageImportError) as exc_info:
             await importer.preview_url(url)
         assert str(exc_info.value) == "Could not download the archive."
+
+    @pytest.mark.parametrize(
+        "error", [UnsafeUrlError("blocked"), PublicFetchError("GET failed")], ids=["blocked", "failed"]
+    )
+    async def test_logged_url_carries_no_credentials(
+        self, monkeypatch: pytest.MonkeyPatch, error: Exception
+    ) -> None:
+        url = "https://user:hunter2@example.com/skill.zip?X-Amz-Signature=SECRET"
+        logger = MagicMock()
+        monkeypatch.setattr(package_importer, "logger", logger)
+        with pytest.raises(PackageImportError):
+            await SkillPackageImporter(_FakeFetcher({url: error})).preview_url(url)
+        logged = " ".join(str(arg) for call in logger.method_calls for arg in call.args)
+        assert "https://example.com/skill.zip" in logged
+        assert "SECRET" not in logged
+        assert "hunter2" not in logged
+
+
+class TestArchiveFormatComesFromTheBytes:
+    async def test_zip_named_url_that_serves_a_tarball(self) -> None:
+        url = "https://example.com/skill.zip"
+        data = _make_tar({"SKILL.md": _VALID_SKILL_MD.encode()})
+        preview = await SkillPackageImporter(_FakeFetcher({url: _response(data)})).preview_url(url)
+        assert preview.name == "pdf-extractor"
+
+    def test_upload_with_the_wrong_extension(self) -> None:
+        data = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode()})
+        assert SkillPackageImporter().preview_upload("skill.tar.gz", data).name == "pdf-extractor"
+
+    def test_uncompressed_tar(self) -> None:
+        content = _VALID_SKILL_MD.encode()
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            info = tarfile.TarInfo(name="SKILL.md")
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+        assert SkillPackageImporter().preview_upload("download", buf.getvalue()).name == "pdf-extractor"
+
+    def test_tar_problems_are_not_masked_by_a_zip_retry(self) -> None:
+        data = _make_tar({"../escape.sh": b"x", "SKILL.md": _VALID_SKILL_MD.encode()})
+        with pytest.raises(PackageImportError, match="unsafe path"):
+            SkillPackageImporter().preview_upload("skill.zip", data)
+
+    def test_neither_zip_nor_tar(self) -> None:
+        with pytest.raises(PackageImportError, match="Not a valid zip or tar/tgz archive"):
+            SkillPackageImporter().preview_upload("skill.tar.gz", b"\x1f\x8bnot really gzip")

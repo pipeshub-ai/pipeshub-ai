@@ -14,14 +14,26 @@ Install:
 
 import ipaddress
 import random
+import re
 import socket
 import time
 from dataclasses import dataclass
 from functools import partial
-from typing import Literal
-from urllib.parse import urljoin, urlparse
+from typing import TYPE_CHECKING, Literal, override
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 from app.utils.logger import create_logger
+
+if TYPE_CHECKING:
+    from curl_cffi import CurlOpt
+    from requests import PreparedRequest
+
+    # requests' stubs name the return type of the method it documents for overriding only privately.
+    from requests.adapters import (
+        HTTPAdapter,
+        _HostParams,  # pyright: ignore[reportPrivateUsage]
+        _PoolKwargs,  # pyright: ignore[reportPrivateUsage]
+    )
 
 logger = create_logger(__name__)
 
@@ -87,6 +99,11 @@ class PublicTarget:
     host: str
     port: int
     addresses: tuple[IPAddress, ...]
+
+    @property
+    def pinned_address(self) -> IPAddress:
+        """The validated address every transport connects to for this hop."""
+        return self.addresses[0]
 
 
 # Cloud metadata / platform endpoints that no range rule catches: Alibaba Cloud's metadata
@@ -221,6 +238,89 @@ def _redirect_location(result: FetchResult) -> str | None:
     return next((v for k, v in headers.items() if k.lower() == "location"), None)
 
 
+# Hostname and userinfo characters that curl reads exactly as urllib does.
+_CURL_SAFE_HOSTNAME = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.?")
+_CURL_SAFE_USERINFO = re.compile(r"[A-Za-z0-9._~!$&'()*+,;=:%-]*")
+
+
+def _curl_pinned_request(
+    url: str, pin: PublicTarget
+) -> "tuple[str, dict[CurlOpt, str | list[str]]]":
+    """The URL and curl options that confine a curl_cffi request to ``pin``'s address.
+
+    CURLOPT_RESOLVE is keyed on the hostname as curl reads it, and curl resolves a name that
+    misses the entry by itself. curl reads some hosts differently from urllib (IDNA,
+    percent-escapes, a backslash in the userinfo), so the URL is rebuilt around exactly the
+    host the entry names, and anything curl could read another way is refused.
+    """
+    from curl_cffi import CurlOpt
+
+    parts = urlsplit(url)
+    # libcurl reads *_proxy from the environment by itself; a proxy would resolve the name again.
+    curl_options: dict[CurlOpt, str | list[str]] = {CurlOpt.PROXY: ""}
+    try:
+        literal = ipaddress.ip_address(pin.host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        host = f"[{literal}]" if literal.version == 6 else str(literal)
+    else:
+        try:
+            host = pin.host.encode("idna").decode("ascii")
+        except UnicodeError as e:
+            raise FetchError(f"Invalid hostname {pin.host!r}") from e
+        if not _CURL_SAFE_HOSTNAME.fullmatch(host):
+            raise FetchError(f"Unsupported characters in hostname {pin.host!r}")
+        address = pin.pinned_address
+        pinned = f"[{address}]" if address.version == 6 else str(address)
+        curl_options[CurlOpt.RESOLVE] = [f"{host}:{pin.port}:{pinned}"]
+
+    userinfo, at, _ = parts.netloc.rpartition("@")
+    if at and not _CURL_SAFE_USERINFO.fullmatch(userinfo):
+        raise FetchError("Unsupported characters in the URL's credentials")
+    port = f":{parts.port}" if parts.port is not None else ""
+    request_url = urlunsplit(
+        (pin.scheme, f"{userinfo}{at}{host}{port}", parts.path, parts.query, "")
+    )
+    return request_url, curl_options
+
+
+def _require_pinned_peer(peer_ip: str, pin: PublicTarget) -> None:
+    """Backstop for the pin: never hand back a response that came from another address."""
+    try:
+        peer = ipaddress.ip_address(peer_ip)
+    except ValueError:
+        peer = None
+    if peer != pin.pinned_address:
+        raise FetchError(f"Connected to {peer_ip!r}, not the validated address for {pin.host!r}")
+
+
+def _pinned_requests_adapter(pin: PublicTarget) -> "HTTPAdapter":
+    """A requests adapter that connects to ``pin``'s address, keeping the URL's host for the
+    Host header, SNI and certificate verification."""
+    from requests.adapters import HTTPAdapter
+
+    class PinnedAddressAdapter(HTTPAdapter):
+        @override
+        def build_connection_pool_key_attributes(
+            self,
+            request: "PreparedRequest",
+            verify: bool | str,
+            cert: tuple[str, str] | str | None = None,
+        ) -> "tuple[_HostParams, _PoolKwargs]":
+            host_params, pool_kwargs = super().build_connection_pool_key_attributes(request, verify, cert)
+            if host_params["scheme"] == "https":
+                pool_kwargs["server_hostname"] = host_params["host"].rstrip(".")  # pyright: ignore[reportGeneralTypeIssues]
+            host_params["host"] = str(pin.pinned_address)
+            return host_params, pool_kwargs
+
+        @override
+        def add_headers(self, request: "PreparedRequest", **kwargs: object) -> None:
+            request.headers["Host"] = urlsplit(request.url or "").netloc.rpartition("@")[2]
+
+    return PinnedAddressAdapter()
+
+
 # ---------------------------------------------------------------------------
 # Shared headers
 # ---------------------------------------------------------------------------
@@ -289,17 +389,20 @@ def _try_curl_cffi(
     profiles: list[str] | None = None,
     *,
     follow_redirects: bool = True,
+    pin: PublicTarget | None = None,
 ) -> FetchResult | None:
     """Try curl_cffi with rotating profiles or an explicit profile list.
 
     With ``follow_redirects=False`` a 3xx is returned as-is so the caller can validate the
-    next hop.
+    next hop. With ``pin`` the request goes only to that validated address.
     """
     try:
         from curl_cffi import CurlOpt
         from curl_cffi.requests import Session
     except ImportError:
         return None
+
+    request_url, curl_options = (url, None) if pin is None else _curl_pinned_request(url, pin)
 
     if profiles is None:
         available = _get_profiles()
@@ -315,7 +418,9 @@ def _try_curl_cffi(
 
     for profile in profiles_to_try:
         try:
-            with Session(impersonate=profile, timeout=timeout) as session:
+            with Session(
+                impersonate=profile, timeout=timeout, trust_env=pin is None, curl_options=curl_options
+            ) as session:
                 # Force HTTP/1.1 if requested (bypasses HTTP/2 fingerprinting)
                 if not use_http2:
                     try:
@@ -323,7 +428,9 @@ def _try_curl_cffi(
                     except Exception:
                         pass
 
-                resp = session.get(url, headers=headers, allow_redirects=follow_redirects)
+                resp = session.get(request_url, headers=headers, allow_redirects=follow_redirects)
+                if pin is not None:
+                    _require_pinned_peer(resp.primary_ip, pin)
 
                 if resp.status_code == HTTP_STATUS_OK or (
                     not follow_redirects and _is_redirect_status(resp.status_code)
@@ -353,6 +460,8 @@ def _try_curl_cffi(
                         strategy=f"curl_cffi({profile})",
                     )
 
+        except FetchError:
+            raise
         except Exception:
             logger.debug("Exception for %s with profile %s", url, profile, exc_info=True)
             continue
@@ -402,7 +511,12 @@ def _try_cloudscraper(
 # ---------------------------------------------------------------------------
 
 def _try_requests(
-    url: str, headers: dict, timeout: int, *, follow_redirects: bool = True
+    url: str,
+    headers: dict[str, str],
+    timeout: int,
+    *,
+    follow_redirects: bool = True,
+    pin: PublicTarget | None = None,
 ) -> FetchResult | None:
     try:
         import requests as req
@@ -411,6 +525,9 @@ def _try_requests(
 
     try:
         session = req.Session()
+        if pin is not None:
+            session.trust_env = False  # no environment proxies: a proxy would resolve the name again
+            session.mount(f"{pin.scheme}://", _pinned_requests_adapter(pin))
         session.headers.update(headers)
 
         # Add a realistic User-Agent (requests doesn't set one by default)
@@ -478,9 +595,11 @@ def fetch_url(
         verbose:     Print which strategy is being tried.
         block_private_hosts: When True (default), refuse loopback, RFC1918,
             link-local, CGNAT, metadata-style hosts, and related SSRF-prone targets
-            before any network I/O, and re-validate every redirect hop (at most
-            ``_MAX_REDIRECTS``). Set False only for URLs an operator configured,
-            never for URLs a user, a model or a third-party document supplied.
+            before any network I/O, re-validate every redirect hop (at most
+            ``_MAX_REDIRECTS``), and connect each hop only to its validated address,
+            without environment proxies or the cloudscraper strategy. Set False only
+            for URLs an operator configured, never for URLs a user, a model or a
+            third-party document supplied.
 
     Returns:
         FetchResult with .text, .content, .status_code, .strategy, etc.
@@ -501,14 +620,14 @@ def fetch_url(
         verbose=verbose,
     )
     if not block_private_hosts:
-        return run(url, follow_redirects=True)
+        return run(url, follow_redirects=True, pin=None)
 
-    # Each hop is validated before it is fetched, but curl_cffi/cloudscraper/requests resolve
-    # DNS again when they connect, so a DNS-rebinding answer can still slip in between.
+    # Each hop is resolved once and pinned to that answer, so a second DNS answer
+    # (rebinding) cannot move the connection somewhere the check never saw.
     current_url = url
     for _ in range(_MAX_REDIRECTS + 1):
-        validate_public_http_url(current_url)
-        result = run(current_url, follow_redirects=False)
+        target = resolve_public_http_target(current_url)
+        result = run(current_url, follow_redirects=False, pin=target)
         location = _redirect_location(result)
         if location is None:
             return result
@@ -527,6 +646,7 @@ def _run_strategies(
     profile: str | None,
     verbose: bool,
     follow_redirects: bool,
+    pin: PublicTarget | None,
 ) -> FetchResult:
     req_headers = _build_headers(url, referer, headers)
     selected_profiles = [profile] if profile else None
@@ -541,6 +661,7 @@ def _run_strategies(
                 use_http2=True,
                 profiles=selected_profiles,
                 follow_redirects=follow_redirects,
+                pin=pin,
             ),
         ),
         "curl_cffi_h1": (
@@ -552,6 +673,7 @@ def _run_strategies(
                 use_http2=False,
                 profiles=selected_profiles,
                 follow_redirects=follow_redirects,
+                pin=pin,
             ),
         ),
         "cloudscraper": (
@@ -562,21 +684,21 @@ def _run_strategies(
         ),
         "requests": (
             "requests",
-            lambda: _try_requests(url, req_headers, timeout, follow_redirects=follow_redirects),
+            lambda: _try_requests(
+                url, req_headers, timeout, follow_redirects=follow_redirects, pin=pin
+            ),
         ),
     }
 
-    if strategy is not None:
-        if strategy not in strategy_map:
-            raise FetchError(f"Unknown fetch strategy: {strategy}")
-        strategies = [strategy_map[strategy]]
-    else:
-        strategies = [
-            strategy_map["curl_cffi_h2"],
-            strategy_map["curl_cffi_h1"],
-            strategy_map["cloudscraper"],
-            strategy_map["requests"],
-        ]
+    if strategy is not None and strategy not in strategy_map:
+        raise FetchError(f"Unknown fetch strategy: {strategy}")
+    if pin is not None:
+        # cloudscraper answers Cloudflare challenges by requesting URLs the challenge names
+        # (cloudscraper/cloudflare.py follows its Location), past any hop check or pin.
+        if strategy == "cloudscraper":
+            raise FetchError("The cloudscraper strategy cannot fetch untrusted URLs")
+        del strategy_map["cloudscraper"]
+    strategies = [strategy_map[strategy]] if strategy is not None else list(strategy_map.values())
 
     errors: list[str] = []
 

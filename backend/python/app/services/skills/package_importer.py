@@ -46,6 +46,7 @@ from app.utils.public_http import (
     ResponseTooLargeError,
     UnsafeUrlError,
 )
+from app.utils.url_redaction import redact_url
 
 __all__ = [
     "ImportPreview",
@@ -173,6 +174,16 @@ def _extract_tar(data: bytes) -> dict[str, bytes]:
     return files
 
 
+def _extract_archive(data: bytes) -> dict[str, bytes]:
+    """Pick the parser from the bytes, not a name: a URL ending in .zip can redirect to a
+    tarball, and an upload's name is whatever the user's machine called the file."""
+    if tarfile.is_tarfile(io.BytesIO(data)):
+        return _extract_tar(data)
+    if zipfile.is_zipfile(io.BytesIO(data)):
+        return _extract_zip(data)
+    raise PackageImportError("Not a valid zip or tar/tgz archive.")
+
+
 def _reject_unsafe_path(path: str) -> None:
     """Zip-slip guard: reject absolute paths and any `..` traversal segment
     before a single byte is written/kept in memory."""
@@ -265,14 +276,14 @@ class SkillPackageImporter:
         try:
             response = await self._fetcher.get(url, limits)
         except UnsafeUrlError as e:
-            logger.info("Blocked skill import download of %s: %s", url, e)
+            logger.info("Blocked skill import download of %s: %s", redact_url(url), e)
             raise PackageImportError(_UNSAFE_URL_MESSAGE) from e
         except ResponseTooLargeError as e:
             raise PackageImportError(
                 f"{label.capitalize()} is too large (limit {limits.max_bytes // _MIB} MB)."
             ) from e
         except PublicFetchError as e:
-            logger.warning("Skill import download of %s failed: %s", url, e)
+            logger.warning("Skill import download of %s failed: %s", redact_url(url), e)
             raise PackageImportError(f"Could not download {label}.") from e
 
         status = response.status_code
@@ -306,29 +317,9 @@ class SkillPackageImporter:
         if not url.lower().startswith(("https://", "http://")):
             raise PackageImportError("Only http(s) URLs are supported.")
         data = await self._download(url, _ARCHIVE_LIMITS, "the archive")
-        files = self._extract_by_hint(data, url=url)
-        return _files_to_preview(files, source_label=f"url:{url}")
+        return _files_to_preview(_extract_archive(data), source_label=f"url:{url}")
 
     def preview_upload(self, filename: str, data: bytes) -> ImportPreview:
         if len(data) > _MAX_ARCHIVE_BYTES:
             raise PackageImportError(f"Uploaded file is too large ({len(data)} bytes).")
-        files = self._extract_by_hint(data, url=filename)
-        return _files_to_preview(files, source_label=f"upload:{filename}")
-
-    @staticmethod
-    def _extract_by_hint(data: bytes, *, url: str) -> dict[str, bytes]:
-        lowered = url.lower()
-        is_zip = lowered.endswith(".zip")
-        is_tar = lowered.endswith((".tar", ".tgz", ".tar.gz"))
-        if is_zip and not is_tar:
-            return _extract_zip(data)
-        if is_tar and not is_zip:
-            return _extract_tar(data)
-        # Ambiguous/no hint (e.g. a bare download URL with no extension) —
-        # sniff by magic bytes rather than guessing from an unreliable name.
-        if data[:4] == b"PK\x03\x04":
-            return _extract_zip(data)
-        try:
-            return _extract_tar(data)
-        except PackageImportError:
-            return _extract_zip(data)
+        return _files_to_preview(_extract_archive(data), source_label=f"upload:{filename}")
