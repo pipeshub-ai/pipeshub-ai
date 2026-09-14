@@ -9219,6 +9219,50 @@ class TestReindexRootRecordGroup:
         assert c._root_rg_id(ctx) == "rg-channel"
 
     @pytest.mark.asyncio
+    async def test_unresolved_root_does_not_fall_back_to_the_thread_group(self):
+        """The reindex path keys channel_groups_map on the record's own group,
+        which for a threaded record is the thread. So when root resolution was
+        attempted and came back empty, _root_rg_id must report no root rather
+        than fall through to that map — storing the thread as its own root is
+        unrepairable, because the membership pass only fills a root in when
+        none is present."""
+        c = _make_connector()
+        c.channel_groups_cache = {}
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(
+            return_value=None
+        )
+        rec = SimpleNamespace(record_group_id="rg-thread", root_record_group_id=None)
+
+        ctx = ProcessingContext(
+            channel_id="C1",
+            channel_groups_map={"C1": rec.record_group_id},
+            root_rg_id=await c._reindex_root_rg_id(rec, "C1"),
+            root_resolved=True,
+            user_id_to_email={},
+            user_id_to_name={},
+            channel_id_to_name={},
+            rate_limiter=c.rate_limiter,
+        )
+
+        assert c._root_rg_id(ctx) is None
+
+    @pytest.mark.asyncio
+    async def test_sync_path_still_uses_the_channel_map(self):
+        """root_resolved is only set by the reindex paths; the normal sync path
+        must keep resolving the channel from channel_groups_map."""
+        c = _make_connector()
+        ctx = ProcessingContext(
+            channel_id="C1",
+            channel_groups_map={"C1": "rg-channel"},
+            user_id_to_email={},
+            user_id_to_name={},
+            channel_id_to_name={},
+            rate_limiter=c.rate_limiter,
+        )
+
+        assert c._root_rg_id(ctx) == "rg-channel"
+
+    @pytest.mark.asyncio
     async def test_stored_root_is_preferred_over_a_lookup(self):
         c = _make_connector()
         c.channel_groups_cache = {"C1": "rg-channel"}

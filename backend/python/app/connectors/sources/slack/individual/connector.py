@@ -207,6 +207,12 @@ class ProcessingContext:
     rate_limiter:       "RateLimiter"
     # Set when channel_groups_map is keyed on a thread instead of a channel.
     root_rg_id:         Optional[str] = None
+    # True when root_rg_id was resolved explicitly, so None means "no root",
+    # not "not looked up". The reindex paths key channel_groups_map on the
+    # record's own group, which for a threaded record is the thread — falling
+    # back to it would store the thread as its own root, and _derive_group_root
+    # only fills a root in when one is absent, so nothing would repair it.
+    root_resolved:      bool = False
 
 
 @dataclass
@@ -3279,6 +3285,7 @@ class SlackIndividualConnector(BaseConnector):
                 channel_id,
                 rg_id,
                 root_rg_id=await self._reindex_root_rg_id(existing_base, channel_id),
+                root_resolved=True,
             )
             text  = self._replace_mentions_in_text(
                 md.get("text", ""), ctx.user_id_to_name, ctx.channel_id_to_name
@@ -3392,6 +3399,8 @@ class SlackIndividualConnector(BaseConnector):
 
     def _root_rg_id(self, ctx: ProcessingContext) -> Optional[str]:
         """Channel record group id: the root of a Slack record's group chain."""
+        if ctx.root_resolved:
+            return ctx.root_rg_id
         return ctx.root_rg_id or ctx.channel_groups_map.get(ctx.channel_id)
 
     @staticmethod
@@ -3428,11 +3437,13 @@ class SlackIndividualConnector(BaseConnector):
         channel_id: str,
         rg_id: Optional[str],
         root_rg_id: Optional[str] = None,
+        root_resolved: bool = False,
     ) -> ProcessingContext:
         return ProcessingContext(
             channel_id=channel_id,
             channel_groups_map={channel_id: rg_id} if rg_id else {},
             root_rg_id=root_rg_id,
+            root_resolved=root_resolved,
             user_id_to_email=dict(self.user_id_to_email_cache),
             user_id_to_name=dict(self.user_id_to_name_cache),
             channel_id_to_name=dict(self.channel_id_to_name_cache),
@@ -4154,6 +4165,7 @@ class SlackIndividualConnector(BaseConnector):
             channel_id=ch,
             channel_groups_map={ch: rg_id} if rg_id else {},
             root_rg_id=await self._reindex_root_rg_id(rec, ch),
+            root_resolved=True,
             user_id_to_email=dict(self.user_id_to_email_cache),
             user_id_to_name=dict(self.user_id_to_name_cache),
             channel_id_to_name=dict(self.channel_id_to_name_cache),
@@ -4210,6 +4222,7 @@ class SlackIndividualConnector(BaseConnector):
             channel_id=ch,
             channel_groups_map={ch: rg_id} if rg_id else {},
             root_rg_id=await self._reindex_root_rg_id(rec, ch),
+            root_resolved=True,
             user_id_to_email=dict(self.user_id_to_email_cache),
             user_id_to_name=dict(self.user_id_to_name_cache),
             channel_id_to_name=dict(self.channel_id_to_name_cache),

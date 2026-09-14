@@ -19380,7 +19380,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             LET app_level_ids = (
                 FOR a IN reachable_app_docs
-                    FILTER a.permissionModel == @app_level
+                    FILTER a.permissionModel == @app_level AND a.orgId == @org_id
                     RETURN a._key
             )
 

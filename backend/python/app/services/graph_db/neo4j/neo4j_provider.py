@@ -5146,7 +5146,7 @@ class Neo4jProvider(IGraphDBProvider):
         WITH u, app_docs,
              [a IN app_docs | a.id] AS reachable_apps,
              [a IN app_docs
-                WHERE a.permissionModel = $app_level
+                WHERE a.permissionModel = $app_level AND a.orgId = $org_id
                 | a.id] AS app_level_ids,
              [a IN app_docs
                 WHERE a.type = $kb_type AND a.orgId = $org_id
