@@ -43,7 +43,11 @@ Events carry `type`, `path`, `oldPath`, `timestamp`, `size`, `isDirectory`, `sha
 Two machines signed into one account both see the connector, because `sync_root_path` lives server-side. Two mechanisms keep only one of them syncing:
 
 - **Registration** — `desktop:register` is first-claim-wins for the life of the socket; a second machine is told `ALREADY_REGISTERED` and must not serve that connector.
-- **`device_id` on the sync point** — registration alone is not enough, because when the owner disconnects the claim frees, another machine takes it, and the next `FULL` run prunes everything the first one synced. The first device to answer is pinned onto the sync point, and `_request_file_event_batch` rejects a page from any other with `RESPONSE_MISMATCH`. Moving to a new machine is therefore an explicit act: clear the sync point, which forces a full re-seed.
+- **`device_id` on the sync point** — registration alone is not enough, because when the owner disconnects the claim frees, another machine takes it, and the next `FULL` run prunes everything the first one synced. The first device to answer is pinned onto the sync point, and `_request_file_event_batch` rejects a page from any other with `DEVICE_MISMATCH`. Moving to a new machine is therefore an explicit act: clear the sync point (a full sync does), which forces a full re-seed.
+
+  Reinstalling the desktop app hits this too: the app's `deviceId` lives in `userData`, so a reinstall mints a new one and the pinned device no longer matches. The connector cannot tell that apart from a second laptop — both arrive with a new device id, no journal, and an unresolvable cursor — so it does not re-pin itself. `run_sync` raises `LocalFsDeviceMismatchError` and notifies the user instead of aborting quietly, because every scheduled run after it fails the same way and only a human can choose which machine owns the folder.
+
+If the configured folder is moved, renamed, or deleted, the desktop answers `ROOT_MISSING` (non-retryable). The connector does not invent a new path and does not prune indexed records — relative paths stay valid once the user points the connector at the new location. `run_sync` notifies and aborts the same way as `DEVICE_MISMATCH`. A missing folder must not surface as `DESKTOP_OFFLINE`: that code means no socket, and remapping exhausted pull retries to it hid the real reason.
 
 ## 2. Content and indexing
 

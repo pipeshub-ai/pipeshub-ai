@@ -1383,6 +1383,28 @@ class DataSourceEntitiesProcessor:
                                 "virtualRecordId": duplicate_vrid,
                                 "connectorId": getattr(duplicate, "connector_id", None),
                             })
+
+                        # The duplicate can have picked up real children within this
+                        # same batch (e.g. an ancestor placeholder minted for a
+                        # not-yet-moved folder, which files landing in it then
+                        # parented themselves under). delete_record_by_key issues a
+                        # DETACH DELETE, so those PARENT_CHILD edges must be
+                        # re-pointed at the surviving vertex (old_record.id, about
+                        # to become new_record.id) before the duplicate is gone, or
+                        # the children are silently orphaned from the tree.
+                        duplicate_children = await tx_store.get_edges_from_node(
+                            f"{CollectionNames.RECORDS.value}/{duplicate.id}",
+                            CollectionNames.RECORD_RELATIONS.value,
+                        )
+                        for edge in duplicate_children:
+                            if edge.get("relationshipType") != RecordRelations.PARENT_CHILD.value:
+                                continue
+                            child_id = str(edge.get("_to", "")).split("/")[-1]
+                            if child_id:
+                                await tx_store.create_record_relation(
+                                    old_record.id, child_id, RecordRelations.PARENT_CHILD.value
+                                )
+
                         await tx_store.delete_parent_child_edge_to_record(duplicate.id)
                         await tx_store.delete_record_by_key(duplicate.id)
 

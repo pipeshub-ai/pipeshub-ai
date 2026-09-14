@@ -84,6 +84,10 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import (
+    NotificationSeverity,
+    NotificationType,
+)
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
@@ -157,7 +161,43 @@ class LocalFsDesktopRemoteError(LocalFsDesktopError):
     def __init__(self, code: str, message: str, retryable: bool) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
+        self.message = message
         self.retryable = retryable
+
+
+class LocalFsRootUnavailableError(LocalFsDesktopRemoteError):
+    """The configured sync folder is gone or unreadable on the desktop.
+
+    Terminal for this run. Indexed records stay: relative paths are still
+    valid if the user points the connector at the new location.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(code, message, retryable=False)
+
+
+class LocalFsDeviceMismatchError(LocalFsDesktopRemoteError):
+    """A machine other than the one pinned on the sync point answered the pull.
+
+    Terminal until a human acts, and reported as such: the connector cannot tell
+    a reinstalled machine apart from a second laptop, and re-seeding from the
+    wrong one prunes everything the other machine synced.
+    """
+
+    def __init__(
+        self, expected_device_id: str, actual_device_id: Optional[str]
+    ) -> None:
+        super().__init__(
+            "DEVICE_MISMATCH",
+            (
+                f"Sync point is owned by device id: {expected_device_id}, but device with id: "
+                f"{actual_device_id or 'unknown'} answered. Clear the sync point/ Run a full sync "
+                "to re-seed from this machine."
+            ),
+            retryable=False,
+        )
+        self.expected_device_id = expected_device_id
+        self.actual_device_id = actual_device_id
 
 
 def _get_datetime_filter_bounds_ms(
@@ -291,6 +331,12 @@ class LocalFsApp(App):
         "Index a folder on the machine running the connector. "
         "Choose a path below, then run manual or scheduled sync—listing as Active alone does not index files."
     )
+    .with_info(
+        "While PipesHub desktop is running with this connector enabled, "
+        "OS may block renaming or moving the synced folders especially on Windows because the desktop app "
+        "keeps a watch on it. Turn sync off for this connector, or quit the desktop "
+        "app, then try again."
+    )
     .with_categories(["Storage", "Local"])
     .with_scopes([ConnectorScope.PERSONAL.value])
     .with_permission_model(PermissionModel.APP_LEVEL)
@@ -323,9 +369,7 @@ class LocalFsApp(App):
                 field_type="FOLDER",
                 required=True,
                 description=(
-                    "Choose the folder on this machine where the connector service runs. "
-                    "Use “Choose folder” — then save and run a manual sync. "
-                    "The CLI is optional."
+                    "Choose the folder on this machine to sync."
                 ),
             )
         )
@@ -853,9 +897,13 @@ class LocalFsConnector(BaseConnector):
         if status == HttpStatusCode.GATEWAY_TIMEOUT.value:
             return LocalFsDesktopTimeoutError(f"Desktop did not answer ({context})")
         error = body.get("error") if isinstance(body.get("error"), dict) else {}
+        code = str(error.get("code") or body.get("code") or f"HTTP_{status}")
+        message = str(error.get("message") or body.get("message") or context)
+        if code in ("ROOT_MISSING", "ROOT_UNREADABLE"):
+            return LocalFsRootUnavailableError(code, message)
         return LocalFsDesktopRemoteError(
-            str(error.get("code") or body.get("code") or f"HTTP_{status}"),
-            str(error.get("message") or body.get("message") or context),
+            code,
+            message,
             retryable=bool(
                 error.get(
                     "retryable",
@@ -956,15 +1004,7 @@ class LocalFsConnector(BaseConnector):
         # full run prunes everything the first one synced. The device pinned on
         # the sync point is what makes changing machines an explicit act.
         if expected_device_id and batch.deviceId != expected_device_id:
-            raise LocalFsDesktopRemoteError(
-                "RESPONSE_MISMATCH",
-                (
-                    f"Sync point is owned by device {expected_device_id}, but "
-                    f"device {batch.deviceId} answered. Clear the sync point to "
-                    "re-seed from this machine."
-                ),
-                retryable=False,
-            )
+            raise LocalFsDeviceMismatchError(expected_device_id, batch.deviceId)
         return batch
 
     async def _storage_base_url(self) -> str:
@@ -1188,9 +1228,6 @@ class LocalFsConnector(BaseConnector):
         sync_filters, indexing_filters = await load_connector_filters(
             self.config_service, "localfs", self.connector_id, self.logger
         )
-
-        self.logger.info(f"sync_filters: {sync_filters}")
-        self.logger.info(f"indexing_filters: {indexing_filters}")
 
         await self.data_entities_processor.on_new_app_users([self._to_app_user(owner)])
 
@@ -1778,7 +1815,11 @@ class LocalFsConnector(BaseConnector):
                 )
             except LocalFsDesktopOfflineError:
                 raise
+            except LocalFsRootUnavailableError:
+                raise
             except LocalFsDesktopRemoteError as exc:
+                if exc.code in ("ROOT_MISSING", "ROOT_UNREADABLE"):
+                    raise LocalFsRootUnavailableError(exc.code, exc.message) from exc
                 if not exc.retryable:
                     raise
                 last_error = exc
@@ -1827,6 +1868,73 @@ class LocalFsConnector(BaseConnector):
                 stale[start : start + FULL_SYNC_RESET_BATCH_SIZE], owner_user_id
             )
         return len(stale)
+
+    async def _notify_root_unavailable(
+        self, exc: LocalFsRootUnavailableError
+    ) -> None:
+        """Tell the user the synced folder is gone; only they can point it elsewhere.
+
+        Title and message stay stable across scheduled ticks so
+        ``BaseConnector._suppress_notification`` collapses repeats.
+        """
+        missing = exc.code == "ROOT_MISSING"
+        await self.notify(
+            type=NotificationType.CONNECTOR_SYNC_ERROR,
+            severity=NotificationSeverity.ERROR,
+            title=(
+                "Local FS sync stopped — the synced folder is missing"
+                if missing
+                else "Local FS sync stopped — the synced folder could not be read"
+            ),
+            message=(
+                (
+                    f"'{self.sync_root_path}' was moved or deleted on this machine. "
+                    "Indexed files are kept. Update the folder path in connector "
+                    "settings to resume sync."
+                )
+                if missing
+                else (
+                    f"The desktop could not read '{self.sync_root_path}'. "
+                    "Check that the folder still exists and this account can access it."
+                )
+            ),
+            payload={
+                "connector_id": self.connector_id,
+                "connector_name": self.connector_name.value,
+                "connector_scope": self.scope,
+                "error_code": exc.code,
+                "sync_root_path": self.sync_root_path,
+            },
+        )
+
+    async def _notify_device_mismatch(self, exc: LocalFsDeviceMismatchError) -> None:
+        """Tell the user their folder is stuck and only they can unstick it.
+
+        Title and message are kept free of the device ids so
+        ``BaseConnector._suppress_notification`` collapses the identical failure
+        every scheduled run produces into one notification.
+        """
+        await self.notify(
+            type=NotificationType.CONNECTOR_SYNC_ERROR,
+            severity=NotificationSeverity.ERROR,
+            title="Local FS sync stopped — this desktop app isn't the one that last synced this folder",
+            message=(
+                f"'{self.sync_root_path}' is tied to a previous desktop install. "
+                "That happens if you synced from another computer, or if you had "
+                "uninstalled the desktop app on this one. "
+                "Incremental sync cannot be resumed. "
+                "If this is due to recent unisntall, run a Full sync "
+                "Previously indexed files will not need re-indexing."
+            ),
+            payload={
+                "connector_id": self.connector_id,
+                "connector_name": self.connector_name.value,
+                "connector_scope": self.scope,
+                "error_code": exc.code,
+                "expected_device_id": exc.expected_device_id,
+                "actual_device_id": exc.actual_device_id,
+            },
+        )
 
     async def run_sync(self) -> None:
         """Pull file-event metadata from the desktop and apply it.
@@ -1989,6 +2097,14 @@ class LocalFsConnector(BaseConnector):
         except asyncio.CancelledError:
             raise
         except LocalFsDesktopOfflineError:
+            raise
+        except LocalFsRootUnavailableError as exc:
+            self.logger.error("Local FS: sync aborted — %s", exc)
+            await self._notify_root_unavailable(exc)
+            raise
+        except LocalFsDeviceMismatchError as exc:
+            self.logger.error("Local FS: sync aborted — %s", exc)
+            await self._notify_device_mismatch(exc)
             raise
         except LocalFsDesktopError as exc:
             self.logger.warning("Local FS: sync aborted — %s", exc)

@@ -1,12 +1,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { ConnectorFsWatcher, type BatchPayload } from './watcher/connector-fs-watcher';
+import {
+  ConnectorFsWatcher,
+  LocalSyncRootMissingError,
+  type BatchPayload,
+} from './watcher/connector-fs-watcher';
 import { LocalSyncJournal, type ConnectorMeta, type JournalRecord } from './persistence/journal';
 import { expandWatchEventsForReplay, type WatchEvent } from './watcher/replay-event-expander';
 import {
   decodeCursor,
   encodeCursor,
   pullFailure,
+  type ServePullFailure,
   type ServePullPage,
   type ServePullRequest,
   type ServePullResponse,
@@ -100,6 +105,25 @@ export interface ConnectorStatus {
 interface RootPathLock {
   connectorId: string;
   connectorName?: string;
+}
+
+function pullFailureFromRootError(
+  request: ServePullRequest,
+  error: unknown,
+): ServePullFailure {
+  if (error instanceof LocalSyncRootMissingError) {
+    return pullFailure(request, 'ROOT_MISSING', error.message, false);
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (/does not exist/i.test(message)) {
+    return pullFailure(request, 'ROOT_MISSING', message, false);
+  }
+  return pullFailure(
+    request,
+    'ROOT_UNREADABLE',
+    message,
+    !/must be a directory/i.test(message),
+  );
 }
 
 function loadWatcherStateFiles(baseDir: string, connectorId: string): FileSnapshotMap {
@@ -503,12 +527,7 @@ export class LocalSyncManager {
           ? await this.serveFullPage(request, run, meta)
           : await this.serveIncrementalPage(request, run, meta);
     } catch (error) {
-      return pullFailure(
-        request,
-        'ROOT_UNREADABLE',
-        error instanceof Error ? error.message : String(error),
-        true,
-      );
+      return pullFailureFromRootError(request, error);
     }
     if (page.ok) {
       run.lastPage = { batchIndex, response: page };
@@ -669,7 +688,7 @@ export class LocalSyncManager {
   private async buildFullWalk(meta: ConnectorMeta): Promise<WatchEvent[]> {
     const rootPath = path.resolve(String(meta.rootPath || ''));
     if (!fs.existsSync(rootPath)) {
-      throw new Error(`Local sync root folder does not exist: ${rootPath}`);
+      throw new LocalSyncRootMissingError(rootPath);
     }
     const scan = await scanSyncRoot(rootPath, {
       includeSubfolders: meta.includeSubfolders !== false,

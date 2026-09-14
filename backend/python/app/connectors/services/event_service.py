@@ -487,6 +487,7 @@ class EventService:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
         start = time.monotonic()
         cancelled = False
+        failed = False
         skipped_code: str | None = None
         try:
             await connector.run_sync()
@@ -500,6 +501,9 @@ class EventService:
             # Not a crash: the connector declined to run (e.g. Local FS with no
             # desktop connected). Logged only; the UI reads live presence.
             skipped_code = exc.code
+        except Exception:
+            failed = True
+            raise
         finally:
             elapsed = time.monotonic() - start
             mins, secs = divmod(elapsed, 60)
@@ -508,7 +512,11 @@ class EventService:
                 self.logger.warning(
                     f"⚠️ Sync cancelled for connector {connector_id} after {elapsed_str}"
                 )
-            if skipped_code:
+            elif failed:
+                self.logger.error(
+                    f"❌ Sync failed for connector {connector_id} after {elapsed_str}"
+                )
+            elif skipped_code:
                 self.logger.info(
                     f"Sync skipped for connector {connector_id} "
                     f"({skipped_code}, {elapsed_str})"

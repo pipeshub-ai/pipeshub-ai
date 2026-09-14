@@ -26,6 +26,7 @@ export interface ServePullPage {
 
 /** Codes the connector already understands; anything else lands as INTERNAL. */
 export type PullErrorCode =
+  | 'ROOT_MISSING'
   | 'ROOT_UNREADABLE'
   | 'CURSOR_UNKNOWN'
   | 'STALE_RUN'

@@ -39,6 +39,16 @@ interface MoveLedgerEntry {
   expiresAt: number;
 }
 
+/** The configured sync folder is gone (moved, renamed, or deleted). */
+export class LocalSyncRootMissingError extends Error {
+  readonly code = 'ROOT_MISSING' as const;
+
+  constructor(public readonly rootPath: string) {
+    super(`Local sync root folder does not exist: ${rootPath}`);
+    this.name = 'LocalSyncRootMissingError';
+  }
+}
+
 /** '' when path *is* prefix, the child suffix when under it, null otherwise. */
 function suffixUnder(prefix: string, candidate: string): string | null {
   if (!prefix) return null;
@@ -459,7 +469,7 @@ export class ConnectorFsWatcher {
   async start(): Promise<void> {
     if (this.running) return;
     if (!fs.existsSync(this.rootPath)) {
-      throw new Error(`Local sync root folder does not exist: ${this.rootPath}`);
+      throw new LocalSyncRootMissingError(this.rootPath);
     }
     const st = fs.statSync(this.rootPath);
     if (!st.isDirectory()) {

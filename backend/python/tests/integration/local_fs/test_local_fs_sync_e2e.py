@@ -101,7 +101,7 @@ from app.connectors.sources.local_fs.connector import (
     SYNC_ROOT_PATH_KEY,
     LocalFsConnector,
     LocalFsDesktopOfflineError,
-    LocalFsDesktopRemoteError,
+    LocalFsDeviceMismatchError,
 )
 from app.connectors.sources.local_fs.models import LocalFsFileEvent, LocalFsPullBatch
 from app.indexing_main import recover_in_progress_records
@@ -442,11 +442,7 @@ class TestRunSync:
             # _pull_with_retry is stubbed out here, so it would otherwise be
             # invisible to these tests.
             if expected_device_id and answer.deviceId != expected_device_id:
-                raise LocalFsDesktopRemoteError(
-                    "RESPONSE_MISMATCH",
-                    f"device {answer.deviceId} is not {expected_device_id}",
-                    retryable=False,
-                )
+                raise LocalFsDeviceMismatchError(expected_device_id, answer.deviceId)
             return answer
 
         connector._pull_with_retry = AsyncMock(side_effect=_pull)
@@ -513,16 +509,20 @@ class TestRunSync:
         # run prune everything the owning machine synced.
         await _seed_files(connector, "kept.txt")
         before = copy.deepcopy(_records_snapshot(graph_store))
+        connector.notify = AsyncMock()
 
-        await self._run(
-            connector,
-            [(_events_for("intruder.txt"), False)],
-            sync_point={"device_id": DEVICE_ID},
-            device_id="device-someone-else",
-        )
+        with pytest.raises(LocalFsDeviceMismatchError):
+            await self._run(
+                connector,
+                [(_events_for("intruder.txt"), False)],
+                sync_point={"device_id": DEVICE_ID},
+                device_id="device-someone-else",
+            )
 
         assert _records_snapshot(graph_store) == before
         assert connector.record_sync_point.update_sync_point.await_count == 0
+        # Only the user can resolve this, so it must not fail silently.
+        connector.notify.assert_awaited_once()
 
     async def test_offline_desktop_leaves_existing_records_untouched(
         self, connector: LocalFsConnector, graph_store

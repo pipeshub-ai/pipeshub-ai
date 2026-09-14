@@ -93,6 +93,8 @@ from app.connectors.sources.local_fs.connector import (  # noqa: E402
     LocalFsDesktopOfflineError,
     LocalFsDesktopRemoteError,
     LocalFsDesktopTimeoutError,
+    LocalFsDeviceMismatchError,
+    LocalFsRootUnavailableError,
     SYNC_ROOT_PATH_KEY,
     _get_datetime_filter_bounds_ms as datetime_filter_bounds_ms,
     _get_sync_config_value as sync_value_from_config,
@@ -1937,18 +1939,44 @@ class TestRunSync:
         self, folder_connector: LocalFsConnector, tmp_path: Path
     ):
         self._prepare(folder_connector, tmp_path, {})
+        folder_connector.notify = AsyncMock()
         folder_connector._pull_with_retry = AsyncMock(
             side_effect=[
                 self._page(batchIndex=0, cursor="c1", hasMore=True),
-                LocalFsDesktopRemoteError("ROOT_UNREADABLE", "gone", retryable=False),
+                LocalFsRootUnavailableError("ROOT_UNREADABLE", "gone"),
             ]
         )
 
-        await folder_connector.run_sync()
+        with pytest.raises(LocalFsRootUnavailableError):
+            await folder_connector.run_sync()
 
         writes = folder_connector.record_sync_point.update_sync_point.await_args_list
         assert len(writes) == 1
         assert "last_sync_time" not in writes[0].args[1]
+        folder_connector._prune_unseen_records.assert_not_awaited()
+        folder_connector.notify.assert_awaited_once()
+
+    async def test_missing_root_raises_and_notifies_the_user(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        # A moved folder used to exhaust retries and surface as DESKTOP_OFFLINE.
+        self._prepare(
+            folder_connector, tmp_path, {"last_sync_time": 1, "cursor": "c0"}
+        )
+        folder_connector.notify = AsyncMock()
+        folder_connector._pull_with_retry = AsyncMock(
+            side_effect=LocalFsRootUnavailableError(
+                "ROOT_MISSING", "Local sync root folder does not exist"
+            )
+        )
+
+        with pytest.raises(LocalFsRootUnavailableError):
+            await folder_connector.run_sync()
+
+        folder_connector.notify.assert_awaited_once()
+        payload = folder_connector.notify.await_args.kwargs["payload"]
+        assert payload["error_code"] == "ROOT_MISSING"
+        folder_connector.record_sync_point.update_sync_point.assert_not_awaited()
         folder_connector._prune_unseen_records.assert_not_awaited()
 
     async def test_unknown_cursor_restarts_once_as_full(
@@ -1995,6 +2023,29 @@ class TestRunSync:
         await folder_connector.run_sync()
 
         assert folder_connector._pull_with_retry.await_count == 2
+        folder_connector._prune_unseen_records.assert_not_awaited()
+
+    async def test_device_mismatch_raises_and_notifies_the_user(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        # Nothing the connector can do resolves this, and a scheduled sync that
+        # swallowed it left the folder silently stuck for ever.
+        self._prepare(
+            folder_connector, tmp_path, {"last_sync_time": 1, "device_id": "dev-old"}
+        )
+        folder_connector.notify = AsyncMock()
+        folder_connector._pull_with_retry = AsyncMock(
+            side_effect=LocalFsDeviceMismatchError("dev-old", "dev-new")
+        )
+
+        with pytest.raises(LocalFsDeviceMismatchError):
+            await folder_connector.run_sync()
+
+        folder_connector.notify.assert_awaited_once()
+        payload = folder_connector.notify.await_args.kwargs["payload"]
+        assert payload["expected_device_id"] == "dev-old"
+        assert payload["actual_device_id"] == "dev-new"
+        folder_connector.record_sync_point.update_sync_point.assert_not_awaited()
         folder_connector._prune_unseen_records.assert_not_awaited()
 
     async def test_cancellation_propagates(
@@ -2061,6 +2112,21 @@ class TestPullWithRetry:
             )
         folder_connector._request_file_event_batch.assert_awaited_once()
 
+    async def test_missing_root_is_not_retried_or_mapped_to_offline(
+        self, folder_connector: LocalFsConnector
+    ):
+        folder_connector._request_file_event_batch = AsyncMock(
+            side_effect=LocalFsDesktopRemoteError(
+                "ROOT_MISSING", "gone", retryable=True
+            )
+        )
+        with pytest.raises(LocalFsRootUnavailableError) as ei:
+            await folder_connector._pull_with_retry(
+                run_id="r", batch_index=0, cursor=None, mode="INCREMENTAL", session=MagicMock()
+            )
+        assert ei.value.code == "ROOT_MISSING"
+        folder_connector._request_file_event_batch.assert_awaited_once()
+
     async def test_exhausted_retries_surface_as_offline(
         self, folder_connector: LocalFsConnector
     ):
@@ -2078,6 +2144,33 @@ class TestPullWithRetry:
                     mode="FULL",
                     session=MagicMock(),
                 )
+
+
+class TestDesktopErrorFor:
+    def test_maps_missing_root_even_when_desktop_marked_it_retryable(
+        self, folder_connector: LocalFsConnector
+    ):
+        err = folder_connector._desktop_error_for(
+            HttpStatusCode.BAD_GATEWAY.value,
+            {
+                "code": "ROOT_MISSING",
+                "error": {
+                    "code": "ROOT_MISSING",
+                    "message": "Local sync root folder does not exist: /old",
+                    "retryable": True,
+                },
+            },
+            "run=r batch=0",
+        )
+        assert isinstance(err, LocalFsRootUnavailableError)
+        assert err.code == "ROOT_MISSING"
+        assert err.retryable is False
+
+    def test_conflict_is_still_offline(self, folder_connector: LocalFsConnector):
+        err = folder_connector._desktop_error_for(
+            HttpStatusCode.CONFLICT.value, {}, "run=r batch=0"
+        )
+        assert isinstance(err, LocalFsDesktopOfflineError)
 
 
 # --------------------------------------------------------------------------- #

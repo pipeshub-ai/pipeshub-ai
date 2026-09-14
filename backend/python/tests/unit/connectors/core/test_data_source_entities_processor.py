@@ -5487,3 +5487,82 @@ class TestOnRecordsMovedDuplicateGuard:
         await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
 
         tx_store.delete_record_by_key.assert_not_awaited()
+
+    async def test_duplicate_children_are_reparented_onto_the_surviving_record(self) -> None:
+        """The duplicate can have picked up real children within the same batch
+        (e.g. an ancestor placeholder minted for a not-yet-moved folder, which
+        files landing in it then parented themselves under). Those PARENT_CHILD
+        edges must be re-pointed at the surviving vertex before the duplicate
+        is DETACH DELETEd, or the children are silently dropped from the tree.
+        """
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        interloper = _make_old_record(record_id="rec-duplicate")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, interloper)
+
+        tx_store.get_edges_from_node = AsyncMock(return_value=[
+            {
+                "_from": f"{CollectionNames.RECORDS.value}/rec-duplicate",
+                "_to": f"{CollectionNames.RECORDS.value}/child-1",
+                "relationshipType": RecordRelations.PARENT_CHILD.value,
+            },
+            {
+                "_from": f"{CollectionNames.RECORDS.value}/rec-duplicate",
+                "_to": f"{CollectionNames.RECORDS.value}/child-2",
+                "relationshipType": RecordRelations.PARENT_CHILD.value,
+            },
+        ])
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.get_edges_from_node.assert_awaited_once_with(
+            f"{CollectionNames.RECORDS.value}/rec-duplicate",
+            CollectionNames.RECORD_RELATIONS.value,
+        )
+        tx_store.create_record_relation.assert_any_await(
+            "rec-original", "child-1", RecordRelations.PARENT_CHILD.value
+        )
+        tx_store.create_record_relation.assert_any_await(
+            "rec-original", "child-2", RecordRelations.PARENT_CHILD.value
+        )
+        # The duplicate must still be retired, same as before.
+        tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
+
+    async def test_duplicate_non_parent_child_edges_are_not_reparented(self) -> None:
+        """Only PARENT_CHILD edges are migrated off a retired duplicate — an
+        ATTACHMENT edge (e.g. an email attachment) must not be copied onto the
+        surviving record."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        interloper = _make_old_record(record_id="rec-duplicate")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, interloper)
+
+        tx_store.get_edges_from_node = AsyncMock(return_value=[
+            {
+                "_from": f"{CollectionNames.RECORDS.value}/rec-duplicate",
+                "_to": f"{CollectionNames.RECORDS.value}/attachment-1",
+                "relationshipType": RecordRelations.ATTACHMENT.value,
+            },
+        ])
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.create_record_relation.assert_not_awaited()
+        tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
+
+    async def test_no_reparenting_when_duplicate_has_no_children(self) -> None:
+        """The common case (duplicate is a bare interloper, no children ever
+        attached to it): nothing is migrated, and retirement proceeds exactly
+        as before this fix."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        interloper = _make_old_record(record_id="rec-duplicate")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, interloper)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.create_record_relation.assert_not_awaited()
+        tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")

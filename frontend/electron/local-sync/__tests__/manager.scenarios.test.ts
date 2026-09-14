@@ -541,6 +541,20 @@ test('An unconfigured connector answers CONFIG_MISMATCH, not an empty sync', asy
   assert.equal((response as { error: { retryable: boolean } }).error.retryable, false);
 });
 
+test('A moved-away sync root answers ROOT_MISSING, not a retryable unread', async () => {
+  const { manager, syncRoot, userData } = setup();
+  await manager.start({ connectorId: 'c-1', connectorName: 'Moved', rootPath: syncRoot });
+  await manager.stop('c-1');
+  fs.renameSync(syncRoot, path.join(userData, 'elsewhere'));
+
+  const response = await manager.servePull(pullArgs({ connectorId: 'c-1' }));
+  assert.equal(response.ok, false);
+  assert.equal((response as { error: { code: string } }).error.code, 'ROOT_MISSING');
+  assert.equal((response as { error: { retryable: boolean } }).error.retryable, false);
+
+  await manager.shutdown();
+});
+
 test('start() called twice with unchanged config is a no-op', async () => {
   const { manager, syncRoot } = setup();
   await fsp.writeFile(path.join(syncRoot, 'existing.txt'), 'hello');
