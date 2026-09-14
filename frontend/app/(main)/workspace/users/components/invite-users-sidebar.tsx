@@ -196,9 +196,13 @@ export function InviteUsersSidebar({
 
         // Update role if changed (stored on User.role, not admin group)
         if (newRole !== currentRole) {
-          await UsersApi.updateUser(userId, {
-            role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
-          });
+          await UsersApi.updateUser(
+            userId,
+            {
+              role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
+            },
+            { suppressErrorToast: true },
+          );
         }
 
         // Update group memberships
