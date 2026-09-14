@@ -32,6 +32,7 @@ on:
             - azure_files
             - messaging
             - oauth_clients
+            - mcp
       commit_hash:
         description: 'Commit hash to checkout (defaults to HEAD)'
         required: false
