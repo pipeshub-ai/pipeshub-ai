@@ -42,6 +42,8 @@ import {
   normalizeUserRole,
   resolveOptionalUserRole,
   saveUserEnsuringOrgRetainsAdmin,
+  saveUserEnsuringAdminCap,
+  assertCanPromoteAdmin,
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
@@ -854,6 +856,8 @@ export class UserController {
             !!id &&
             !!orgId &&
             (await isUserOrgAdmin(String(id), String(orgId)))));
+      const promotingAdmin =
+        updateFields.role === 'admin' && previousRole !== 'admin';
 
       if (demotingAdmin && (!id || !orgId)) {
         throw new BadRequestError('User or organization not found');
@@ -898,12 +902,12 @@ export class UserController {
         }
       }
 
-      // Demotion: RS = Org touch + check + save in one txn; non-RS = check, save, restore if zero
+      // Demotion / promotion: RS = Org touch + check + save in one txn
+      const rsAvailable = this.config.rsAvailable === 'true';
       if (demotingAdmin && id && orgId) {
-        await saveUserEnsuringOrgRetainsAdmin(
-          user,
-          this.config.rsAvailable === 'true',
-        );
+        await saveUserEnsuringOrgRetainsAdmin(user, rsAvailable);
+      } else if (promotingAdmin && id && orgId) {
+        await saveUserEnsuringAdminCap(user, rsAvailable);
       } else {
         await user.save();
       }
@@ -1856,6 +1860,21 @@ export class UserController {
       (user) => user._id && !blockedPendingUserIds.has(user._id.toString()),
     );
 
+    const emailsForNewAccounts = emails.filter(
+      (email) =>
+        !activeEmails.includes(email) && !deletedEmails.includes(email),
+    );
+
+    if (inviteRole === 'admin') {
+      const additionalAdmins =
+        emailsForNewAccounts.length +
+        deletedUsers.length +
+        pendingUsersToReinvite.filter(
+          (user) => normalizeUserRole(user.role) !== 'admin',
+        ).length;
+      await assertCanPromoteAdmin(String(orgId), additionalAdmins);
+    }
+
     let restoredUsers: User[] = [];
     if (deletedUsers.length > 0) {
       await Users.updateMany(
@@ -1883,11 +1902,6 @@ export class UserController {
         { $addToSet: { users: userId } },
       );
     }
-
-    const emailsForNewAccounts = emails.filter(
-      (email) =>
-        !activeEmails.includes(email) && !deletedEmails.includes(email),
-    );
 
     let newUsers: User[] = [];
     if (emailsForNewAccounts.length > 0) {

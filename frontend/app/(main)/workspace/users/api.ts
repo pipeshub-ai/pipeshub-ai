@@ -148,7 +148,9 @@ export const UsersApi = {
       payload.role =
         role === USER_ROLES.ADMIN || role === 'admin' ? 'admin' : 'member';
     }
-    await apiClient.post(`${BASE_URL}/bulk/invite`, payload);
+    await apiClient.post(`${BASE_URL}/bulk/invite`, payload, {
+      suppressErrorToast: true,
+    });
   },
 
   /**
