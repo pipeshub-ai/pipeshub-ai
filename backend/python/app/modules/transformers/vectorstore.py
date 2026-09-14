@@ -14,6 +14,8 @@ No LangChain QdrantVectorStore is imported or used.
 """
 
 import asyncio
+import codecs
+import logging
 import os
 import time
 import uuid
@@ -203,12 +205,17 @@ def _min_words_for_sentence_embeddings() -> int:
 # proportional: English prose runs ~4 chars/token while base64 or dense code can
 # run under 2, so no single characters-per-token constant is correct for both.
 # These helpers make the decision in the unit the limit is expressed in.
+_module_logger = logging.getLogger(__name__)
+
 _EMBED_TOKEN_LIMIT_DEFAULT = 8191  # text-embedding-3-{small,large}; ada-002 is 2048
 _EMBED_TOKEN_ENV = "PIPESHUB_EMBED_TOKEN_LIMIT"
-# Used only when no tokenizer resolves. Deliberately pessimistic: it
-# over-estimates the token count, so the fallback errs toward splitting rather
-# than toward emitting something the provider will reject.
-_CHARS_PER_TOKEN_FALLBACK = 3
+# Halving from the ceiling, this reaches a step of 1 for any realistic limit.
+_MAX_SPLIT_ATTEMPTS = 16
+# Used only when no tokenizer resolves. A BPE token encodes at least one byte,
+# so the UTF-8 byte length is a guaranteed upper bound on the token count for
+# any input -- unlike a characters-per-token ratio, which is unsafe in exactly
+# the cases that matter: measured against cl100k_base, one character is ~0.17
+# tokens for ASCII prose but ~1.1 for CJK and ~3 for emoji.
 
 
 def _embed_token_ceiling() -> int:
@@ -252,23 +259,63 @@ def _token_encoder() -> object | None:
 
 
 def _token_len(text: str) -> int:
-    """Token count, or a deliberately high character-based estimate."""
+    """Exact token count, or a guaranteed upper bound when no tokenizer exists."""
     encoder = _token_encoder()
     if encoder is None:
-        return -(-len(text) // _CHARS_PER_TOKEN_FALLBACK)
+        return len(text.encode("utf-8"))
     return len(encoder.encode(text))
 
 
 def _exceeds_token_ceiling(text: str, ceiling: int) -> bool:
     """True when *text* will not embed as a single input.
 
-    The length check first is a cheap guard, not an approximation: at
-    _CHARS_PER_TOKEN_FALLBACK characters per token a shorter string cannot
-    exceed the ceiling, so the common case never pays for tokenization.
+    The length check first is a cheap guard, not an approximation: a token
+    encodes at least one byte, so text of at most *ceiling* BYTES cannot exceed
+    it and the common case never pays for tokenization.
+
+    The guard must measure bytes, not characters. A character count is not an
+    upper bound on tokens -- one emoji is a single character and three tokens
+    against cl100k_base -- so a character-based guard would wave through exactly
+    the dense input this function exists to catch.
     """
-    if len(text) <= ceiling * _CHARS_PER_TOKEN_FALLBACK:
+    if len(text) <= ceiling and text.isascii():
+        return False  # ASCII: one byte per character, so chars bound tokens
+    if len(text.encode("utf-8")) <= ceiling:
         return False
     return _token_len(text) > ceiling
+
+
+def _slice_on_character_boundaries(text: str, step: int) -> List[str]:
+    """Cut *text* into pieces of at most *step* tokens (or bytes) each.
+
+    Slices on tokens when an encoder is available and on UTF-8 bytes otherwise,
+    but reassembles on CHARACTER boundaries either way: neither cut is
+    guaranteed to fall between characters, and decoding a partial sequence
+    substitutes U+FFFD, which corrupts the text and stops the pieces joining
+    back to the source. An incremental decoder carries an incomplete trailing
+    sequence into the next piece instead.
+    """
+    encoder = _token_encoder()
+    if encoder is None:
+        raw = text.encode("utf-8")
+        chunks = (raw[i : i + step] for i in range(0, len(raw), step))
+    else:
+        tokens = encoder.encode(text)
+        chunks = (
+            encoder.decode_bytes(tokens[i : i + step])
+            for i in range(0, len(tokens), step)
+        )
+
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    pieces: List[str] = []
+    for chunk in chunks:
+        piece = decoder.decode(chunk)
+        if piece:
+            pieces.append(piece)
+    tail = decoder.decode(b"", True)
+    if tail:
+        pieces.append(tail)
+    return pieces
 
 
 def _split_to_token_ceiling(text: str, ceiling: int) -> List[str]:
@@ -276,20 +323,33 @@ def _split_to_token_ceiling(text: str, ceiling: int) -> List[str]:
 
     Applies to input the sentence splitter could not break up -- a table row, a
     base64 payload, a minified line, or text in a script whose delimiters it
-    does not recognise. Splitting mid-token is acceptable here because the
-    alternative is a rejected record or a clipped tail that is not retrievable.
+    does not recognise.
+
+    The result is *verified* rather than assumed. Two effects make a slice of
+    ``ceiling`` units come back over ``ceiling`` tokens: carrying an incomplete
+    character forward can add a few bytes to the following piece, and
+    re-encoding a decoded slice does not always reproduce its original token
+    count, because BPE merges differ once the text is cut. Both are small, but
+    "small" is not a bound -- so each attempt is measured and the step halved
+    until every piece fits.
     """
     if not _exceeds_token_ceiling(text, ceiling):
         return [text]
-    encoder = _token_encoder()
-    if encoder is None:
-        cap = ceiling * _CHARS_PER_TOKEN_FALLBACK
-        return [text[i : i + cap] for i in range(0, len(text), cap)] or [text]
-    tokens = encoder.encode(text)
-    return [
-        encoder.decode(tokens[i : i + ceiling])
-        for i in range(0, len(tokens), ceiling)
-    ] or [text]
+
+    step = ceiling
+    pieces = [text]
+    for _ in range(_MAX_SPLIT_ATTEMPTS):
+        pieces = _slice_on_character_boundaries(text, step)
+        if all(not _exceeds_token_ceiling(p, ceiling) for p in pieces):
+            return pieces
+        step = max(1, step // 2)
+
+    _module_logger.warning(
+        "Could not split a %d-character block under the %d-token ceiling after "
+        "%d attempts; emitting %d piece(s) anyway.",
+        len(text), ceiling, _MAX_SPLIT_ATTEMPTS, len(pieces),
+    )
+    return pieces or [text]
 
 
 def _word_count(text: str) -> int:
