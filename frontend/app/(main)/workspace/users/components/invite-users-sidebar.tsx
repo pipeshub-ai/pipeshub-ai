@@ -16,9 +16,10 @@ import type { SelectOption, CheckboxOption, TagItem } from '../../components';
 import { useUsersStore } from '../store';
 import { UsersApi } from '../api';
 import { GroupsApi } from '../../groups/api';
-import { USER_ROLES, INVITE_ROLE_OPTIONS } from '../../constants';
+import { USER_ROLES, INVITE_ROLE_OPTIONS, isMaxOrgAdminsErrorMessage } from '../../constants';
 import { GroupType, type Group } from '../../groups/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { isProcessedError } from '@/lib/api';
 
 // ========================================
 // Constants
@@ -260,14 +261,31 @@ export function InviteUsersSidebar({
       // Close panel and refresh parent list
       closeInvitePanel();
       onInviteSuccess?.();
-    } catch {
-      addToast({
-        variant: 'error',
-        title: isEditMode
-          ? t('workspace.users.invite.editError', 'Failed to update invite')
-          : t('workspace.users.invite.errorGeneric', 'Failed to send invite'),
-        duration: 5000,
-      });
+    } catch (err: unknown) {
+      const apiMessage = isProcessedError(err) ? err.message : undefined;
+      if (isMaxOrgAdminsErrorMessage(apiMessage)) {
+        addToast({
+          variant: 'error',
+          title: t(
+            'workspace.users.actions.maxAdminsReachedTitle',
+            'Cannot add another admin'
+          ),
+          description: t(
+            'workspace.users.actions.maxAdminsReached',
+            'There are already 5 admins in this organization. You cannot add another.'
+          ),
+          duration: 5000,
+        });
+      } else {
+        addToast({
+          variant: 'error',
+          title: isEditMode
+            ? t('workspace.users.invite.editError', 'Failed to update invite')
+            : t('workspace.users.invite.errorGeneric', 'Failed to send invite'),
+          ...(apiMessage ? { description: apiMessage } : {}),
+          duration: 5000,
+        });
+      }
     } finally {
       setIsInviting(false);
     }
