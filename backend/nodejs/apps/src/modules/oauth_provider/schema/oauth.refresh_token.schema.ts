@@ -1,19 +1,20 @@
-import mongoose, { Document, Schema, Model, Types } from 'mongoose'
+import mongoose, { Document, Schema, Model, Types } from 'mongoose';
 
 export interface IOAuthRefreshToken extends Document {
-  tokenHash: string
-  clientId: string
-  userId: Types.ObjectId
-  orgId: Types.ObjectId
-  scopes: string[]
-  expiresAt: Date
-  isRevoked: boolean
-  revokedAt?: Date
-  revokedBy?: Types.ObjectId
-  revokedReason?: string
-  rotationCount: number
-  previousTokenHash?: string
-  createdAt: Date
+  tokenHash: string;
+  clientId: string;
+  userId: Types.ObjectId;
+  orgId: Types.ObjectId;
+  scopes: string[];
+  expiresAt: Date;
+  isRevoked: boolean;
+  revokedAt?: Date;
+  revokedBy?: Types.ObjectId;
+  revokedReason?: string;
+  rotationCount: number;
+  previousTokenHash?: string;
+  familyId: Types.ObjectId;
+  createdAt: Date;
 }
 
 const OAuthRefreshTokenSchema = new Schema<IOAuthRefreshToken>(
@@ -51,18 +52,30 @@ const OAuthRefreshTokenSchema = new Schema<IOAuthRefreshToken>(
     revokedReason: { type: String },
     rotationCount: { type: Number, default: 0 },
     previousTokenHash: { type: String },
+    familyId: { type: Schema.Types.ObjectId, required: true },
   },
   { timestamps: true },
-)
+);
 
-OAuthRefreshTokenSchema.index({ clientId: 1, userId: 1, isRevoked: 1 })
-OAuthRefreshTokenSchema.index({ clientId: 1, isRevoked: 1 })
-OAuthRefreshTokenSchema.index({ orgId: 1, isRevoked: 1, expiresAt: 1, createdAt: -1 })
-OAuthRefreshTokenSchema.index({ userId: 1, orgId: 1, isRevoked: 1, expiresAt: 1, createdAt: -1 })
+OAuthRefreshTokenSchema.index({ clientId: 1, userId: 1, isRevoked: 1 });
+OAuthRefreshTokenSchema.index({ clientId: 1, isRevoked: 1 });
+OAuthRefreshTokenSchema.index({
+  orgId: 1,
+  isRevoked: 1,
+  expiresAt: 1,
+  createdAt: -1,
+});
+OAuthRefreshTokenSchema.index({
+  userId: 1,
+  orgId: 1,
+  isRevoked: 1,
+  expiresAt: 1,
+  createdAt: -1,
+});
 
 export const OAuthRefreshToken: Model<IOAuthRefreshToken> =
   mongoose.model<IOAuthRefreshToken>(
     'oauthRefreshToken',
     OAuthRefreshTokenSchema,
     'oauthRefreshTokens',
-  )
+  );

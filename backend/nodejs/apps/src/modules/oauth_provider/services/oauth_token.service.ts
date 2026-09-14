@@ -1,36 +1,36 @@
-import { injectable, inject } from 'inversify'
-import jwt, { Algorithm, Secret } from 'jsonwebtoken'
-import crypto from 'crypto'
-import { randomUUID } from 'crypto'
-import mongoose, { Types } from 'mongoose'
-import { Logger } from '../../../libs/services/logger.service'
+import { injectable, inject } from 'inversify';
+import jwt, { Algorithm, Secret } from 'jsonwebtoken';
+import crypto from 'crypto';
+import { randomUUID } from 'crypto';
+import mongoose, { Types } from 'mongoose';
+import { Logger } from '../../../libs/services/logger.service';
 import {
   OAuthAccessToken,
   IOAuthAccessToken,
-} from '../schema/oauth.access_token.schema'
-import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema'
-import { IOAuthApp } from '../schema/oauth.app.schema'
+} from '../schema/oauth.access_token.schema';
+import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema';
+import { IOAuthApp } from '../schema/oauth.app.schema';
 import {
   InvalidTokenError,
   ExpiredTokenError,
-} from '../../../libs/errors/oauth.errors'
+} from '../../../libs/errors/oauth.errors';
 import {
   OAuthTokenPayload,
   GeneratedTokens,
   GenerateTokensOptions,
   IntrospectResponse,
   TokenListItem,
-} from '../types/oauth.types'
-import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig'
-import { PAT_TOKEN_PREFIX } from '../constants/constants'
-import { AppConfig } from '../../tokens_manager/config/config'
+} from '../types/oauth.types';
+import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
+import { PAT_TOKEN_PREFIX } from '../constants/constants';
+import { AppConfig } from '../../tokens_manager/config/config';
 
 @injectable()
 export class OAuthTokenService {
-  private algorithm: Algorithm
-  private signingKey: Secret
-  private verifyKey: Secret
-  private keyId?: string
+  private algorithm: Algorithm;
+  private signingKey: Secret;
+  private verifyKey: Secret;
+  private keyId?: string;
 
   constructor(
     @inject('Logger') private logger: Logger,
@@ -38,23 +38,23 @@ export class OAuthTokenService {
     @inject('OAUTH_ISSUER') private issuer: string,
     @inject('AppConfig') private appConfig: AppConfig,
   ) {
-    const keyConfig = getJwtKeyFromConfig(jwtConfig)
-    this.algorithm = keyConfig.algorithm
-    this.signingKey = keyConfig.signingKey
-    this.verifyKey = keyConfig.verifyKey
-    this.keyId = keyConfig.keyId
+    const keyConfig = getJwtKeyFromConfig(jwtConfig);
+    this.algorithm = keyConfig.algorithm;
+    this.signingKey = keyConfig.signingKey;
+    this.verifyKey = keyConfig.verifyKey;
+    this.keyId = keyConfig.keyId;
   }
 
   getAlgorithm(): Algorithm {
-    return this.algorithm
+    return this.algorithm;
   }
 
   getKeyId(): string | undefined {
-    return this.keyId
+    return this.keyId;
   }
 
   getPublicKey(): string | undefined {
-    return this.jwtConfig.publicKey
+    return this.jwtConfig.publicKey;
   }
 
   /**
@@ -70,10 +70,10 @@ export class OAuthTokenService {
     accountType?: string,
     opts?: GenerateTokensOptions,
   ): Promise<GeneratedTokens> {
-    const jti = randomUUID()
-    const now = Math.floor(Date.now() / 1000)
+    const jti = randomUUID();
+    const now = Math.floor(Date.now() / 1000);
     const accessTokenLifetime =
-      opts?.accessTokenLifetimeOverrideSeconds ?? app.accessTokenLifetime
+      opts?.accessTokenLifetimeOverrideSeconds ?? app.accessTokenLifetime;
 
     // Generate access token
     const accessTokenPayload: OAuthTokenPayload = {
@@ -89,27 +89,32 @@ export class OAuthTokenService {
       fullName,
       accountType,
       createdBy: app.createdBy?.toString(),
-    }
+    };
 
-    const signOptions: jwt.SignOptions = { algorithm: this.algorithm }
+    const signOptions: jwt.SignOptions = { algorithm: this.algorithm };
     if (this.keyId) {
-      signOptions.keyid = this.keyId
+      signOptions.keyid = this.keyId;
     }
-    const accessToken = jwt.sign(accessTokenPayload, this.signingKey, signOptions)
+    const accessToken = jwt.sign(
+      accessTokenPayload,
+      this.signingKey,
+      signOptions,
+    );
 
     // Store access token hash for revocation lookup
-    const accessTokenHash = this.hashToken(accessToken)
+    const accessTokenHash = this.hashToken(accessToken);
 
     // Check if refresh token should be generated
     const hasRefreshToken = Boolean(
       includeRefreshToken && userId && scopes.includes('offline_access'),
-    )
-    const refreshTokenId = hasRefreshToken ? new Types.ObjectId() : undefined
-    let refreshToken: string | undefined
-    let refreshTokenHash: string | undefined
+    );
+    const refreshTokenId = hasRefreshToken ? new Types.ObjectId() : undefined;
+    const familyId = opts?.familyId || refreshTokenId;
+    let refreshToken: string | undefined;
+    let refreshTokenHash: string | undefined;
 
     if (hasRefreshToken && userId) {
-      const refreshJti = randomUUID()
+      const refreshJti = randomUUID();
       const refreshTokenPayload: OAuthTokenPayload = {
         userId: userId,
         orgId,
@@ -124,10 +129,14 @@ export class OAuthTokenService {
         fullName,
         accountType,
         createdBy: app.createdBy?.toString(),
-      }
+      };
 
-      refreshToken = jwt.sign(refreshTokenPayload, this.signingKey, signOptions)
-      refreshTokenHash = this.hashToken(refreshToken)
+      refreshToken = jwt.sign(
+        refreshTokenPayload,
+        this.signingKey,
+        signOptions,
+      );
+      refreshTokenHash = this.hashToken(refreshToken);
     }
 
     const accessTokenData = {
@@ -138,16 +147,21 @@ export class OAuthTokenService {
       scopes,
       expiresAt: new Date((now + accessTokenLifetime) * 1000),
       name: opts?.name,
-      parentRefreshTokenId: refreshTokenId,
-    }
+      parentRefreshTokenId: familyId,
+    };
 
-    let storedAccessToken: IOAuthAccessToken | null = null
+    let storedAccessToken: IOAuthAccessToken | null = null;
     if (this.appConfig.rsAvailable === 'true') {
-      const session = await mongoose.startSession()
+      const session = await mongoose.startSession();
       try {
         await session.withTransaction(async () => {
-          const createdAccess = await OAuthAccessToken.create([accessTokenData], { session })
-          storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) || null
+          const createdAccess = await OAuthAccessToken.create(
+            [accessTokenData],
+            { session },
+          );
+          storedAccessToken =
+            (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) ||
+            null;
 
           if (hasRefreshToken && refreshTokenHash && userId) {
             await OAuthRefreshToken.create(
@@ -159,15 +173,16 @@ export class OAuthTokenService {
                   userId: new Types.ObjectId(userId),
                   orgId: new Types.ObjectId(orgId),
                   scopes,
+                  familyId: familyId as Types.ObjectId,
                   expiresAt: new Date((now + app.refreshTokenLifetime) * 1000),
                 },
               ],
               { session },
-            )
+            );
           }
-        })
+        });
       } finally {
-        await session.endSession()
+        await session.endSession();
       }
     } else {
       // Safe non-transactional fallback:
@@ -182,24 +197,31 @@ export class OAuthTokenService {
           userId: new Types.ObjectId(userId),
           orgId: new Types.ObjectId(orgId),
           scopes,
+          familyId: familyId as Types.ObjectId,
           expiresAt: new Date((now + app.refreshTokenLifetime) * 1000),
-        })
+        });
 
         try {
-          const createdAccess = await OAuthAccessToken.create(accessTokenData)
-          storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) || null
+          const createdAccess = await OAuthAccessToken.create(accessTokenData);
+          storedAccessToken =
+            (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) ||
+            null;
         } catch (err) {
-          await OAuthRefreshToken.deleteOne({ _id: refreshTokenId }).catch(() => {})
-          throw err
+          await OAuthRefreshToken.deleteOne({ _id: refreshTokenId }).catch(
+            () => {},
+          );
+          throw err;
         }
       } else {
-        const createdAccess = await OAuthAccessToken.create(accessTokenData)
-        storedAccessToken = (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) || null
+        const createdAccess = await OAuthAccessToken.create(accessTokenData);
+        storedAccessToken =
+          (Array.isArray(createdAccess) ? createdAccess[0] : createdAccess) ||
+          null;
       }
     }
 
     if (!storedAccessToken) {
-      throw new Error('OAuth access token creation failed')
+      throw new Error('OAuth access token creation failed');
     }
 
     const result: GeneratedTokens = {
@@ -209,16 +231,16 @@ export class OAuthTokenService {
       expiresIn: accessTokenLifetime,
       scope: scopes.join(' '),
       refreshToken,
-    }
+    };
 
     this.logger.info('OAuth tokens generated', {
       clientId: app.clientId,
       userId,
       scopes,
       hasRefreshToken: !!result.refreshToken,
-    })
+    });
 
-    return result
+    return result;
   }
 
   /**
@@ -232,25 +254,25 @@ export class OAuthTokenService {
       // type never has this prefix, so this is a no-op for them.
       const rawToken = token.startsWith(PAT_TOKEN_PREFIX)
         ? token.slice(PAT_TOKEN_PREFIX.length)
-        : token
+        : token;
 
       const payload = jwt.verify(rawToken, this.verifyKey, {
         algorithms: [this.algorithm],
-      }) as OAuthTokenPayload
+      }) as OAuthTokenPayload;
 
       if (payload.isRefreshToken) {
-        throw new InvalidTokenError('Invalid token type')
+        throw new InvalidTokenError('Invalid token type');
       }
 
       // Check if token is revoked
-      const tokenHash = this.hashToken(rawToken)
+      const tokenHash = this.hashToken(rawToken);
       const storedToken = await OAuthAccessToken.findOne({
         tokenHash: { $eq: tokenHash },
         isRevoked: { $eq: false },
-      })
+      });
 
       if (!storedToken) {
-        throw new InvalidTokenError('Token has been revoked')
+        throw new InvalidTokenError('Token has been revoked');
       }
 
       // Best-effort recency tracking for the token list UI — never blocks
@@ -258,18 +280,18 @@ export class OAuthTokenService {
       this.touchLastUsed(storedToken).catch((err: unknown) => {
         this.logger.warn('Failed to update token lastUsedAt', {
           error: err instanceof Error ? err.message : 'Unknown error',
-        })
-      })
+        });
+      });
 
-      return payload
+      return payload;
     } catch (error) {
       if (error instanceof jwt.TokenExpiredError) {
-        throw new ExpiredTokenError('Access token has expired')
+        throw new ExpiredTokenError('Access token has expired');
       }
       if (error instanceof jwt.JsonWebTokenError) {
-        throw new InvalidTokenError('Invalid access token')
+        throw new InvalidTokenError('Invalid access token');
       }
-      throw error
+      throw error;
     }
   }
 
@@ -280,31 +302,31 @@ export class OAuthTokenService {
     try {
       const payload = jwt.verify(token, this.verifyKey, {
         algorithms: [this.algorithm],
-      }) as OAuthTokenPayload
+      }) as OAuthTokenPayload;
 
       if (!payload.isRefreshToken) {
-        throw new InvalidTokenError('Invalid token type')
+        throw new InvalidTokenError('Invalid token type');
       }
 
-      const tokenHash = this.hashToken(token)
+      const tokenHash = this.hashToken(token);
       const storedToken = await OAuthRefreshToken.findOne({
         tokenHash: { $eq: tokenHash },
         isRevoked: { $eq: false },
-      })
+      });
 
       if (!storedToken) {
-        throw new InvalidTokenError('Refresh token has been revoked')
+        throw new InvalidTokenError('Refresh token has been revoked');
       }
 
-      return payload
+      return payload;
     } catch (error) {
       if (error instanceof jwt.TokenExpiredError) {
-        throw new ExpiredTokenError('Refresh token has expired')
+        throw new ExpiredTokenError('Refresh token has expired');
       }
       if (error instanceof jwt.JsonWebTokenError) {
-        throw new InvalidTokenError('Invalid refresh token')
+        throw new InvalidTokenError('Invalid refresh token');
       }
-      throw error
+      throw error;
     }
   }
 
@@ -316,27 +338,69 @@ export class OAuthTokenService {
     refreshToken: string,
     requestedScopes?: string[],
   ): Promise<GeneratedTokens> {
-    const payload = await this.verifyRefreshToken(refreshToken)
+    const payload = await this.verifyRefreshToken(refreshToken);
 
     // Get stored refresh token
-    const tokenHash = this.hashToken(refreshToken)
-    const storedToken = await OAuthRefreshToken.findOne({ tokenHash: { $eq: tokenHash } })
+    const tokenHash = this.hashToken(refreshToken);
+    const storedToken = await OAuthRefreshToken.findOne({
+      tokenHash: { $eq: tokenHash },
+    });
 
     if (!storedToken) {
-      throw new InvalidTokenError('Refresh token not found')
+      throw new InvalidTokenError('Refresh token not found');
+    }
+
+    const familyId =
+      storedToken.familyId || (storedToken._id as Types.ObjectId);
+
+    // Token Reuse Detection
+    if (storedToken.isRevoked) {
+      this.logger.warn(
+        'Refresh token reuse detected, revoking entire grant family',
+        {
+          clientId: app.clientId,
+          userId: payload.userId,
+          familyId,
+        },
+      );
+
+      // Revoke all refresh tokens and access tokens in this family
+      await Promise.all([
+        OAuthRefreshToken.updateMany(
+          { familyId: { $eq: familyId }, isRevoked: { $eq: false } },
+          {
+            isRevoked: true,
+            revokedAt: new Date(),
+            revokedReason: 'Token Reuse Detected',
+          },
+        ),
+        OAuthAccessToken.updateMany(
+          {
+            parentRefreshTokenId: { $eq: familyId },
+            isRevoked: { $eq: false },
+          },
+          {
+            isRevoked: true,
+            revokedAt: new Date(),
+            revokedReason: 'Token Reuse Detected',
+          },
+        ),
+      ]);
+
+      throw new InvalidTokenError('Refresh token reuse detected');
     }
 
     // Determine scopes - can only be reduced, not expanded
-    let scopes = storedToken.scopes
+    let scopes = storedToken.scopes;
     if (requestedScopes && requestedScopes.length > 0) {
       // Filter to only include scopes that were in the original grant
-      scopes = requestedScopes.filter((s) => storedToken.scopes.includes(s))
+      scopes = requestedScopes.filter((s) => storedToken.scopes.includes(s));
     }
 
     // Revoke old refresh token (rotation)
-    storedToken.isRevoked = true
-    storedToken.revokedAt = new Date()
-    await storedToken.save()
+    storedToken.isRevoked = true;
+    storedToken.revokedAt = new Date();
+    await storedToken.save();
 
     // Generate new tokens
     const newTokens = await this.generateTokens(
@@ -347,15 +411,16 @@ export class OAuthTokenService {
       true, // Include new refresh token
       payload.fullName,
       payload.accountType,
-    )
+      { familyId },
+    );
 
     this.logger.info('Tokens refreshed', {
       clientId: app.clientId,
       userId: payload.userId,
       rotationCount: storedToken.rotationCount + 1,
-    })
+    });
 
-    return newTokens
+    return newTokens;
   }
 
   /**
@@ -370,7 +435,7 @@ export class OAuthTokenService {
     clientId: string,
     tokenType?: 'access_token' | 'refresh_token',
   ): Promise<boolean> {
-    const tokenHash = this.hashToken(token)
+    const tokenHash = this.hashToken(token);
 
     // RFC 7009: The authorization server validates...that the token was issued to the client
     // We include clientId in the query to ensure the token belongs to this client
@@ -383,10 +448,10 @@ export class OAuthTokenService {
           isRevoked: { $eq: false },
         },
         { isRevoked: true, revokedAt: new Date() },
-      )
+      );
       if (result.modifiedCount > 0) {
-        this.logger.info('Access token revoked', { clientId })
-        return true
+        this.logger.info('Access token revoked', { clientId });
+        return true;
       }
     }
 
@@ -398,14 +463,14 @@ export class OAuthTokenService {
           isRevoked: { $eq: false },
         },
         { isRevoked: true, revokedAt: new Date() },
-      )
+      );
       if (result.modifiedCount > 0) {
-        this.logger.info('Refresh token revoked', { clientId })
-        return true
+        this.logger.info('Refresh token revoked', { clientId });
+        return true;
       }
     }
 
-    return false
+    return false;
   }
 
   /**
@@ -421,9 +486,9 @@ export class OAuthTokenService {
         { clientId: { $eq: clientId }, isRevoked: { $eq: false } },
         { isRevoked: true, revokedAt: new Date() },
       ),
-    ])
+    ]);
 
-    this.logger.info('All tokens revoked for app', { clientId })
+    this.logger.info('All tokens revoked for app', { clientId });
   }
 
   /**
@@ -433,7 +498,7 @@ export class OAuthTokenService {
     clientId: string,
     userId: string,
   ): Promise<void> {
-    const userObjId = new Types.ObjectId(userId)
+    const userObjId = new Types.ObjectId(userId);
     await Promise.all([
       OAuthAccessToken.updateMany(
         {
@@ -451,9 +516,12 @@ export class OAuthTokenService {
         },
         { isRevoked: true, revokedAt: new Date() },
       ),
-    ])
+    ]);
 
-    this.logger.info('All tokens revoked for user in app', { clientId, userId })
+    this.logger.info('All tokens revoked for user in app', {
+      clientId,
+      userId,
+    });
   }
 
   /**
@@ -462,35 +530,37 @@ export class OAuthTokenService {
    * @param token The token to introspect
    * @param clientId The client_id making the request (for ownership verification)
    */
-  async introspectToken(token: string, clientId: string): Promise<IntrospectResponse> {
+  async introspectToken(
+    token: string,
+    clientId: string,
+  ): Promise<IntrospectResponse> {
     try {
       const payload = jwt.verify(token, this.verifyKey, {
         algorithms: [this.algorithm],
-      }) as OAuthTokenPayload
-      const tokenHash = this.hashToken(token)
+      }) as OAuthTokenPayload;
+      const tokenHash = this.hashToken(token);
 
       // RFC 7662: Validate that the token was issued to the requesting client
       // Or the requesting client is authorized to introspect tokens (resource server)
       // For now, we only allow the token's client to introspect it
       if (payload.client_id !== clientId) {
         // Return inactive rather than error to prevent information disclosure
-        return { active: false }
+        return { active: false };
       }
 
       // Check revocation
-      const storedToken =
-        !payload.isRefreshToken
-          ? await OAuthAccessToken.findOne({
-              tokenHash: { $eq: tokenHash },
-              isRevoked: { $eq: false },
-            })
-          : await OAuthRefreshToken.findOne({
-              tokenHash: { $eq: tokenHash },
-              isRevoked: { $eq: false },
-            })
+      const storedToken = !payload.isRefreshToken
+        ? await OAuthAccessToken.findOne({
+            tokenHash: { $eq: tokenHash },
+            isRevoked: { $eq: false },
+          })
+        : await OAuthRefreshToken.findOne({
+            tokenHash: { $eq: tokenHash },
+            isRevoked: { $eq: false },
+          });
 
       if (!storedToken) {
-        return { active: false }
+        return { active: false };
       }
 
       // Build introspection response per RFC 7662
@@ -504,16 +574,16 @@ export class OAuthTokenService {
         user_id: payload.userId,
         iss: payload.iss,
         jti: payload.jti,
-      }
+      };
 
       // RFC 7662: Add username if available (for user tokens)
       if (storedToken.userId) {
-        response.username = storedToken.userId.toString()
+        response.username = storedToken.userId.toString();
       }
 
-      return response
+      return response;
     } catch {
-      return { active: false }
+      return { active: false };
     }
   }
 
@@ -538,7 +608,7 @@ export class OAuthTokenService {
         .sort({ createdAt: -1 })
         .limit(100)
         .exec(),
-    ])
+    ]);
 
     const tokens: TokenListItem[] = [
       ...accessTokens.map((t) => ({
@@ -561,11 +631,9 @@ export class OAuthTokenService {
         expiresAt: t.expiresAt,
         isRevoked: t.isRevoked,
       })),
-    ]
+    ];
 
-    return tokens.sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
-    )
+    return tokens.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
   /**
@@ -585,7 +653,7 @@ export class OAuthTokenService {
     })
       .sort({ createdAt: -1 })
       .limit(100)
-      .exec()
+      .exec();
 
     return tokens.map((t) => ({
       id: (t._id as Types.ObjectId).toString(),
@@ -597,7 +665,7 @@ export class OAuthTokenService {
       isRevoked: t.isRevoked,
       name: t.name,
       lastUsedAt: t.lastUsedAt,
-    }))
+    }));
   }
 
   /**
@@ -615,7 +683,7 @@ export class OAuthTokenService {
       clientId: { $eq: clientId },
       isRevoked: { $eq: false },
       expiresAt: { $gt: new Date() },
-    }
+    };
     const [tokens, total] = await Promise.all([
       OAuthAccessToken.find(filter)
         .sort({ createdAt: -1 })
@@ -623,7 +691,7 @@ export class OAuthTokenService {
         .limit(limit)
         .exec(),
       OAuthAccessToken.countDocuments(filter),
-    ])
+    ]);
 
     return {
       tokens: tokens.map((t) => ({
@@ -638,7 +706,7 @@ export class OAuthTokenService {
         lastUsedAt: t.lastUsedAt,
       })),
       total,
-    }
+    };
   }
 
   /**
@@ -657,7 +725,7 @@ export class OAuthTokenService {
     // BSONError out of `new Types.ObjectId(id)` — treat it the same as
     // "not found" rather than letting that leak as an unhandled 500.
     if (!Types.ObjectId.isValid(id)) {
-      return false
+      return false;
     }
     const result = await OAuthAccessToken.updateOne(
       {
@@ -672,13 +740,13 @@ export class OAuthTokenService {
         revokedBy: new Types.ObjectId(revokedBy),
         revokedReason: reason,
       },
-    )
+    );
 
     if (result.modifiedCount > 0) {
-      this.logger.info('Access token revoked by id', { id, clientId, userId })
-      return true
+      this.logger.info('Access token revoked by id', { id, clientId, userId });
+      return true;
     }
-    return false
+    return false;
   }
 
   /**
@@ -694,7 +762,7 @@ export class OAuthTokenService {
     reason?: string,
   ): Promise<boolean> {
     if (!Types.ObjectId.isValid(id)) {
-      return false
+      return false;
     }
     const result = await OAuthAccessToken.updateOne(
       {
@@ -708,17 +776,17 @@ export class OAuthTokenService {
         revokedBy: new Types.ObjectId(revokedBy),
         revokedReason: reason,
       },
-    )
+    );
 
     if (result.modifiedCount > 0) {
       this.logger.info('Access token revoked by id (admin)', {
         id,
         clientId,
         revokedBy,
-      })
-      return true
+      });
+      return true;
     }
-    return false
+    return false;
   }
 
   /**
@@ -727,17 +795,17 @@ export class OAuthTokenService {
    * write on every authenticated request.
    */
   private async touchLastUsed(token: IOAuthAccessToken): Promise<void> {
-    const staleThresholdMs = 5 * 60 * 1000
+    const staleThresholdMs = 5 * 60 * 1000;
     if (
       token.lastUsedAt &&
       Date.now() - token.lastUsedAt.getTime() < staleThresholdMs
     ) {
-      return
+      return;
     }
     await OAuthAccessToken.updateOne(
       { _id: token._id },
       { lastUsedAt: new Date() },
-    )
+    );
   }
 
   /**
@@ -745,9 +813,9 @@ export class OAuthTokenService {
    */
   decodeToken(token: string): OAuthTokenPayload | null {
     try {
-      return jwt.decode(token) as OAuthTokenPayload | null
+      return jwt.decode(token) as OAuthTokenPayload | null;
     } catch {
-      return null
+      return null;
     }
   }
 
@@ -755,6 +823,6 @@ export class OAuthTokenService {
    * Hash token for storage
    */
   private hashToken(token: string): string {
-    return crypto.createHash('sha256').update(token).digest('hex')
+    return crypto.createHash('sha256').update(token).digest('hex');
   }
 }

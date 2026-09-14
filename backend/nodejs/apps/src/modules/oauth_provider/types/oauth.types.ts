@@ -1,296 +1,299 @@
+import { Types } from 'mongoose';
+
 // Token Payload
 export interface OAuthTokenPayload {
-  userId: string
-  orgId: string
-  iss: string
-  exp: number
-  iat: number
-  jti: string
-  scope: string
-  client_id: string
-  tokenType: 'oauth'
-  isRefreshToken?: true
-  fullName?: string
-  accountType?: string
-  createdBy?: string
+  userId: string;
+  orgId: string;
+  iss: string;
+  exp: number;
+  iat: number;
+  jti: string;
+  scope: string;
+  client_id: string;
+  tokenType: 'oauth';
+  isRefreshToken?: true;
+  fullName?: string;
+  accountType?: string;
+  createdBy?: string;
 }
 
 // Generated Tokens Response
 export interface GeneratedTokens {
-  accessToken: string
+  accessToken: string;
   /** OAuthAccessToken document id, e.g. for a PAT list/revoke UI to
    * reference this token without ever seeing it again. */
-  accessTokenId: string
-  refreshToken?: string
-  tokenType: string
-  expiresIn: number
-  scope: string
-  idToken?: string
+  accessTokenId: string;
+  refreshToken?: string;
+  tokenType: string;
+  expiresIn: number;
+  scope: string;
+  idToken?: string;
 }
 
 // Per-call overrides for GeneratedTokens.accessToken minting, used by
 // personal access tokens: a fixed lifetime and user-given label rather
 // than the issuing app's own accessTokenLifetime.
 export interface GenerateTokensOptions {
-  accessTokenLifetimeOverrideSeconds?: number
-  name?: string
+  accessTokenLifetimeOverrideSeconds?: number;
+  name?: string;
+  familyId?: Types.ObjectId;
 }
 
 // Token Response (RFC 6749 compliant)
 export interface TokenResponse {
-  access_token: string
-  token_type: string
-  expires_in: number
-  refresh_token?: string
-  scope: string
-  id_token?: string
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+  refresh_token?: string;
+  scope: string;
+  id_token?: string;
 }
 
 // Authorization Request Parameters
 export interface AuthorizeRequest {
-  response_type: 'code'
-  client_id: string
-  redirect_uri: string
-  scope: string
-  state: string
-  code_challenge?: string
-  code_challenge_method?: 'S256' | 'plain'
-  nonce?: string
+  response_type: 'code';
+  client_id: string;
+  redirect_uri: string;
+  scope: string;
+  state: string;
+  code_challenge?: string;
+  code_challenge_method?: 'S256' | 'plain';
+  nonce?: string;
 }
 
 // Token Request Parameters
 export interface TokenRequest {
-  grant_type: 'authorization_code' | 'client_credentials' | 'refresh_token'
-  code?: string
-  redirect_uri?: string
-  client_id: string
-  client_secret?: string
-  refresh_token?: string
-  scope?: string
-  code_verifier?: string
+  grant_type: 'authorization_code' | 'client_credentials' | 'refresh_token';
+  code?: string;
+  redirect_uri?: string;
+  client_id: string;
+  client_secret?: string;
+  refresh_token?: string;
+  scope?: string;
+  code_verifier?: string;
 }
 
 // Revoke Request
 export interface RevokeRequest {
-  token: string
-  token_type_hint?: 'access_token' | 'refresh_token'
-  client_id: string
-  client_secret?: string
+  token: string;
+  token_type_hint?: 'access_token' | 'refresh_token';
+  client_id: string;
+  client_secret?: string;
 }
 
 // Introspect Request
 export interface IntrospectRequest {
-  token: string
-  token_type_hint?: 'access_token' | 'refresh_token'
-  client_id: string
-  client_secret?: string
+  token: string;
+  token_type_hint?: 'access_token' | 'refresh_token';
+  client_id: string;
+  client_secret?: string;
 }
 
 // Introspect Response (RFC 7662)
 export interface IntrospectResponse {
-  active: boolean
-  scope?: string
-  client_id?: string
-  username?: string
-  token_type?: string
-  exp?: number
-  iat?: number
-  nbf?: number
-  user_id?: string
-  iss?: string
-  jti?: string
+  active: boolean;
+  scope?: string;
+  client_id?: string;
+  username?: string;
+  token_type?: string;
+  exp?: number;
+  iat?: number;
+  nbf?: number;
+  user_id?: string;
+  iss?: string;
+  jti?: string;
 }
 
 // UserInfo Response (OIDC)
 export interface UserInfoResponse {
-  user_id: string
-  name?: string
-  given_name?: string
-  family_name?: string
-  email?: string
-  email_verified?: boolean
-  picture?: string
-  updated_at?: number
+  user_id: string;
+  name?: string;
+  given_name?: string;
+  family_name?: string;
+  email?: string;
+  email_verified?: boolean;
+  picture?: string;
+  updated_at?: number;
 }
 
 // Create OAuth App Request
 export interface CreateOAuthAppRequest {
-  name: string
-  description?: string
-  redirectUris?: string[]
-  allowedGrantTypes?: string[]
-  allowedScopes: string[]
-  homepageUrl?: string
-  privacyPolicyUrl?: string
-  termsOfServiceUrl?: string
-  isConfidential?: boolean
-  accessTokenLifetime?: number
-  refreshTokenLifetime?: number
+  name: string;
+  description?: string;
+  redirectUris?: string[];
+  allowedGrantTypes?: string[];
+  allowedScopes: string[];
+  homepageUrl?: string;
+  privacyPolicyUrl?: string;
+  termsOfServiceUrl?: string;
+  isConfidential?: boolean;
+  accessTokenLifetime?: number;
+  refreshTokenLifetime?: number;
 }
 
 // Update OAuth App Request
 export interface UpdateOAuthAppRequest {
-  name?: string
-  description?: string
-  redirectUris?: string[]
-  allowedGrantTypes?: string[]
-  allowedScopes?: string[]
-  homepageUrl?: string | null
-  privacyPolicyUrl?: string | null
-  termsOfServiceUrl?: string | null
-  accessTokenLifetime?: number
-  refreshTokenLifetime?: number
+  name?: string;
+  description?: string;
+  redirectUris?: string[];
+  allowedGrantTypes?: string[];
+  allowedScopes?: string[];
+  homepageUrl?: string | null;
+  privacyPolicyUrl?: string | null;
+  termsOfServiceUrl?: string | null;
+  accessTokenLifetime?: number;
+  refreshTokenLifetime?: number;
 }
 
 // OAuth App Response (public data without secret)
 export interface OAuthAppResponse {
-  id: string
-  slug: string
-  clientId: string
-  name: string
-  description?: string
-  redirectUris: string[]
-  allowedGrantTypes: string[]
-  allowedScopes: string[]
-  status: string
-  logoUrl?: string
-  homepageUrl?: string
-  privacyPolicyUrl?: string
-  termsOfServiceUrl?: string
-  isConfidential: boolean
-  accessTokenLifetime: number
-  refreshTokenLifetime: number
-  createdAt: Date
-  updatedAt: Date
+  id: string;
+  slug: string;
+  clientId: string;
+  name: string;
+  description?: string;
+  redirectUris: string[];
+  allowedGrantTypes: string[];
+  allowedScopes: string[];
+  status: string;
+  logoUrl?: string;
+  homepageUrl?: string;
+  privacyPolicyUrl?: string;
+  termsOfServiceUrl?: string;
+  isConfidential: boolean;
+  accessTokenLifetime: number;
+  refreshTokenLifetime: number;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 // OAuth App with Secret (returned only on creation/regeneration)
 export interface OAuthAppWithSecret extends OAuthAppResponse {
-  clientSecret: string
+  clientSecret: string;
 }
 
 // Consent Data (for authorization page)
 export interface ConsentData {
   app: {
-    name: string
-    description?: string
-    logoUrl?: string
-    homepageUrl?: string
-    privacyPolicyUrl?: string
-  }
+    name: string;
+    description?: string;
+    logoUrl?: string;
+    homepageUrl?: string;
+    privacyPolicyUrl?: string;
+  };
   scopes: Array<{
-    name: string
-    description: string
-    category: string
-  }>
+    name: string;
+    description: string;
+    category: string;
+  }>;
   user: {
-    email: string
-    name?: string
-  }
-  redirectUri: string
-  state: string
+    email: string;
+    name?: string;
+  };
+  redirectUri: string;
+  state: string;
 }
 
 // Auth Code Exchange Result
 export interface AuthCodeExchangeResult {
-  userId: string
-  orgId: string
-  scopes: string[]
+  userId: string;
+  orgId: string;
+  scopes: string[];
 }
 
 // OAuth Error Response (RFC 6749)
 export interface OAuthErrorResponse {
-  error: string
-  error_description?: string
-  error_uri?: string
-  state?: string
+  error: string;
+  error_description?: string;
+  error_uri?: string;
+  state?: string;
 }
 
 // OAuth Protected Resource Metadata (RFC 9728)
 export interface OAuthProtectedResourceMetadata {
-  resource: string
-  authorization_servers: string[]
-  scopes_supported: string[]
-  bearer_methods_supported: string[]
-  resource_documentation?: string
+  resource: string;
+  authorization_servers: string[];
+  scopes_supported: string[];
+  bearer_methods_supported: string[];
+  resource_documentation?: string;
 }
 
 // OIDC Discovery Response
 export interface OpenIDConfiguration {
-  issuer: string
-  authorization_endpoint: string
-  token_endpoint: string
-  userinfo_endpoint: string
-  revocation_endpoint: string
-  introspection_endpoint: string
-  jwks_uri: string
-  scopes_supported: string[]
-  response_types_supported: string[]
-  grant_types_supported: string[]
-  token_endpoint_auth_methods_supported: string[]
-  subject_types_supported: string[]
-  id_token_signing_alg_values_supported: string[]
-  claims_supported: string[]
-  code_challenge_methods_supported: string[]
+  issuer: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  userinfo_endpoint: string;
+  revocation_endpoint: string;
+  introspection_endpoint: string;
+  jwks_uri: string;
+  scopes_supported: string[];
+  response_types_supported: string[];
+  grant_types_supported: string[];
+  token_endpoint_auth_methods_supported: string[];
+  subject_types_supported: string[];
+  id_token_signing_alg_values_supported: string[];
+  claims_supported: string[];
+  code_challenge_methods_supported: string[];
 }
 
 // List Apps Query
 export interface ListAppsQuery {
-  page?: number
-  limit?: number
-  status?: string
-  search?: string
+  page?: number;
+  limit?: number;
+  status?: string;
+  search?: string;
 }
 
 // Paginated Response
 export interface PaginatedResponse<T> {
-  data: T[]
+  data: T[];
   pagination: {
-    page: number
-    limit: number
-    total: number
-    totalPages: number
-  }
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
 }
 
 // Token List Item
 export interface TokenListItem {
-  id: string
-  tokenType: 'access' | 'refresh'
-  userId?: string
-  scopes: string[]
-  createdAt: Date
-  expiresAt: Date
-  isRevoked: boolean
-  name?: string
-  lastUsedAt?: Date
+  id: string;
+  tokenType: 'access' | 'refresh';
+  userId?: string;
+  scopes: string[];
+  createdAt: Date;
+  expiresAt: Date;
+  isRevoked: boolean;
+  name?: string;
+  lastUsedAt?: Date;
 }
 
 // Personal Access Tokens
 export interface CreatePatRequest {
-  name: string
-  scopes?: string[]
+  name: string;
+  scopes?: string[];
   /** Days until expiry, or 'never' for a non-expiring token (stored as a
    * far-future expiresAt — the schema's expiresAt is required). */
-  expiryDays?: 30 | 90 | 365 | 'never'
+  expiryDays?: 30 | 90 | 365 | 'never';
 }
 
 export interface PatWithSecret {
-  id: string
-  name: string
-  scopes: string[]
-  createdAt: Date
-  expiresAt: Date
-  accessToken: string
+  id: string;
+  name: string;
+  scopes: string[];
+  createdAt: Date;
+  expiresAt: Date;
+  accessToken: string;
 }
 
 export interface PatListItem {
-  id: string
-  name: string
-  scopes: string[]
-  createdAt: Date
-  expiresAt: Date
-  lastUsedAt?: Date
+  id: string;
+  name: string;
+  scopes: string[];
+  createdAt: Date;
+  expiresAt: Date;
+  lastUsedAt?: Date;
 }
 
 /**
@@ -299,13 +302,13 @@ export interface PatListItem {
  * own (see `PatService.listAllTokens` / `GET /personal-access-tokens/admin`).
  */
 export interface AdminPatListItem extends PatListItem {
-  userId: string
-  ownerEmail?: string
-  ownerFullName?: string
+  userId: string;
+  ownerEmail?: string;
+  ownerFullName?: string;
   /** True if the owning user has been deleted (or no longer resolves at
    * all) — the token still needs to be visible/revocable for cleanup,
    * even though there's no live account behind it. */
-  ownerDeleted: boolean
+  ownerDeleted: boolean;
 }
 
 /**
@@ -313,16 +316,16 @@ export interface AdminPatListItem extends PatListItem {
  * (`GET /api/v1/oauth-grants`).
  */
 export interface OAuthGrantListItem {
-  id: string
-  clientId: string
-  appName: string
-  appDescription?: string
-  appLogoUrl?: string
-  isConfidential: boolean
-  scopes: string[]
-  createdAt: Date
-  expiresAt: Date
-  lastUsedAt?: Date
+  id: string;
+  clientId: string;
+  appName: string;
+  appDescription?: string;
+  appLogoUrl?: string;
+  isConfidential: boolean;
+  scopes: string[];
+  createdAt: Date;
+  expiresAt: Date;
+  lastUsedAt?: Date;
 }
 
 /**
@@ -330,37 +333,37 @@ export interface OAuthGrantListItem {
  * (`GET /api/v1/oauth-grants/admin`).
  */
 export interface AdminOAuthGrantListItem extends OAuthGrantListItem {
-  userId: string
-  ownerEmail?: string
-  ownerFullName?: string
-  ownerDeleted: boolean
+  userId: string;
+  ownerEmail?: string;
+  ownerFullName?: string;
+  ownerDeleted: boolean;
 }
 
 // Request with OAuth user info
 export interface OAuthAuthenticatedRequest {
   oauthClient?: {
-    clientId: string
-    orgId: string
-    scopes: string[]
-  }
+    clientId: string;
+    orgId: string;
+    scopes: string[];
+  };
   oauthUser?: {
-    userId: string
-    orgId: string
-    email: string
-  }
+    userId: string;
+    orgId: string;
+    email: string;
+  };
 }
 
 // JWK (JSON Web Key) - RFC 7517
 export interface JWK {
-  kty: 'RSA'
-  use: 'sig'
-  alg: 'RS256'
-  kid: string
-  n: string
-  e: string
+  kty: 'RSA';
+  use: 'sig';
+  alg: 'RS256';
+  kid: string;
+  n: string;
+  e: string;
 }
 
 // JWKS (JSON Web Key Set)
 export interface JWKS {
-  keys: JWK[]
+  keys: JWK[];
 }
