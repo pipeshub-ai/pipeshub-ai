@@ -84,9 +84,10 @@ export const UsersApi = {
    */
   async updateUser(
     userId: string,
-    payload: { role?: string; fullName?: string; [key: string]: unknown }
+    payload: { role?: string; fullName?: string; [key: string]: unknown },
+    config?: { suppressErrorToast?: boolean },
   ): Promise<void> {
-    await apiClient.put(`${BASE_URL}/${userId}`, payload);
+    await apiClient.put(`${BASE_URL}/${userId}`, payload, config);
   },
 
   /**
