@@ -4,25 +4,21 @@ import * as path from 'path';
 
 const CREDENTIALS_VERSION = 1;
 const CREDENTIALS_FILE = 'desktop-credentials.json';
-/** Re-mint this far before the access token's own `exp`, to cover clock skew. */
-const TOKEN_REFRESH_SKEW_MS = 60_000;
-/** Used when the minted token carries no readable `exp`. */
+/** Stop presenting a token this far before its `exp`, to cover clock skew. */
+const TOKEN_EXPIRY_SKEW_MS = 60_000;
+/** Used when the pushed token carries no readable `exp`. */
 const TOKEN_FALLBACK_TTL_MS = 10 * 60_000;
-const MINT_TIMEOUT_MS = 20_000;
-const REFRESH_TOKEN_ROUTE = '/api/v1/userAccount/refresh/token';
 
 /**
- * `apiBaseUrl` is concatenated into the token-mint `fetch()` here and into
- * the socket.io handshake URL in `desktop-socket.ts`, so an unparseable or
- * dangerous scheme (`javascript:`, `data:`, `file:`, ...) must never be
- * used — whether it just arrived from the renderer or was loaded back from
- * a possibly-tampered credentials file. Self-hosted PipesHub servers are
- * commonly reached over plain `http:` (see `env.template`'s defaults and
- * `server-url-setup.tsx`, which accepts any http(s) origin), so this only
- * restricts the scheme, matching that same policy rather than requiring
- * https or a loopback host. Exported so call sites that read `apiBaseUrl`
- * back out of this store (e.g. before opening the socket) can re-check it
- * with the same rule instead of duplicating it.
+ * `apiBaseUrl` is concatenated into the socket.io handshake URL in
+ * `desktop-socket.ts`, so an unparseable or dangerous scheme
+ * (`javascript:`, `data:`, `file:`, ...) must never be used. Self-hosted
+ * PipesHub servers are commonly reached over plain `http:` (see
+ * `env.template`'s defaults and `server-url-setup.tsx`, which accepts any
+ * http(s) origin), so this only restricts the scheme, matching that same
+ * policy rather than requiring https or a loopback host. Exported so call
+ * sites that read `apiBaseUrl` back out of this store can re-check it with
+ * the same rule instead of duplicating it.
  */
 export function isValidApiBaseUrl(rawUrl: string): boolean {
   let parsed: URL;
@@ -40,33 +36,24 @@ function assertValidApiBaseUrl(rawUrl: string): void {
   }
 }
 
-/** The slice of Electron's `safeStorage` this store needs, injected for testability. */
-export interface SafeStorageLike {
-  isEncryptionAvailable(): boolean;
-  encryptString(plainText: string): Buffer;
-  decryptString(encrypted: Buffer): string;
-}
-
-export interface DesktopCredentialsInput {
-  refreshToken: string;
+export interface DesktopAccessTokenInput {
+  accessToken: string;
   apiBaseUrl: string;
 }
 
-export interface SetCredentialsResult {
-  /** False when the refresh token is held in memory only for this session. */
-  persisted: boolean;
+export interface SetAccessTokenResult {
   deviceId: string;
-  reason?: string;
+  /** False when the renderer re-pushed the token main already held. */
+  changed: boolean;
 }
 
-interface StoredCredentials {
+interface StoredDeviceIdentity {
   version: number;
   deviceId: string;
-  apiBaseUrl: string | null;
-  /** base64 of safeStorage.encryptString output; absent when encryption is unavailable. */
-  refreshTokenEnc?: string;
   updatedAt: number;
 }
+
+const IDENTITY_FIELDS = ['version', 'deviceId', 'updatedAt'];
 
 function readJsonFile<T>(filePath: string): T | null {
   if (!fs.existsSync(filePath)) return null;
@@ -83,7 +70,7 @@ function writeFileAtomic(filePath: string, content: string): void {
   fs.renameSync(tmp, filePath);
 }
 
-/** Read `exp` out of a JWT without verifying it — only used to schedule re-minting. */
+/** Read `exp` out of a JWT without verifying it — only used to stop presenting a dead token. */
 function readJwtExpiryMs(token: string): number | null {
   const parts = String(token || '').split('.');
   if (parts.length < 2) return null;
@@ -97,51 +84,67 @@ function readJwtExpiryMs(token: string): number | null {
 }
 
 /**
- * The desktop's own credential, independent of any renderer window: the
- * refresh token, the server it belongs to, and a stable per-install device id.
+ * The desktop's identity and its current access token.
  *
- * `apiBaseUrl` lives here rather than only in per-connector journal meta
- * because a machine that has signed in but not yet configured a connector
- * still needs somewhere to send its socket handshake.
+ * Nothing secret is written to disk: the file holds only a stable per-install
+ * `deviceId`, which the Local FS sync point is pinned to. The access token and
+ * the server it belongs to are pushed in by the renderer on every token change
+ * and held in memory for this process only, so Local FS syncs while the app
+ * runs rather than as a background daemon.
  */
 export class DesktopCredentialsStore {
   private readonly filePath: string;
-  private readonly safeStorage: SafeStorageLike | null;
-  private stored: StoredCredentials;
-  /** Set when the token could not be encrypted at rest — session-scoped only. */
-  private volatileRefreshToken: string | null = null;
+  private stored: StoredDeviceIdentity;
   private accessToken: string | null = null;
   private accessTokenExpiresAt = 0;
-  private mintInFlight: Promise<string | null> | null = null;
+  private baseUrl: string | null = null;
 
-  constructor(baseDir: string, safeStorage?: SafeStorageLike | null) {
+  constructor(baseDir: string) {
     fs.mkdirSync(baseDir, { recursive: true });
     this.filePath = path.join(baseDir, CREDENTIALS_FILE);
-    this.safeStorage = safeStorage ?? null;
     this.stored = this.load();
   }
 
-  private load(): StoredCredentials {
-    const raw = readJsonFile<StoredCredentials>(this.filePath);
-    if (raw && raw.version === CREDENTIALS_VERSION && typeof raw.deviceId === 'string' && raw.deviceId) {
-      return raw;
+  private load(): StoredDeviceIdentity {
+    const raw = readJsonFile<Record<string, unknown>>(this.filePath);
+    // Any readable deviceId is kept, whatever wrote it: minting a fresh one
+    // orphans the device recorded on the server's sync point, which costs a
+    // full re-walk and a manual sync-point reset to recover from.
+    const deviceId = typeof raw?.deviceId === 'string' ? raw.deviceId : '';
+    if (raw && deviceId) {
+      // Pre-release builds of this branch also wrote an encrypted refresh
+      // token here; rewrite so no token material is left behind on a machine
+      // that ran one.
+      const isIdentityOnly =
+        raw.version === CREDENTIALS_VERSION &&
+        typeof raw.updatedAt === 'number' &&
+        Object.keys(raw).every((key) => IDENTITY_FIELDS.includes(key));
+      if (isIdentityOnly) {
+        return { version: CREDENTIALS_VERSION, deviceId, updatedAt: raw.updatedAt as number };
+      }
+      const identity: StoredDeviceIdentity = {
+        version: CREDENTIALS_VERSION,
+        deviceId,
+        updatedAt: Date.now(),
+      };
+      this.persist(identity);
+      return identity;
     }
-    const fresh: StoredCredentials = {
+    const fresh: StoredDeviceIdentity = {
       version: CREDENTIALS_VERSION,
       deviceId: crypto.randomUUID(),
-      apiBaseUrl: null,
       updatedAt: Date.now(),
     };
     this.persist(fresh);
     return fresh;
   }
 
-  private persist(next: StoredCredentials): void {
+  private persist(next: StoredDeviceIdentity): void {
     this.stored = next;
     try {
       writeFileAtomic(this.filePath, JSON.stringify(next, null, 2));
     } catch (error) {
-      console.warn('[desktop-credentials] could not write credential file:', error);
+      console.warn('[desktop-credentials] could not write device identity file:', error);
     }
   }
 
@@ -150,153 +153,45 @@ export class DesktopCredentialsStore {
   }
 
   get apiBaseUrl(): string | null {
-    return this.stored.apiBaseUrl;
+    return this.baseUrl;
   }
 
-  getRefreshToken(): string | null {
-    if (this.volatileRefreshToken) return this.volatileRefreshToken;
-    const enc = this.stored.refreshTokenEnc;
-    if (!enc || !this.safeStorage) return null;
-    try {
-      return this.safeStorage.decryptString(Buffer.from(enc, 'base64')) || null;
-    } catch {
-      return null;
-    }
+  getAccessToken(): string | null {
+    if (!this.accessToken) return null;
+    if (Date.now() >= this.accessTokenExpiresAt) return null;
+    return this.accessToken;
   }
 
   hasCredential(): boolean {
-    return Boolean(this.getRefreshToken() && this.stored.apiBaseUrl);
+    return Boolean(this.getAccessToken() && this.baseUrl);
   }
 
   /**
-   * Accept a refresh token from the renderer at login.
-   *
-   * `safeStorage.isEncryptionAvailable()` is false on some Linux desktops
-   * (no keyring), where encryptString silently degrades to obfuscation. Writing
-   * a bare refresh token to disk there is worse than losing sync when the app
-   * closes, so keep it in memory for this session instead.
+   * Accept the access token the renderer holds. Called on sign-in and again on
+   * every refresh, so the socket always reads a token main did not have to mint.
    */
-  setCredentials({ refreshToken, apiBaseUrl }: DesktopCredentialsInput): SetCredentialsResult {
-    const token = String(refreshToken || '').trim();
+  setAccessToken({ accessToken, apiBaseUrl }: DesktopAccessTokenInput): SetAccessTokenResult {
+    const token = String(accessToken || '').trim();
     const baseUrl = String(apiBaseUrl || '').replace(/\/$/, '');
     if (!token || !baseUrl) {
-      throw new Error('refreshToken and apiBaseUrl are both required');
+      throw new Error('accessToken and apiBaseUrl are both required');
     }
     assertValidApiBaseUrl(baseUrl);
-    // A different server means the stored token is for a different account.
-    if (this.stored.apiBaseUrl && this.stored.apiBaseUrl !== baseUrl) {
-      this.invalidateAccessToken();
-    }
 
-    const canEncrypt = Boolean(this.safeStorage?.isEncryptionAvailable());
-    if (!canEncrypt) {
-      this.volatileRefreshToken = token;
-      this.persist({
-        ...this.stored,
-        apiBaseUrl: baseUrl,
-        refreshTokenEnc: undefined,
-        updatedAt: Date.now(),
-      });
-      this.invalidateAccessToken();
-      return {
-        persisted: false,
-        deviceId: this.deviceId,
-        reason: 'OS credential encryption is unavailable; sync stops when the app closes',
-      };
-    }
+    const changed = token !== this.accessToken || baseUrl !== this.baseUrl;
+    const expiresAt = readJwtExpiryMs(token);
+    this.accessToken = token;
+    this.accessTokenExpiresAt = expiresAt
+      ? expiresAt - TOKEN_EXPIRY_SKEW_MS
+      : Date.now() + TOKEN_FALLBACK_TTL_MS;
+    this.baseUrl = baseUrl;
 
-    this.volatileRefreshToken = null;
-    this.persist({
-      ...this.stored,
-      apiBaseUrl: baseUrl,
-      refreshTokenEnc: this.safeStorage!.encryptString(token).toString('base64'),
-      updatedAt: Date.now(),
-    });
-    this.invalidateAccessToken();
-    return { persisted: true, deviceId: this.deviceId };
+    return { deviceId: this.deviceId, changed };
   }
 
   clear(): void {
-    this.volatileRefreshToken = null;
-    this.invalidateAccessToken();
-    this.persist({
-      version: CREDENTIALS_VERSION,
-      deviceId: this.stored.deviceId,
-      apiBaseUrl: this.stored.apiBaseUrl,
-      updatedAt: Date.now(),
-    });
-  }
-
-  invalidateAccessToken(): void {
     this.accessToken = null;
     this.accessTokenExpiresAt = 0;
-  }
-
-  /**
-   * Mint (or reuse) an access token from the stored refresh token. Concurrent
-   * callers share one in-flight request — a reconnect storm must not fan out
-   * into one refresh call per attempt.
-   */
-  async getAccessToken(force = false): Promise<string | null> {
-    if (!force && this.accessToken && Date.now() < this.accessTokenExpiresAt) {
-      return this.accessToken;
-    }
-    if (this.mintInFlight) return this.mintInFlight;
-    const promise = this.mintAccessToken().finally(() => {
-      if (this.mintInFlight === promise) this.mintInFlight = null;
-    });
-    this.mintInFlight = promise;
-    return promise;
-  }
-
-  private async mintAccessToken(): Promise<string | null> {
-    const refreshToken = this.getRefreshToken();
-    const baseUrl = this.stored.apiBaseUrl;
-    if (!refreshToken || !baseUrl) return null;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), MINT_TIMEOUT_MS);
-    let response: Response;
-    try {
-      response = await fetch(`${baseUrl}${REFRESH_TOKEN_ROUTE}`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${refreshToken}`,
-          'Content-Type': 'application/json',
-        },
-        signal: controller.signal,
-      });
-    } catch (error) {
-      console.warn('[desktop-credentials] token mint failed:', error);
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (!response.ok) {
-      // A rejected refresh token never recovers on retry; drop it so the
-      // socket stops reconnecting against a 401 until the user signs in again.
-      if (response.status === 401 || response.status === 403) {
-        console.warn('[desktop-credentials] refresh token rejected; clearing');
-        this.clear();
-      }
-      return null;
-    }
-
-    let accessToken: string | null = null;
-    try {
-      const body = (await response.json()) as { accessToken?: string };
-      accessToken = typeof body?.accessToken === 'string' ? body.accessToken : null;
-    } catch {
-      accessToken = null;
-    }
-    if (!accessToken) return null;
-
-    const expiresAt = readJwtExpiryMs(accessToken);
-    this.accessToken = accessToken;
-    this.accessTokenExpiresAt = expiresAt
-      ? expiresAt - TOKEN_REFRESH_SKEW_MS
-      : Date.now() + TOKEN_FALLBACK_TTL_MS;
-    return accessToken;
+    this.baseUrl = null;
   }
 }

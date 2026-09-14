@@ -12,7 +12,7 @@ const NAMESPACE = '/rest-proxy';
 const SOCKET_PATH = '/socket.io-rest-proxy';
 const RECONNECT_DELAY_MS = 2_000;
 const RECONNECT_DELAY_MAX_MS = 60_000;
-/** Give up re-minting after this many consecutive auth failures until a new login. */
+/** Give up reconnecting after this many consecutive auth failures, until a new token arrives. */
 const MAX_AUTH_RETRIES = 5;
 /** `local-sync/start` must not return until the claim is ack'd, or the enable pull races it. */
 const REGISTER_TIMEOUT_MS = 5_000;
@@ -54,23 +54,22 @@ export class DesktopSocketClient {
   }
 
   /**
-   * Bring the socket up if a credential exists. Safe to call repeatedly — the
-   * renderer hands credentials over on every login, and a boot with no
-   * credential must wait for that IPC rather than retrying against a 401.
+   * Bring the socket up if a token exists. Safe to call repeatedly — the
+   * renderer pushes its access token on every change, and a boot before that
+   * push must wait for the IPC rather than retrying against a 401.
    */
   async connect(): Promise<void> {
     this.stopped = false;
     if (this.socket) return;
     const { credentials } = this.deps;
     if (!credentials.hasCredential()) {
-      this.log('no stored credential yet; waiting for sign-in');
+      this.log('no access token yet; waiting for the app window to hand one over');
       return;
     }
     const baseUrl = credentials.apiBaseUrl;
     if (!baseUrl) return;
-    // setCredentials already validates on write; re-check here too since
-    // this value can also come back from a credentials file loaded straight
-    // off disk, and it is about to receive the access token over the wire.
+    // setAccessToken already validates on write; re-check here too since this
+    // value is about to receive the access token over the wire.
     if (!isValidApiBaseUrl(baseUrl)) {
       this.log(`refusing to connect: apiBaseUrl is not an approved origin: ${baseUrl}`);
       return;
@@ -83,23 +82,22 @@ export class DesktopSocketClient {
       reconnection: true,
       reconnectionDelay: RECONNECT_DELAY_MS,
       reconnectionDelayMax: RECONNECT_DELAY_MAX_MS,
-      // Function form so every attempt — including reconnects after the token
-      // expired — mints a fresh token. A value captured at construction makes
-      // the first reconnect past expiry fail the handshake forever.
+      // Function form so every attempt — including reconnects after the
+      // renderer pushed a refreshed token — reads the current one. A value
+      // captured at construction makes the first reconnect past expiry fail
+      // the handshake forever.
       auth: (cb: (data: Record<string, unknown>) => void) => {
-        void credentials
-          .getAccessToken()
-          // extractToken splits on a space and requires the literal
-          // "Bearer <token>" form; a bare token is rejected at the handshake.
-          .then((token) => cb({ token: token ? `Bearer ${token}` : '' }))
-          .catch(() => cb({ token: '' }));
+        const token = credentials.getAccessToken();
+        // extractToken splits on a space and requires the literal
+        // "Bearer <token>" form; a bare token is rejected at the handshake.
+        cb({ token: token ? `Bearer ${token}` : '' });
       },
     });
 
     this.attachListeners(this.socket);
   }
 
-  /** Sign-in / server change: drop the old socket and come back up with the new credential. */
+  /** Sign-in / token refresh / server change: drop the old socket and come back up with the new token. */
   async reconnectWithNewCredential(): Promise<void> {
     this.disconnect();
     await this.connect();
@@ -208,13 +206,15 @@ export class DesktopSocketClient {
       }
       this.authFailures += 1;
       if (this.authFailures > MAX_AUTH_RETRIES) {
-        this.log(`giving up after ${MAX_AUTH_RETRIES} auth failures; sign in again to resume`);
+        // Main cannot refresh on its own; the next token the renderer pushes
+        // rebuilds this socket through reconnectWithNewCredential().
+        this.log(
+          `giving up after ${MAX_AUTH_RETRIES} auth failures; ` +
+          'open the app window to resume',
+        );
         socket.io.opts.reconnection = false;
         socket.disconnect();
-        return;
       }
-      // Force a fresh mint before socket.io's own retry re-invokes `auth`.
-      this.deps.credentials.invalidateAccessToken();
     });
 
     socket.on('disconnect', (reason: string) => {

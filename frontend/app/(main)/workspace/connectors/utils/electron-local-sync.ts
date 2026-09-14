@@ -57,10 +57,10 @@ interface ElectronLocalSyncApi {
   reap: (connectorIds: string[]) => Promise<{ removed: string[] }>;
   status: (connectorId: string) => Promise<LocalSyncStatus>;
   bootstrap: () => Promise<Array<{ connectorId: string; ok: boolean; error?: string }>>;
-  setCredentials: (
-    refreshToken: string,
+  setAccessToken: (
+    accessToken: string,
     apiBaseUrl: string
-  ) => Promise<{ ok: boolean; persisted?: boolean; reason?: string; error?: string }>;
+  ) => Promise<{ ok: boolean; deviceId?: string; error?: string }>;
   clearCredentials: () => Promise<{ ok: boolean }>;
 }
 
@@ -94,31 +94,50 @@ export async function startElectronLocalSync(
   });
 }
 
+/** Last value handed to main, so a store change that left the token alone is not re-pushed. */
+let lastPushedAccessToken: string | null = null;
+let tokenBridgeStarted = false;
+
 /**
- * Hand the refresh token to the Electron main process at sign-in.
+ * Hand the current access token to the Electron main process.
  *
- * Main persists it with `safeStorage` and mints its own access tokens, so the
- * desktop keeps answering the server's pull with the window closed — which is
- * the entire point of moving sync cadence server-side.
+ * Main stores nothing on disk and cannot mint tokens of its own, so the
+ * desktop answers the server's pull only while this process holds a live one.
  */
-export async function setElectronDesktopCredentials(): Promise<void> {
+export async function pushElectronDesktopAccessToken(): Promise<void> {
   const api = getElectronLocalSyncApi();
   if (!api) return;
 
   const apiBaseUrl = getApiBaseUrl();
-  const refreshToken = useAuthStore.getState().refreshToken;
-  if (!apiBaseUrl || !refreshToken) return;
+  const accessToken = useAuthStore.getState().accessToken;
+  if (!apiBaseUrl || !accessToken) return;
+  if (accessToken === lastPushedAccessToken) return;
 
-  const result = await api.setCredentials(refreshToken, apiBaseUrl);
-  if (result?.ok && result.persisted === false) {
-    console.warn(`[local-sync] ${result.reason}`);
+  const result = await api.setAccessToken(accessToken, apiBaseUrl);
+  if (result?.ok) {
+    lastPushedAccessToken = accessToken;
+  } else if (result?.error) {
+    console.warn(`[local-sync] desktop rejected the access token: ${result.error}`);
   }
 }
 
-export async function clearElectronDesktopCredentials(): Promise<void> {
-  const api = getElectronLocalSyncApi();
-  if (!api) return;
-  await api.clearCredentials();
+/**
+ * Keep main's copy fresh for as long as a window is alive. The refresh
+ * scheduler re-mints ~90s before expiry and writes the result to the auth
+ * store, so subscribing here is enough — main never has to ask.
+ *
+ * Idempotent: mirrors `initTokenRefreshScheduler`, which mounts from the same
+ * layout and may re-run on hot reload.
+ */
+export function startElectronDesktopTokenBridge(): void {
+  if (tokenBridgeStarted) return;
+  if (!getElectronLocalSyncApi()) return;
+  tokenBridgeStarted = true;
+  useAuthStore.subscribe(() => {
+    void pushElectronDesktopAccessToken().catch((error) => {
+      console.warn('[local-sync] could not push the access token to the desktop:', error);
+    });
+  });
 }
 
 /**

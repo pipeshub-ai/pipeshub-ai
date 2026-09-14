@@ -9,7 +9,6 @@ import {
   dialog,
   shell,
   systemPreferences,
-  safeStorage,
   type IpcMainInvokeEvent,
   type IpcMainEvent,
   type NativeImage,
@@ -144,8 +143,8 @@ interface ConnectorIdPayload {
   connectorId?: string;
 }
 
-interface CredentialsPayload {
-  refreshToken?: string;
+interface AccessTokenPayload {
+  accessToken?: string;
   apiBaseUrl?: string;
 }
 
@@ -185,10 +184,9 @@ app.whenReady().then(() => {
     },
   });
 
-  // Credentials live beside the journal so sync keeps working with the window
-  // closed — moving the scheduler server-side buys nothing if the desktop can
-  // only answer while a renderer is alive.
-  desktopCredentials = new DesktopCredentialsStore(localSyncManager.baseDir, safeStorage);
+  // Only the device identity lives beside the journal; the access token is
+  // pushed in by the renderer and held in memory for this process only.
+  desktopCredentials = new DesktopCredentialsStore(localSyncManager.baseDir);
   const contentStreamer = new ContentStreamer({
     getRootPath: (connectorId: string) => localSyncManager?.getRootPath(connectorId) ?? null,
   });
@@ -310,19 +308,23 @@ app.whenReady().then(() => {
     return results;
   });
 
-  // The renderer hands the refresh token over at login; from then on main
-  // mints its own access tokens and no longer needs a window.
-  ipcMain.handle('local-sync/credentials', async (_event: IpcMainInvokeEvent, payload: CredentialsPayload) => {
-    if (!desktopCredentials || !payload?.refreshToken || !payload?.apiBaseUrl) {
-      return { ok: false, error: 'refreshToken and apiBaseUrl are required' };
+  // The renderer pushes its access token at login and on every refresh; main
+  // never mints one, so sync runs as long as this process holds a live token.
+  ipcMain.handle('local-sync/access-token', async (_event: IpcMainInvokeEvent, payload: AccessTokenPayload) => {
+    if (!desktopCredentials || !payload?.accessToken || !payload?.apiBaseUrl) {
+      return { ok: false, error: 'accessToken and apiBaseUrl are required' };
     }
     try {
-      const result = desktopCredentials.setCredentials({
-        refreshToken: payload.refreshToken,
+      const { deviceId, changed } = desktopCredentials.setAccessToken({
+        accessToken: payload.accessToken,
         apiBaseUrl: payload.apiBaseUrl,
       });
-      await desktopSocket?.reconnectWithNewCredential();
-      return { ok: true, ...result };
+      // A re-push of the token already in hand must not tear down a healthy
+      // socket; the renderer pushes on every store change, not only on refresh.
+      if (changed || !desktopSocket?.connected) {
+        await desktopSocket?.reconnectWithNewCredential();
+      }
+      return { ok: true, deviceId };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
@@ -420,9 +422,8 @@ app.whenReady().then(() => {
   });
 
   createWindow();
-  // Mount watchers and connect before any window work: the server owns sync
-  // cadence now, and a scheduled tick must land on a desktop that is answering
-  // even with the window closed.
+  // Mount watchers up front so the journal is warm by the time the renderer
+  // pushes a token; connect() no-ops until then.
   localSyncManager
     .bootstrapFromJournal()
     .then(() => desktopSocket?.connect())

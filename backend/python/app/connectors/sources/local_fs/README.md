@@ -77,7 +77,7 @@ If the desktop is offline, Node refuses Sync and toggle-on up front with `409 DE
 
 The pull and content routes are service-to-service. Python mints a scoped JWT with the `desktop:command` scope (`generate_jwt`), and Node guards the routes with `scopedTokenValidator(TokenScopes.DESKTOP_COMMAND)`. `orgId`/`userId` come from the token, never the request body — a body-supplied user id would be a cross-tenant targeting primitive.
 
-The desktop side authenticates separately: the renderer hands its **refresh token** to the Electron main process at login, which encrypts it with `safeStorage` and mints its own access tokens for the socket handshake. That is what lets sync run with the window closed. Where `safeStorage.isEncryptionAvailable()` is false (some Linux desktops, no keyring) the token is kept in memory for the session rather than written to disk in the clear, and sync stops when the app closes.
+The desktop side authenticates separately: the renderer hands its **access token** to the Electron main process over IPC at login and again on every refresh, and main presents it on the socket handshake. Main holds it in memory only and cannot mint one itself — the only thing on disk is the per-install `deviceId` the sync point is pinned to. Local FS therefore syncs while the app is running, not as a background daemon: a machine with no app open reports `DESKTOP_OFFLINE` and its scheduled ticks are skipped, not failed.
 
 ## 5. Known limits
 

@@ -108,12 +108,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     status: (connectorId?: string) => ipcRenderer.invoke('local-sync/status', { connectorId }),
     bootstrap: () => ipcRenderer.invoke('local-sync/bootstrap'),
     /**
-     * Hand the refresh token to the main process at login. Main persists it
-     * with safeStorage and mints its own access tokens, so sync survives the
-     * window being closed.
+     * Hand the current access token to the main process, at login and on every
+     * refresh. Main holds it in memory only — nothing is written to disk — so
+     * sync runs while this process does.
      */
-    setCredentials: (refreshToken: string, apiBaseUrl: string) => (
-      ipcRenderer.invoke('local-sync/credentials', { refreshToken, apiBaseUrl })
+    setAccessToken: (accessToken: string, apiBaseUrl: string) => (
+      ipcRenderer.invoke('local-sync/access-token', { accessToken, apiBaseUrl })
     ),
     clearCredentials: () => ipcRenderer.invoke('local-sync/clear-credentials'),
     onStatus: (callback: (payload: unknown) => void): (() => void) => {
