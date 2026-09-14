@@ -50,6 +50,9 @@ export interface ICitation extends Document {
 export interface AiSearchResponse {
   searchResults: ICitation[];
   records: Record<string, any>;
+  /** Retrieval outcome, e.g. `accessible_records_not_found`; absent on older payloads. */
+  status?: string;
+  message?: string;
 }
 
 interface ICitationModel extends Model<ICitation> {

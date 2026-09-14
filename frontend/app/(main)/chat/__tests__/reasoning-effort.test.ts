@@ -40,8 +40,7 @@ vi.mock('@/lib/api', () => ({
   isProcessedError: vi.fn(() => false),
   isRequestCancelledError: vi.fn(() => false),
   isSearchNoAccessibleDocumentsNotFound: vi.fn(() => false),
-  SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS: 404,
-  SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT: '',
+  SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS: 'accessible_records_not_found',
   useMutation: vi.fn(),
   withToast: vi.fn(),
 }));

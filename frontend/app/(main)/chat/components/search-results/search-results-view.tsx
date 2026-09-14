@@ -107,6 +107,7 @@ export function SearchResultsView() {
   const searchQuery = useChatStore((s) => s.searchQuery);
   const isSearching = useChatStore((s) => s.isSearching);
   const searchError = useChatStore((s) => s.searchError);
+  const searchEmptyReason = useChatStore((s) => s.searchEmptyReason);
   const setMode = useChatStore((s) => s.setMode);
   const { onPreview } = useCitationActions();
 
@@ -277,9 +278,23 @@ export function SearchResultsView() {
             gap="2"
             style={{ padding: 'var(--space-6)' }}
           >
-            <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              No results found for &ldquo;{searchQuery}&rdquo;
-            </Text>
+            {searchEmptyReason === 'no_accessible_documents' ? (
+              <>
+                <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  {t('chat.searchNoDocumentsTitle', { defaultValue: 'No knowledge to search yet' })}
+                </Text>
+                <Text size="2" style={{ color: 'var(--slate-11)', textAlign: 'center' }}>
+                  {t('chat.searchNoDocumentsHint', {
+                    defaultValue:
+                      'Nothing has been indexed for you yet. Upload files to a Collection or connect a data source under Connectors, then search again.',
+                  })}
+                </Text>
+              </>
+            ) : (
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                No results found for &ldquo;{searchQuery}&rdquo;
+              </Text>
+            )}
           </Flex>
         )}
 

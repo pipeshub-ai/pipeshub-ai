@@ -294,6 +294,10 @@ export const stableObjectIdHexForExternalEmail = (email: string): string =>
     .slice(0, 24);
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
+/** Retrieval `Status.ACCESSIBLE_RECORDS_NOT_FOUND`: the search ran, but nothing indexed is in the caller's scope. */
+export const AI_SEARCH_NO_ACCESSIBLE_RECORDS_STATUS = 'accessible_records_not_found';
+const SEARCH_NO_ACCESSIBLE_RECORDS_MESSAGE =
+  'No documents are available for you to search yet. Upload files in Collections or connect a data source under Connectors so content can be indexed.';
 
 export const hydrateScopedRequestAsUser = async (
   req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
@@ -4920,6 +4924,29 @@ export const search =
       
       if (!aiResponse || !aiResponse.data) {
         throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (
+        aiResponse.statusCode === HTTP_STATUS.NOT_FOUND &&
+        aiResponse.data.status === AI_SEARCH_NO_ACCESSIBLE_RECORDS_STATUS
+      ) {
+        // An empty scope is an outcome, not a failure. Keep the 404 this API has
+        // always returned, but carry the retrieval `status` so clients can tell it
+        // apart from a real not-found; the error middleware serialises only
+        // code + message, which is why this does not go through next(error).
+        logger.info('Search scope has no indexed documents', {
+          requestId,
+          orgId,
+          userId,
+        });
+        res.status(HTTP_STATUS.NOT_FOUND).json({
+          error: {
+            code: 'HTTP_NOT_FOUND',
+            message:
+              aiResponse.data.message || SEARCH_NO_ACCESSIBLE_RECORDS_MESSAGE,
+          },
+          status: AI_SEARCH_NO_ACCESSIBLE_RECORDS_STATUS,
+        });
+        return;
       }
       if (aiResponse.statusCode !== 200) {
         throw handleBackendError(

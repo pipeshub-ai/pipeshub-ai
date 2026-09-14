@@ -512,6 +512,8 @@
       "relevance": "Relevance: {{percent}}%"
     },
     "results": "Results",
+    "searchNoDocumentsTitle": "No knowledge to search yet",
+    "searchNoDocumentsHint": "Nothing has been indexed for you yet. Upload files to a Collection or connect a data source under Connectors, then search again.",
     "greeting": "What do you want to explore today?",
     "heyUser": "Hey, {{name}} 👋",
     "heyUserDefaultName": "there",

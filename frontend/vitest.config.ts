@@ -46,6 +46,7 @@ export default defineConfig({
       'app/(main)/onboarding/utils/__tests__/s3-credentials.test.ts',
       'app/(main)/workspace/connectors/components/__tests__/vector-store-actions.test.tsx',
       'lib/store/__tests__/auth-store.test.ts',
+      'lib/api/__tests__/api-error.test.ts',
     ],
     passWithNoTests: false,
   },

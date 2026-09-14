@@ -1,6 +1,7 @@
 """Unit tests for app.api.routes.search module."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,6 +18,10 @@ from app.api.routes.search import (
     get_retrieval_service,
     health_check,
     search,
+)
+from app.exceptions.fastapi_responses import Status
+from app.modules.retrieval.retrieval_service import (
+    ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE,
 )
 
 
@@ -457,6 +462,51 @@ class TestSearchEndpoint:
             )
 
         assert response.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_search_no_accessible_documents_returns_404_with_status(self) -> None:
+        """An empty scope (nothing indexed, or nothing the user may read) is a
+        404 whose body carries the retrieval `status` and a user-facing message,
+        so the Node gateway and UI can render it as an empty state rather than
+        a failure."""
+        request = self._build_request()
+
+        mock_retrieval = MagicMock()
+        mock_retrieval.llm = MagicMock()
+        mock_retrieval.search_with_filters = AsyncMock(
+            return_value={
+                "searchResults": [],
+                "records": [],
+                "status": Status.ACCESSIBLE_RECORDS_NOT_FOUND.value,
+                "status_code": 404,
+                "message": ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE,
+            }
+        )
+        mock_graph = MagicMock()
+        body = SearchQuery(query="quarterly revenue")
+
+        with patch(
+            "app.api.routes.search.setup_query_transformation"
+        ) as mock_setup:
+            mock_setup.return_value = (
+                self._make_chain("quarterly revenue figures"),
+                self._make_chain("revenue by quarter"),
+            )
+
+            response = await search(
+                request=request,
+                body=body,
+                retrieval_service=mock_retrieval,
+                graph_provider=mock_graph,
+            )
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 404
+        payload = json.loads(response.body)
+        assert payload["status"] == "accessible_records_not_found"
+        assert payload["message"] == ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE
+        assert payload["searchResults"] == []
+        assert payload["records"] == []
 
     @pytest.mark.asyncio
     async def test_search_passes_correct_params_to_retrieval(self):

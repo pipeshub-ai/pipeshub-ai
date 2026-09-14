@@ -1103,3 +1103,6 @@ export interface SearchResponse {
     searchResults: SearchResultItem[];
   };
 }
+
+/** Why a search came back empty when that is an outcome rather than a failure. */
+export type SearchEmptyReason = 'no_accessible_documents';

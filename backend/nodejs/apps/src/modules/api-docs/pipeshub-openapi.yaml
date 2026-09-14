@@ -27745,8 +27745,12 @@ paths:
             Bearer token lacks the `semantic:write` scope.
         '404':
           description: |
-            A referenced knowledge base or app filter could not be
-            resolved.
+            Nothing indexed is in the caller's search scope — no records
+            in the org yet, or none the caller may access under the given
+            filters. The body carries `status: accessible_records_not_found`
+            alongside `error.message` so clients can render an empty state
+            rather than a failure. Any other 404 means a referenced
+            knowledge base or app filter could not be resolved.
         '500':
           description: |
             Unexpected server error while executing the search, or the

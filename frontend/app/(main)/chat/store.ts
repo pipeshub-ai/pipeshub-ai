@@ -10,6 +10,7 @@ import {
   ChatSlot,
   MAX_SLOTS,
   SearchResultItem,
+  SearchEmptyReason,
   type ModelInfo,
   type PendingAskUserQuestion,
   type AgentCapabilities,
@@ -423,6 +424,8 @@ interface ChatState {
   searchId: string | null;
   isSearching: boolean;
   searchError: string | null;
+  /** Set when the last search legitimately had nothing to search; cleared by the next result set. */
+  searchEmptyReason: SearchEmptyReason | null;
 
   // ── Slot actions ──
   /** Create a new slot. Returns the generated slotId. */
@@ -618,6 +621,7 @@ interface ChatState {
   setSearchResults: (results: SearchResultItem[], searchId: string | null, query: string) => void;
   setIsSearching: (loading: boolean) => void;
   setSearchError: (error: string | null) => void;
+  setSearchEmptyReason: (reason: SearchEmptyReason | null) => void;
   clearSearchResults: () => void;
 
   // ── Cache actions ──
@@ -740,6 +744,7 @@ const initialState = {
   searchId: null as string | null,
   isSearching: false,
   searchError: null as string | null,
+  searchEmptyReason: null as SearchEmptyReason | null,
 };
 
 // ── Store creation ──────────────────────────────────────────────────
@@ -1390,14 +1395,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // ── Search actions ──────────────────────────────────────────────
 
   setSearchResults: (results, searchId, query) =>
-    set({ searchResults: results, searchId, searchQuery: query }),
+    set({ searchResults: results, searchId, searchQuery: query, searchEmptyReason: null }),
 
   setIsSearching: (loading) => set({ isSearching: loading }),
 
   setSearchError: (error) => set({ searchError: error }),
 
+  setSearchEmptyReason: (reason) => set({ searchEmptyReason: reason }),
+
   clearSearchResults: () =>
-    set({ searchResults: [], searchQuery: '', searchId: null, searchError: null }),
+    set({
+      searchResults: [],
+      searchQuery: '',
+      searchId: null,
+      searchError: null,
+      searchEmptyReason: null,
+    }),
 
   // ── Cache ────────────────────────────────────────────────────────
 
@@ -1521,7 +1534,7 @@ if (typeof window !== 'undefined') {
     'settings', 'previewFile', 'previewMode', 'expansionViewMode',
     'scopedAgentCapabilities',
     'collectionNamesCache', 'collectionMetaCache', 'conversationsVersion',
-    'searchResults', 'searchQuery', 'searchId', 'isSearching', 'searchError',
+    'searchResults', 'searchQuery', 'searchId', 'isSearching', 'searchError', 'searchEmptyReason',
   ] as const;
 
   useChatStore.subscribe((state, prev) => {

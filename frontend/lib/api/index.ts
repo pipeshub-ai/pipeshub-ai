@@ -16,7 +16,6 @@ export {
   isRequestCancelledError,
   isSearchNoAccessibleDocumentsNotFound,
   SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS,
-  SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT,
 } from './api-error';
 export type { ProcessedError } from './api-error';
 

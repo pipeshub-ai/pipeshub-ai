@@ -219,17 +219,17 @@ export function isProcessedError(error: unknown): error is ProcessedError {
 /** Retrieval `Status.ACCESSIBLE_RECORDS_NOT_FOUND` — search ran but no docs in scope. */
 export const SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS = 'accessible_records_not_found';
 
-/** Fallback if response body omits `status` (message copy may change). */
-export const SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT = 'No accessible documents found';
-
 export function isRequestCancelledError(error: unknown): boolean {
   return isProcessedError(error) && error.type === ErrorType.REQUEST_CANCELLED;
 }
 
-/** Empty search results (not a failure): API reports no docs for current scope. */
+/**
+ * Empty search results (not a failure): the API reports no indexed docs in the
+ * caller's scope. Keyed on the `status` the search route forwards from retrieval,
+ * never on message copy — an earlier copy-fragment fallback silently stopped
+ * matching when the backend reworded the message.
+ */
 export function isSearchNoAccessibleDocumentsNotFound(error: unknown): boolean {
   if (!isProcessedError(error) || error.type !== ErrorType.NOT_FOUND) return false;
-  const apiStatus = error.details?.apiStatus;
-  if (apiStatus === SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS) return true;
-  return (error.message || '').includes(SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT);
+  return error.details?.apiStatus === SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS;
 }

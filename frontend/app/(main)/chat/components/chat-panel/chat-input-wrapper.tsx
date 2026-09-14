@@ -101,6 +101,7 @@ export function ChatInputWrapper() {
       if (isRequestCancelledError(error)) return;
       if (isSearchNoAccessibleDocumentsNotFound(error)) {
         store.setSearchResults([], null, query);
+        store.setSearchEmptyReason('no_accessible_documents');
         return;
       }
       store.setSearchError((error as Error)?.message || 'Search failed');

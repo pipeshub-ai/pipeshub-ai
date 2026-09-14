@@ -60,6 +60,7 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
+import { NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
@@ -2160,6 +2161,87 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+
+    it('should answer 404 with the retrieval status when nothing indexed is in scope', async () => {
+      const handler = search(createMockAppConfig())
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 404,
+        data: {
+          searchResults: [],
+          records: [],
+          status: 'accessible_records_not_found',
+          status_code: 404,
+          message: 'No documents are available for you to search yet.',
+        },
+      } as any)
+      const searchSave = sinon.stub(EnterpriseSemanticSearch.prototype, 'save')
+
+      const req = createMockRequest({
+        body: { query: 'anything' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledOnceWith(404)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        error: {
+          code: 'HTTP_NOT_FOUND',
+          message: 'No documents are available for you to search yet.',
+        },
+        status: 'accessible_records_not_found',
+      })
+      expect(searchSave.called).to.be.false
+    })
+
+    it('should fall back to a generic message when the empty-scope 404 has none', async () => {
+      const handler = search(createMockAppConfig())
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 404,
+        data: { searchResults: [], records: [], status: 'accessible_records_not_found' },
+      } as any)
+
+      const req = createMockRequest({
+        body: { query: 'anything' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      const body = res.json.firstCall.args[0]
+      expect(body.status).to.equal('accessible_records_not_found')
+      expect(body.error.message).to.be.a('string').and.not.empty
+    })
+
+    it('should still route other 404s through the error middleware', async () => {
+      const handler = search(createMockAppConfig())
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 404,
+        data: { detail: 'Knowledge base not found' },
+      } as any)
+
+      const req = createMockRequest({
+        body: { query: 'anything' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect(res.json.called).to.be.false
     })
   })
 
