@@ -619,6 +619,7 @@ describe('tokens_manager/services/cm.service', () => {
       mockKvStore = {
         get: sinon.stub(),
         set: sinon.stub().resolves(),
+        compareAndSet: sinon.stub().resolves(true),
         connect: sinon.stub().resolves(),
         watchKey: sinon.stub().resolves(),
         isConnected: sinon.stub().returns(true),
@@ -953,7 +954,9 @@ describe('tokens_manager/services/cm.service', () => {
         expect(result).to.be.a('string')
         expect(result).to.have.lengthOf(SIGNING_SECRET_BYTES * 2)
         expect(result).to.match(/^[0-9a-f]+$/)
-        expect(mockKvStore.set.calledOnce).to.be.true
+        expect(mockKvStore.compareAndSet.calledOnce).to.be.true
+        expect(mockKvStore.compareAndSet.firstCall.args[0]).to.equal('/services/secretKeys')
+        expect(mockKvStore.compareAndSet.firstCall.args[1]).to.equal(null)
       })
 
       it('should generate JWT secret when parsedKeys has no jwtSecret', async () => {
@@ -969,7 +972,7 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves('encrypted:' + JSON.stringify({ jwtSecret: legacySecret }))
         const result = await configService.getJwtSecret()
         expect(result).to.equal(legacySecret)
-        expect(mockKvStore.set.called).to.be.false
+        expect(mockKvStore.compareAndSet.called).to.be.false
       })
 
       it('should persist JWT_SECRET from env only when no stored secret exists', async () => {
@@ -977,7 +980,7 @@ describe('tokens_manager/services/cm.service', () => {
         process.env.JWT_SECRET = 'operator-seeded-secret'
         const result = await configService.getJwtSecret()
         expect(result).to.equal('operator-seeded-secret')
-        expect(mockKvStore.set.calledOnce).to.be.true
+        expect(mockKvStore.compareAndSet.calledOnce).to.be.true
       })
 
       it('should ignore JWT_SECRET env when a stored secret already exists', async () => {
@@ -985,7 +988,7 @@ describe('tokens_manager/services/cm.service', () => {
         process.env.JWT_SECRET = 'should-not-win'
         const result = await configService.getJwtSecret()
         expect(result).to.equal('existing-secret-key')
-        expect(mockKvStore.set.called).to.be.false
+        expect(mockKvStore.compareAndSet.called).to.be.false
       })
     })
 
@@ -1048,9 +1051,9 @@ describe('tokens_manager/services/cm.service', () => {
         const jwt = await configService.getJwtSecret()
         expect(jwt).to.not.equal(stored.jwtSecret)
         expect(jwt).to.match(/^[0-9a-f]{64}$/)
-        expect(mockKvStore.set.calledOnce).to.be.true
+        expect(mockKvStore.compareAndSet.calledOnce).to.be.true
         const saved = JSON.parse(
-          mockEncryption.decrypt(mockKvStore.set.firstCall.args[1]),
+          mockEncryption.decrypt(mockKvStore.compareAndSet.firstCall.args[2]),
         )
         expect(saved.jwtSecret).to.equal(jwt)
         expect(saved.scopedJwtSecret).to.not.equal(stored.scopedJwtSecret)
@@ -1070,22 +1073,23 @@ describe('tokens_manager/services/cm.service', () => {
         process.env.ROTATE_SIGNING_SECRETS = 'rotate-1'
         const jwt = await configService.getJwtSecret()
         expect(jwt).to.equal(rotated.jwtSecret)
-        expect(mockKvStore.set.called).to.be.false
+        expect(mockKvStore.compareAndSet.called).to.be.false
       })
 
-      it('should use env-seeded values when rotating', async () => {
+      it('should generate new secrets during rotation even if env seeds are set', async () => {
         mockKvStore.get.resolves('encrypted:' + JSON.stringify(stored))
         process.env.ROTATE_SIGNING_SECRETS = 'rotate-2'
-        process.env.JWT_SECRET = 'vault-jwt'
-        process.env.SCOPED_JWT_SECRET = 'vault-scoped'
-        process.env.COOKIE_SECRET = 'vault-cookie'
+        process.env.JWT_SECRET = stored.jwtSecret
+        process.env.SCOPED_JWT_SECRET = stored.scopedJwtSecret
+        process.env.COOKIE_SECRET = stored.cookieSecret
         const jwt = await configService.getJwtSecret()
-        expect(jwt).to.equal('vault-jwt')
+        expect(jwt).to.not.equal(stored.jwtSecret)
+        expect(jwt).to.match(/^[0-9a-f]{64}$/)
         const saved = JSON.parse(
-          mockEncryption.decrypt(mockKvStore.set.firstCall.args[1]),
+          mockEncryption.decrypt(mockKvStore.compareAndSet.firstCall.args[2]),
         )
-        expect(saved.scopedJwtSecret).to.equal('vault-scoped')
-        expect(saved.cookieSecret).to.equal('vault-cookie')
+        expect(saved.scopedJwtSecret).to.not.equal(stored.scopedJwtSecret)
+        expect(saved.cookieSecret).to.not.equal(stored.cookieSecret)
       })
 
       it('should ignore an empty ROTATE_SIGNING_SECRETS value', async () => {
@@ -1093,7 +1097,49 @@ describe('tokens_manager/services/cm.service', () => {
         process.env.ROTATE_SIGNING_SECRETS = '   '
         const jwt = await configService.getJwtSecret()
         expect(jwt).to.equal(stored.jwtSecret)
-        expect(mockKvStore.set.called).to.be.false
+        expect(mockKvStore.compareAndSet.called).to.be.false
+      })
+
+      it('should adopt a peer replica\'s secrets when CAS loses the first write', async () => {
+        process.env.ROTATE_SIGNING_SECRETS = 'rotate-1'
+        const winner = {
+          jwtSecret: 'a'.repeat(64),
+          scopedJwtSecret: 'b'.repeat(64),
+          cookieSecret: 'c'.repeat(64),
+          [SIGNING_SECRETS_ROTATE_ID_FIELD]: 'rotate-1',
+        }
+        mockKvStore.get
+          .onFirstCall().resolves('encrypted:' + JSON.stringify(stored))
+          .onSecondCall().resolves('encrypted:' + JSON.stringify(winner))
+        mockKvStore.compareAndSet.onFirstCall().resolves(false)
+
+        const jwt = await configService.getJwtSecret()
+        expect(jwt).to.equal(winner.jwtSecret)
+        expect(mockKvStore.compareAndSet.calledOnce).to.be.true
+        expect(mockKvStore.get.calledTwice).to.be.true
+      })
+
+      it('should adopt a peer-created jwtSecret after a lost first-boot CAS', async () => {
+        mockKvStore.get
+          .onFirstCall().resolves(null)
+          .onSecondCall().resolves('encrypted:' + JSON.stringify({ jwtSecret: 'peer-secret' }))
+        mockKvStore.compareAndSet.onFirstCall().resolves(false)
+
+        const jwt = await configService.getJwtSecret()
+        expect(jwt).to.equal('peer-secret')
+        expect(mockKvStore.compareAndSet.calledOnce).to.be.true
+      })
+
+      it('should throw when CAS keeps failing', async () => {
+        mockKvStore.get.resolves(null)
+        mockKvStore.compareAndSet.resolves(false)
+        try {
+          await configService.getJwtSecret()
+          expect.fail('Should have thrown')
+        } catch (error: any) {
+          expect(error.message).to.include('concurrent modification')
+        }
+        expect(mockKvStore.compareAndSet.callCount).to.equal(5)
       })
     })
 
@@ -1577,6 +1623,7 @@ describe('ConfigService - coverage', () => {
     mockKvStore = {
       get: sinon.stub(),
       set: sinon.stub().resolves(),
+      compareAndSet: sinon.stub().resolves(true),
       connect: sinon.stub().resolves(),
       watchKey: sinon.stub().resolves(),
     }
@@ -2003,7 +2050,7 @@ describe('ConfigService - coverage', () => {
       const result = await service.getJwtSecret()
       expect(result).to.be.a('string')
       expect(result).to.have.lengthOf(SIGNING_SECRET_BYTES * 2)
-      expect(mockKvStore.set.called).to.be.true
+      expect(mockKvStore.compareAndSet.called).to.be.true
     })
 
     it('should generate jwt secret when parsedKeys has no jwtSecret', async () => {
@@ -2036,7 +2083,7 @@ describe('ConfigService - coverage', () => {
       const result = await service.getScopedJwtSecret()
       expect(result).to.be.a('string')
       expect(result).to.have.lengthOf(SIGNING_SECRET_BYTES * 2)
-      expect(mockKvStore.set.called).to.be.true
+      expect(mockKvStore.compareAndSet.called).to.be.true
     })
   })
 

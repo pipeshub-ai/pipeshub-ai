@@ -1025,12 +1025,16 @@ class TestKbReclassificationFromAppsFilter:
             connected_provider.http_client, "execute_aql",
             new_callable=AsyncMock, return_value=[kb_uuid]
         ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_connector, patch.object(
             connected_provider, "_get_kb_virtual_ids",
             new_callable=AsyncMock, return_value={"vr-1": "rec-1"}
         ):
             result = await connected_provider.get_accessible_virtual_record_ids(
                 "u1", "o1", filters={"apps": [kb_uuid], "kb": []}
             )
+            mock_connector.assert_not_awaited()
             assert result == {"vr-1": "rec-1"}
 
     @pytest.mark.asyncio

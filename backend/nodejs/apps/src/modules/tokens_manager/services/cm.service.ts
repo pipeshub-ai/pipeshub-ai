@@ -20,8 +20,9 @@ export interface SmtpConfig {
 
 export const SIGNING_SECRET_BYTES = 32;
 export const SIGNING_SECRETS_ROTATE_ID_FIELD = 'signingSecretsRotateId';
+const SIGNING_SECRETS_CAS_MAX_RETRIES = 5;
 
-export const randomKeyGenerator = () =>
+export const randomKeyGenerator = (): string =>
   randomBytes(SIGNING_SECRET_BYTES).toString('hex');
 
 export interface KafkaConfig {
@@ -602,9 +603,11 @@ export class ConfigService {
     if (!rotateId || parsedKeys[SIGNING_SECRETS_ROTATE_ID_FIELD] === rotateId) {
       return false;
     }
-    parsedKeys.jwtSecret = this.secretFromEnvOrGenerated('JWT_SECRET');
-    parsedKeys.scopedJwtSecret = this.secretFromEnvOrGenerated('SCOPED_JWT_SECRET');
-    parsedKeys.cookieSecret = this.secretFromEnvOrGenerated('COOKIE_SECRET');
+    // Env JWT_SECRET / SCOPED_JWT_SECRET / COOKIE_SECRET seed first boot only.
+    // Reusing them here would no-op rotation when those vars are still set.
+    parsedKeys.jwtSecret = randomKeyGenerator();
+    parsedKeys.scopedJwtSecret = randomKeyGenerator();
+    parsedKeys.cookieSecret = randomKeyGenerator();
     parsedKeys[SIGNING_SECRETS_ROTATE_ID_FIELD] = rotateId;
     Logger.getInstance({ service: 'ConfigService' }).warn(
       'Rotated JWT/cookie signing secrets (ROTATE_SIGNING_SECRETS). Existing sessions and service tokens are now invalid.',
@@ -616,31 +619,47 @@ export class ConfigService {
     field: 'jwtSecret' | 'scopedJwtSecret' | 'cookieSecret',
     envName: string,
   ): Promise<string> {
-    const encryptedSecretKeys = await this.keyValueStoreService.get<string>(
-      configPaths.secretKeys,
-    );
-    let parsedKeys: Record<string, string> = {};
-    if (encryptedSecretKeys) {
-      parsedKeys = JSON.parse(
-        this.encryptionService.decrypt(encryptedSecretKeys),
-      );
-    }
+    for (let attempt = 0; attempt < SIGNING_SECRETS_CAS_MAX_RETRIES; attempt++) {
+      const encryptedCurrent =
+        (await this.keyValueStoreService.get<string>(configPaths.secretKeys)) ??
+        null;
+      let parsedKeys: Record<string, string> = {};
+      if (encryptedCurrent) {
+        parsedKeys = JSON.parse(
+          this.encryptionService.decrypt(encryptedCurrent),
+        );
+      }
 
-    let dirty = this.applySigningSecretsRotation(parsedKeys);
-    if (!parsedKeys[field]) {
-      parsedKeys[field] = this.secretFromEnvOrGenerated(envName);
-      dirty = true;
-    }
-    if (dirty) {
-      const encryptedKeys = this.encryptionService.encrypt(
+      let dirty = this.applySigningSecretsRotation(parsedKeys);
+      if (!parsedKeys[field]) {
+        parsedKeys[field] = this.secretFromEnvOrGenerated(envName);
+        dirty = true;
+      }
+      if (!dirty) {
+        return parsedKeys[field];
+      }
+
+      const encryptedUpdated = this.encryptionService.encrypt(
         JSON.stringify(parsedKeys),
       );
-      await this.keyValueStoreService.set(
+      const wrote = await this.keyValueStoreService.compareAndSet(
         configPaths.secretKeys,
-        encryptedKeys,
+        encryptedCurrent,
+        encryptedUpdated,
       );
+      if (wrote) {
+        return parsedKeys[field];
+      }
+
+      if (attempt === SIGNING_SECRETS_CAS_MAX_RETRIES - 1) {
+        throw new Error(
+          'Failed to persist signing secrets due to concurrent modification. Please retry.',
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
     }
-    return parsedKeys[field];
+
+    throw new Error('Failed to persist signing secrets.');
   }
 
   public async getJwtSecret(): Promise<string> {
