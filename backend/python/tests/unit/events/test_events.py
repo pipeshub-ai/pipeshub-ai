@@ -7,7 +7,7 @@ these tests provide additional coverage for edge cases and boundary conditions.
 
 import hashlib
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -2211,7 +2211,13 @@ class TestDuplicateCodeFileProjection:
             "connectorId": "conn-1",
             "virtualRecordId": "vr-original",
         }
-        processor.project_code_blocks_to_graph = AsyncMock()
+        from app.events.processor import Processor  # noqa: PLC0415
+
+        # Autospec'd: a caller passing a kwarg the real processor does not
+        # accept fails here instead of at runtime.
+        processor.project_code_blocks_to_graph = create_autospec(
+            Processor, instance=True
+        ).project_code_blocks_to_graph
         return ep, processor
 
     @pytest.mark.asyncio

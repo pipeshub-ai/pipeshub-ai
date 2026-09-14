@@ -156,6 +156,10 @@ class CodeGraph:
             from app.agents.actions.knowledge_graph.ops.scope import derive_scope
             self._allowed_connector_ids: tuple[str, ...] = tuple(derive_scope(state).app_ids)
         except Exception:
+            # Empty means "no connector restriction", the same as a chat-mode
+            # agent that has no knowledge attached; per-record ACLs still gate
+            # every result, so this degrades rather than opening anything up.
+            self._log.warning("codegraph: connector scope derivation failed", exc_info=True)
             self._allowed_connector_ids = ()
 
     # ------------------------------------------------------------------
@@ -469,9 +473,15 @@ class CodeGraph:
             "says where it stopped, and a bare path is enough — you never need to list "
             "a file before reading it.\n\n"
             "Cost trade-offs: one file read beats five symbol reads, but a whole file "
-            "also fills context fast. Prefer `qualified_name` for a single definition, "
-            "a whole-file read to understand structure, `lines` only when you know the "
-            "range (e.g. a call-site line from get_neighbour).\n\n"
+            "also fills context fast. Prefer `qualified_name` when you can already name "
+            "the one definition you want; read the file when the answer depends on what "
+            "else is in it, because a symbol read shows that symbol and nothing else — "
+            "whatever sits elsewhere in the file stays invisible and absent from it is "
+            "not evidence of absence.\n\n"
+            "A file longer than `max_lines` stops partway and reports the line it "
+            "reached. That is a checkpoint, not the end of the file: continue with "
+            "`lines` from there — '601-1200', then '1201-1800' — until you have covered "
+            "it. A conclusion about a whole file rests on having read the whole file.\n\n"
             "This does not resolve where calls go: the identifiers in a body are "
             "expressions, not addresses. Use get_neighbour to follow the flow instead "
             "of guessing filenames.\n\n"
@@ -514,9 +524,11 @@ class CodeGraph:
             ToolParameter(
                 name="lines", type=ParameterType.STRING, required=False, default=None,
                 description=(
-                    "Read a line range instead, e.g. '380-420'. Use when you already "
-                    "know WHICH part you want — pair it with the `line` an edge reports "
-                    "to land on a call site. To bound size, use max_lines instead."
+                    "Read a line range, e.g. '380-420'. Two uses: landing on a place you "
+                    "already know — pair it with the `line` an edge reports to hit a call "
+                    "site — and paging a file too long for one read, by passing successive "
+                    "ranges from the line the previous read stopped at until the file is "
+                    "covered. To bound a single read's size, use max_lines instead."
                 ),
             ),
             ToolParameter(

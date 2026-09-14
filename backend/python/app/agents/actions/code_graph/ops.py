@@ -407,7 +407,7 @@ async def get_record_roles(
             collection=_CODE_FILES,
             field_name="_key",
             field_values=ids,
-            return_fields=["_key", "fileRole"],
+            return_fields=["_key", "orgId", "fileRole"],
         )
     except Exception as exc:
         logger.warning("File role lookup failed: %s", exc)
@@ -417,6 +417,10 @@ async def get_record_roles(
         row = raw
         if isinstance(raw, dict) and len(raw) <= 2 and ("b" in raw or "node" in raw):
             row = raw.get("b") or raw.get("node") or raw
+        # `get_nodes_by_field_in` takes no filters, so the org scope every other
+        # lookup here applies at the query is re-applied on the rows.
+        if row.get("orgId") != org_id:
+            continue
         key = row.get("_key") or row.get("id")
         role = row.get("fileRole")
         if key and role:

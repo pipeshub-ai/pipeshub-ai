@@ -2177,6 +2177,33 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get file paths for records failed: {str(e)}")
             return {}
 
+    @staticmethod
+    def _endpoint_lookup(keys: list[str], alias: str, parameter: str) -> str:
+        """Cypher binding *alias* to the nodes the ArangoDB-style *keys* name.
+
+        The endpoint needs a label for ``id IN $ids`` to reach an index -- Neo4j
+        indexes are per label, so an unlabelled ``(target)`` pattern makes the
+        planner walk every relationship of the type instead. The labels come from
+        the collection half of the keys the caller passed, so a batch mixing
+        records and blocks still seeks both.
+        """
+        labels = sorted({
+            collection_to_label(key.partition("/")[0])
+            for key in keys
+            if "/" in key
+        })
+        if not labels:
+            return f"MATCH ({alias}) WHERE {alias}.id IN ${parameter}"
+        seeks = "\n            ".join(
+            f"OPTIONAL MATCH (_n{i}:{label} {{id: _id}})"
+            for i, label in enumerate(labels)
+        )
+        coalesced = ", ".join(f"_n{i}" for i in range(len(labels)))
+        return f"""UNWIND ${parameter} AS _id
+            {seeks}
+            WITH coalesce({coalesced}) AS {alias}
+            WHERE {alias} IS NOT NULL"""
+
     async def get_edges_by_target_keys(
         self,
         target_keys: list[str],
@@ -2191,17 +2218,21 @@ class Neo4jProvider(IGraphDBProvider):
             raise ValueError("return_field must be '_from' or '_to'")
         try:
             relationship = edge_collection_to_relationship(edge_collection)
-            target_ids = [key.split("/", 1)[-1] for key in target_keys]
-            conditions = ["target.id IN $target_ids"]
+            # Deduped: the lookup below unwinds these, and a repeated id would
+            # otherwise expand the same relationship twice.
+            target_ids = sorted({key.split("/", 1)[-1] for key in target_keys})
+            conditions: list[str] = []
             parameters: dict[str, Any] = {"target_ids": target_ids}
             for field, value in (filters or {}).items():
                 parameter = f"filter_{field}"
                 conditions.append(f"rel.{field} = ${parameter}")
                 parameters[parameter] = value
             endpoint = "source" if return_field == "_from" else "target"
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""
+            {self._endpoint_lookup(target_keys, "target", "target_ids")}
             MATCH (source)-[rel:{relationship}]->(target)
-            WHERE {" AND ".join(conditions)}
+            {where_clause}
             RETURN DISTINCT labels({endpoint}) AS labels,
                             {endpoint}.id AS key
             """
@@ -2230,16 +2261,18 @@ class Neo4jProvider(IGraphDBProvider):
             return 0
         try:
             relationship = edge_collection_to_relationship(edge_collection)
-            source_ids = [key.split("/", 1)[-1] for key in source_keys]
-            conditions = ["source.id IN $source_ids"]
+            source_ids = sorted({key.split("/", 1)[-1] for key in source_keys})
+            conditions: list[str] = []
             parameters: dict[str, Any] = {"source_ids": source_ids}
             for field, value in (filters or {}).items():
                 parameter = f"filter_{field}"
                 conditions.append(f"rel.{field} = ${parameter}")
                 parameters[parameter] = value
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""
+            {self._endpoint_lookup(source_keys, "source", "source_ids")}
             MATCH (source)-[rel:{relationship}]->()
-            WHERE {" AND ".join(conditions)}
+            {where_clause}
             DELETE rel
             RETURN count(rel) AS deleted
             """
@@ -2281,8 +2314,11 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return int(rows[0].get("count", 0)) if rows else 0
         except Exception as e:
+            # Callers gate on the count (build_code_graph_edges only builds when
+            # nothing is still indexing), so a swallowed failure reading as 0
+            # would let them act on a repo that has not drained.
             self.logger.error(f"❌ Count nodes by filters failed: {str(e)}")
-            return 0
+            raise
 
     async def has_nodes_by_filters(
         self,
@@ -11076,7 +11112,13 @@ class Neo4jProvider(IGraphDBProvider):
                         "MATCH (r:Record)-[:IS_OF_TYPE]->(t) WHERE r.id IN $record_ids DETACH DELETE t",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,
                     )
-                    await self.delete_blocks_for_records(record_keys, transaction=txn_id)
+                    # Auto-committed in batches, as delete_connector_instance
+                    # does: a repo's worth of blocks DETACH DELETEd inside this
+                    # txn keeps every page in txn state and trips
+                    # dbms.memory.transaction.total.max. A later rollback then
+                    # leaves the records intact, so a retry finishes the
+                    # leftover blocks.
+                    await self.delete_blocks_for_records(record_keys)
                     await self.client.execute_query(
                         "MATCH (r:Record) WHERE r.id IN $record_ids DETACH DELETE r",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,

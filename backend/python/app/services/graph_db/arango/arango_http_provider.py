@@ -3296,8 +3296,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ) or []
             return int(rows[0]) if rows else 0
         except Exception as e:
+            # Matches has_nodes_by_filters, and the reason is the same: callers
+            # gate on the count, so a failure reading as 0 lets them act on a
+            # repo that has not drained.
             self.logger.error(f"❌ Count nodes by filters failed: {str(e)}")
-            return 0
+            raise
 
     async def has_nodes_by_filters(
         self,
@@ -3602,11 +3605,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # Two separate loops rather than `_from IN @a OR _to IN @a`: each half
         # then uses the edge collection's own _from / _to index, which a single
         # OR of two IN clauses does not reliably do.
+        # `LET rows = (...)` materialises the whole subquery before the outer
+        # LIMIT sees it, so each half has to bound itself. With direction "any"
+        # that caps the halves independently and UNION_DISTINCT can yield up to
+        # 2x @limit, which the outer LIMIT then trims.
         def _half(anchor_field: str, other_field: str, label: str) -> str:
             return f"""
             FOR edge IN {edges}
                 FILTER edge.{anchor_field} IN @anchors
                 FILTER edge.relationshipType IN @relationship_types
+                LIMIT @limit
                 RETURN {{
                     anchorKey: PARSE_IDENTIFIER(edge.{anchor_field}).key,
                     collection: PARSE_IDENTIFIER(edge.{other_field}).collection,

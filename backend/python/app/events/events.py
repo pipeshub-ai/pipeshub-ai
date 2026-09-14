@@ -462,6 +462,7 @@ class EventProcessor:
                 record_name=record_name,
                 file_path=file_path,
                 block_containers=block_container,
+                propagate_failure=True,
             )
 
         # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────

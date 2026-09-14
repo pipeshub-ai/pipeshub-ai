@@ -613,10 +613,10 @@ def test_invariant_bound_toolset_tools_listed_like_pinned() -> None:
     available_section = prompt.split("## Available Tools", 1)[1].split("\n## ", 1)[0]
     assert "codegraph__read_code" in available_section
     assert "codegraph__get_neighbour" in available_section
-    if "Tools you must load before calling" in prompt:
-        load_first = prompt.split("Tools you must load before calling", 1)[1]
-        assert "`codegraph`" not in load_first
-    assert "`jira`" in prompt  # still lazy
+    assert "Tools you must load before calling" in prompt
+    load_first = prompt.split("Tools you must load before calling", 1)[1]
+    assert "`codegraph`" not in load_first
+    assert "`jira`" in load_first  # still lazy
 
 
 def test_invariant_unbound_codegraph_still_under_load_first() -> None:

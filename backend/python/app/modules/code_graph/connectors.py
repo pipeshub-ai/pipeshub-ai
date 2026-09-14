@@ -23,25 +23,27 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CODE_CONNECTOR_TYPES",
+    "NORMALIZED_CODE_TYPES",
     "agent_knowledge_has_code_connector",
     "connector_instances_have_code",
     "has_code_connector_configured",
+    "normalize_connector_type",
 ]
 
-# GitLab is the only connector that currently enables the `code_files` indexing
-# filter (`connectors/sources/gitlab/connector.py`, `gitlab_personal/`), so it
-# is the only one that produces the blocks the code graph is built from. GitHub
-# is listed because the connector exists and gains the filter the moment it
-# emits code files; listing it early costs nothing and avoids the tools being
-# silently unavailable for a repo that is plainly indexed.
+# Every connector that syncs CODE_FILE records, and so produces the blocks the
+# code graph is built from: GitLab and GitLab Personal
+# (`connectors/sources/gitlab/`, `gitlab_personal/`) plus both GitHub flavours,
+# which are distinct `Connectors` values — a GitHub Teams-only org would
+# otherwise have its plainly indexed repo report no code connector.
 CODE_CONNECTOR_TYPES = frozenset({
     Connectors.GITLAB.value,
     Connectors.GITLAB_PERSONAL.value,
     Connectors.GITHUB.value,
+    Connectors.GITHUB_TEAMS.value,
 })
 
 
-def _normalized(value: object) -> str:
+def normalize_connector_type(value: object) -> str:
     """Connector types reach us in three spellings for the same thing.
 
     The stored App node says `GitLab`, a record says `GITLAB`, and attached
@@ -53,7 +55,7 @@ def _normalized(value: object) -> str:
     return str(value or "").upper().replace("_", " ").strip()
 
 
-_NORMALIZED_CODE_TYPES = frozenset(_normalized(t) for t in CODE_CONNECTOR_TYPES)
+NORMALIZED_CODE_TYPES = frozenset(normalize_connector_type(t) for t in CODE_CONNECTOR_TYPES)
 
 
 def connector_instances_have_code(instances: list[dict[str, Any]] | None) -> bool:
@@ -65,7 +67,7 @@ def connector_instances_have_code(instances: list[dict[str, Any]] | None) -> boo
     :func:`app.utils.execute_query.connector_instances_have_sql`.
     """
     return any(
-        _normalized(i.get("type")) in _NORMALIZED_CODE_TYPES and bool(i.get("isConfigured"))
+        normalize_connector_type(i.get("type")) in NORMALIZED_CODE_TYPES and bool(i.get("isConfigured"))
         for i in (instances or [])
     )
 
@@ -113,6 +115,6 @@ def agent_knowledge_has_code_connector(
     if not agent_knowledge:
         return False
     return any(
-        isinstance(entry, dict) and _normalized(entry.get("type")) in _NORMALIZED_CODE_TYPES
+        isinstance(entry, dict) and normalize_connector_type(entry.get("type")) in NORMALIZED_CODE_TYPES
         for entry in agent_knowledge
     )

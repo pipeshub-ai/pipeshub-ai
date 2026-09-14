@@ -51,6 +51,7 @@ QUERY_CODE_GRAPH_TOOL_NAME = "codegraph__query_code_graph"
 
 _BLOCKS = CollectionNames.BLOCKS.value
 _CODE_FILES = CollectionNames.CODE_FILES.value
+_RECORDS = CollectionNames.RECORDS.value
 
 CONNECTOR_ID_REQUIRED = (
     "connector_id is required. Run a knowledge search first and copy the "
@@ -116,7 +117,7 @@ def _looks_like_locator(select: str) -> bool:
 
 async def _select_by_path(
     graph_provider: Any, org_id: str, pattern: str, connector_id: str
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
     """Blocks of the files whose path matches a glob (or a literal prefix).
 
     Matched against ``codeFiles``, which holds one row per file, rather than
@@ -169,29 +170,89 @@ async def _select_by_path(
     return out, scan_capped
 
 
+async def _visible_record_ids(
+    graph_provider: Any,
+    org_id: str,
+    user_id: str,
+    connector_id: str,
+    record_ids: set[str],
+) -> set[str]:
+    """Which of ``record_ids`` are in this connector and readable by the caller.
+
+    ``codeFiles`` is keyed by record id and carries neither ``connectorId`` nor
+    permissions, so both are re-applied from the owning ``records`` row. Fails
+    closed: a record whose connector or access cannot be established is dropped,
+    so an unavailable lookup narrows the answer rather than widening it.
+    """
+    if not record_ids:
+        return set()
+    accessible = await get_accessible_record_ids(graph_provider, org_id, user_id)
+    if accessible is None:
+        return set()
+    candidates = sorted(record_ids & accessible)
+    if not candidates:
+        return set()
+    try:
+        rows = await graph_provider.get_nodes_by_field_in(
+            collection=_RECORDS,
+            field_name="_key",
+            field_values=candidates,
+            return_fields=["_key", "orgId", "connectorId"],
+        )
+    except Exception as exc:
+        logger.warning("Connector scope lookup failed for directory listing: %s", exc)
+        return set()
+    visible: set[str] = set()
+    for raw in rows or []:
+        row = _unwrap(raw)
+        if row.get("orgId") != org_id or row.get("connectorId") != connector_id:
+            continue
+        if key := (row.get("_key") or row.get("id")):
+            visible.add(key)
+    return visible
+
+
 async def _list_children(
-    graph_provider: Any, org_id: str, prefix: str, connector_id: str, limit: int
+    graph_provider: Any,
+    org_id: str,
+    user_id: str,
+    prefix: str,
+    connector_id: str,
+    limit: int,
 ) -> dict[str, Any]:
     """Immediate files and subdirectories under a directory prefix.
 
     Reads ``codeFiles`` rather than deriving from blocks: the rollup in
     `_group_rows` is built from edge rows, so a file nothing imports would be
     invisible there. An inventory has to come from the file list itself.
+
+    The prefix scan is only org-scoped, so a path two repos share would
+    otherwise list files from a connector the caller did not ask for and may not
+    be allowed to read. Both the subdirectory rollup and the file list are built
+    from the gated rows only.
     """
     prefix = prefix.rstrip("/") + "/" if prefix.strip("/") else ""
-    rows = await graph_provider.get_nodes_by_field_prefix(
-        collection=_CODE_FILES,
-        field_name="filePath",
-        prefix=prefix,
-        filters={"orgId": org_id},
-        limit=_LIST_SCAN_LIMIT,
+    rows = [
+        _unwrap(raw)
+        for raw in await graph_provider.get_nodes_by_field_prefix(
+            collection=_CODE_FILES,
+            field_name="filePath",
+            prefix=prefix,
+            filters={"orgId": org_id},
+            limit=_LIST_SCAN_LIMIT,
+        ) or []
+    ]
+    visible = await _visible_record_ids(
+        graph_provider, org_id, user_id, connector_id,
+        {key for row in rows if (key := (row.get("_key") or row.get("id")))},
     )
     files: list[dict[str, Any]] = []
     dirs: dict[str, int] = {}
-    for raw in rows or []:
-        row = _unwrap(raw)
+    for row in rows:
         path = row.get("filePath")
         if not path or not path.startswith(prefix):
+            continue
+        if (row.get("_key") or row.get("id")) not in visible:
             continue
         rest = path[len(prefix):]
         if "/" in rest:
@@ -204,7 +265,7 @@ async def _list_children(
             "role": row.get("fileRole"),
             "select": path,
         })
-    scanned = len(rows or [])
+    scanned = len(rows)
     return {
         "directories": [
             {"path": f"{prefix}{name}", "files": n, "select": f"{prefix}{name}/"}
@@ -279,7 +340,7 @@ async def query_code_graph_impl(
 
     if _looks_like_directory(select):
         listing = await _list_children(
-            graph_provider, org_id, select, connector_id, limit
+            graph_provider, org_id, user_id, select, connector_id, limit
         )
         # An empty listing means this was never a directory. `conversations/
         # stream` is a URL fragment; answering it with "no such directory" is a
@@ -417,30 +478,15 @@ def _glob_parent(select: str) -> str:
 def _miss_hint(select: str, how: str) -> str:
     """What to call next when a selector matched nothing.
 
-    Each branch fails for a different reason, so a single "not found" would
-    send the model guessing. A path that misses usually means the file does not
-    exist under that name; a qualified name that misses usually means the right
-    file with the wrong symbol.
+    A path that misses usually means the file does not exist under that name, so
+    the next step is a listing of its parent rather than another guessed path.
     """
-    if how == "locator":
-        file_path, _, qualified_name = select.partition("#")
-        return (
-            f"No symbol {qualified_name!r} in {file_path!r}. The file may still "
-            f"exist — select {file_path!r} on its own to list what it defines, "
-            "then copy an exact name from that."
-        )
     if how == "path":
         parent = select.rstrip("/").rpartition("/")[0]
         where = f"{parent}/" if parent else "**"
         return (
             f"No file matched {select!r}. List what is actually there with "
             f"select={where!r}, then re-select an exact path."
-        )
-    if how == "qualified_name":
-        return (
-            f"No symbol named {select!r} in this repository. If you know the "
-            "file, select its path to list the symbols it defines; otherwise "
-            "search for it by wording."
         )
     return (
         f"Nothing matched {select!r}. Free text matches symbol names only — "

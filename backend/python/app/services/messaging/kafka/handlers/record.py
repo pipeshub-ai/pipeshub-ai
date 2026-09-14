@@ -126,6 +126,11 @@ class RecordEventHandler(BaseEventService):
                 graph_provider, org_id, record_group_id
             )
 
+            # Read before the watermark query, not after: a record updated in
+            # between is invisible to this build and would also sit below the
+            # `since` of the next one, so it would never be re-resolved.
+            started_at_ms = int(time.time() * 1000)
+
             touched_record_ids = None
             if last_build is not None:
                 rows = (
@@ -148,7 +153,6 @@ class RecordEventHandler(BaseEventService):
                 if not touched_record_ids:
                     return
 
-            started_at_ms = int(time.time() * 1000)
             self.logger.info(
                 "Automatic code edge build starting for org=%s record_group=%s "
                 "mode=%s touched_records=%s",

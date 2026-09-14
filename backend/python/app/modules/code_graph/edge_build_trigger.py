@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.modules.code_graph.connectors import (
-    _NORMALIZED_CODE_TYPES,
-    _normalized,
+    NORMALIZED_CODE_TYPES,
+    normalize_connector_type,
 )
 
 if TYPE_CHECKING:
@@ -101,7 +101,7 @@ def is_code_record(record: "Mapping[str, Any] | None") -> bool:
     """
     if not record:
         return False
-    return _normalized(record.get("connectorName")) in _NORMALIZED_CODE_TYPES
+    return normalize_connector_type(record.get("connectorName")) in NORMALIZED_CODE_TYPES
 
 
 def publishable_scope(

@@ -479,6 +479,8 @@ def _build_code_navigation_section() -> str:
     return (
         "\n## Navigating Code\n\n"
         "Code questions are answered by traversing the graph, in this order.\n\n"
+        "Search matches meaning: a symbol name, a quoted token, or a call expression finds "
+        "neither a definition nor a call site, and rewording it will not change that.\n\n"
         "**1. Traverse with `codegraph__get_neighbour`.** This is how you move through a "
         "codebase. Give it the address you hold, `edge_types` omitted on the first call, and the "
         "result tells you what the node is — its container, its heritage, what it reaches and "
