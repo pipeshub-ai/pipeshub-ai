@@ -232,6 +232,8 @@ export class UserAccountController {
         userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
         await userCredentials.save();
         await UserActivities.create({
+          userId: userId,
+          orgId: orgId,
           email: email,
           activityType: ACCOUNT_BLOCKED,
           ipAddress: ipAddress,
@@ -1140,6 +1142,8 @@ export class UserAccountController {
         userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
         await userCredentials.save();
         await UserActivities.create({
+          userId: userId,
+          orgId: orgId,
           email: email,
           activityType: ACCOUNT_BLOCKED,
           ipAddress: ip,
