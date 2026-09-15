@@ -560,6 +560,7 @@
     "loadingConversation": "Cargando conversación...",
     "recents": "Recientes",
     "sharedChats": "Chats compartidos",
+    "sharedBy": "Compartido por {{name}}",
     "noSharedChats": "No hay chats compartidos",
     "yourChats": "Tus chats",
     "noChatsFound": "No se encontraron chats",

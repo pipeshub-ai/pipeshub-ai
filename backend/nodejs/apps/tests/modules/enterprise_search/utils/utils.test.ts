@@ -17,6 +17,8 @@ import {
   buildMessageSortOptions,
   buildConversationResponse,
   addComputedFields,
+  attachSharedBy,
+  attachSharedByIfRecipient,
   buildFilter,
   initializeSSEResponse,
   sendSSEErrorEvent,
@@ -41,6 +43,7 @@ import { InternalServerError, BadRequestError } from '../../../../src/libs/error
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { AGUI_PROTOCOL, LEGACY_PROTOCOL } from '../../../../src/modules/enterprise_search/utils/agui'
 import { CONVERSATION_STATUS } from '../../../../src/modules/enterprise_search/constants/constants'
 
@@ -789,6 +792,51 @@ describe('Enterprise Search Utils', () => {
       }
       const result = addComputedFields(conversation, VALID_OID)
       expect(result.accessLevel).to.equal('write')
+    })
+  })
+
+  describe('attachSharedBy', () => {
+    it('returns the same array when there are no conversations', async () => {
+      const result = await attachSharedBy([], VALID_OID2)
+      expect(result).to.deep.equal([])
+    })
+
+    it('resolves initiator names in one lookup', async () => {
+      const initiatorId = new mongoose.Types.ObjectId(VALID_OID)
+      const findChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([
+          {
+            _id: initiatorId,
+            fullName: 'Ada Lovelace',
+            email: 'ada@example.com',
+          },
+        ]),
+      }
+      sinon.stub(Users, 'find').returns(findChain as any)
+
+      const result = await attachSharedBy(
+        [{ initiator: initiatorId, title: 'Shared thread' }],
+        VALID_OID2,
+      )
+
+      expect(result[0].sharedBy).to.deep.equal({
+        userId: VALID_OID,
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+      })
+    })
+  })
+
+  describe('attachSharedByIfRecipient', () => {
+    it('skips lookup for the owner', async () => {
+      const conversation = {
+        initiator: VALID_OID,
+        access: { isOwner: true },
+      }
+      const result = await attachSharedByIfRecipient(conversation, VALID_OID2)
+      expect(result).to.equal(conversation)
     })
   })
 

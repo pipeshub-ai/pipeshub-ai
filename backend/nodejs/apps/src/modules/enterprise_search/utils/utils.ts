@@ -24,6 +24,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { Response } from 'express';
 import { ChatSession } from '../schema/chat.session.schema';
 import { ChatSessionMessage } from '../schema/chat.session.message.schema';
+import { Users } from '../../user_management/schema/users.schema';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import {
   sanitizeForResponse,
@@ -711,6 +712,102 @@ export const addComputedFields = <
         (share) => share.userId.toString() === userId,
       )?.accessLevel || 'read',
   };
+};
+
+export type SharedByInfo = {
+  userId: string;
+  name: string;
+  email?: string;
+};
+
+function sharedByDisplayName(user: {
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+}): string {
+  const fullName = user.fullName?.trim();
+  if (fullName) return fullName;
+  const parts = [user.firstName, user.lastName]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join(' ')
+    .trim();
+  if (parts) return parts;
+  return user.email?.trim() || '';
+}
+
+/**
+ * Resolve conversation `initiator` IDs to display names for recipients.
+ * Only the initiator can share a chat, so initiator is the sharer.
+ */
+export const attachSharedBy = async <
+  T extends { initiator?: { toString(): string } },
+>(
+  conversations: T[],
+  orgId: string,
+): Promise<Array<T & { sharedBy?: SharedByInfo }>> => {
+  if (conversations.length === 0) {
+    return conversations;
+  }
+
+  const initiatorIds = [
+    ...new Set(
+      conversations
+        .map((conversation) => conversation.initiator?.toString())
+        .filter((id): id is string => {
+          if (!id) return false;
+          return mongoose.Types.ObjectId.isValid(id);
+        }),
+    ),
+  ];
+
+  if (initiatorIds.length === 0) {
+    return conversations;
+  }
+
+  const users = await Users.find({
+    orgId: new mongoose.Types.ObjectId(orgId),
+    isDeleted: false,
+    _id: { $in: initiatorIds.map((id) => new mongoose.Types.ObjectId(id)) },
+  })
+    .select('fullName firstName lastName email')
+    .lean()
+    .exec();
+
+  const userById = new Map(
+    users.map((user) => [user._id.toString(), user] as const),
+  );
+
+  return conversations.map((conversation) => {
+    const initiatorId = conversation.initiator?.toString();
+    if (!initiatorId) {
+      return conversation;
+    }
+    const user = userById.get(initiatorId);
+    const name = user ? sharedByDisplayName(user) : '';
+    const sharedBy: SharedByInfo = {
+      userId: initiatorId,
+      name: name || initiatorId,
+      ...(user?.email ? { email: user.email } : {}),
+    };
+    return { ...conversation, sharedBy };
+  });
+};
+
+export const attachSharedByIfRecipient = async <
+  T extends {
+    initiator?: { toString(): string };
+    access?: { isOwner?: boolean };
+  },
+>(
+  conversation: T,
+  orgId: string | undefined,
+): Promise<T & { sharedBy?: SharedByInfo }> => {
+  if (!orgId || conversation.access?.isOwner) {
+    return conversation;
+  }
+  const [enriched] = await attachSharedBy([conversation], orgId);
+  return enriched ?? conversation;
 };
 
 /**

@@ -70,6 +70,8 @@ interface ChatSectionElementProps {
  * A single conversation item in the chat sidebar.
  */
 export function ChatSectionElement({ conversation, isActive, onClick, agentId, projectId }: ChatSectionElementProps) {
+  const { t } = useTranslation();
+
   const [isHovered, setIsHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
@@ -250,6 +252,13 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
     }
   };
 
+  const sharedByName = conversation.sharedBy?.name?.trim();
+  const sharedBySubtitle =
+    conversation.isOwner === false && sharedByName
+      ? t('chat.sharedBy', { name: sharedByName })
+      : undefined;
+
+
   // Inline rename mode — render a plain input instead of SidebarItem
   if (isRenaming) {
     return (
@@ -307,6 +316,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
         onClick={onClick}
         textColor="var(--slate-12)"
         fontWeight={500}
+        subtitle={sharedBySubtitle}
         forceHighlight={menuOpen}
         onHoverChange={setIsHovered}
         rightSlot={

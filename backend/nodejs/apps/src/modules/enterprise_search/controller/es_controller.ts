@@ -58,6 +58,8 @@ import { ChatSessionMessage } from '../schema/chat.session.message.schema';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
   addComputedFields,
+  attachSharedBy,
+  attachSharedByIfRecipient,
   assignAiModelField,
   buildAIResponseMessage,
   buildFiltersMetadata,
@@ -3021,9 +3023,15 @@ export const getAllConversations = async (
       ChatSession.countDocuments(filter),
     ]);
 
-    const processedConversations = conversations.map((conversation: any) =>
+    let processedConversations = conversations.map((conversation: any) =>
       addComputedFields(conversation as IConversation, userId),
     );
+    if (!isOwned) {
+      processedConversations = await attachSharedBy(
+        processedConversations,
+        orgId,
+      );
+    }
 
     const response = {
       conversations: processedConversations,
@@ -3160,19 +3168,21 @@ export const getConversationById = async (
       messageSortOptions as { field: keyof IMessage },
     );
 
-    // Build conversation response using existing helper
-    const conversationResponse = buildConversationResponse(
-      conversationWithMessages as unknown as IChatSessionDocument,
-      userId,
-      {
-        page,
-        limit,
-        skip,
-        totalMessages,
-        hasNextPage: skip > 0,
-        hasPrevPage: skip + effectiveLimit < totalMessages,
-      },
-      sortedMessages,
+    const conversationResponse = await attachSharedByIfRecipient(
+      buildConversationResponse(
+        conversationWithMessages as unknown as IChatSessionDocument,
+        userId,
+        {
+          page,
+          limit,
+          skip,
+          totalMessages,
+          hasNextPage: skip > 0,
+          hasPrevPage: skip + effectiveLimit < totalMessages,
+        },
+        sortedMessages,
+      ),
+      orgId,
     );
 
     // Build filters metadata using existing helper

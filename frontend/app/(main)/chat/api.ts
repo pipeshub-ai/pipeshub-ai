@@ -103,6 +103,7 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     status: conv.status,
     modelInfo: conv.modelInfo,
     isOwner: conv.isOwner,
+    sharedBy: conv.sharedBy,
   };
 }
 

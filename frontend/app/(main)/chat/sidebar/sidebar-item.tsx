@@ -9,6 +9,8 @@ interface SidebarItemProps {
   icon?: React.ReactNode;
   /** Label text or ReactNode displayed in the item */
   label: React.ReactNode;
+  /** Optional second line under the label (e.g. who shared a chat) */
+  subtitle?: string;
   /** Optional content rendered on the right side (e.g., keyboard shortcut badge) */
   rightSlot?: React.ReactNode;
   /** Click handler */
@@ -39,6 +41,7 @@ interface SidebarItemProps {
 export function SidebarItem({
   icon,
   label,
+  subtitle,
   rightSlot,
   onClick,
   href,
@@ -66,8 +69,9 @@ export function SidebarItem({
     alignItems: 'center',
     gap: 'var(--space-2)',
     width: '100%',
-    height: CHAT_ITEM_HEIGHT,
-    padding: '0 var(--space-3)',
+    height: subtitle ? 'auto' : CHAT_ITEM_HEIGHT,
+    minHeight: CHAT_ITEM_HEIGHT,
+    padding: subtitle ? '4px var(--space-3)' : '0 var(--space-3)',
     boxSizing: 'border-box',
     flexShrink: 0,
     borderRadius: 'var(--radius-1)',
@@ -83,17 +87,41 @@ export function SidebarItem({
     <span
       style={{
         flex: 1,
-        fontSize: 14,
-        fontWeight,
-        lineHeight: 'var(--line-height-2)',
-        color: textColor,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
+        minWidth: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
         textAlign: 'left',
       }}
     >
-      {label}
+      <span
+        style={{
+          fontSize: 14,
+          fontWeight,
+          lineHeight: 'var(--line-height-2)',
+          color: textColor,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {label}
+      </span>
+      {subtitle ? (
+        <span
+          style={{
+            fontSize: 12,
+            fontWeight: 400,
+            lineHeight: '16px',
+            color: 'var(--slate-11)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {subtitle}
+        </span>
+      ) : null}
     </span>
   ) : (
     <div

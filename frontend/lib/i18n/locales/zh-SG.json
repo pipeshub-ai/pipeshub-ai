@@ -578,6 +578,7 @@
     "loadingConversation": "正在加载对话…",
     "recents": "最近",
     "sharedChats": "共享的聊天",
+    "sharedBy": "由 {{name}} 共享",
     "noSharedChats": "没有共享的聊天",
     "yourChats": "您的聊天",
     "noChatsFound": "未找到聊天",

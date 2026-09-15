@@ -561,6 +561,7 @@
     "loadingConversation": "Loading conversation...",
     "recents": "Recents",
     "sharedChats": "Shared Chats",
+    "sharedBy": "Shared by {{name}}",
     "noSharedChats": "No shared chats",
     "yourChats": "Your Chats",
     "noChatsFound": "No chats found",

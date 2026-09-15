@@ -100,6 +100,13 @@ export interface SharedWithEntry {
   _id: string;
 }
 
+/** Initiator of a chat, present on conversations shared with the current user */
+export interface SharedByInfo {
+  userId: string;
+  name: string;
+  email?: string;
+}
+
 /**
  * Pagination metadata returned by the conversation detail API.
  * `hasNextPage` means there are older message batches to load;
@@ -136,6 +143,7 @@ export interface ConversationApiResponse {
   /** Present when this conversation is linked to a Project. */
   projectId?: string;
   projectVisibility?: 'private' | 'project';
+  sharedBy?: SharedByInfo;
 }
 
 export type ConversationSource = 'owned' | 'shared';
@@ -167,6 +175,7 @@ export interface Conversation {
   /** Present when this conversation is linked to a Project. */
   projectId?: string;
   projectVisibility?: 'private' | 'project';
+  sharedBy?: SharedByInfo;
 }
 
 export interface ChatSuggestion {
