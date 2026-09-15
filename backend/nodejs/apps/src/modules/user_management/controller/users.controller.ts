@@ -524,10 +524,43 @@ export class UserController {
         role: resolveOptionalUserRole(req.body.role),
       });
 
-      await UserGroups.updateOne(
-        { orgId: newUser.orgId, type: 'everyone' }, // Find the everyone group in the same org
-        { $addToSet: { users: newUser._id } }, // Add user to the group if not already present
-      );
+      // Refuse a duplicate here rather than letting the unique index throw
+      // after side effects have happened.
+      const email =
+        typeof newUser.email === 'string' ? newUser.email.trim() : '';
+      if (email !== '') {
+        const existing = await Users.findOne({ email, isDeleted: false });
+        if (existing) {
+          throw new BadRequestError('A user with this email already exists');
+        }
+      }
+
+      // Persist first. The graph side upserts users by email, so an event
+      // for a user that was never saved (duplicate key, validation error)
+      // would overwrite the existing account's id and lock that person out.
+      await newUser.save();
+
+      // The user document and its everyone-group membership live in two
+      // collections, and the shipped MongoDB is a single node with no replica
+      // set, so there is no transaction to put them in. If the membership
+      // write fails, the user is removed again: otherwise the address is
+      // taken, the duplicate check refuses every retry, and the account sits
+      // with no group and no way to repair it from the API.
+      try {
+        await UserGroups.updateOne(
+          { orgId: newUser.orgId, type: 'everyone' }, // Find the everyone group in the same org
+          { $addToSet: { users: newUser._id } }, // Add user to the group if not already present
+        );
+      } catch (groupError) {
+        await Users.deleteOne({ _id: newUser._id }).catch((undoError) => {
+          this.logger.error('User saved but everyone-group update failed, and the undo failed too', {
+            userId: String(newUser._id),
+            orgId: newUser.orgId.toString(),
+            error: (undoError as Error).message,
+          });
+        });
+        throw groupError;
+      }
 
       await this.eventService.start();
       const event: Event = {
@@ -543,7 +576,6 @@ export class UserController {
       };
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      await newUser.save();
       this.logger.debug('user created');
       res.status(201).json(newUser);
     } catch (error) {
