@@ -622,7 +622,7 @@ test('A deleted connector does not come back on the next launch and frees its ro
   assert.deepEqual(m2.listConnectorIds(), [], 'journal meta must be gone');
 
   // The freed root is now available to a different connector — this is the
-  // failure users hit: "already watched by connector T1" after deleting T1.
+  // failure users hit: "already synced by connector T1" after deleting T1.
   await m2.start({ connectorId: 'c-new', connectorName: 'T2', rootPath: syncRoot });
   assert.equal((m2.getStatus('c-new') as { watcherState: string }).watcherState, 'watching');
 

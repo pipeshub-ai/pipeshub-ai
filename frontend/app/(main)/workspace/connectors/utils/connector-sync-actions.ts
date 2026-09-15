@@ -98,7 +98,7 @@ export async function assertLocalFsRootPathAvailable(
   const result = await checkLocalRootPathConflict(connectorId, rootPath);
   if (!result.available) {
     const owner = result.ownerConnectorName || result.ownerConnectorId || 'another connector';
-    throw new Error(`Local sync root is already watched by connector "${owner}": ${rootPath}`);
+    throw new Error(`Local sync root is already synced by connector "${owner}": ${rootPath}`);
   }
 }
 

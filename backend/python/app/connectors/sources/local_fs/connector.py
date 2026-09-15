@@ -332,9 +332,9 @@ class LocalFsApp(App):
         "Choose a path below, then run manual or scheduled sync—listing as Active alone does not index files."
     )
     .with_info(
-        "While PipesHub desktop is running with this connector enabled, "
+        "While PipesHub desktop app is running with connector enabled, "
         "OS may block renaming or moving the synced folders especially on Windows because the desktop app "
-        "keeps a watch on it. Turn sync off for this connector, or quit the desktop "
+        "keeps a watch on it. Turn sync off for that folder's connector, or quit the desktop "
         "app, then try again."
     )
     .with_categories(["Storage", "Local"])

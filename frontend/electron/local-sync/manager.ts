@@ -261,7 +261,7 @@ export class LocalSyncManager {
     const conflict = this.findRootPathConflict(normalizedRootPath, connectorId);
     if (conflict) {
       const owner = conflict.connectorName || conflict.connectorId;
-      throw new Error(`Local sync root is already watched by connector "${owner}": ${normalizedRootPath}`);
+      throw new Error(`Local sync root is already synced by connector "${owner}": ${normalizedRootPath}`);
     }
   }
 

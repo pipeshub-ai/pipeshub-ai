@@ -11522,6 +11522,11 @@ components:
         isActive:
           type: boolean
           description: Whether connector is enabled for syncing/agent
+        desktopOnline:
+          type: boolean
+          description: |
+            Whether the owner's desktop app is currently connected for this
+            instance. Present only on Local FS connectors; omitted otherwise.
         isConfigured:
           type: boolean
           description: Whether all required configuration is complete
@@ -30078,6 +30083,7 @@ paths:
         <li><b>isConfigured:</b> All required settings are complete</li>
         <li><b>isAuthenticated:</b> OAuth flow complete or credentials valid</li>
         <li><b>isActive:</b> Connector is enabled for sync/agent</li>
+        <li><b>desktopOnline:</b> Desktop app connected (Local FS only)</li>
         </ul>
       operationId: listConnectorInstances
       security:
