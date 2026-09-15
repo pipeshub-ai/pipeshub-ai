@@ -1,0 +1,273 @@
+name: Scheduled Bug Sweep
+
+# A weekly AI review of the code that changed recently plus one rotating area
+# of the codebase, looking for defects nobody has reported yet.
+#
+# What it produces:
+#   - Security findings  -> private draft security advisories, with a proposed
+#                           fix attached. Never a public issue or pull request:
+#                           either of those would disclose the hole before it
+#                           is fixed.
+#   - Other bugs         -> public issues labelled `bug`, `automated-sweep` and
+#                           an area label, so they land with the right people
+#                           and can be found or bulk-closed in one query.
+#
+# Two guards on the way to live:
+#   - Scheduled runs are dry until the repository variable SWEEP_LIVE is set
+#     to "true". A dry run prints what it would file and files nothing.
+#   - Manual runs default to dry as well; untick the box to file for real.
+#
+# One-time setup: the default GITHUB_TOKEN cannot create security advisories —
+# no Actions permission key covers them (security-events is code scanning only).
+# Add a fine-grained personal access token as the SWEEP_TOKEN secret with
+# "Issues: write" and "Repository security advisories: write". Without it,
+# issues are still filed, and any security finding fails the run visibly
+# rather than being dropped or filed publicly.
+#
+# This repository is public, so its logs and artifacts are public. The router
+# never prints a security finding, and nothing containing one is uploaded. The
+# AI review step itself can echo file contents it reads into the action log;
+# if that is a concern, run this workflow from the private mirror instead.
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'   # Mondays, 03:17 UTC — off the hour to avoid the queue spike
+  pull_request:
+    paths:
+      - '.github/scripts/route_sweep_findings.py'
+      - '.github/scripts/tests/test_route_sweep_findings.py'
+      - '.github/workflows/scheduled-bug-sweep.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report what would be filed without filing anything'
+        type: boolean
+        default: true
+      focus_area:
+        description: 'Override the rotating focus area (leave blank for the schedule)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  # The router is the only part of this workflow that writes to GitHub, so a
+  # change to it runs its tests on the pull request rather than waiting for
+  # the next scheduled sweep to find out.
+  test-router:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet pytest
+      - run: python -m pytest .github/scripts/tests/test_route_sweep_findings.py -v
+
+  sweep:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the sweep reads recent history to find what changed
+
+      - name: Decide whether this run files anything
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_DRY: ${{ inputs.dry_run }}
+          LIVE_VAR: ${{ vars.SWEEP_LIVE }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            [ "$INPUT_DRY" = "false" ] && DRY=false || DRY=true
+          else
+            [ "$LIVE_VAR" = "true" ] && DRY=false || DRY=true
+          fi
+          echo "dry_run=$DRY" >> "$GITHUB_OUTPUT"
+          echo "This run is $([ "$DRY" = true ] && echo 'a DRY RUN: nothing will be filed' || echo 'LIVE: findings will be filed')"
+
+      - name: Pick this week's focus area
+        id: focus
+        env:
+          OVERRIDE: ${{ inputs.focus_area }}
+        run: |
+          # One area per week, so the whole list is covered every couple of
+          # months without any single run trying to read everything.
+          AREAS=(
+            "backend/nodejs/apps/src/modules/auth"
+            "backend/python/app/connectors/core"
+            "backend/python/app/api/routes"
+            "backend/python/app/services/messaging"
+            "backend/nodejs/apps/src/modules/storage"
+            "backend/python/app/connectors/sources/localKB"
+            "backend/nodejs/apps/src/modules/knowledge_base"
+            "backend/python/app/modules/retrieval"
+            "backend/nodejs/apps/src/modules/oauth_provider"
+            "backend/python/app/agents"
+          )
+          if [ -n "$OVERRIDE" ]; then
+            AREA="$OVERRIDE"
+          else
+            WEEK=$(date -u +%V)
+            AREA="${AREAS[$(( 10#$WEEK % ${#AREAS[@]} ))]}"
+          fi
+          echo "area=$AREA" >> "$GITHUB_OUTPUT"
+          echo "Focus area: $AREA"
+
+      - name: List recently changed files
+        id: changed
+        run: |
+          git log --since='8 days ago' --name-only --pretty=format: origin/main \
+            | grep -E '\.(py|ts|tsx|js)$' | grep -vE '(^|/)tests?/|\.test\.|_test\.' \
+            | sort -u > recently-changed.txt || true
+          echo "changed_count=$(wc -l < recently-changed.txt)" >> "$GITHUB_OUTPUT"
+          echo "Recently changed source files: $(wc -l < recently-changed.txt)"
+
+      - name: Review for defects
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are performing a scheduled defect sweep of ${{ github.repository }}.
+            Nobody has asked you to look at anything in particular; you are looking for
+            problems that exist today and that no one has reported.
+
+            ## Scope
+
+            Two sets of files, and only these:
+
+            1. Source files changed in the last eight days. They are listed one per
+               line in `recently-changed.txt` at the repository root. Read that file
+               with the Read tool.
+            2. Everything under `${{ steps.focus.outputs.area }}`, this week's rotating
+               focus area.
+
+            Read `CLAUDE.md` at the repository root first. Its review criteria and
+            severity conventions apply here exactly as they do to a pull request review.
+
+            ## What counts
+
+            Report only what you would stake a review on. Every finding needs:
+            - a file and a line,
+            - a concrete failure scenario — specific inputs or state, and the wrong
+              result or crash they produce — not "this could be a problem",
+            - enough confidence that a maintainer reading it cold would agree it is
+              a defect, not a style preference.
+
+            If you are not sure, leave it out. A sweep that files things people close
+            as "not a bug" stops being read.
+
+            Do not report: style, naming, missing tests, missing docs, things already
+            covered by a TODO with an owner, or anything that needs a product decision
+            rather than a fix.
+
+            ## Security versus bug
+
+            Classify a finding as **security** if exploiting it lets someone read,
+            change or delete data they should not, act as someone else, run code, or
+            reach a resource they were not granted. The usual shapes: a route with no
+            permission check, a query built from request input, a client-supplied
+            org or user id trusted as-is, a path or URL built from user input, a
+            secret in a log or response, a token that outlives what it should.
+
+            Everything else is a **bug**.
+
+            Get this right. A security finding is filed privately; a bug is filed
+            publicly. Misfiling a security hole as a bug publishes it.
+
+            ## Limits
+
+            At most 3 security findings and at most 5 bugs. If you have more, keep
+            the ones with the highest severity and the most certain failure scenario.
+
+            ## Output
+
+            Write exactly one file, `sweep-findings.json`, at the repository root:
+
+            {
+              "scanned": {
+                "focus_area": "${{ steps.focus.outputs.area }}",
+                "recently_changed_files": ${{ steps.changed.outputs.changed_count }}
+              },
+              "findings": [
+                {
+                  "kind": "security" | "bug",
+                  "title": "one line, plain words, the consequence not the mechanism",
+                  "file": "path/from/repo/root.py",
+                  "line": 123,
+                  "severity": "critical" | "high" | "medium" | "low",
+                  "area": "python" | "javascript" | "connectors" | "sdk" | "performance" | "agent_builder" | "",
+                  "summary": "what is wrong, two or three sentences, plain language",
+                  "failure_scenario": "specific inputs or state -> specific wrong outcome",
+                  "suggested_fix": "what to change, concretely; may be empty",
+                  "cwe": "CWE-nnn or empty; security findings only"
+                }
+              ]
+            }
+
+            An empty findings list is a valid and common result. Do not invent
+            findings to fill it.
+
+            ## Rules
+
+            - Do NOT create issues, pull requests, advisories or comments. Do NOT push.
+              A separate step reads your file and decides what to file; that step is
+              the only thing that touches GitHub.
+            - Do NOT print any finding to standard output, and do not describe a
+              security finding anywhere except inside `sweep-findings.json`. This
+              repository is public and so are its logs.
+            - Your only output artifact is `sweep-findings.json`.
+          claude_args: '--model claude-opus-5 --allowedTools "Read,Write,Glob,Grep,Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(head:*),Bash(find:*)"'
+
+      - name: Check the report exists
+        id: report
+        run: |
+          if [ -s sweep-findings.json ] && python3 -c 'import json,sys; json.load(open("sweep-findings.json"))' 2>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Findings in report: $(python3 -c 'import json; print(len(json.load(open("sweep-findings.json")).get("findings") or []))')"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::sweep-findings.json was not produced or is not valid JSON"
+          fi
+
+      - name: Set up Python
+        if: steps.report.outputs.exists == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: File findings
+        if: steps.report.outputs.exists == 'true'
+        env:
+          # SWEEP_TOKEN can create advisories; github.token cannot. Falling back
+          # keeps issue filing working on a repo that has not set the secret,
+          # while a security finding then fails the run rather than vanishing.
+          GITHUB_TOKEN: ${{ secrets.SWEEP_TOKEN || github.token }}
+          SWEEP_TOKEN_SET: ${{ secrets.SWEEP_TOKEN != '' }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DRY_RUN: ${{ steps.mode.outputs.dry_run }}
+        run: |
+          if [ "$SWEEP_TOKEN_SET" != "true" ]; then
+            echo "::warning::SWEEP_TOKEN is not set; security findings cannot be filed as advisories on this run"
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            python3 .github/scripts/route_sweep_findings.py sweep-findings.json --dry-run
+          else
+            python3 .github/scripts/route_sweep_findings.py sweep-findings.json
+          fi
+
+      # The report is not uploaded as an artifact on purpose: it may contain a
+      # security finding, and artifacts on a public repository are public.
+      - name: Remove the report from the runner
+        if: always()
+        run: rm -f sweep-findings.json recently-changed.txt
