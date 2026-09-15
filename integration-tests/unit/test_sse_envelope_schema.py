@@ -41,6 +41,15 @@ _UPLOAD_FRAME = (
     'data: {"recordId":"a9dbc392-e907-44ed-8a54-7a23b92e0aa1","fileName":"probe","filePath":"probe.md","extension":"md"}'
 )
 
+# As written by the Node proxy for GET /configurationManager/ai-models/download-progress:
+# the embedding server's payload with a `timestamp` added on each poll
+# (cm_controller.ts, `event: progress`).
+_EMBEDDING_DOWNLOAD_FRAME = (
+    "event: progress\n"
+    'data: {"model":"BAAI/bge-large-en-v1.5","status":"downloading","progress":42.5,'
+    '"downloaded_bytes":567000000,"total_bytes":1340000000,"error":null,"timestamp":1789072618883}'
+)
+
 
 @pytest.mark.parametrize("raw", _CONVERSATION_FRAMES, ids=lambda r: r.split("\n", 1)[0].split(": ")[1])
 def test_conversation_frames_validate_after_decoding(raw: str) -> None:
@@ -61,6 +70,16 @@ def test_upload_frame_validates_after_decoding() -> None:
     envelope = _parse_frame(_UPLOAD_FRAME)
     assert envelope is not None
     assert_matches_component_schema(decode_sse_envelope(envelope), "UploadStreamSSEEvent")
+
+
+def test_embedding_download_frame_validates_after_decoding() -> None:
+    """The eighth stream, and the only one whose payload the proxy extends."""
+    envelope = _parse_frame(_EMBEDDING_DOWNLOAD_FRAME)
+    assert envelope is not None
+    decoded = decode_sse_envelope(envelope)
+    assert isinstance(decoded["data"], dict)
+    assert decoded["data"]["timestamp"] == 1789072618883, "the proxy's added field must survive decoding"
+    assert_matches_component_schema(decoded, "EmbeddingDownloadProgressSSEEvent")
 
 
 def test_raw_envelope_is_not_the_contract() -> None:
