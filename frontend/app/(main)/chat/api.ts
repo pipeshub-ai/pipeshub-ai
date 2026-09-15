@@ -305,6 +305,7 @@ export const ChatApi = {
         chatMode: agentChatMode,
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
+        ...(request.runId ? { runId: request.runId } : {}),
         ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
         // `undefined` (runtime.ts omits the field entirely when every tool
         // is selected) must NOT become `[]` here — an empty array means
@@ -323,6 +324,7 @@ export const ChatApi = {
         : `/api/v1/conversations/stream`;
       // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
       // uniformly for both agent and non-agent paths) and validate filters.
+      // `rest` already carries `runId` — spread through as-is.
       const { agentStreamTools, filters: reqFilters, attachments: reqAttachments, ...rest } = request;
       payload = {
         ...rest,
@@ -362,6 +364,7 @@ export const ChatApi = {
       agentStreamTools?: string[];
       agentCapabilities?: StreamChatRequest['agentCapabilities'];
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
+      runId?: string;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -383,6 +386,9 @@ export const ChatApi = {
     }
     if (request.reasoningEffort) {
       body.reasoningEffort = request.reasoningEffort;
+    }
+    if (request.runId) {
+      body.runId = request.runId;
     }
 
     await runChatStream(endpoint, body, callbacks);
@@ -407,6 +413,7 @@ export const ChatApi = {
       filters: { apps: string[]; kb: string[] };
       agentCapabilities?: AgentCapabilities;
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
+      runId?: string;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -429,8 +436,43 @@ export const ChatApi = {
     if (model.reasoningEffort) {
       agentRegenBody.reasoningEffort = model.reasoningEffort;
     }
+    if (model.runId) {
+      agentRegenBody.runId = model.runId;
+    }
 
     await runChatStream(endpoint, agentRegenBody, callbacks);
+  },
+
+  /**
+   * Cooperatively stop an in-flight stream by `runId`.
+   * Endpoint: POST /api/v1/conversations/:conversationId/cancel (assistant)
+   *        or POST /api/v1/agents/:agentId/conversations/:conversationId/cancel (agent)
+   *
+   * Never rejects on "already finished" — the backend returns
+   * `{ cancelled: false }` (200) for an unknown/already-settled `runId`
+   * rather than a 4xx; see `cancelConversationStream` (Node) /
+   * `cancel_chat_stream` (Python). Callers that only care whether the
+   * stream is now stopped can ignore the return value entirely and rely on
+   * the grace-timeout abort fallback (`stopStreamForSlot`) instead.
+   */
+  async cancelStream(
+    conversationId: string,
+    runId: string,
+    agentId?: string | null,
+  ): Promise<{ cancelled: boolean }> {
+    const endpoint = agentId
+      ? `/api/v1/agents/${agentId}/conversations/${conversationId}/cancel`
+      : `/api/v1/conversations/${conversationId}/cancel`;
+    const { data } = await apiClient.post<{ cancelled: boolean }>(
+      endpoint,
+      { runId },
+      // The composer already shows its own "Stopping…" affordance; a
+      // generic error toast on top (e.g. if the run already ended) would
+      // be confusing noise — `stopStreamForSlot`'s grace-timeout fallback
+      // covers the case where this call fails outright.
+      { suppressErrorToast: true },
+    );
+    return data;
   },
 
   /**

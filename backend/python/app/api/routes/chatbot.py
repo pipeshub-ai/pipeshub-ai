@@ -19,6 +19,8 @@ from pydantic import BaseModel, field_validator
 from app.config.constants.ai_models import validate_reasoning_effort
 from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_as_pil_from_bytes_sync
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry, RunOwner
+from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
@@ -87,8 +89,24 @@ class ChatQuery(BaseModel):
     # labels are only valid for the request that minted them, so callers
     # that rely on record ids surviving across turns should leave this off.
     enableRecordIdShortening: bool = False
+    # Stop Generation: client-generated UUID identifying this run, so a
+    # later `POST /chat/cancel {runId}` can target it. Absent for callers
+    # that predate this field or don't need cancellation (the agent loop
+    # generates one itself — see `stream_bridge.py`/`bridge.py`).
+    runId: str | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
+    _validate_run_id = field_validator("runId")(validate_run_id)
+
+
+class CancelRunRequest(BaseModel):
+    """Body of `POST /chat/cancel`. One endpoint for both assistant
+    (`/chat/stream`) and agent (`/{agent_id}/chat/stream`) runs — the
+    registry is keyed by `runId` alone, not by which route created it."""
+
+    runId: str
+
+    _validate_run_id = field_validator("runId")(validate_run_id)
 
 
 class AttachmentUploadItem(BaseModel):
@@ -229,6 +247,11 @@ async def get_graph_provider(request: Request) -> IGraphDBProvider:
 async def get_config_service(request: Request) -> ConfigurationService:
     container: QueryAppContainer = request.app.container
     return container.config_service()
+
+
+async def get_run_cancellation_registry(request: Request) -> RunCancellationRegistry:
+    container: QueryAppContainer = request.app.container
+    return container.run_cancellation_registry()
 
 
 async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -964,6 +987,7 @@ async def _generate_chat_stream_via_agent_loop(
     retrieval_service: RetrievalService,
     graph_provider: IGraphDBProvider,
     config_service: ConfigurationService,
+    cancellation_registry: RunCancellationRegistry | None = None,
 ) -> AsyncGenerator[str, None]:
     """Adapts a validated `ChatQuery` + the authenticated request into the
     plain-dict `query_info`/`user_info` contract `chat_modes.run_chat_stream()`
@@ -1046,6 +1070,7 @@ async def _generate_chat_stream_via_agent_loop(
         "conversationId": query_info.conversationId,
         "attachments": query_info.attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
+        "runId": query_info.runId,
     }
     user_info = {
         "userId": user_id,
@@ -1091,6 +1116,7 @@ async def _generate_chat_stream_via_agent_loop(
         llm_provider=model_config.get("provider") or "",
         system_prompts_config=system_prompts_config, protocol=protocol,
         client_name=client_name,
+        cancellation_registry=cancellation_registry,
     ):
         yield event
 
@@ -1102,6 +1128,7 @@ async def askAIStream(
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(get_config_service),
+    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
 ) -> StreamingResponse:
     """Perform semantic search across documents with streaming events and tool support.
 
@@ -1118,6 +1145,12 @@ async def askAIStream(
         query_info = ChatQuery(**body)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+
+    # A real HTTP 409 is only possible HERE, before `StreamingResponse` is
+    # returned — once the SSE generator below starts, Starlette has already
+    # committed the response to 200. See `RunCancellationRegistry.is_active`.
+    if query_info.runId and await cancellation_registry.is_active(query_info.runId):
+        raise HTTPException(status_code=409, detail=f"runId '{query_info.runId}' is already active")
 
 
     _chat_user = getattr(request.state, "user", {}) or {}
@@ -1138,6 +1171,7 @@ async def askAIStream(
         retrieval_service=retrieval_service,
         graph_provider=graph_provider,
         config_service=config_service,
+        cancellation_registry=cancellation_registry,
     )
 
     return StreamingResponse(
@@ -1150,3 +1184,39 @@ async def askAIStream(
             "Access-Control-Allow-Headers": "Cache-Control",
         },
     )
+
+
+@router.post("/chat/cancel", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+async def cancel_chat_stream(
+    request: Request,
+    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
+) -> dict[str, bool]:
+    """Cooperatively cancel an in-flight run — one endpoint for both
+    assistant (`/chat/stream`) and agent (`/{agent_id}/chat/stream`) runs,
+    since the registry is keyed by `runId` alone. Node's own
+    `/conversations/:id/cancel` and `/agents/:key/conversations/:id/cancel`
+    routes (owner-filtered against Mongo) forward here after their own
+    ownership check; this is the second, independent check against the
+    `RunOwner` the run was actually registered with.
+
+    Never a 4xx for "already finished"/"unknown" — `{cancelled: false}` —
+    only for a genuine mismatch (403) or a malformed `runId` (400, via
+    `CancelRunRequest`'s field validator).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+
+    try:
+        cancel_request = CancelRunRequest(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+
+    user = getattr(request.state, "user", {}) or {}
+    requester = RunOwner(user_id=user.get("userId", ""), org_id=user.get("orgId", ""))
+
+    outcome = await cancellation_registry.cancel(cancel_request.runId, requester)
+    if outcome == "forbidden":
+        raise HTTPException(status_code=403, detail="You do not own this run")
+    return {"cancelled": outcome == "cancelled"}

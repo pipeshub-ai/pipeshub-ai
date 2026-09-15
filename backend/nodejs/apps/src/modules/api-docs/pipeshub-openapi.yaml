@@ -5940,6 +5940,14 @@ components:
             that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /conversations/{conversationId}/cancel {runId}` while the
+            stream is still generating. Optional — a caller that never sends
+            one just can't cooperatively cancel the run.
 
     ConversationStreamRequest:
       allOf:
@@ -6085,6 +6093,13 @@ components:
             send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /agents/{agentKey}/conversations/{conversationId}/cancel
+            {runId}` while the stream is still generating.
       example:
         query: what are some latest tech news?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
@@ -6204,6 +6219,13 @@ components:
             compatibility with callers that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this regeneration run. Send it
+            here to enable `POST .../cancel {runId}` while it is still
+            generating.
 
     AgentRegenerateRequest:
       allOf:
@@ -6296,6 +6318,13 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /conversations/{conversationId}/cancel {runId}` while the
+            stream is still generating.
 
     ConversationMessageStreamRequest:
       allOf:
@@ -6447,6 +6476,13 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /agents/{agentKey}/conversations/{conversationId}/cancel
+            {runId}` while the stream is still generating.
       example:
         query: can you elaborate on the latest headlines?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
@@ -27265,6 +27301,66 @@ paths:
         '404':
           description: Conversation or message not found
 
+  /conversations/{conversationId}/cancel:
+    post:
+      tags:
+        - Conversations
+      summary: Cancel an in-flight chat stream
+      description: |
+        Cooperatively stop a `POST /conversations/stream` or
+        `POST /conversations/{conversationId}/messages/stream` run that is
+        still generating, using the `runId` sent when that stream started.
+
+        This is a synchronous JSON ack, not another SSE stream. The
+        cancelled run's own stream (if still connected) receives a terminal
+        frame with a `stopped` status and whatever partial answer had
+        already generated; nothing further is delivered here.
+
+        `{ cancelled: false }` — not an error — covers a `runId` that
+        already finished or was never registered; the caller only needs to
+        know the stream is not running anymore, not why.
+      operationId: cancelConversationStream
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - runId
+              properties:
+                runId:
+                  type: string
+                  format: uuid
+                  description: The `runId` sent when the stream was started.
+      responses:
+        '200':
+          description: Cancellation requested, or the run had already finished.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: boolean
+        '400':
+          description: Missing or malformed `runId`.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found or unauthorized
+
   /conversations/{conversationId}/message/{messageId}/feedback:
     post:
       tags:
@@ -29417,6 +29513,71 @@ paths:
             with offset information.
         '401':
           description: Unauthorized
+
+  /agents/{agentKey}/conversations/{conversationId}/cancel:
+    post:
+      tags:
+        - Agents
+      summary: Cancel an in-flight agent chat stream
+      description: |
+        Cooperatively stop a `POST /agents/{agentKey}/conversations/stream`
+        or `.../messages/stream` run that is still generating, using the
+        `runId` sent when that stream started.
+
+        Same synchronous JSON ack contract as the assistant
+        `POST /conversations/{conversationId}/cancel` — both forward to the
+        same backend cancellation endpoint, since the run registry is keyed
+        by `runId` alone. `{ cancelled: false }` covers a `runId` that
+        already finished or was never registered.
+      operationId: cancelAgentConversationStream
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Stable key identifying the agent that owns this conversation.
+          schema:
+            type: string
+            minLength: 1
+        - name: conversationId
+          in: path
+          required: true
+          description: ID of the agent conversation to cancel a run for.
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - runId
+              properties:
+                runId:
+                  type: string
+                  format: uuid
+                  description: The `runId` sent when the stream was started.
+      responses:
+        '200':
+          description: Cancellation requested, or the run had already finished.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: boolean
+        '400':
+          description: Missing or malformed `runId`.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found or unauthorized
 
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
     post:

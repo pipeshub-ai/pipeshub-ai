@@ -28,6 +28,7 @@ export default defineConfig({
       'app/(main)/chat/__tests__/agui-event-handler.test.ts',
       'app/(main)/chat/__tests__/agent-capabilities.test.ts',
       'app/(main)/chat/__tests__/api.test.ts',
+      'app/(main)/chat/__tests__/streaming-stop.test.ts',
       'app/(main)/chat/__tests__/reasoning-effort.test.ts',
       'app/(main)/chat/__tests__/attachment-types.test.ts',
       'app/(main)/chat/components/message-area/__tests__/agent-activity.test.tsx',

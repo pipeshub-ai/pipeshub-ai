@@ -615,10 +615,11 @@
     "diagramRenderFailed": "Diagramm konnte nicht gerendert werden",
     "showDiagramSource": "Quelle anzeigen",
     "hideDiagramSource": "Quelle ausblenden",
+    "stoppedMarker": "Gestoppt",
     "fullTableView": "Vollständige Tabellenansicht",
     "toasts": {
-      "stopStreamTitle": "Demnächst verfügbar",
-      "stopStreamDescription": "Das Stoppen der Generierung wird nicht unterstützt",
+      "stopStreamTitle": "Wird gestoppt…",
+      "stopStreamDescription": "Die Antwort wird in Kürze gestoppt. Eine bereits erzeugte Teilantwort bleibt erhalten.",
       "editComingSoonTitle": "Demnächst verfügbar",
       "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt",
       "deprecatedTools": "Dieser Agent hat Tools, die nicht mehr verfügbar sind. Öffnen Sie den Agent Builder, um sie zu entfernen.",

@@ -154,13 +154,17 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   }
 
   // Execute streaming request
-  public async executeStream(): Promise<Readable> {
+  public async executeStream(signal?: AbortSignal): Promise<Readable> {
     const url = this.buildUrl();
     const sanitizedHeaders = this.sanitizeHeaders(this.headers);
     const requestOptions: RequestInit = {
       method: this.method,
       headers: sanitizedHeaders,
       body: this.body,
+      // Propagates a client disconnect to the upstream fetch — without this,
+      // aborting on our end only tore down the Node-side Readable while
+      // Python kept generating against a socket nobody was reading.
+      ...(signal ? { signal } : {}),
     };
 
     try {

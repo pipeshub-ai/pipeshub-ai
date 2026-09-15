@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
+from app.agent_loop_lib.core.context import CancellationToken
 from app.agent_loop_lib.core.exceptions import TransportError
 from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart, ToolMessage, UserMessage
 from app.agent_loop_lib.core.responses import StopReason
@@ -1630,3 +1631,93 @@ class TestRetryabilityFollowsWhatTheClientSaw:
             async for event in transport.stream([UserMessage(content="hi")]):
                 seen.append(event)
         assert seen == []
+
+
+class _CancellingModel:
+    """Fake LangChain model whose `astream()` cancels `token` right before
+    yielding the chunk at index `cancel_before_index` — lets a test assert
+    exactly what `LangChainTransport.stream()`'s per-chunk cancellation
+    check (module docstring, Stop Generation Phase 3b) does with a chunk
+    that arrives AFTER cancellation: it must never be appended/emitted."""
+
+    def __init__(
+        self, chunks: list[AIMessageChunk], token: CancellationToken, cancel_before_index: int,
+    ) -> None:
+        self._chunks = chunks
+        self._token = token
+        self._cancel_before_index = cancel_before_index
+
+    def bind_tools(self, tools: list[Any]) -> "_CancellingModel":
+        return self
+
+    async def astream(self, messages: list, config: Any = None) -> AsyncIterator[AIMessageChunk]:
+        for i, chunk in enumerate(self._chunks):
+            if i == self._cancel_before_index:
+                self._token.cancel()
+            yield chunk
+
+
+class TestStreamCancellation:
+    """`LangChainTransport.stream()`'s `CancellationToken` check — the
+    intra-LLM-call half of Stop Generation (Phase 3b). `TestStream` above
+    covers the same method with no token wired at all (`None` is a no-op,
+    the default for every transport built outside a cancellable run)."""
+
+    async def test_cancellation_before_any_chunk_yields_only_a_cancelled_complete_event(
+        self,
+    ) -> None:
+        token = CancellationToken()
+        chunks = [AIMessageChunk(content="never seen")]
+        model = _CancellingModel(chunks, token, cancel_before_index=0)
+        transport = LangChainTransport(model, cancellation_token=token)
+
+        events = [e async for e in transport.stream([UserMessage(content="hi")])]
+
+        assert len(events) == 1
+        final = events[0]
+        assert isinstance(final, StreamCompleteEvent)
+        assert final.response.stop_reason == StopReason.CANCELLED
+        assert final.response.message.text == ""
+
+    async def test_cancellation_mid_stream_keeps_prior_text_and_drops_the_in_progress_tool_call(
+        self,
+    ) -> None:
+        token = CancellationToken()
+        chunks = [
+            AIMessageChunk(content="Partial answer so far"),
+            AIMessageChunk(content="", tool_call_chunks=[
+                {"name": "final_answer", "args": '{"answer_mark', "id": "1", "index": 0},
+            ]),
+            AIMessageChunk(content="", tool_call_chunks=[
+                {"name": None, "args": 'down": "..."}', "id": None, "index": 0},
+            ]),
+        ]
+        model = _CancellingModel(chunks, token, cancel_before_index=1)
+        transport = LangChainTransport(model, cancellation_token=token)
+
+        events = [e async for e in transport.stream([UserMessage(content="hi")])]
+
+        text_events = [e for e in events if isinstance(e, TextDeltaEvent)]
+        assert [e.delta for e in text_events] == ["Partial answer so far"]
+
+        final = events[-1]
+        assert isinstance(final, StreamCompleteEvent)
+        assert final.response.stop_reason == StopReason.CANCELLED
+        # The user-visible text survives cancellation ...
+        assert final.response.message.text == "Partial answer so far"
+        # ... but the tool call whose arguments were still being assembled
+        # when the token fired must not reach `Agent.step()` — its JSON is
+        # truncated mid-string and would corrupt the tool-dispatch loop.
+        assert final.response.message.tool_calls is None
+
+    async def test_a_not_yet_cancelled_token_does_not_affect_a_normal_stream(self) -> None:
+        token = CancellationToken()
+        chunks = [AIMessageChunk(content="Hello "), AIMessageChunk(content="world")]
+        transport = LangChainTransport(_FakeModel(stream_chunks=chunks), cancellation_token=token)
+
+        events = [e async for e in transport.stream([UserMessage(content="hi")])]
+
+        final = events[-1]
+        assert isinstance(final, StreamCompleteEvent)
+        assert final.response.stop_reason == StopReason.END_TURN
+        assert final.response.message.text == "Hello world"

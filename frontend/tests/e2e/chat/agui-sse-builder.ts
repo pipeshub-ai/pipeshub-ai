@@ -131,6 +131,103 @@ export function buildAguiPartialSseBody(conversationId: string, partialText: str
 }
 
 /**
+ * Cooperative-stop happy path: `conversation_created` -> `TEXT_MESSAGE_START`
+ * -> one partial delta -> `RUN_FINISHED` whose `result.conversation.messages`
+ * bot entry carries `status: 'stopped'` — the exact shape Node's
+ * `saveCompleteConversation`/`savePartialConversation` persist once Python's
+ * `/chat/cancel` (or a passive disconnect) ends the run early (see
+ * `es_controller.ts`, `utils.ts`). Distinct from `buildAguiPartialSseBody`,
+ * which deliberately omits `RUN_FINISHED` to simulate the connection still
+ * being open when the test clicks Stop.
+ */
+export function buildAguiStoppedSseBody(opts: AguiConversationOptions): string {
+  const { conversationId, userMessageId, botMessageId, question, answer, modelInfo, requestId } = opts;
+
+  const responsePayload = {
+    conversation: {
+      _id: conversationId,
+      userId: 'user-e2e',
+      orgId: 'org-e2e',
+      title: question.slice(0, 60),
+      initiator: 'main',
+      messages: [
+        {
+          _id: userMessageId,
+          messageType: 'user_query',
+          content: question,
+          contentFormat: 'MARKDOWN',
+          citations: [],
+          followUpQuestions: [],
+          referenceData: [],
+          modelInfo,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          feedback: [],
+        },
+        {
+          _id: botMessageId,
+          messageType: 'bot_response',
+          content: answer,
+          contentFormat: 'MARKDOWN',
+          citations: [],
+          status: 'stopped',
+          followUpQuestions: [],
+          referenceData: [],
+          modelInfo,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          feedback: [],
+        },
+      ],
+      isShared: false,
+      isDeleted: false,
+      isArchived: false,
+      lastActivityAt: Date.now(),
+      status: 'Stopped',
+      modelInfo,
+      sharedWith: [],
+      conversationErrors: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      __v: 0,
+    },
+    meta: {
+      requestId: requestId ?? 'req-e2e-agui-stopped',
+      timestamp: new Date().toISOString(),
+      duration: 480,
+    },
+  };
+
+  return [
+    frame('CUSTOM', {
+      name: 'conversation_created',
+      value: { conversationId, title: question.slice(0, 60) },
+    }),
+    frame('TEXT_MESSAGE_START'),
+    frame('TEXT_MESSAGE_CONTENT', { delta: answer }),
+    frame('RUN_FINISHED', { result: responsePayload }),
+  ].join('');
+}
+
+/**
+ * `conversation_created` + `TOOL_CALL_START` — deliberately no
+ * `TOOL_CALL_RESULT`/`RUN_FINISHED`, matching a tool that is still running
+ * when the user clicks Stop (see `handleToolCallStart` in
+ * `agui-event-handler.ts`, which leaves the part `status: 'running'` until
+ * a `TOOL_CALL_RESULT` arrives).
+ */
+export function buildAguiToolCallStartSseBody(
+  conversationId: string,
+  toolCallId: string,
+  toolCallName: string,
+): string {
+  return [
+    frame('CUSTOM', { name: 'conversation_created', value: { conversationId } }),
+    frame('TOOL_CALL_START', { toolCallId, toolCallName, displayName: toolCallName }),
+  ].join('');
+}
+
+/**
  * `conversation_created` + `CUSTOM(ask_user_question)` — deliberately no
  * `RUN_FINISHED`, matching the real backend keeping the stream open while
  * the `internaltools.ask_user_question` clarification card is interactive.

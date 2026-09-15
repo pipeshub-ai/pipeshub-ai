@@ -464,6 +464,15 @@ describe('createAGUIEventHandler', () => {
     expect(spies.onError).not.toHaveBeenCalled();
   });
 
+  it('treats a root RUN_ERROR with code "abort" as a stop, not an error', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('RUN_ERROR', { code: 'abort', message: 'Stream aborted' }));
+
+    expect(spies.onError).not.toHaveBeenCalled();
+  });
+
   it('silently ignores unmapped event types (e.g. RUN_STARTED, STATE_SNAPSHOT)', () => {
     const { callbacks, spies } = makeCallbacks();
     const handle = createAGUIEventHandler(callbacks);
