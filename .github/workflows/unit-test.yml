@@ -189,7 +189,7 @@ jobs:
             --ignore=tests/integration/redis_cluster \
             --ignore=tests/integration/skills/test_npm_import_live.py \
             --ignore=tests/integration/test_model_reasoning_effort_e2e.py \
-            -v --timeout=300
+            -v --timeout=300 --session-timeout=900
 
       - name: Generate coverage reports
         if: ${{ always() && inputs.generate-coverage-reports == true }}
