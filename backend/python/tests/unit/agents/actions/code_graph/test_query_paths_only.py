@@ -73,12 +73,27 @@ def empty_graph():
 def repo_root_graph():
     """Paths are stored repo-relative, so `backend` carries no slash."""
 
+    paths = ["backend/python/app/events/events.py", "backend/nodejs/apps/src/app.ts"]
+
     class _Graph:
         async def get_nodes_by_field_prefix(self, collection, field_name, prefix,
                                             filters=None, limit=None):
-            paths = ["backend/python/app/events/events.py", "backend/nodejs/apps/src/app.ts"]
             return [{"_key": p, "filePath": p, "fileRole": "source"}
                     for p in paths if p.startswith(prefix)]
+
+        # The listing is gated on the owning records: readable by the caller
+        # and in the connector asked for.
+        async def get_accessible_virtual_record_ids(self, user_id: str, org_id: str,
+                                                    **kwargs: object) -> dict[str, str]:
+            return {f"v-{p}": p for p in paths}
+
+        async def get_nodes_by_field_in(self, collection: str, field_name: str,
+                                        field_values: list[str],
+                                        return_fields: list[str] | None = None) -> list[dict]:
+            if collection != CollectionNames.RECORDS.value:
+                return []
+            return [{"_key": p, "orgId": "org-1", "connectorId": "conn-1"}
+                    for p in paths if p in set(field_values)]
 
     return _Graph()
 

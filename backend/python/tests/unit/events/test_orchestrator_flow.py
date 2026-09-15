@@ -717,3 +717,31 @@ async def test_failed_code_projection_stops_the_record() -> None:
     kwargs = processor.project_code_blocks_to_graph.await_args.kwargs
     assert kwargs["propagate_failure"] is True
     sink_orchestrator.index.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_service_pipeline_forwards_the_record_file_path() -> None:
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=None)
+    sink_orchestrator = MagicMock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock()
+    transform_pipeline = MagicMock()
+    transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+        transform_pipeline=transform_pipeline,
+    )
+    event_data = _make_event_data()
+    event_data["payload"]["filePath"] = "docs/reports/test.pdf"
+
+    async for _ in ep.on_event(event_data):
+        pass
+
+    assert parsing_client.parse.await_args.kwargs["file_path"] == "docs/reports/test.pdf"

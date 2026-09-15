@@ -341,6 +341,28 @@ class TestBuildCodeFileRecords:
         assert record.file_role == "test"
         assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
+    async def test_test_file_stays_off_when_filters_exist_without_a_row(self) -> None:
+        """A pre-existing filter config with no ``test_files`` row must not
+        fall back to the generic default-True and start indexing tests."""
+        from app.config.constants.arangodb import ProgressStatus
+        from app.connectors.core.registry.filters import FilterCollection
+
+        c = make_mock_connector()
+        c.indexing_filters = FilterCollection()
+        repos = ReposSync(c)
+        repos._process_records = AsyncMock()
+        assert repos._code_files_indexing_enabled() is True
+        assert repos._test_files_indexing_enabled() is False
+
+        await repos.build_code_file_records(
+            [self._blob_node("src/main.py"), self._blob_node("tests/test_main.py")],
+            _PROJECT_ID,
+            _PROJECT_PATH,
+        )
+        by_path = {u.record.file_path: u.record for u in repos._process_records.call_args.args[0]}
+        assert by_path["tests/test_main.py"].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert by_path["src/main.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
     async def test_test_file_is_indexed_once_the_filter_is_on(self) -> None:
         from app.config.constants.arangodb import ProgressStatus
 

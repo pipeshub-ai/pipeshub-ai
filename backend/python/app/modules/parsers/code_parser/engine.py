@@ -938,16 +938,23 @@ class _Walker:
         Nested definitions are not emitted here. Anything tiling did not reach
         sits inside a span that already covers its bytes, so emitting it would
         double-count them; its references belong to the block that holds it.
+
+        Explicit stack, not recursion: a long `a + b + c + ...` or `f(f(f(...)))`
+        chain nests one AST level per term, deeper than the interpreter's frame
+        limit, and a RecursionError here fails the whole record. Children are
+        pushed reversed so facts are still emitted in source order.
         """
         cfg = self.cfg
-        for child in node.named_children:
+        stack = list(reversed(node.named_children))
+        while stack:
+            child = stack.pop()
             ntype = child.type
             if ntype in cfg.import_types or ntype in cfg.export_types:
                 self._run_handler(child, enclosing)
                 continue
             if ntype in cfg.call_types:
                 self._emit_call(child, enclosing)
-            self._walk_facts(child, enclosing)
+            stack.extend(reversed(child.named_children))
 
     def _emit_call(self, node, enclosing: int) -> None:
         name, is_member, receiver, qualifier = _callee_info(node, self.src, self.cfg)
@@ -979,7 +986,10 @@ def parse_code(source: bytes, language: str) -> ParsedFile:
         return ParsedFile(language=cfg.name, skipped_reason="oversized")
 
     src = decode_source(source)
-    parser = _get_parser(cfg)
+    try:
+        parser = _get_parser(cfg)
+    except ImportError:
+        return ParsedFile(language=cfg.name, skipped_reason="grammar_unavailable")
     tree = parser.parse(src)
 
     parsed = _Walker(src, cfg).walk(tree.root_node)
@@ -1014,19 +1024,43 @@ def _attribute_facts(parsed: ParsedFile) -> None:
     script would be sourced from the file rather than from the statement holding
     it.
     """
-    ranked = sorted(
-        range(len(parsed.symbols)),
-        key=lambda i: parsed.symbols[i].end_byte - parsed.symbols[i].start_byte,
+    symbols = parsed.symbols
+    if not symbols:
+        return
+    # Spans nest properly, so the innermost span holding an offset is the last
+    # one starting at or before it that still covers it, or an ancestor of that
+    # one. Ordered outermost-first at a shared start (and, for identical spans,
+    # lowest index last) so `enclosing` climbs parent-ward and ties resolve to
+    # the lowest index, as the exhaustive scan did.
+    order = sorted(
+        range(len(symbols)),
+        key=lambda i: (
+            symbols[i].start_byte, symbols[i].start_byte - symbols[i].end_byte, -i,
+        ),
     )
+    starts = [symbols[i].start_byte for i in order]
+    enclosing: list[int | None] = []
+    stack: list[int] = []
+    for pos, i in enumerate(order):
+        start = symbols[i].start_byte
+        while stack and symbols[order[stack[-1]]].end_byte <= start:
+            stack.pop()
+        enclosing.append(stack[-1] if stack else None)
+        stack.append(pos)
+
     for fact in parsed.pending:
         if fact.pinned:
             continue
-        for i in ranked:
-            sym = parsed.symbols[i]
+        pos: int | None = bisect.bisect_right(starts, fact.byte_offset) - 1
+        if pos < 0:
+            continue
+        while pos is not None:
+            sym = symbols[order[pos]]
             if sym.start_byte <= fact.byte_offset < sym.end_byte:
-                fact.from_symbol = i
+                fact.from_symbol = order[pos]
                 fact.from_kind = "block"
                 break
+            pos = enclosing[pos]
 
 
 def _first_error_line(root: Node) -> int | None:

@@ -30,7 +30,8 @@ from .ops import (
     _degrees,
     _key_of,
     _readable_blocks,
-    _user_can_read,
+    _readable_only,
+    _unwrap,
     get_accessible_record_ids,
     get_record_roles,
 )
@@ -276,15 +277,6 @@ async def _list_children(
     }
 
 
-def _unwrap(row: dict) -> dict:
-    """Providers return either the node itself or {'b': node}."""
-    if isinstance(row, dict) and len(row) <= 2 and ("b" in row or "node" in row):
-        inner = row.get("b") or row.get("node")
-        if isinstance(inner, dict):
-            return inner
-    return row
-
-
 def _rank_by_degree(blocks: list[dict], degrees: dict[str, int]) -> list[dict]:
     """Most-connected first.
 
@@ -493,32 +485,3 @@ def _miss_hint(select: str, how: str) -> str:
         "select a path to list a directory or file, or search the knowledge "
         "base for wording that appears in the code itself."
     )
-
-
-async def _readable_only(
-    graph_provider: Any,
-    org_id: str,
-    user_id: str,
-    blocks: list[dict],
-    accessible: set[str] | None = None,
-) -> list[dict]:
-    """Drop blocks whose owning record the caller cannot read, keeping order.
-
-    When ``accessible`` is provided (from ``get_accessible_record_ids``), the
-    check is an O(1) set lookup per block.  Otherwise falls back to parallel
-    per-record ``_user_can_read`` calls.
-    """
-    if accessible is not None:
-        return [b for b in blocks if b.get("recordId") in accessible]
-
-    unique_rids = list({b.get("recordId") for b in blocks if b.get("recordId")})
-    if not unique_rids:
-        return []
-    verdicts = await asyncio.gather(*(
-        _user_can_read(graph_provider, user_id, org_id, rid)
-        for rid in unique_rids
-    ))
-    allowed = dict(zip(unique_rids, verdicts))
-    return [b for b in blocks if allowed.get(b.get("recordId"), False)]
-
-

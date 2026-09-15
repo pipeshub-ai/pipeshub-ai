@@ -12,6 +12,7 @@ from app.agents.actions.code_graph.ops import (
     get_neighbour_impl,
 )
 
+from .conftest import BLOCKS, CODE_FILES
 from .conftest import FakeGraphProvider as _BaseFake
 
 ORG = "org-1"
@@ -251,13 +252,20 @@ class TestWholeFile:
         assert result["truncated"] is True
 
     @pytest.mark.asyncio
-    async def test_an_unindexed_path_is_an_error_naming_the_path(self, graph) -> None:
-        result = await get_neighbour_impl(
+    async def test_an_unindexed_path_looks_like_a_denied_one(self, graph) -> None:
+        """An error naming the path for a miss, next to an empty walk for a
+        denial, would tell the caller which of the two it hit."""
+        missing = await get_neighbour_impl(
             graph_provider=graph, connector_id=CONN, org_id=ORG, user_id=USER,
-            file_path="src/nope.py",
+            file_path="src/nope.py", direction="outbound",
         )
-        assert "src/nope.py" in result["error"]
-        assert "neighbors" not in result
+        denied = await get_neighbour_impl(
+            graph_provider=FakeGraphProvider(deny_records=["rec-b"]),
+            connector_id=CONN, org_id=ORG, user_id=USER,
+            file_path="src/b.py", direction="outbound",
+        )
+        assert "error" not in missing
+        assert missing == {**denied, "file_path": "src/nope.py"}
 
     @pytest.mark.asyncio
     async def test_a_denied_file_looks_like_an_empty_walk(self) -> None:
@@ -269,6 +277,51 @@ class TestWholeFile:
         assert result == {
             "file_path": "src/b.py", "direction": "outbound", "neighbors": [],
         }
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_symbol_looks_like_a_denied_one(self, graph) -> None:
+        missing = await get_neighbour_impl(
+            graph_provider=graph, connector_id=CONN, org_id=ORG, user_id=USER,
+            file_path="src/a.py", qualified_name="function:nope", direction="outbound",
+        )
+        denied = await _neighbours(FakeGraphProvider(deny_records=["rec-a"]), direction="outbound")
+        assert missing == denied == {"symbol": None, "direction": "outbound", "neighbors": []}
+
+
+class TestProviderFailures:
+    """A lookup that raises must not come back as an empty success: `neighbors:
+    []` reads as "nothing here", and a missing role table reads as "not a
+    test file"."""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_block_load_raises_instead_of_reporting_no_neighbours(self) -> None:
+        class Broken(FakeGraphProvider):
+            async def get_nodes_by_field_in(
+                self, collection, field_name, field_values, **kw
+            ) -> list[dict]:
+                if collection == BLOCKS:
+                    raise RuntimeError("graph is down")
+                return await super().get_nodes_by_field_in(
+                    collection, field_name, field_values, **kw
+                )
+
+        with pytest.raises(RuntimeError, match="graph is down"):
+            await _neighbours(Broken(), direction="outbound")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_role_lookup_raises_instead_of_failing_open(self) -> None:
+        class Broken(FakeGraphProvider):
+            async def get_nodes_by_field_in(
+                self, collection, field_name, field_values, **kw
+            ) -> list[dict]:
+                if collection == CODE_FILES:
+                    raise RuntimeError("graph is down")
+                return await super().get_nodes_by_field_in(
+                    collection, field_name, field_values, **kw
+                )
+
+        with pytest.raises(RuntimeError, match="graph is down"):
+            await _neighbours(Broken(), direction="outbound")
 
 
 class TestPagination:
@@ -317,3 +370,71 @@ class TestPagination:
     @pytest.mark.asyncio
     async def test_negative_offset_is_rejected(self, graph) -> None:
         assert "error" in await self._page(graph, offset=-1)
+
+
+class TestTraversalCap:
+    """The provider's `limit` caps rows across the whole frontier. A flat 200
+    once let a hub with 300 callers come back as 200 rows and `truncated:
+    false`, which the prompt tells the model to read as a complete set."""
+
+    @staticmethod
+    def _hub_with_callers(count: int) -> FakeGraphProvider:
+        graph = FakeGraphProvider()
+        graph.edges = [
+            {"_from": f"blocks/k_in_{i}", "_to": "blocks/k_target", "relationshipType": "CALLS"}
+            for i in range(count)
+        ]
+        for i in range(count):
+            graph.blocks[f"k_in_{i}"] = dict(
+                graph.blocks["k_caller"], _key=f"k_in_{i}", id=f"k_in_{i}",
+                qualifiedName=f"function:in_{i}", connectorId=CONN,
+            )
+        return graph
+
+    async def _inbound(self, graph: FakeGraphProvider, **kwargs: object) -> dict:
+        return await get_neighbour_impl(
+            graph_provider=graph, connector_id=CONN, org_id=ORG, user_id=USER,
+            file_path="src/b.py", qualified_name="function:target",
+            direction="inbound", edge_types=["CALLS"], **kwargs,
+        )
+
+    @pytest.mark.asyncio
+    async def test_more_callers_than_the_old_flat_cap_is_still_a_full_set(self) -> None:
+        result = await self._inbound(self._hub_with_callers(250), limit=1000)
+        assert result["total"] == 250
+        assert len(result["neighbors"]) == 250
+        assert result["truncated"] is False
+        assert "fanout_capped" not in result
+
+    @pytest.mark.asyncio
+    async def test_hitting_the_row_cap_is_reported_not_silent(self, monkeypatch) -> None:
+        from app.agents.actions.code_graph import ops
+
+        monkeypatch.setattr(ops, "_ROWS_PER_ANCHOR", 3)
+        result = await self._inbound(self._hub_with_callers(5), limit=100)
+        assert result["total"] == 3, "rows past the cap are not fetched"
+        assert result["fanout_capped"] is True
+        assert result["truncated"] is True, "a page with room left is still not complete"
+        assert "lower bound" in result["next"]
+
+    @pytest.mark.asyncio
+    async def test_exactly_the_cap_is_complete(self, monkeypatch) -> None:
+        """The sentinel row is what separates 'exactly N' from 'more than N'."""
+        from app.agents.actions.code_graph import ops
+
+        monkeypatch.setattr(ops, "_ROWS_PER_ANCHOR", 5)
+        result = await self._inbound(self._hub_with_callers(5), limit=100)
+        assert result["total"] == 5
+        assert result["truncated"] is False
+        assert "fanout_capped" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_frontier_wider_than_the_fanout_is_reported(self, monkeypatch) -> None:
+        from app.agents.actions.code_graph import ops
+
+        monkeypatch.setattr(ops, "_NEIGHBOUR_FANOUT", 2)
+        graph = self._hub_with_callers(3)
+        # Hop 2 would expand three nodes; only two are walked.
+        result = await self._inbound(graph, depth=2, limit=100)
+        assert result["fanout_capped"] is True
+        assert result["truncated"] is True

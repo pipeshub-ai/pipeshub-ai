@@ -88,6 +88,18 @@ def _pairs(graph, relation):
     return sorted(p for p in out if p[0] and p[1])
 
 
+# A typed variable of the subclass, not `self`: the receiver's type comes from
+# the type table and the method still lives on the base.
+TYPED_CALLER = b'''
+from .confluence import ConfluenceConnector
+
+
+def run():
+    conn = ConfluenceConnector()
+    return conn.notify("typed", "receiver")
+'''
+
+
 class TestInheritedSelfCall:
     @pytest.mark.asyncio
     async def test_call_to_an_inherited_method_reaches_the_base(
@@ -139,6 +151,19 @@ class TestInheritedSelfCall:
         callers = {src for src, dst in _pairs(graph, CALLS)
                    if dst == "method:BaseConnector.notify"}
         assert any("_on_error" in (c or "") or "report" in (c or "") for c in callers)
+
+    @pytest.mark.asyncio
+    async def test_a_typed_receiver_reaches_an_inherited_method(
+        self, graph, index_file
+    ) -> None:
+        """`conn = ConfluenceConnector(); conn.notify()` used to look `notify`
+        up on ConfluenceConnector alone and drop the call the base defines."""
+        await index_file("recB", "src/base.py", BASE, "python")
+        await index_file("recC", "src/confluence.py", CONNECTOR, "python")
+        await index_file("recT", "src/typed.py", TYPED_CALLER, "python")
+        await _build(graph)
+
+        assert ("function:run", "method:BaseConnector.notify") in _pairs(graph, CALLS)
 
     @pytest.mark.asyncio
     async def test_an_undefined_self_method_creates_no_edge(

@@ -49,9 +49,13 @@ class ImportResolution:
         if direct:
             return direct
         # Absolute imports are usually rooted at a package dir (src/, app/…),
-        # so match on the tail of known paths.
-        for suffix in (f"/{rel}.py", f"/{rel}/__init__.py"):
-            matches = [p for p in self._files if p.endswith(suffix)]
+        # so match on the tail of known paths. The basename index narrows the
+        # scan to files sharing the leaf name; without it every unrooted import
+        # walked the whole repo.
+        leaf = rel.rsplit("/", 1)[-1]
+        for suffix, base in ((f"/{rel}.py", f"{leaf}.py"),
+                             (f"/{rel}/__init__.py", "__init__.py")):
+            matches = [p for p in self._by_suffix.get(base, ()) if p.endswith(suffix)]
             if len(matches) == 1:
                 return matches[0]
         return None

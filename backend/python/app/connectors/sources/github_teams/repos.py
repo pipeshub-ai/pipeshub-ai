@@ -53,9 +53,10 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
-from app.connectors.core.registry.filters import IndexingFilterKey
+from app.connectors.core.registry.code_indexing_flags import code_indexing_flags
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordGroupType, RecordType
 from app.modules.parsers.code_parser.file_role import FileRole, classify_file_role
+from app.modules.parsers.code_parser.lang_config import detect_language
 
 from .constants import (
     CODE_FILE_MAX_SIZE_BYTES,
@@ -804,6 +805,7 @@ class ReposSync:
             extension=extension.lower() or None,
             preview_renderable=extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS if extension else True,
             file_path=path, file_hash=sha, file_role=file_role.value,
+            language=detect_language(name),
             inherit_permissions=True, parent_external_record_id=parent_external_id,
             parent_record_type=(RecordType.FILE if parent_external_id else None),
             weburl=f"{repo.html_url}/blob/{repo.default_branch}/{path}",
@@ -835,22 +837,10 @@ class ReposSync:
             return False
 
     def _code_files_indexing_enabled(self) -> bool:
-        c = self.c
-        if not c.indexing_filters:
-            return True
-        return c.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
+        return code_indexing_flags(self.c.indexing_filters)[0]
 
     def _test_files_indexing_enabled(self) -> bool:
-        """Whether test files get their content indexed. Off unless opted in.
-
-        Unlike ``_code_files_indexing_enabled``, an absent filter means False:
-        a connector configured before this filter existed must not start
-        indexing tests just because its config has no row for them.
-        """
-        c = self.c
-        if not c.indexing_filters:
-            return False
-        return c.indexing_filters.is_enabled(IndexingFilterKey.TEST_FILES, default=False)
+        return code_indexing_flags(self.c.indexing_filters)[1]
 
     # ------------------------------------------------------------------
     # 6. Content streaming (index time)

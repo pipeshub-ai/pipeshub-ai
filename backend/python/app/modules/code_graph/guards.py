@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import posixpath
 
+from app.modules.parsers.code_parser.file_role import FileRole, classify_file_role
+
 __all__ = [
     "CALLABLE_KINDS",
     "TYPE_KINDS",
@@ -35,10 +37,6 @@ _FAMILY_BY_EXTENSION = {
     "ts": "js", "tsx": "js", "mts": "js", "cts": "js",
 }
 
-_TEST_SEGMENTS = frozenset({
-    "test", "tests", "spec", "specs", "__tests__", "__mocks__",
-    "testing", "e2e", "integration-tests", "integration_tests",
-})
 
 
 def lang_family(language: str | None, file_path: str | None = None) -> str | None:
@@ -53,24 +51,10 @@ def lang_family(language: str | None, file_path: str | None = None) -> str | Non
 
 
 def is_test_path(file_path: str | None) -> bool:
-    """Segment-aware, never substring.
-
-    A substring check classifies `contest/`, `latest/` and `protest.py` as
-    tests.
-    """
+    """The parser's own verdict, so a file is a test here iff it was one at index time."""
     if not file_path:
         return False
-    segments = [s for s in file_path.replace("\\", "/").split("/") if s]
-    if any(seg.lower() in _TEST_SEGMENTS for seg in segments[:-1]):
-        return True
-    name = segments[-1].lower() if segments else ""
-    return (
-        name.startswith("test_")
-        or name.endswith(("_test.py", "_test.go", "_test.ts", "_test.js", "_spec.rb"))
-        or ".test." in name
-        or ".spec." in name
-        or name == "conftest.py"
-    )
+    return classify_file_role(file_path) is FileRole.TEST
 
 
 def prefer_non_test(candidate_ids: list[str], files_by_id: dict[str, str],
@@ -93,8 +77,6 @@ def path_proximity_winner(candidate_ids: list[str], files_by_id: dict[str, str],
         return candidate_ids
 
     same_file = [cid for cid in candidate_ids if files_by_id.get(cid) == call_site_file]
-    if len(same_file) == 1:
-        return same_file
     if same_file:
         return same_file
 

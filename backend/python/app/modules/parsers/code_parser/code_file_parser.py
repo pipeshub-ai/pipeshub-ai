@@ -386,15 +386,17 @@ class CodeFileParser:
         summary = f"{record_name} ({parsed.language}) — " + (
             ", ".join(top_level) if top_level else "no top-level symbols"
         )
-        kept, truncated = self._cap(list(file_pending))
+        facts = list(file_pending)
         # `export function f` is resolvable here: the symbol is in this file.
-        for sym in symbols:
-            if sym.is_exported and sym.name:
-                kept.append({
-                    "relation": Relation.EXPORTS, "toName": sym.name,
-                    "line": sym.start_line, "fromKind": "record", "toKind": "block",
-                    "restrictToFile": True,
-                })
+        facts.extend(
+            {
+                "relation": Relation.EXPORTS, "toName": sym.name,
+                "line": sym.start_line, "fromKind": "record", "toKind": "block",
+                "restrictToFile": True,
+            }
+            for sym in symbols if sym.is_exported and sym.name
+        )
+        kept, truncated = self._cap(facts)
         return Block(
             index=index,
             type=BlockType.RECORD_SUMMARY,

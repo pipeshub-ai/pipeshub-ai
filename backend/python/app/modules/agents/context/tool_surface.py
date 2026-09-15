@@ -282,7 +282,7 @@ _NON_CONNECTOR_PREFIXES = frozenset({"dynamic", "skills", "codegraph"})
 # Used only while the registry is empty. Kept in sync by the test that asserts
 # it equals the registry's own `isInternal` set once discovery has run.
 _FALLBACK_INTERNAL_KEYS = frozenset({
-    "artifactmanager", "calculator", "codingsandbox",
+    "artifactmanager", "calculator", "codegraph", "codingsandbox",
     "databasesandbox", "datecalculator", "imagegenerator", "internaltools",
     "knowledgegraph", "knowledgehub", "retrieval",
 })

@@ -2990,6 +2990,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get nodes by field in failed: {str(e)}")
             return []
 
+    @staticmethod
+    def _filter_conditions(
+        filters: dict[str, Any] | None,
+        in_filters: dict[str, list[Any]] | None = None,
+        var: str = "doc",
+    ) -> tuple[list[str], dict[str, Any]]:
+        """Equality and membership filters as AQL predicates on ``var`` plus their bind vars."""
+        conditions: list[str] = []
+        bind_vars: dict[str, Any] = {}
+        for field, value in (filters or {}).items():
+            parameter = f"filter_{field}"
+            conditions.append(f"{var}.{field} == @{parameter}")
+            bind_vars[parameter] = value
+        for field, values in (in_filters or {}).items():
+            parameter = f"in_filter_{field}"
+            conditions.append(f"{var}.{field} IN @{parameter}")
+            bind_vars[parameter] = values
+        return conditions, bind_vars
+
     async def get_nodes_by_field_prefix(
         self,
         collection: str,
@@ -2999,13 +3018,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int = 400,
         transaction: str | None = None,
     ) -> list[dict]:
-        filters = filters or {}
-        conditions = [f"STARTS_WITH(doc.{field_name}, @prefix)"]
-        bind_vars: dict[str, Any] = {"prefix": prefix, "limit": limit}
-        for field, value in filters.items():
-            parameter = f"filter_{field}"
-            conditions.append(f"doc.{field} == @{parameter}")
-            bind_vars[parameter] = value
+        filter_conditions, bind_vars = self._filter_conditions(filters)
+        conditions = [f"STARTS_WITH(doc.{field_name}, @prefix)", *filter_conditions]
+        bind_vars.update({"prefix": prefix, "limit": limit})
         query = f"""
         FOR doc IN {collection}
             FILTER {" AND ".join(conditions)}
@@ -3031,13 +3046,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> list[dict]:
         if not terms:
             return []
-        filters = filters or {}
-        conditions = [f"doc.{field_name} != null"]
-        bind_vars: dict[str, Any] = {"terms": terms, "limit": limit}
-        for field, value in filters.items():
-            parameter = f"filter_{field}"
-            conditions.append(f"doc.{field} == @{parameter}")
-            bind_vars[parameter] = value
+        filter_conditions, bind_vars = self._filter_conditions(filters)
+        conditions = [f"doc.{field_name} != null", *filter_conditions]
+        bind_vars.update({"terms": terms, "limit": limit})
         query = f"""
         FOR doc IN {collection}
             FILTER {" AND ".join(conditions)}
@@ -3072,7 +3083,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         FOR edge IN {edge_collection}
             FILTER edge._from IN @node_ids OR edge._to IN @node_ids
             REMOVE edge IN {edge_collection} OPTIONS {{ ignoreErrors: true }}
-            RETURN OLD
+            RETURN 1
         """
         try:
             rows = await self.http_client.execute_aql(
@@ -3253,7 +3264,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         FOR edge IN {edge_collection}
             FILTER {" AND ".join(conditions)}
             REMOVE edge IN {edge_collection} OPTIONS {{ ignoreErrors: true }}
-            RETURN OLD
+            RETURN 1
         """
         try:
             rows = await self.http_client.execute_aql(
@@ -3271,18 +3282,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         in_filters: dict[str, list[Any]] | None = None,
         transaction: str | None = None,
     ) -> int:
-        filters = filters or {}
-        in_filters = in_filters or {}
-        conditions: list[str] = []
-        bind_vars: dict[str, Any] = {}
-        for field, value in filters.items():
-            parameter = f"filter_{field}"
-            conditions.append(f"doc.{field} == @{parameter}")
-            bind_vars[parameter] = value
-        for field, values in in_filters.items():
-            parameter = f"in_filter_{field}"
-            conditions.append(f"doc.{field} IN @{parameter}")
-            bind_vars[parameter] = values
+        conditions, bind_vars = self._filter_conditions(filters, in_filters)
         filter_clause = f"FILTER {' AND '.join(conditions)}" if conditions else ""
         query = f"""
         FOR doc IN {collection}
@@ -3309,16 +3309,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         in_filters: dict[str, list[Any]] | None = None,
         transaction: str | None = None,
     ) -> bool:
-        conditions: list[str] = []
-        bind_vars: dict[str, Any] = {}
-        for field, value in (filters or {}).items():
-            parameter = f"filter_{field}"
-            conditions.append(f"doc.{field} == @{parameter}")
-            bind_vars[parameter] = value
-        for field, values in (in_filters or {}).items():
-            parameter = f"in_filter_{field}"
-            conditions.append(f"doc.{field} IN @{parameter}")
-            bind_vars[parameter] = values
+        conditions, bind_vars = self._filter_conditions(filters, in_filters)
         filter_clause = f"FILTER {' AND '.join(conditions)}" if conditions else ""
         query = f"""
         FOR doc IN {collection}
@@ -3344,13 +3335,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         return_fields: list[str] | None = None,
         transaction: str | None = None,
     ) -> list[dict]:
-        filters = filters or {}
-        conditions = [f"doc.{timestamp_field} > @since"]
-        bind_vars: dict[str, Any] = {"since": since}
-        for field, value in filters.items():
-            parameter = f"filter_{field}"
-            conditions.append(f"doc.{field} == @{parameter}")
-            bind_vars[parameter] = value
+        filter_conditions, bind_vars = self._filter_conditions(filters)
+        conditions = [f"doc.{timestamp_field} > @since", *filter_conditions]
+        bind_vars["since"] = since
         if return_fields:
             return_expr = (
                 "{"
@@ -6085,6 +6072,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         sort_field: str | None = None,
         transaction: str | None = None,
         raise_on_error: bool = False,
+        after_key: str | None = None,
+        return_fields: list[str] | None = None,
     ) -> list[dict]:
         """
         Fetch a page of documents from a collection using AQL LIMIT so that
@@ -6100,18 +6089,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     param = f"fv{idx}"
                     filter_clauses.append(f"doc.{field} == @{param}")
                     bind_vars[param] = value
+            if after_key is not None:
+                filter_clauses.append("doc._key > @after_key")
+                bind_vars["after_key"] = after_key
 
             filter_aql = (
                 "FILTER " + " AND ".join(filter_clauses) if filter_clauses else ""
             )
             sort_aql = f"SORT doc.{sort_field} ASC" if sort_field else ""
+            if return_fields:
+                return_expr = (
+                    "{ "
+                    + ", ".join(f'"{field}": doc.{field}' for field in return_fields)
+                    + " }"
+                )
+            else:
+                return_expr = "doc"
 
             query = f"""
             FOR doc IN @@collection
                 {filter_aql}
                 {sort_aql}
                 LIMIT @skip, @limit
-                RETURN doc
+                RETURN {return_expr}
             """
 
             results = await self.http_client.execute_aql(
@@ -12687,6 +12687,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER {condition}
                     RETURN block._id
             )
+            FILTER LENGTH(block_ids) > 0
             FOR edge IN {edges}
                 FILTER edge._from IN block_ids OR edge._to IN block_ids
                 REMOVE edge IN {edges} OPTIONS {{ ignoreErrors: true }}

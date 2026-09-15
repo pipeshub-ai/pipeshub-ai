@@ -81,7 +81,7 @@ def unlock_code_graph_tools(run_scope: Any, registry: Any) -> list[str]:
 
 
 def _maybe_unlock(context: "AgentContext", run_scope: Any) -> list[str]:
-    records = (context.tool_state or {}).get("virtual_record_id_to_result") or {}
+    records = context.tool_state.get("virtual_record_id_to_result") or {}
     code_hits = virtual_records_include_code(records)
     if context.tool_state.get(_UNLOCK_FLAG) or code_hits:
         context.tool_state[_UNLOCK_FLAG] = True

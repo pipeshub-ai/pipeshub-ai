@@ -3,9 +3,12 @@ import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import aiohttp  # type: ignore
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -54,6 +57,9 @@ from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
 
+if TYPE_CHECKING:
+    from redis.asyncio import Redis
+
 
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
@@ -67,6 +73,13 @@ class RecordEventHandler(BaseEventService):
 
         self.event_processor : EventProcessor = event_processor
         self.producer = producer
+        # Shared by every code record this handler finishes; all uses run on the
+        # consumer's worker loop (process_event), which is the loop the client
+        # binds to on first use.
+        self._redis: Redis | None = None
+        # Deferred edge-build re-requests; held so the loop does not collect
+        # them mid-sleep and so shutdown can cancel them.
+        self._deferred_builds: set[asyncio.Task] = set()
         # The producer's client is bound to the loop that created it — the main
         # loop this handler is constructed on (indexing_main.start_kafka_consumers).
         # process_event runs on the indexing consumer's worker-thread loop, so
@@ -79,6 +92,31 @@ class RecordEventHandler(BaseEventService):
         except RuntimeError:
             self._producer_loop = None
 
+    async def _redis_client(self) -> "Redis":
+        if self._redis is None:
+            self._redis = await redis_from_config_service(self.config_service)
+        return self._redis
+
+    async def _discard_redis(self) -> None:
+        redis, self._redis = self._redis, None
+        if redis is None:
+            return
+        try:
+            await redis.aclose()
+        except Exception:
+            self.logger.exception("Failed to close the record handler's Redis client")
+
+    async def aclose(self) -> None:
+        for task in list(self._deferred_builds):
+            task.cancel()
+        if self._deferred_builds:
+            await asyncio.gather(*self._deferred_builds, return_exceptions=True)
+        await self._discard_redis()
+
+    @staticmethod
+    def _is_redis_connection_error(exc: BaseException) -> bool:
+        return isinstance(exc, (RedisConnectionError, RedisTimeoutError))
+
     async def _build_code_edges(
         self,
         *,
@@ -86,10 +124,11 @@ class RecordEventHandler(BaseEventService):
         connector_id: str,
         record_group_id: str,
     ) -> None:
-        redis = await redis_from_config_service(self.config_service)
+        redis = await self._redis_client()
         lock_key = f"{edge_build_trigger.BUILD_LOCK_PREFIX}{org_id}:{record_group_id}"
         lock_token = str(uuid4())
         lock_acquired = False
+        redis_broken = False
         renewal: asyncio.Task | None = None
         try:
             lock_acquired = bool(
@@ -101,6 +140,14 @@ class RecordEventHandler(BaseEventService):
                 )
             )
             if not lock_acquired:
+                # Another build holds this repo. It may have started before the
+                # records behind this request were in, so ask again once it has
+                # had time to finish rather than dropping the request.
+                await self._defer_code_edges_build(
+                    org_id=org_id,
+                    connector_id=connector_id,
+                    record_group_id=record_group_id,
+                )
                 return
 
             # The build outruns the lease on a large repo, and an expired lease
@@ -121,10 +168,11 @@ class RecordEventHandler(BaseEventService):
             ):
                 return
 
-            sync_point_key = edge_build_trigger.sync_point_key_for(record_group_id)
-            last_build, _ = await edge_build_trigger.read_build_state(
-                graph_provider, org_id, record_group_id
-            )
+            last_build = (
+                await edge_build_trigger.read_build_state(
+                    graph_provider, org_id, record_group_id
+                )
+            ).last_build
 
             # Read before the watermark query, not after: a record updated in
             # between is invisible to this build and would also sit below the
@@ -151,6 +199,12 @@ class RecordEventHandler(BaseEventService):
                     if isinstance(row.get("_key"), str)
                 }
                 if not touched_record_ids:
+                    await self._settle_code_edges_build(
+                        org_id=org_id,
+                        connector_id=connector_id,
+                        record_group_id=record_group_id,
+                        started_at_ms=started_at_ms,
+                    )
                     return
 
             self.logger.info(
@@ -172,21 +226,18 @@ class RecordEventHandler(BaseEventService):
                 touched_record_ids=touched_record_ids,
                 log=self.logger,
             )
-            await graph_provider.upsert_sync_point(
-                sync_point_key=sync_point_key,
-                sync_point_data={
-                    "orgId": org_id,
-                    "connectorId": connector_id,
-                    "syncDataPointType": "codeEdgeBuild",
-                    "lastEdgeBuildAt": started_at_ms,
-                    "edgeBuildPending": False,
-                },
-                collection=CollectionNames.SYNC_POINTS.value,
+            await self._settle_code_edges_build(
+                org_id=org_id,
+                connector_id=connector_id,
+                record_group_id=record_group_id,
+                started_at_ms=started_at_ms,
+                last_build_at=started_at_ms,
             )
             self.logger.info(
                 "Automatic code edge build complete: %s", result.as_log_fields()
             )
-        except Exception:
+        except Exception as exc:
+            redis_broken = self._is_redis_connection_error(exc)
             self.logger.exception(
                 "Automatic code edge build failed for org=%s record_group=%s",
                 org_id,
@@ -195,8 +246,8 @@ class RecordEventHandler(BaseEventService):
             raise
         finally:
             if renewal is not None:
-                # Awaited, not just cancelled: it holds the Redis client closed
-                # below, and must not renew a lease the release is about to drop.
+                # Awaited, not just cancelled: it must not renew a lease the
+                # release below is about to drop.
                 renewal.cancel()
                 await asyncio.wait({renewal})
             if lock_acquired:
@@ -207,22 +258,16 @@ class RecordEventHandler(BaseEventService):
                         lock_key,
                         lock_token,
                     )
-                except Exception:
+                except Exception as exc:
+                    redis_broken = redis_broken or self._is_redis_connection_error(exc)
                     self.logger.exception(
                         "Failed to release code edge build lock for org=%s "
                         "record_group=%s",
                         org_id,
                         record_group_id,
                     )
-            try:
-                await redis.aclose()
-            except Exception:
-                self.logger.exception(
-                    "Failed to close code edge build Redis client for org=%s "
-                    "record_group=%s",
-                    org_id,
-                    record_group_id,
-                )
+            if redis_broken:
+                await self._discard_redis()
 
     # Statuses that already describe a finished record. Abandoning a duplicate
     # delivery of one of these must not rewrite it as a failure. FAILED is
@@ -482,6 +527,80 @@ class RecordEventHandler(BaseEventService):
                 record_group_id,
             )
 
+    async def _settle_code_edges_build(
+        self,
+        *,
+        org_id: str,
+        connector_id: str,
+        record_group_id: str,
+        started_at_ms: int,
+        last_build_at: int | None = None,
+    ) -> None:
+        """Record that a build ran, keeping ``edgeBuildPending`` if it was asked
+        for again after this build started."""
+        graph_provider = self.event_processor.graph_provider
+        state = await edge_build_trigger.read_build_state(
+            graph_provider, org_id, record_group_id
+        )
+        sync_point_data: dict[str, Any] = {
+            "orgId": org_id,
+            "connectorId": connector_id,
+            "syncDataPointType": "codeEdgeBuild",
+            "edgeBuildPending": edge_build_trigger.still_owed(state, started_at_ms),
+        }
+        if last_build_at is not None:
+            sync_point_data["lastEdgeBuildAt"] = last_build_at
+        await graph_provider.upsert_sync_point(
+            sync_point_key=edge_build_trigger.sync_point_key_for(record_group_id),
+            sync_point_data=sync_point_data,
+            collection=CollectionNames.SYNC_POINTS.value,
+        )
+
+    async def _defer_code_edges_build(
+        self, *, org_id: str, connector_id: str, record_group_id: str
+    ) -> None:
+        redis = await self._redis_client()
+        if not await edge_build_trigger.claim_deferral(redis, org_id, record_group_id):
+            return
+        task = asyncio.create_task(
+            self._request_code_edges_after_delay(
+                org_id=org_id,
+                connector_id=connector_id,
+                record_group_id=record_group_id,
+            )
+        )
+        self._deferred_builds.add(task)
+        task.add_done_callback(self._deferred_builds.discard)
+        self.logger.info(
+            "Code edge build busy for org=%s record_group=%s; asking again in %ss",
+            org_id,
+            record_group_id,
+            edge_build_trigger.DEFERRED_BUILD_DELAY_SECONDS,
+        )
+
+    async def _request_code_edges_after_delay(
+        self, *, org_id: str, connector_id: str, record_group_id: str
+    ) -> None:
+        """Never raises: a lost deferral leaves ``edgeBuildPending`` set, so the
+        next record indexed for the repo asks again past the dedupe window."""
+        await asyncio.sleep(edge_build_trigger.DEFERRED_BUILD_DELAY_SECONDS)
+        try:
+            redis = await self._redis_client()
+            await edge_build_trigger.release_deferral(redis, org_id, record_group_id)
+            await self._publish_code_edges_event(
+                org_id=org_id,
+                connector_id=connector_id,
+                record_group_id=record_group_id,
+            )
+        except Exception as exc:
+            self.logger.exception(
+                "Deferred code edge build request failed for org=%s record_group=%s",
+                org_id,
+                record_group_id,
+            )
+            if self._is_redis_connection_error(exc):
+                await self._discard_redis()
+
     async def _request_code_edge_build_if_repo_drained(
         self, record_id: str | None, record: dict | None = None
     ) -> None:
@@ -500,7 +619,6 @@ class RecordEventHandler(BaseEventService):
         # predates the status write that made the record terminal.
         if record is not None and not edge_build_trigger.is_code_record(record):
             return
-        redis = None
         try:
             graph_provider = self.event_processor.graph_provider
             record = await graph_provider.get_document(
@@ -516,16 +634,17 @@ class RecordEventHandler(BaseEventService):
             ):
                 return
 
-            _, pending = await edge_build_trigger.read_build_state(
+            state = await edge_build_trigger.read_build_state(
                 graph_provider, org_id, record_group_id
             )
-            redis = await redis_from_config_service(self.config_service)
-            # A build already known to be owed skips the dedupe window: it is
-            # owed because the last request was lost, and waiting the window
-            # out would only delay the record that noticed.
-            if not pending and not await edge_build_trigger.claim_publish(
+            redis = await self._redis_client()
+            now_ms = int(time.time() * 1000)
+            # The claim is always taken first, so the tail of a repo asks once.
+            # Only a pending request older than the window, presumed lost,
+            # gets past a lost claim.
+            if not await edge_build_trigger.claim_publish(
                 redis, org_id, record_group_id
-            ):
+            ) and not edge_build_trigger.request_is_stale(state, now_ms):
                 return
 
             # Written before the request, so a request that dies in the broker
@@ -540,6 +659,7 @@ class RecordEventHandler(BaseEventService):
                     "connectorId": connector_id,
                     "syncDataPointType": "codeEdgeBuild",
                     "edgeBuildPending": True,
+                    "edgeBuildRequestedAt": now_ms,
                 },
                 collection=CollectionNames.SYNC_POINTS.value,
             )
@@ -553,19 +673,12 @@ class RecordEventHandler(BaseEventService):
                 org_id,
                 record_group_id,
             )
-        except Exception:
+        except Exception as exc:
             self.logger.exception(
                 "Failed to request a code edge build after record %s", record_id
             )
-        finally:
-            if redis is not None:
-                try:
-                    await redis.aclose()
-                except Exception:
-                    self.logger.exception(
-                        "Failed to close Redis client after a code edge "
-                        "build request"
-                    )
+            if self._is_redis_connection_error(exc):
+                await self._discard_redis()
 
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:

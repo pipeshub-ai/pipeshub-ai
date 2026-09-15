@@ -7,6 +7,7 @@ these tests provide additional coverage for edge cases and boundary conditions.
 
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
@@ -2192,6 +2193,23 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
 # ===========================================================================
 
 
+def _finished_duplicate(calls: list | None = None) -> Callable[..., Awaitable[DedupDecision]]:
+    """Stand-in for a same-collection finished duplicate: runs the hook where
+    the real helper does, just before the duplicate's status is copied."""
+
+    async def _check(
+        content: object, doc: dict,
+        before_reusing_status: Callable[[], Awaitable[None]] | None = None,
+    ) -> DedupDecision:
+        if before_reusing_status is not None:
+            await before_reusing_status()
+        if calls is not None:
+            calls.append("status copied")
+        return DedupDecision(virtual_record_id=None, skip_indexing=True)
+
+    return _check
+
+
 class TestDuplicateCodeFileProjection:
     """A deduped code file must still get its own block nodes.
 
@@ -2224,8 +2242,7 @@ class TestDuplicateCodeFileProjection:
     async def test_duplicate_code_file_projects_under_the_new_record(self) -> None:
         ep, processor = self._setup()
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-             return_value=DedupDecision(virtual_record_id=None, skip_indexing=True)):
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=_finished_duplicate()):
             event_data = _make_event_payload(
                 extension="py", mime_type="text/plain", record_name="client.py",
                 buffer=b"def helper():\n    return 1\n",
@@ -2247,8 +2264,7 @@ class TestDuplicateCodeFileProjection:
         """Projection is additive: the two terminal events are unchanged."""
         ep, processor = self._setup()
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-             return_value=DedupDecision(virtual_record_id=None, skip_indexing=True)):
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=_finished_duplicate()):
             event_data = _make_event_payload(extension="py", mime_type="text/plain")
             events = await _drain(ep.on_event(event_data))
 
@@ -2261,8 +2277,7 @@ class TestDuplicateCodeFileProjection:
     async def test_duplicate_non_code_file_is_not_projected(self) -> None:
         ep, processor = self._setup(record_type="FILE")
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-             return_value=DedupDecision(virtual_record_id=None, skip_indexing=True)):
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=_finished_duplicate()):
             event_data = _make_event_payload(extension=ExtensionTypes.DOCX.value)
             await _drain(ep.on_event(event_data))
 
@@ -2273,8 +2288,7 @@ class TestDuplicateCodeFileProjection:
         """Connectors walking a git tree often send text/plain and no extension."""
         ep, processor = self._setup()
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-             return_value=DedupDecision(virtual_record_id=None, skip_indexing=True)):
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=_finished_duplicate()):
             event_data = _make_event_payload(
                 extension="unknown", mime_type="text/plain", record_name="main.ts",
             )
@@ -2287,8 +2301,7 @@ class TestDuplicateCodeFileProjection:
         """`decode_source` indexes by byte offset and rejects a str."""
         ep, processor = self._setup()
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-             return_value=DedupDecision(virtual_record_id=None, skip_indexing=True)):
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=_finished_duplicate()):
             event_data = _make_event_payload(
                 extension="py", mime_type="text/plain", record_name="client.py",
                 buffer="def helper():\n    return 1\n",
@@ -2298,3 +2311,100 @@ class TestDuplicateCodeFileProjection:
         content = processor.project_code_blocks_to_graph.await_args.kwargs["content"]
         assert content == b"def helper():\n    return 1\n"
 
+    @pytest.mark.asyncio
+    async def test_projection_lands_before_the_status_is_copied(self) -> None:
+        """The copied COMPLETED status is what tells the edge builder the repo
+        has drained, so it must not precede this file's blocks."""
+        ep, processor = self._setup()
+        calls: list[str] = []
+        async def _project(**_: object) -> None:
+            calls.append("projected")
+
+        processor.project_code_blocks_to_graph.side_effect = _project
+
+        with patch.object(ep, "_check_duplicate_by_md5",
+                          side_effect=_finished_duplicate(calls)):
+            await _drain(ep.on_event(_make_event_payload(extension="py", mime_type="text/plain")))
+
+        assert calls == ["projected", "status copied"]
+        assert processor.project_code_blocks_to_graph.await_args.kwargs["propagate_failure"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_projection_stops_the_record(self) -> None:
+        ep, processor = self._setup()
+        calls: list[str] = []
+        processor.project_code_blocks_to_graph.side_effect = RuntimeError("graph down")
+
+        with patch.object(ep, "_check_duplicate_by_md5",
+                          side_effect=_finished_duplicate(calls)), \
+             pytest.raises(RuntimeError, match="graph down"):
+            await _drain(ep.on_event(_make_event_payload(extension="py", mime_type="text/plain")))
+
+        assert calls == [], "the duplicate's status must not be copied"
+
+
+
+class TestDedupHookBeforeReusedStatus:
+    """`before_reusing_status` runs only where a finished duplicate's status is
+    copied, and before that write."""
+
+    @staticmethod
+    def _doc() -> dict:
+        return {"_key": "r1", "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10}
+
+    @pytest.mark.asyncio
+    async def test_runs_before_the_status_write(self) -> None:
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1", "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+        }]
+        calls: list[str] = []
+        real_update = ep.update_record_fields
+
+        async def _update(doc: dict, fields: dict) -> bool:
+            if "indexingStatus" in fields:
+                calls.append("status")
+            return await real_update(doc, fields)
+
+        async def _hook() -> None:
+            calls.append("hook")
+
+        with patch.object(ep, "update_record_fields", side_effect=_update):
+            result = await ep._check_duplicate_by_md5(b"x", self._doc(), before_reusing_status=_hook)
+
+        assert result.skip_indexing is True
+        assert calls == ["hook", "status"]
+
+    @pytest.mark.asyncio
+    async def test_a_raising_hook_leaves_the_status_alone(self) -> None:
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1", "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+        }]
+
+        async def _hook() -> None:
+            raise RuntimeError("graph down")
+
+        doc = self._doc()
+        with pytest.raises(RuntimeError, match="graph down"):
+            await ep._check_duplicate_by_md5(b"x", doc, before_reusing_status=_hook)
+        assert doc.get("indexingStatus") is None
+        gp.copy_document_relationships.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_not_run_for_an_in_flight_duplicate(self) -> None:
+        """A QUEUED record still blocks the edge build; it is projected when the
+        primary finishes and it is reprocessed as a finished duplicate."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-ip", "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+        }]
+        hook = AsyncMock()
+
+        result = await ep._check_duplicate_by_md5(b"x", self._doc(), before_reusing_status=hook)
+
+        assert result.skip_indexing is True
+        hook.assert_not_awaited()

@@ -1,200 +1,122 @@
-"""The generic `query_code_graph` primitive.
+"""The `query_code_graph` primitive: "what is here", for a path.
 
-One call shape covers callers, file contents, cold-start lookup and the module
-graph, so the tests are organised by which of those the arguments select.
+A directory selector lists its children, a file or glob selector lists the
+symbols those files define. Edges are `get_neighbour`'s job and a symbol's
+source is `read_code`'s; the rejection of those shapes lives in
+`test_query_paths_only.py`. These tests cover what a path resolves to, how the
+result is gated, ranked and capped, and that a denial looks like a miss.
 """
 import pytest
 
-from app.agents.actions.code_graph.query import query_code_graph_impl
+from app.agents.actions.code_graph.query import TEST_ROLE, query_code_graph_impl
 
-from .conftest import ORG, USER, QueryGraphProvider
+from .conftest import CONN, ORG, USER, QueryGraphProvider
 
 pytestmark = pytest.mark.asyncio
 
 
-def _ctx(graph, user=USER):
-    return {"graph_provider": graph, "org_id": ORG, "user_id": user}
+def _ctx(graph, user=USER, connector=CONN):
+    return {"graph_provider": graph, "org_id": ORG, "user_id": user, "connector_id": connector}
 
 
-def _symbols(result):
-    return {n["symbol_id"] for n in result["nodes"]}
+def _names(result: dict) -> set[str]:
+    return {n["qualified_name"] for n in result["nodes"]}
 
 
 class TestSelectorResolution:
-    async def test_path_glob(self, query_graph):
+    async def test_path_glob(self, query_graph) -> None:
         result = await query_code_graph_impl(**_ctx(query_graph), select="web/ui/*")
         assert result["resolved_as"] == "path"
-        assert _symbols(result) == {"web_ui_panel_render", "web_ui_panel_imports"}
+        assert _names(result) == {"function:renderPanel", "imports:run"}
 
-    async def test_literal_file_path(self, query_graph):
+    async def test_literal_file_path(self, query_graph) -> None:
         result = await query_code_graph_impl(**_ctx(query_graph), select="src/b.py")
         assert result["resolved_as"] == "path"
-        assert _symbols(result) == {"src_b_target", "src_b_thing", "src_b_thing_run"}
+        assert _names(result) == {"function:target", "class:Thing", "method:run"}
+        assert result["connector_id"] == CONN, "every follow-up call needs it back"
 
-    async def test_glob_does_not_leak_its_prefix_siblings(self, query_graph):
+    async def test_glob_does_not_leak_its_prefix_siblings(self, query_graph) -> None:
         # The DB-side filter is a prefix, so `web/api/*` must not return web/ui.
         result = await query_code_graph_impl(**_ctx(query_graph), select="web/api/*")
-        assert _symbols(result) == {"web_api_client_fetch"}
+        assert _names(result) == {"function:fetchTarget"}
 
-    async def test_exact_symbol_id(self, query_graph):
-        result = await query_code_graph_impl(**_ctx(query_graph), select="src_b_target")
-        assert result["resolved_as"] == "symbol_id"
-        assert _symbols(result) == {"src_b_target"}
+    async def test_a_directory_lists_its_children(self, query_graph) -> None:
+        result = await query_code_graph_impl(**_ctx(query_graph), select="web/")
+        assert result["resolved_as"] == "directory"
+        assert [d["select"] for d in result["directories"]] == ["web/api/", "web/ui/"]
+        assert result["files"] == []
 
-    async def test_free_text_needs_no_prior_knowledge(self, query_graph):
-        """The cold-start case: the only selector an agent can use as a first call."""
-        result = await query_code_graph_impl(**_ctx(query_graph), select="target")
-        assert result["resolved_as"] == "text"
-        assert result["nodes"][0]["symbol_id"] == "src_b_target"  # exact beats substring
-        assert "web_api_client_fetch" in _symbols(result)  # fetchTarget
+    async def test_a_leaf_directory_lists_its_files(self, query_graph) -> None:
+        result = await query_code_graph_impl(**_ctx(query_graph), select="web/ui")
+        assert result["resolved_as"] == "directory"
+        assert result["directories"] == []
+        assert [f["select"] for f in result["files"]] == ["web/ui/panel.ts"]
 
-    async def test_no_match_is_empty_not_an_error(self, query_graph):
-        result = await query_code_graph_impl(**_ctx(query_graph), select="nosuchthing")
+    async def test_no_match_is_empty_not_an_error(self, query_graph) -> None:
+        result = await query_code_graph_impl(**_ctx(query_graph), select="src/nosuchfile.py")
         assert result["matches"] == 0
         assert result["nodes"] == [] and "error" not in result
+        assert "select='src/'" in result["hint"], "a miss must name the next call"
 
 
 class TestNoise:
-    async def test_filler_kinds_are_excluded_from_free_text(self, query_graph):
-        # Two blocks are named `run`: a method and an imports span.
-        result = await query_code_graph_impl(**_ctx(query_graph), select="run")
-        assert _symbols(result) == {"src_b_thing_run"}
-
-    async def test_filler_kinds_stay_reachable_by_path(self, query_graph):
+    async def test_filler_kinds_stay_reachable_by_path(self, query_graph) -> None:
         result = await query_code_graph_impl(**_ctx(query_graph), select="web/ui/panel.ts")
-        assert "web_ui_panel_imports" in _symbols(result)
+        assert "imports:run" in _names(result)
 
-
-class TestExpansion:
-    async def test_depth_zero_returns_no_edges(self, query_graph):
+    async def test_kinds_filter_the_symbols(self, query_graph) -> None:
         result = await query_code_graph_impl(
-            **_ctx(query_graph), select="src_a_caller", depth=0)
-        assert result["edges"] == []
-
-    async def test_inbound_expansion_finds_callers(self, query_graph):
-        """Reported the way the edge points: the caller calls the callee.
-
-        Emitting the walk order instead would read as `target` calling its own
-        caller, which reverses every dependency an agent draws from it.
-        """
-        result = await query_code_graph_impl(
-            **_ctx(query_graph), select="src_b_target",
-            relations=["CALLS"], direction="inbound", depth=1,
-        )
-        assert result["edges"] == [{
-            "from": "src/a.py#src_a_caller",
-            "to": "src/b.py#src_b_target",
-            "relation": "CALLS",
-        }]
-
-    async def test_relations_filter_the_walk(self, query_graph):
-        result = await query_code_graph_impl(
-            **_ctx(query_graph), select="src_b_target",
-            relations=["INHERITS"], direction="outbound", depth=1,
-        )
-        assert [e["relation"] for e in result["edges"]] == ["INHERITS"]
-
-    async def test_unknown_relation_names_are_dropped(self, query_graph):
-        result = await query_code_graph_impl(
-            **_ctx(query_graph), select="src_b_target",
-            relations=["NOT_A_RELATION"], direction="outbound", depth=1,
-        )
-        # Falls back to every relation rather than silently matching nothing.
-        assert [e["relation"] for e in result["edges"]] == ["INHERITS"]
+            **_ctx(query_graph), select="src/b.py", kinds=["method"])
+        assert _names(result) == {"method:run"}
+        assert result["matches"] == 1
 
 
-class TestGrouping:
-    async def test_directory_rollup_weights_the_underlying_edges(self, query_graph):
-        """An import edge points at a whole record, a call edge at a block.
+class TestRanking:
+    async def test_hubs_come_first_and_carry_their_degree(self, query_graph) -> None:
+        """`target` and `Thing` touch two edges each, `run` one. Without the
+        degree a 60-file selection reads as a flat list in scan order."""
+        result = await query_code_graph_impl(**_ctx(query_graph), select="src/b.py")
+        assert [n["degree"] for n in result["nodes"]] == [2, 2, 1]
+        assert result["nodes"][-1]["qualified_name"] == "method:run"
 
-        `web/ui` reaches `web/api` twice, once each way, and both have to land
-        on the same module pair or the module graph undercounts.
-        """
-        result = await query_code_graph_impl(
-            **_ctx(query_graph), select="web/**",
-            relations=["CALLS", "IMPORTS_FROM"], direction="outbound",
-            group_by="directory",
-        )
-        assert result["grouped_by"] == "directory"
-        assert result["edges"] == [{
-            "from": "web/ui", "to": "web/api", "weight": 2,
-            "relations": ["IMPORTS_FROM", "CALLS"],
-        }]
-        assert result["groups"] == [
-            {"group": "web/api", "files": 1},
-            {"group": "web/ui", "files": 1},
-        ]
 
-    async def test_depth_follows_the_selector(self, query_graph):
-        """`web/**` groups at `web/ui`; `web/ui/**` would group a level deeper.
-
-        A fixed depth cannot serve both — it either merges every module of a
-        deep tree into one bucket or splits a shallow one into leaves.
-        """
-        shallow = await query_code_graph_impl(
-            **_ctx(query_graph), select="web/**",
-            relations=["CALLS"], direction="outbound", group_by="directory")
-        assert [g["group"] for g in shallow["groups"]] == ["web/api", "web/ui"]
-        assert shallow["scope"] == "web/"
-
-    async def test_file_rollup_keeps_full_paths(self, query_graph):
-        result = await query_code_graph_impl(
-            **_ctx(query_graph), select="web/**",
-            relations=["CALLS", "IMPORTS_FROM"], direction="outbound",
-            group_by="file",
-        )
-        assert {g["group"] for g in result["groups"]} == {
-            "web/ui/panel.ts", "web/api/client.ts"}
-        assert result["edges"][0]["from"] == "web/ui/panel.ts"
-
-    async def test_intra_group_edges_are_dropped(self, query_graph):
-        # src/a.py and src/b.py both roll up to `src`, so the CALLS edge between
-        # them is a self-loop at this level and carries no information.
-        result = await query_code_graph_impl(
-            **_ctx(query_graph), select="src/**",
-            relations=["CALLS"], direction="outbound", group_by="directory",
-        )
-        assert result["edges"] == []
-
-    async def test_inbound_reverses_the_reported_edge(self, query_graph):
-        """Asked who depends on `web/api`, the edge still reads api <- ui."""
-        result = await query_code_graph_impl(
-            **_ctx(query_graph), select="web/api/**",
-            relations=["CALLS"], direction="inbound", group_by="directory",
-        )
-        assert result["edges"] == [{
-            "from": "web/ui", "to": "web/api", "weight": 1, "relations": ["CALLS"],
-        }]
+class TestTests:
+    async def test_test_files_are_hidden_unless_asked_for(self) -> None:
+        graph = QueryGraphProvider(file_roles={"rec-a": TEST_ROLE})
+        hidden = await query_code_graph_impl(**_ctx(graph), select="src/*")
+        assert _names(hidden) == {"function:target", "class:Thing", "method:run"}
+        shown = await query_code_graph_impl(**_ctx(graph), select="src/*", include_tests=True)
+        assert "function:caller" in _names(shown)
 
 
 class TestTruncation:
-    async def test_the_true_total_is_reported(self, query_graph):
-        result = await query_code_graph_impl(
-            **_ctx(query_graph), select="src/b.py", limit=1)
+    async def test_the_true_total_is_reported(self, query_graph) -> None:
+        result = await query_code_graph_impl(**_ctx(query_graph), select="src/b.py", limit=1)
         assert result["truncated"] is True
         assert result["matches"] == 3
         assert len(result["nodes"]) == 1
 
-    async def test_a_complete_result_says_so(self, query_graph):
-        result = await query_code_graph_impl(
-            **_ctx(query_graph), select="src/b.py", limit=50)
+    async def test_a_complete_result_says_so(self, query_graph) -> None:
+        result = await query_code_graph_impl(**_ctx(query_graph), select="src/b.py", limit=50)
         assert result["truncated"] is False
 
 
 class TestArgumentValidation:
     @pytest.mark.parametrize("kwargs", [
         {"select": "   "},
-        {"select": "src/b.py", "direction": "sideways"},
-        {"select": "src/b.py", "group_by": "planet"},
+        {"select": "src/b.py", "connector": ""},
     ])
-    async def test_rejected(self, query_graph, kwargs):
-        result = await query_code_graph_impl(**_ctx(query_graph), **kwargs)
+    async def test_rejected(self, query_graph, kwargs) -> None:
+        connector = kwargs.pop("connector", CONN)
+        result = await query_code_graph_impl(
+            **_ctx(query_graph, connector=connector), **kwargs)
         assert "error" in result
 
-    async def test_depth_is_clamped_not_rejected(self, query_graph):
-        result = await query_code_graph_impl(
-            **_ctx(query_graph), select="src_a_caller", depth=99)
+    @pytest.mark.parametrize("limit", [0, 99_999])
+    async def test_limit_is_clamped_not_rejected(self, query_graph, limit) -> None:
+        result = await query_code_graph_impl(**_ctx(query_graph), select="src/b.py", limit=limit)
         assert "error" not in result
+        assert 1 <= len(result["nodes"]) <= 3
 
 
 class TestAccessControl:
@@ -204,56 +126,45 @@ class TestAccessControl:
     and how much is in it, which is the leak the empty result exists to prevent.
     """
 
-    async def test_denied_user_sees_a_plain_miss(self, query_graph):
+    @staticmethod
+    def _without_select(result: dict) -> dict:
+        return {k: v for k, v in result.items() if k not in ("select", "hint")}
+
+    async def test_denied_user_sees_a_plain_miss(self, query_graph) -> None:
         denied = await query_code_graph_impl(
             **_ctx(query_graph, user="intruder"), select="src/b.py")
         missing = await query_code_graph_impl(
             **_ctx(query_graph), select="src/nosuchfile.py")
         assert denied["matches"] == 0 and "error" not in denied
-        assert {k: v for k, v in denied.items() if k != "select"} == \
-               {k: v for k, v in missing.items() if k != "select"}
+        assert self._without_select(denied) == self._without_select(missing)
 
-    async def test_unreadable_neighbour_is_dropped_from_the_walk(self):
-        graph = QueryGraphProvider(deny_records={"rec-b"})
-        result = await query_code_graph_impl(
-            **_ctx(graph), select="src_a_caller",
-            relations=["CALLS"], direction="outbound", depth=1,
-        )
-        assert result["edges"] == []
-        assert _symbols(result) == {"src_a_caller"}
+    async def test_denied_user_gets_no_directory_listing(self, query_graph) -> None:
+        """A listing is built from `codeFiles`, which carries no permissions;
+        the gate has to come from the owning records."""
+        result = await query_code_graph_impl(**_ctx(query_graph, user="intruder"), select="web/")
+        assert "directories" not in result
+        assert result["matches"] == 0 and "error" not in result
 
-    async def test_grouped_import_target_is_gated(self):
-        """An import edge names a record the caller may not read.
-
-        Without the record-level gate the module graph would still print
-        `web/api/client.ts` as a dependency, disclosing a file by its path.
-        """
+    async def test_an_unreadable_file_is_dropped_from_the_listing(self) -> None:
         graph = QueryGraphProvider(deny_records={"rec-d"})
-        result = await query_code_graph_impl(
-            **_ctx(graph), select="web/ui/",
-            relations=["IMPORTS_FROM"], direction="outbound", group_by="directory",
-        )
-        assert result["edges"] == []
-        # The module the caller *can* read still appears — redacting the
-        # dependency must not silently redact the dependent.
-        assert [g["group"] for g in result["groups"]] == ["web/ui"]
+        result = await query_code_graph_impl(**_ctx(graph), select="web/")
+        assert [d["select"] for d in result["directories"]] == ["web/ui/"]
 
-    async def test_denied_user_gets_no_module_graph(self):
-        graph = QueryGraphProvider()
-        result = await query_code_graph_impl(
-            **_ctx(graph, user="intruder"), select="web/**",
-            relations=["CALLS"], direction="outbound", group_by="directory",
-        )
-        assert result["groups"] == [] and result["edges"] == []
-        assert "error" not in result
+    async def test_another_connectors_files_are_not_listed(self, query_graph) -> None:
+        """Two repos can share `src/`; the caller named one of them."""
+        result = await query_code_graph_impl(**_ctx(query_graph, connector="conn-2"), select="web/")
+        assert "directories" not in result
+        assert result["matches"] == 0 and "error" not in result
 
-    async def test_a_failed_permission_lookup_does_not_fail_open(self):
+    async def test_a_failed_permission_lookup_does_not_fail_open(self) -> None:
         class Broken(QueryGraphProvider):
-            async def get_accessible_virtual_record_ids(self, *a, **k):
+            async def get_accessible_virtual_record_ids(self, *a: object, **k: object) -> None:
                 raise RuntimeError("neo4j is down")
 
-        result = await query_code_graph_impl(
-            **_ctx(Broken()), select="web/**", group_by="directory")
-        # Not an empty graph: "no dependencies" would be stated as fact.
-        assert "error" in result
-        assert result.get("edges") is None
+            async def check_record_access_with_details(self, *a: object, **k: object) -> None:
+                raise RuntimeError("neo4j is down")
+
+        listing = await query_code_graph_impl(**_ctx(Broken()), select="web/")
+        assert "directories" not in listing and listing["matches"] == 0
+        symbols = await query_code_graph_impl(**_ctx(Broken()), select="src/b.py")
+        assert symbols["nodes"] == [] and symbols["matches"] == 0

@@ -93,6 +93,14 @@ def serialize_block_for_graph(
     Every writer goes through here. Letting each writer stringify enums on its
     own is how field-name drift starts.
     """
+    # The Arango `blocks` schema rejects these server-side; Neo4j has no
+    # equivalent (existence constraints are Enterprise-only and its app-side
+    # validation skips `required`), so the invariant is held here for both. A
+    # block without them is unscoped: every org-filtered lookup misses it.
+    if not (isinstance(ctx.org_id, str) and ctx.org_id):
+        raise ValueError(f"block {block_id!r} has no orgId")
+    if not (isinstance(ctx.record_id, str) and ctx.record_id):
+        raise ValueError(f"block {block_id!r} has no recordId")
     meta = item.code_metadata
     now = _now_ms()
     doc: dict[str, Any] = {

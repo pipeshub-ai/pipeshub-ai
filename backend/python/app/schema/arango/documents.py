@@ -614,9 +614,11 @@ code_file_record_schema={
     },
 }
 
-# Deliberately loose: no "level": "strict" and no additionalProperties:false.
-# update_collection_schema re-applies this on every boot, so a strict schema
-# would hard-reject existing documents the moment a field is added.
+# Deliberately loose: no additionalProperties:false. (ArangoDB's `level`
+# already defaults to "strict"; it is the missing additionalProperties that
+# lets unknown fields through.) update_collection_schema re-applies this on
+# every boot, so a closed schema would hard-reject existing documents the
+# moment a field is added.
 block_schema = {
     "rule": {
         "type": "object",

@@ -8,7 +8,6 @@ export enum EventType {
   UpdateRecordEvent = 'updateRecord',
   DeletedRecordEvent = 'deleteRecord',
   ReindexRecordEvent = 'reindexRecord',
-  BuildCodeEdgesEvent = 'buildCodeEdges',
 }
 
 export interface Event {
@@ -18,8 +17,7 @@ export interface Event {
     | NewRecordEvent
     | UpdateRecordEvent
     | DeletedRecordEvent
-    | ReindexRecordEvent
-    | BuildCodeEdgesEvent;
+    | ReindexRecordEvent;
 }
 
 export interface NewRecordEvent {
@@ -98,12 +96,6 @@ function laneKeyFor(event: Event): string {
   }
   return '__default__';
 }
-export interface BuildCodeEdgesEvent {
-  orgId: string;
-  connectorId: string;
-  recordGroupId: string;
-}
-
 @injectable()
 export class RecordsEventProducer {
   private readonly recordsTopic = 'record-events';

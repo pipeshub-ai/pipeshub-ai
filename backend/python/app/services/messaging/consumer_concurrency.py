@@ -166,30 +166,6 @@ async def bridge_to_main_loop(
     return await bridge_to_loop(coro, host.main_loop, timeout)
 
 
-def schedule_on_main_loop(
-    host: ConcurrencyHost, coro: Any
-) -> "asyncio.Future[None]":
-    """Bridge a long-lived coroutine (e.g. the renewal loop) onto the main loop.
-
-    Unlike ``bridge_to_main_loop``, the caller does not want to block until
-    the coroutine finishes — it returns a future/task the caller can await
-    or cancel independently.
-    """
-    current_loop = asyncio.get_running_loop()
-    main_loop = host.main_loop
-    if main_loop is not None and current_loop is not main_loop:
-        if not main_loop.is_running():
-            coro.close()
-            raise RuntimeError("Main event loop is not running")
-        try:
-            thread_future = asyncio.run_coroutine_threadsafe(coro, main_loop)
-        except BaseException:
-            coro.close()
-            raise
-        return asyncio.wrap_future(thread_future)
-    return asyncio.create_task(coro)
-
-
 def _normalize_operation(operation: str) -> str:
     """Collapse ``<op>:record:<record_id>`` to ``<op>:record``.
 

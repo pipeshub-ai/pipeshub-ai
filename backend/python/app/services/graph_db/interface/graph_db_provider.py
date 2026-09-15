@@ -279,6 +279,8 @@ class IGraphDBProvider(ABC):
         sort_field: str | None = None,
         transaction: str | None = None,
         raise_on_error: bool = False,
+        after_key: str | None = None,
+        return_fields: list[str] | None = None,
     ) -> list[dict]:
         """
         Fetch a single page of documents from a collection using database-level
@@ -297,6 +299,15 @@ class IGraphDBProvider(ABC):
             transaction:  Optional transaction ID.
             raise_on_error: Propagate database errors instead of returning an
                             empty page.
+            after_key:    Keyset cursor: only documents whose `_key` sorts
+                          after this value are returned. Pass the last `_key`
+                          of the previous page together with
+                          `sort_field="_key"` and `skip=0` to sweep a large
+                          collection without the O(n^2) cost of a growing
+                          offset.
+            return_fields: Optional list of fields to project (None = whole
+                           document). `_key` is always spelled `_key` in the
+                           result, whichever backend serves it.
 
         Returns:
             List of document dicts for the requested page (may be shorter than
@@ -431,6 +442,32 @@ class IGraphDBProvider(ABC):
 
         Returns:
             bool: True if successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_record_relations(
+        self,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Batch upsert record relation edges.
+
+        Upserts rather than inserts, matching on _from, _to, relationshipType
+        and constraintName, so the same edge written twice is one edge while
+        two relation types (or two constraints) between the same pair coexist.
+
+        Args:
+            edges: Edge documents with _from, _to, relationshipType and
+                optionally constraintName
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+
+        Raises:
+            Exception: propagated from the database on failure
         """
         pass
 

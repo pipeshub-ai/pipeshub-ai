@@ -1773,6 +1773,7 @@ class Processor:
         language: str | None = None,
         content: bytes | None = None,
         block_containers: BlocksContainer | None = None,
+        propagate_failure: bool = False,
     ) -> None:
         """Write a code file's blocks to the graph, carrying their unresolved
         cross-file references for the corpus edge pass to resolve later.
@@ -1783,8 +1784,14 @@ class Processor:
         from the code graph.
 
         Callers holding a parsed container pass it; the duplicate path passes raw
-        ``content`` and pays for a parse instead. Never raises -- the blocks are
-        already searchable and the edge pass can be re-run.
+        ``content`` and pays for a parse instead.
+
+        Swallows failures by default -- the blocks are already searchable and the
+        edge pass can be re-run. Callers that run this *before* the record is
+        marked COMPLETED pass ``propagate_failure=True``: there, silently losing
+        the blocks would let the edge builder resolve the repo against a symbol
+        table the file is missing from, which yields wrong edges rather than
+        absent ones.
         """
         try:
             if not file_path:
@@ -1819,6 +1826,8 @@ class Processor:
             self.logger.error(
                 f"❌ Failed to project code blocks to graph for {record_id}: {projection_error}"
             )
+            if propagate_failure:
+                raise
 
     async def process_code_document(
         self, recordName, recordId, code_binary, virtual_record_id, extension=None,
@@ -1868,13 +1877,14 @@ class Processor:
                 return
 
             parser = self.parsers[ExtensionTypes.CODE.value]
-            block_containers = parser.parse_to_blocks(
-                code_binary, recordName, file_path, language
+            block_containers = await asyncio.to_thread(
+                parser.parse_to_blocks, code_binary, recordName, file_path, language
             )
 
             if block_containers is None:
                 self.logger.info(
-                    f"Code parser skipped {recordName} (oversized); marking as not supported"
+                    f"Code parser skipped {recordName} (oversized or grammar unavailable); "
+                    "marking as not supported"
                 )
                 await self._mark_record(recordId, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1904,6 +1914,7 @@ class Processor:
                 file_path=file_path,
                 language=language,
                 block_containers=block_containers,
+                propagate_failure=True,
             )
 
             record.block_containers = block_containers

@@ -4490,3 +4490,51 @@ class TestTeamQueriesExcludeInactiveUsers:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.get_team_users("t1", "org1", "uk1")
         self._assert_guarded(self._member_query(neo4j_provider))
+
+
+class TestBlockPropertyRoundTrip:
+    """Blocks carry dicts and lists of dicts, which Neo4j cannot store; they go
+    in as JSON and must come back out as what ArangoDB would return."""
+
+    def test_json_encoded_fields_round_trip(self, neo4j_provider) -> None:
+        block = {
+            "_key": "b1",
+            "pendingEdges": [{"relation": "CALLS", "toName": "notify"}],
+            "typeTable": {"conn": "GitLabConnector"},
+        }
+
+        stored = neo4j_provider._arango_to_neo4j_node(block, "blocks")
+        assert isinstance(stored["pendingEdges"], str)
+        assert isinstance(stored["typeTable"], str)
+
+        read_back = neo4j_provider._neo4j_to_arango_node(stored, "blocks")
+        assert read_back["pendingEdges"] == block["pendingEdges"]
+        assert read_back["typeTable"] == block["typeTable"]
+        assert read_back["_key"] == "b1"
+
+    def test_a_list_with_a_dict_anywhere_is_encoded(self, neo4j_provider) -> None:
+        stored = neo4j_provider._arango_to_neo4j_node(
+            {"_key": "b1", "mixed": ["plain", {"nested": 1}], "nested": [[1], [2]]},
+            "blocks",
+        )
+        assert isinstance(stored["mixed"], str)
+        assert isinstance(stored["nested"], str)
+
+    def test_primitive_lists_stay_native(self, neo4j_provider) -> None:
+        stored = neo4j_provider._arango_to_neo4j_node(
+            {"_key": "b1", "tags": ["a", "b"], "empty": []}, "blocks"
+        )
+        assert stored["tags"] == ["a", "b"]
+        assert stored["empty"] == []
+
+    def test_already_decoded_values_pass_through(self, neo4j_provider) -> None:
+        node = {"id": "b1", "pendingEdges": [{"relation": "CALLS"}], "typeTable": {}}
+        read_back = neo4j_provider._neo4j_to_arango_node(node, "blocks")
+        assert read_back["pendingEdges"] == [{"relation": "CALLS"}]
+        assert read_back["typeTable"] == {}
+
+    def test_unparseable_string_is_left_alone(self, neo4j_provider) -> None:
+        read_back = neo4j_provider._neo4j_to_arango_node(
+            {"id": "b1", "typeTable": "not json"}, "blocks"
+        )
+        assert read_back["typeTable"] == "not json"

@@ -16,6 +16,7 @@ CODE_FILES = CollectionNames.CODE_FILES.value
 RECORDS = CollectionNames.RECORDS.value
 ORG = "org-1"
 USER = "user-1"
+CONN = "conn-1"
 
 
 def _block(key, record_id, file_path, symbol_id, name, kind="function"):
@@ -23,6 +24,7 @@ def _block(key, record_id, file_path, symbol_id, name, kind="function"):
         "_key": key,
         "id": key,
         "orgId": ORG,
+        "connectorId": CONN,
         "recordId": record_id,
         "recordGroupId": "repo-1",
         "filePath": file_path,
@@ -39,9 +41,11 @@ def _block(key, record_id, file_path, symbol_id, name, kind="function"):
 class FakeGraphProvider:
     """Implements only what the CodeGraph ops call."""
 
-    def __init__(self, *, allow_user=USER, deny_records=()):
+    def __init__(self, *, allow_user=USER, deny_records=(), file_roles=None):
         self.allow_user = allow_user
         self.deny_records = set(deny_records)
+        # `fileRole` per record, as `codeFiles` stores it; absent means source.
+        self.file_roles: dict[str, str] = dict(file_roles or {})
         self.blocks = {
             "k_caller": _block("k_caller", "rec-a", "src/a.py", "src_a_caller", "caller"),
             "k_target": _block("k_target", "rec-b", "src/b.py", "src_b_target", "target"),
@@ -73,16 +77,17 @@ class FakeGraphProvider:
             {"_from": f"{BLOCKS}/k_panel", "_to": f"{BLOCKS}/k_client",
              "relationshipType": "CALLS"},
         ]
+        # The owning `records` rows carry the connector; `codeFiles` does not,
+        # so the listing re-applies repo scope and access from here.
         self.records = {
-            "rec-a": {"_key": "rec-a", "virtualRecordId": "v-a"},
-            "rec-b": {"_key": "rec-b", "virtualRecordId": "v-b"},
-            "rec-c": {"_key": "rec-c", "virtualRecordId": "v-c"},
-            "rec-d": {"_key": "rec-d", "virtualRecordId": "v-d"},
+            rid: {"_key": rid, "orgId": ORG, "connectorId": CONN, "virtualRecordId": f"v-{rid[-1]}"}
+            for rid in ("rec-a", "rec-b", "rec-c", "rec-d")
         }
 
     def _code_file_docs(self) -> list[dict]:
         return [
-            {"_key": record_id, "id": record_id, "orgId": ORG, "filePath": path}
+            {"_key": record_id, "id": record_id, "orgId": ORG, "filePath": path,
+             **({"fileRole": self.file_roles[record_id]} if record_id in self.file_roles else {})}
             for record_id, path in self.code_files.items()
         ]
 
@@ -102,7 +107,13 @@ class FakeGraphProvider:
     async def get_nodes_by_field_in(self, collection, field_name, field_values,
                                     return_fields=None, transaction=None):
         wanted = set(field_values)
-        return [d for d in self.blocks.values() if d.get(field_name) in wanted]
+        if collection == RECORDS:
+            docs = self.records.values()
+        elif collection == CODE_FILES:
+            docs = self._code_file_docs()
+        else:
+            docs = self.blocks.values()
+        return [d for d in docs if d.get(field_name) in wanted]
 
     async def get_document(self, document_key, collection):
         return self.records.get(document_key)

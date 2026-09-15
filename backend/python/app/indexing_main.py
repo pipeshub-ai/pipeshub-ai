@@ -1076,6 +1076,9 @@ async def start_kafka_consumers(
         record_event_handler = await KafkaUtils.create_record_event_handler(
             app_container, producer=retry_producer
         )
+        # Kept on the container so shutdown can release the Redis client the
+        # handler caches for edge-build coordination.
+        app_container.record_event_handler = record_event_handler
 
         # Same process-wide singleton the ParsingClient/DoclingClient/
         # EmbeddingServerEmbeddings instances used by this consumer's
@@ -1191,6 +1194,14 @@ async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
                 logger.info(f"✅ {name.title()} retry producer stopped")
             except Exception as e:
                 logger.error(f"❌ Error stopping {name} retry producer: {str(e)}")
+
+    handler = getattr(container, "record_event_handler", None)
+    aclose = getattr(handler, "aclose", None)
+    if inspect.iscoroutinefunction(aclose):
+        try:
+            await aclose()
+        except Exception as e:
+            logger.error(f"❌ Error closing record event handler: {str(e)}")
 
     # Clear the consumers list
     if hasattr(container, 'kafka_consumers'):

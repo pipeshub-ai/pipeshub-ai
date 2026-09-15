@@ -225,3 +225,18 @@ def test_pending_edges_are_capped():
     big = _blocks_by_name(container)["big"]
     assert len(big.code_metadata.pending_edges) == MAX_PENDING_EDGES_PER_BLOCK
     assert big.code_metadata.pending_edges_truncated is True
+
+
+def test_file_summary_pending_edges_are_capped_after_exports() -> None:
+    from app.models.blocks import BlockType
+    from app.modules.parsers.code_parser.code_file_parser import (
+        MAX_PENDING_EDGES_PER_BLOCK,
+    )
+
+    src = "\n".join(
+        f"export function f{i}() {{}}" for i in range(MAX_PENDING_EDGES_PER_BLOCK + 10)
+    ).encode()
+    container = CodeFileParser().parse_to_blocks(src, "mod.js", "src/mod.js", "javascript")
+    summary = next(b for b in container.blocks if b.type == BlockType.RECORD_SUMMARY)
+    assert len(summary.code_metadata.pending_edges) == MAX_PENDING_EDGES_PER_BLOCK
+    assert summary.code_metadata.pending_edges_truncated is True

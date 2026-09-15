@@ -31,6 +31,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.registry.code_indexing_flags import code_indexing_flags
 from app.connectors.core.constants import (
     IconPaths,
 )
@@ -1091,24 +1092,10 @@ class ReposSync:
     # ------------------------------------------------------------------
 
     def _code_files_indexing_enabled(self) -> bool:
-        c = self.c
-        if not c.indexing_filters:
-            return True
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        return c.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
+        return code_indexing_flags(self.c.indexing_filters)[0]
 
     def _test_files_indexing_enabled(self) -> bool:
-        """Whether test files get their content indexed. Off unless opted in.
-
-        Unlike ``_code_files_indexing_enabled``, an absent filter means False:
-        a connector configured before this filter existed must not start
-        indexing tests just because its config has no row for them.
-        """
-        c = self.c
-        if not c.indexing_filters:
-            return False
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        return c.indexing_filters.is_enabled(IndexingFilterKey.TEST_FILES, default=False)
+        return code_indexing_flags(self.c.indexing_filters)[1]
 
     # ------------------------------------------------------------------
     # Record persistence helper

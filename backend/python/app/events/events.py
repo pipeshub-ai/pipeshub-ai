@@ -6,7 +6,7 @@ import logging
 import math
 import multiprocessing
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
@@ -382,6 +382,7 @@ class EventProcessor:
             extension=extension,
             org_id=org_id,
             provider=provider,
+            file_path=file_path,
         )
         block_container = parse_result.block_container
         self.logger.debug(
@@ -723,6 +724,7 @@ class EventProcessor:
         self,
         content: bytes | str | dict | list | None,
         doc: dict[str, Any],
+        before_reusing_status: Callable[[], Awaitable[None]] | None = None,
     ) -> DedupDecision:
         """Check for duplicate records by MD5 hash and decide whether to skip indexing.
 
@@ -734,6 +736,10 @@ class EventProcessor:
         indexed anyway, since its target collection has no vectors for it yet.
         Under the default SingleCollectionStrategy every record resolves to the
         same collection, so this degenerates to the original skip-or-not behaviour.
+
+        ``before_reusing_status`` runs just before a finished duplicate's
+        ``indexingStatus`` is copied onto this record, for work that has to be
+        in place by the time the record reads as done.
         """
         # Calculate MD5 from content
         existing_md5_checksum = doc.get("md5Checksum")
@@ -799,6 +805,8 @@ class EventProcessor:
             if match.same_collection:
                 # The vectors this record needs already exist. Take the
                 # duplicate's state wholesale and skip indexing.
+                if before_reusing_status is not None:
+                    await before_reusing_status()
                 duplicate_fields = {
                     "isDirty": False,
                     "summaryDocumentId": match.record.get("summaryDocumentId"),
@@ -989,33 +997,46 @@ class EventProcessor:
             record_type = doc.get("recordType")
             is_code = _is_code_file(mime_type, code_ext)
 
+            # The blob and the vectors are shared through the duplicate's
+            # virtualRecordId, but block nodes are keyed by record, so a deduped
+            # code file would otherwise be searchable and yet missing from the
+            # code graph. Projected before the duplicate's COMPLETED status is
+            # copied over: that status is what tells the edge builder the repo
+            # has drained, so it must not precede the blocks. For the same
+            # reason a failure propagates instead of leaving a COMPLETED record
+            # with no blocks.
+            before_reusing_status: Callable[[], Awaitable[None]] | None = None
+            if is_code:
+                # `_check_duplicate_by_md5` encodes only its own local binding,
+                # so a str buffer reaches here unconverted and `decode_source`
+                # (tree-sitter indexes by byte offset) would fail on it.
+                code_bytes = (
+                    file_content.encode("utf-8")
+                    if isinstance(file_content, str)
+                    else file_content
+                )
+
+                async def _project_duplicate_code() -> None:
+                    await self.processor.project_code_blocks_to_graph(
+                        record_id=record_id,
+                        org_id=org_id,
+                        record_group_id=doc.get("recordGroupId"),
+                        connector_id=doc.get("connectorId"),
+                        record_name=record_name,
+                        file_path=event_data.get("filePath"),
+                        content=code_bytes,
+                        propagate_failure=True,
+                    )
+
+                before_reusing_status = _project_duplicate_code
+
             # Calculate MD5 hash and check for duplicates for ALL record types
             try:
-                dedup_decision = await self._check_duplicate_by_md5(file_content, doc)
+                dedup_decision = await self._check_duplicate_by_md5(
+                    file_content, doc, before_reusing_status=before_reusing_status
+                )
                 if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")
-                    # The blob and the vectors are shared through the duplicate's
-                    # virtualRecordId, but block nodes are keyed by record, so
-                    # this file would otherwise be searchable and yet missing
-                    # from the code graph entirely.
-                    if is_code:
-                        # `_check_duplicate_by_md5` encodes only its own local
-                        # binding, so a str buffer reaches here unconverted and
-                        # `decode_source` (tree-sitter indexes by byte offset)
-                        # would fail on it.
-                        await self.processor.project_code_blocks_to_graph(
-                            record_id=record_id,
-                            org_id=org_id,
-                            record_group_id=doc.get("recordGroupId"),
-                            connector_id=doc.get("connectorId"),
-                            record_name=record_name,
-                            file_path=event_data.get("filePath"),
-                            content=(
-                                file_content.encode("utf-8")
-                                if isinstance(file_content, str)
-                                else file_content
-                            ),
-                        )
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return

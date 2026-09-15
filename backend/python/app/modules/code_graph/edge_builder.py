@@ -3,8 +3,6 @@
 Ordering is load-bearing. Imports resolve first because their output is the
 evidence table every later step consults; member calls resolve last because they
 need both the type tables and the method index.
-
-Spec: ``edge-resolution.md`` at the repo root.
 """
 from __future__ import annotations
 
@@ -32,6 +30,13 @@ CONFIDENCE_INFERRED = "INFERRED"
 
 _SCAN_PAGE = 2000
 _WRITE_CHUNK = 500
+
+# Exactly what `BlockRow.from_doc` reads; the rest of the block document (its
+# text, hashes, timestamps) never reaches the symbol index.
+_BLOCK_SCAN_FIELDS = [
+    "_key", "recordId", "name", "kind", "qualifiedName", "language",
+    "isBlockGroup", "parentBlockId", "pendingEdges", "typeTable",
+]
 
 _CALL_RELATIONS = {RecordRelations.CALLS.value}
 _MODULE_RELATIONS = {
@@ -96,23 +101,30 @@ class EdgeBuildResult:
 
 async def _scan_blocks(graph_provider: IGraphDBProvider, org_id: str,
                        record_group_id: str) -> list[dict]:
-    """Skip-paginated sweep of every block in the repo."""
+    """Keyset sweep of every block in the repo, projected to the index's fields.
+
+    A growing offset makes each page rescan everything before it; seeking on
+    `_key > last` keeps every page the same cost.
+    """
     out: list[dict] = []
-    skip = 0
+    after_key: str | None = None
     filters = {"orgId": org_id, "recordGroupId": record_group_id}
     while True:
         page = await graph_provider.get_documents_paginated(
             collection=CollectionNames.BLOCKS.value,
-            skip=skip,
             limit=_SCAN_PAGE,
             filters=filters,
             sort_field="_key",
+            after_key=after_key,
+            return_fields=_BLOCK_SCAN_FIELDS,
         )
         if not page:
             break
         out.extend(page)
-        skip += len(page)
         if len(page) < _SCAN_PAGE:
+            break
+        after_key = page[-1].get("_key")
+        if not after_key:
             break
     return out
 
@@ -529,7 +541,7 @@ class _Builder:
             if type_candidates:
                 self.result.ambiguous_skipped += 1
             return None
-        return self.index.method_index.get((type_candidates[0], fact.get("toName") or ""))
+        return self._resolve_self_method(type_candidates[0], fact.get("toName") or "")
 
     def _enclosing_type(self, block_id: str) -> str | None:
         """The class a block sits in, through any intermediate scopes.
@@ -548,7 +560,9 @@ class _Builder:
         return None
 
     def _resolve_self_method(self, owner: str, method_name: str) -> str | None:
-        """`self.m()` -- the owner's own `m`, else the nearest base that defines it.
+        """`m` on a known type: the owner's own `m`, else the nearest base that defines it.
+
+        Serves `self.m()` and `conn.m()` on a typed receiver alike.
 
         Calling a method the subclass never overrode is the common case, not an
         edge case: `BaseConnector.notify` has ~38 `await self.notify(...)` call

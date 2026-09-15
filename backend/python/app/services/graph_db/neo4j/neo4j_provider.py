@@ -8,6 +8,7 @@ Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, pro
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -103,6 +104,9 @@ EDGE_DELETE_BATCH_SIZE = 2000  # Batch size for edge deletion to avoid huge sing
 # DETACH DELETE holds every touched node/rel in txn state; a mid-size code repo
 # is 100k+ blocks and blows dbms.memory.transaction.total.max (~70% of heap).
 BLOCK_DELETE_BATCH_SIZE = 500
+# Block properties that hold a dict or a list of dicts, which Neo4j cannot
+# store natively; written as JSON strings and decoded again on read.
+JSON_ENCODED_BLOCK_FIELDS = ("pendingEdges", "typeTable")
 
 
 class Neo4jProvider(IGraphDBProvider):
@@ -751,12 +755,14 @@ class Neo4jProvider(IGraphDBProvider):
         neo4j_node.pop("_id", None)
 
         # Neo4j properties must be primitives or arrays of primitives.
-        # JSON-serialize any dict or list-of-dict values. None is kept so that
-        # `SET n += props` still removes the property on update paths.
+        # JSON-serialize dicts and any list with a nested dict or list. None is
+        # kept so that `SET n += props` still removes the property on update paths.
         for key, value in list(neo4j_node.items()):
             if isinstance(value, dict):
                 neo4j_node[key] = json.dumps(value, default=str)
-            elif isinstance(value, list) and value and isinstance(value[0], dict):
+            elif isinstance(value, list) and any(
+                isinstance(item, (dict, list)) for item in value
+            ):
                 neo4j_node[key] = json.dumps(value, default=str)
 
         return neo4j_node
@@ -779,6 +785,14 @@ class Neo4jProvider(IGraphDBProvider):
             arango_node["_key"] = arango_node["id"]
             # Also create _id for compatibility
             arango_node["_id"] = f"{collection}/{arango_node['id']}"
+
+        # Undo the JSON encoding _arango_to_neo4j_node applied on write, so a
+        # block reads the same here as it does from ArangoDB.
+        for key in JSON_ENCODED_BLOCK_FIELDS:
+            value = arango_node.get(key)
+            if isinstance(value, str):
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
+                    arango_node[key] = json.loads(value)
 
         return arango_node
 
@@ -912,6 +926,8 @@ class Neo4jProvider(IGraphDBProvider):
         sort_field: str | None = None,
         transaction: str | None = None,
         raise_on_error: bool = False,
+        after_key: str | None = None,
+        return_fields: list[str] | None = None,
     ) -> list[dict]:
         """
         Fetch a page of documents using Cypher SKIP/LIMIT so that only the
@@ -928,6 +944,9 @@ class Neo4jProvider(IGraphDBProvider):
                     param = f"fv_{field}"
                     where_clauses.append(f"n.{field} = ${param}")
                     parameters[param] = value
+            if after_key is not None:
+                where_clauses.append("n.id > $after_key")
+                parameters["after_key"] = after_key
 
             where_cypher = (
                 "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
@@ -939,12 +958,20 @@ class Neo4jProvider(IGraphDBProvider):
                 else ""
             )
 
+            if return_fields:
+                return_expr = ", ".join(
+                    f"n.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
+            else:
+                return_expr = "n"
+
             query = f"""
             MATCH (n:{label})
             {where_cypher}
             {order_cypher}
             SKIP $skip LIMIT $limit
-            RETURN n
+            RETURN {return_expr}
             """
 
             results = await self.client.execute_query(
@@ -956,7 +983,10 @@ class Neo4jProvider(IGraphDBProvider):
             if results:
                 documents = []
                 for record in results:
-                    node_dict = dict(record["n"])
+                    if return_fields:
+                        node_dict = {field: record.get(field) for field in return_fields}
+                    else:
+                        node_dict = dict(record["n"])
                     documents.append(self._neo4j_to_arango_node(node_dict, collection))
                 return documents
 
@@ -1932,6 +1962,25 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get nodes by field in failed: {str(e)}")
             return []
 
+    @staticmethod
+    def _filter_conditions(
+        filters: dict[str, Any] | None,
+        in_filters: dict[str, list[Any]] | None = None,
+        var: str = "n",
+    ) -> tuple[list[str], dict[str, Any]]:
+        """Equality and membership filters as Cypher predicates on ``var`` plus their parameters."""
+        conditions: list[str] = []
+        parameters: dict[str, Any] = {}
+        for field, value in (filters or {}).items():
+            parameter = f"filter_{field}"
+            conditions.append(f"{var}.{field} = ${parameter}")
+            parameters[parameter] = value
+        for field, values in (in_filters or {}).items():
+            parameter = f"in_filter_{field}"
+            conditions.append(f"{var}.{field} IN ${parameter}")
+            parameters[parameter] = values
+        return conditions, parameters
+
     async def get_nodes_by_field_prefix(
         self,
         collection: str,
@@ -1944,12 +1993,9 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             label = collection_to_label(collection)
             neo4j_field = "id" if field_name == "_key" else field_name
-            conditions = [f"n.{neo4j_field} STARTS WITH $prefix"]
-            parameters: dict[str, Any] = {"prefix": prefix, "limit": limit}
-            for field, value in (filters or {}).items():
-                parameter = f"filter_{field}"
-                conditions.append(f"n.{field} = ${parameter}")
-                parameters[parameter] = value
+            filter_conditions, parameters = self._filter_conditions(filters)
+            conditions = [f"n.{neo4j_field} STARTS WITH $prefix", *filter_conditions]
+            parameters.update({"prefix": prefix, "limit": limit})
             query = f"""
             MATCH (n:{label})
             WHERE {" AND ".join(conditions)}
@@ -2262,12 +2308,8 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             relationship = edge_collection_to_relationship(edge_collection)
             source_ids = sorted({key.split("/", 1)[-1] for key in source_keys})
-            conditions: list[str] = []
-            parameters: dict[str, Any] = {"source_ids": source_ids}
-            for field, value in (filters or {}).items():
-                parameter = f"filter_{field}"
-                conditions.append(f"rel.{field} = ${parameter}")
-                parameters[parameter] = value
+            conditions, parameters = self._filter_conditions(filters, var="rel")
+            parameters["source_ids"] = source_ids
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""
             {self._endpoint_lookup(source_keys, "source", "source_ids")}
@@ -2293,16 +2335,7 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> int:
         try:
             label = collection_to_label(collection)
-            conditions: list[str] = []
-            parameters: dict[str, Any] = {}
-            for field, value in (filters or {}).items():
-                parameter = f"filter_{field}"
-                conditions.append(f"node.{field} = ${parameter}")
-                parameters[parameter] = value
-            for field, values in (in_filters or {}).items():
-                parameter = f"in_filter_{field}"
-                conditions.append(f"node.{field} IN ${parameter}")
-                parameters[parameter] = values
+            conditions, parameters = self._filter_conditions(filters, in_filters, var="node")
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""
             MATCH (node:{label})
@@ -2329,16 +2362,7 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> bool:
         try:
             label = collection_to_label(collection)
-            conditions: list[str] = []
-            parameters: dict[str, Any] = {}
-            for field, value in (filters or {}).items():
-                parameter = f"filter_{field}"
-                conditions.append(f"node.{field} = ${parameter}")
-                parameters[parameter] = value
-            for field, values in (in_filters or {}).items():
-                parameter = f"in_filter_{field}"
-                conditions.append(f"node.{field} IN ${parameter}")
-                parameters[parameter] = values
+            conditions, parameters = self._filter_conditions(filters, in_filters, var="node")
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""
             MATCH (node:{label})

@@ -32,6 +32,7 @@ from app.connectors.sources.github_teams.timestamps import (
     aggregate_folder_timestamps as _aggregate_folder_timestamps,
 )
 from app.config.constants.arangodb import ProgressStatus
+from app.connectors.core.registry.filters import FilterCollection
 from app.models.entities import CodeFileRecord
 
 from tests.unit.connectors.sources.test_github_teams.conftest import (
@@ -391,6 +392,31 @@ class TestFullSync:
         )
         assert persisted["src/main.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
+    async def test_test_files_stay_off_when_filters_exist_without_a_row(self) -> None:
+        """A pre-existing filter config with no ``test_files`` row must not
+        fall back to the generic default-True and start indexing tests."""
+        c = make_mock_connector()
+        c.indexing_filters = FilterCollection()
+        repo = make_repo(repo_id=1)
+        c.runtime.ds_call.return_value = ok_response(make_git_tree([
+            make_tree_element("src/main.py", entry_type="blob", sha="sha-main", size=10),
+            make_tree_element("tests/test_main.py", entry_type="blob", sha="sha-test", size=10),
+        ]))
+
+        sync = ReposSync(c)
+        assert sync._code_files_indexing_enabled() is True
+        assert sync._test_files_indexing_enabled() is False
+        assert await sync._full_sync(repo, "head-sha") is True
+
+        persisted = {
+            record.file_path: record
+            for call in c.data_entities_processor.on_new_records.call_args_list
+            for record, _perms in call.args[0]
+            if isinstance(record, CodeFileRecord)
+        }
+        assert persisted["tests/test_main.py"].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert persisted["src/main.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
     async def test_test_files_are_indexed_once_the_filter_is_on(self) -> None:
         c = make_mock_connector()
         c.indexing_filters = SimpleNamespace(is_enabled=lambda _key, default=True: True)
@@ -572,6 +598,7 @@ class TestFullSync:
         assert by_name["big.bin"].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
         assert "content-indexing limit" in (by_name["big.bin"].reason or "")
         assert by_name["ok.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+        assert by_name["ok.py"].language == "python"
         assert by_name[".env"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
 

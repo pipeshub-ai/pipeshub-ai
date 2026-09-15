@@ -15,7 +15,8 @@ busy repo never looks drained at all.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
+from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.modules.code_graph.connectors import (
@@ -34,17 +35,26 @@ if TYPE_CHECKING:
 __all__ = [
     "BLOCKING_STATUSES",
     "BUILD_LOCK_PREFIX",
+    "BuildState",
+    "DEFERRED_BUILD_DELAY_SECONDS",
     "BUILD_LOCK_RENEW_INTERVAL_SECONDS",
     "BUILD_LOCK_TTL_SECONDS",
     "REFRESH_LOCK_IF_OWNER_LUA",
     "RELEASE_LOCK_IF_OWNER_LUA",
     "SYNC_POINT_SUFFIX",
+    "acquire_build_lock",
+    "claim_deferral",
     "claim_publish",
     "group_has_unfinished_records",
     "is_code_record",
     "publishable_scope",
     "read_build_state",
+    "records_updated_since",
+    "release_build_lock",
+    "release_deferral",
     "renew_build_lock_until_cancelled",
+    "request_is_stale",
+    "still_owed",
     "sync_point_key_for",
 ]
 
@@ -86,6 +96,19 @@ return 0
 # burst, short enough that a genuine second drain minutes later is not swallowed.
 _PUBLISH_DEDUPE_PREFIX = "pipeshub:code-edge-publish:"
 _PUBLISH_DEDUPE_TTL_SECONDS = 60
+
+# A request that finds another build holding the lock waits this long and asks
+# again, in process: a broker-side delay (`_retry_not_before`) would sit at the
+# head of the connector's fair-scheduling queue and hold its records back for
+# the whole wait. One deferral per repo at a time.
+DEFERRED_BUILD_DELAY_SECONDS = 60
+_DEFERRAL_PREFIX = "pipeshub:code-edge-deferred:"
+
+
+class BuildState(NamedTuple):
+    last_build: int | None
+    pending: bool
+    requested_at: int | None
 
 
 def sync_point_key_for(record_group_id: str) -> str:
@@ -147,11 +170,13 @@ async def read_build_state(
     graph_provider: "IGraphDBProvider",
     org_id: str,
     record_group_id: str,
-) -> tuple[int | None, bool]:
-    """``(lastEdgeBuildAt, edgeBuildPending)`` from the group's sync point.
+) -> BuildState:
+    """``lastEdgeBuildAt``, ``edgeBuildPending`` and ``edgeBuildRequestedAt``.
 
     ``edgeBuildPending`` outlives the message that was going to do the build,
     so a request that died in the broker leaves a mark instead of nothing.
+    ``edgeBuildRequestedAt`` says when it was last asked for, which is what
+    tells a finishing build whether someone asked again while it ran.
     """
     rows = await graph_provider.get_nodes_by_filters(
         collection=CollectionNames.SYNC_POINTS.value,
@@ -159,14 +184,89 @@ async def read_build_state(
             "orgId": org_id,
             "syncPointKey": sync_point_key_for(record_group_id),
         },
-        return_fields=["lastEdgeBuildAt", "edgeBuildPending"],
+        return_fields=["lastEdgeBuildAt", "edgeBuildPending", "edgeBuildRequestedAt"],
     )
     if not rows:
-        return None, False
-    last_build = rows[0].get("lastEdgeBuildAt")
-    return (
-        int(last_build) if isinstance(last_build, (int, float)) else None,
-        bool(rows[0].get("edgeBuildPending")),
+        return BuildState(None, False, None)
+    row = rows[0]
+    return BuildState(
+        _ms_or_none(row.get("lastEdgeBuildAt")),
+        bool(row.get("edgeBuildPending")),
+        _ms_or_none(row.get("edgeBuildRequestedAt")),
+    )
+
+
+def _ms_or_none(value: object) -> int | None:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def still_owed(state: BuildState, started_at_ms: int) -> bool:
+    """Whether a build that started at ``started_at_ms`` leaves one owed.
+
+    A request stamped after the start was for records this build may not have
+    seen, so clearing ``edgeBuildPending`` there would erase that request.
+    """
+    return state.requested_at is not None and state.requested_at > started_at_ms
+
+
+def request_is_stale(state: BuildState, now_ms: int) -> bool:
+    """A pending build whose request is older than the dedupe window.
+
+    Such a request is presumed lost, so the dedupe claim must not suppress the
+    next one. A pending mark with no timestamp predates the field and is
+    treated the same way.
+    """
+    if not state.pending:
+        return False
+    if state.requested_at is None:
+        return True
+    return now_ms - state.requested_at > _PUBLISH_DEDUPE_TTL_SECONDS * 1000
+
+
+async def records_updated_since(
+    graph_provider: "IGraphDBProvider",
+    org_id: str,
+    record_group_id: str,
+    since_ms: int,
+) -> set[str]:
+    """Keys of the group's records touched after the last build's watermark."""
+    rows = await graph_provider.get_nodes_updated_since(
+        collection=CollectionNames.RECORDS.value,
+        timestamp_field="updatedAtTimestamp",
+        since=since_ms,
+        filters={"orgId": org_id, "recordGroupId": record_group_id},
+        return_fields=["_key"],
+    )
+    return {row["_key"] for row in rows if isinstance(row.get("_key"), str)}
+
+
+async def acquire_build_lock(
+    redis: "Redis",
+    org_id: str,
+    record_group_id: str,
+) -> tuple[str, str] | None:
+    """``(lock_key, lock_token)`` if this caller now owns the group's build, else None.
+
+    Pair with ``renew_build_lock_until_cancelled`` for the build's duration and
+    ``release_build_lock`` afterwards.
+    """
+    lock_key = f"{BUILD_LOCK_PREFIX}{org_id}:{record_group_id}"
+    lock_token = str(uuid4())
+    acquired = await redis.set(
+        lock_key, lock_token, nx=True, ex=BUILD_LOCK_TTL_SECONDS
+    )
+    return (lock_key, lock_token) if acquired else None
+
+
+async def release_build_lock(
+    redis: "Redis",
+    lock_key: str,
+    lock_token: str,
+) -> bool:
+    """Drop the lease only if it is still ours; a lease that expired and was
+    re-taken belongs to the build that took it."""
+    return bool(
+        await redis.eval(RELEASE_LOCK_IF_OWNER_LUA, 1, lock_key, lock_token)
     )
 
 
@@ -184,6 +284,34 @@ async def claim_publish(
             ex=_PUBLISH_DEDUPE_TTL_SECONDS,
         )
     )
+
+
+async def claim_deferral(
+    redis: "Redis",
+    org_id: str,
+    record_group_id: str,
+) -> bool:
+    """Win the one deferred re-request a busy repo may hold at a time.
+
+    Outlives the delay, so a later busy delivery sees the deferral still
+    scheduled; ``release_deferral`` clears it when the timer fires.
+    """
+    return bool(
+        await redis.set(
+            f"{_DEFERRAL_PREFIX}{org_id}:{record_group_id}",
+            "1",
+            nx=True,
+            ex=DEFERRED_BUILD_DELAY_SECONDS * 2,
+        )
+    )
+
+
+async def release_deferral(
+    redis: "Redis",
+    org_id: str,
+    record_group_id: str,
+) -> None:
+    await redis.delete(f"{_DEFERRAL_PREFIX}{org_id}:{record_group_id}")
 
 
 async def renew_build_lock_until_cancelled(

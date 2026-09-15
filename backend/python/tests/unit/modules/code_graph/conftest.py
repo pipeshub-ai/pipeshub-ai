@@ -33,15 +33,20 @@ class FakeGraphProvider:
         }
 
     async def get_documents_paginated(self, collection, skip=0, limit=50, filters=None,
-                                      sort_field=None, transaction=None, raise_on_error=False):
+                                      sort_field=None, transaction=None, raise_on_error=False,
+                                      after_key=None, return_fields=None):
         if collection != CollectionNames.BLOCKS.value:
             return []
         rows = [
             doc for doc in self.blocks.values()
             if all(doc.get(field) == value for field, value in (filters or {}).items())
+            and (after_key is None or (doc.get("_key") or "") > after_key)
         ]
         rows.sort(key=lambda d: d.get("_key") or "")
-        return rows[skip: skip + limit]
+        page = rows[skip: skip + limit]
+        if return_fields:
+            return [{field: doc.get(field) for field in return_fields} for doc in page]
+        return page
 
     async def get_edges_by_target_keys(
         self, target_keys, edge_collection, filters=None, return_field="_from",
