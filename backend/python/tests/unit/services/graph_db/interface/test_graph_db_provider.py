@@ -239,6 +239,7 @@ class TestAbstractMethodInventory:
         "get_record_by_issue_key",
         "get_record_by_weburl",
         "get_records_by_parent",
+        "get_records_by_record_type",
         "get_records_by_record_group",
         "get_records_by_parent_record",
         # Record group operations

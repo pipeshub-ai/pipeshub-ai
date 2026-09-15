@@ -487,8 +487,18 @@ class TestPersonalCreatorFallback:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args, _ = connector.data_entities_processor.on_new_record_groups.call_args
         record_groups_payload = args[0]
-        # Four record groups: project, work items, MRs, code repo.
-        assert len(record_groups_payload) == 4
+        # Five record groups: project, work items, confidential work items, MRs,
+        # code repo. Confidential issues need their own ACL holder because GitLab
+        # hides them below the Planner role, so they cannot share a group with the
+        # ordinary work items.
+        assert len(record_groups_payload) == 5
+        assert {rg.external_group_id for rg, _ in record_groups_payload} == {
+            "99",
+            "99-work-items",
+            "99-confidential-work-items",
+            "99-merge-requests",
+            "99-code-repository",
+        }
         for _rg, perms in record_groups_payload:
             assert len(perms) == 1
             assert perms[0].entity_type == EntityType.GROUP

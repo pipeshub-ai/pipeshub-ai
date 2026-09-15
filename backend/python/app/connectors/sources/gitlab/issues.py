@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.models.entities import Record, RecordGroupType, RecordType, TicketRecord, ItemType
+from app.models.permission import EntityType, Permission, PermissionType
 from app.models.blocks import (
     BlockGroup,
     BlocksContainer,
@@ -35,6 +36,11 @@ from app.models.blocks import wire_block_group_parent_children
 
 from .common.utils import parse_item_id_from_url
 from .models import GitlabLiterals, RecordUpdate
+
+# Work items split across two ACL groups: GitLab hides confidential issues from
+# Guests, so they cannot share a record group with the ordinary ones.
+_WORK_ITEMS_SUFFIX = "-work-items"
+_CONFIDENTIAL_SUFFIX = "-confidential-work-items"
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
@@ -176,7 +182,12 @@ class IssuesSync:
             elif issue.issue_type == ItemType.TASK.value.lower():
                 issue_type = ItemType.TASK.value
 
-            external_group_id = f"{issue.project_id}-work-items"
+            # GitLab hides a confidential issue from Guests; the connector reads as
+            # the token owner and sees it regardless, so the restriction has to be
+            # re-imposed here or every Guest inherits it through the work-items group.
+            is_confidential = bool(getattr(issue, "confidential", False))
+            suffix = _CONFIDENTIAL_SUFFIX if is_confidential else _WORK_ITEMS_SUFFIX
+            external_group_id = f"{issue.project_id}{suffix}"
             ticket_record = TicketRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=issue.title,
@@ -200,6 +211,13 @@ class IssuesSync:
                 labels=list(issue.labels),
                 inherit_permissions=True,
             )
+            # Author and assignees keep access whatever their role. Additive on top
+            # of the restricted group, which is the direction the union-with-no-deny
+            # model can express.
+            exceptions = (
+                await self._confidential_exception_permissions(issue)
+                if is_confidential else []
+            )
             return RecordUpdate(
                 record=ticket_record,
                 is_new=is_new,
@@ -207,14 +225,47 @@ class IssuesSync:
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=False,
+                permissions_changed=bool(exceptions),
                 old_permissions=[],
-                new_permissions=[],
+                new_permissions=exceptions,
                 external_record_id=str(issue.id),
             )
         except Exception as e:
             self.logger.error("Error processing issue/task/incident to ticket: %s", e, exc_info=True)
             return None
+
+    async def _confidential_exception_permissions(self, issue: Any) -> list[Permission]:
+        """Principals who see a confidential issue regardless of their project role.
+
+        Resolved through the same path as member permissions, so an author without a
+        resolvable identity is parked on a pseudo-group rather than dropped.
+        """
+        c = self.c
+        candidates: list[int] = []
+        author = getattr(issue, "author", None) or {}
+        if isinstance(author, dict) and author.get("id") is not None:
+            candidates.append(int(author["id"]))
+        candidates.extend(
+            int(assignee["id"])
+            for assignee in getattr(issue, "assignees", None) or []
+            if isinstance(assignee, dict) and assignee.get("id") is not None
+        )
+
+        permissions: list[Permission] = []
+        seen: set[int] = set()
+        for user_id in candidates:
+            if user_id in seen:
+                continue
+            seen.add(user_id)
+            permission = await c.projects._create_permission_from_principal(
+                EntityType.USER.value,
+                str(user_id),
+                PermissionType.OWNER.value,
+                create_pseudo_group_if_missing=True,
+            )
+            if permission:
+                permissions.append(permission)
+        return permissions
 
     # ------------------------------------------------------------------
     # Record persistence + checkpoint advancement
@@ -252,6 +303,12 @@ class IssuesSync:
                 group_id = record_update.record.external_record_group_id
                 if not (group_id and last_sync_time):
                     continue
+                # Confidential issues sit in their own ACL group but come from the
+                # same listing stream, and the checkpoint is only ever read back
+                # under the work-items key — so they must advance that key rather
+                # than a parallel one nothing reads.
+                if group_id.endswith(_CONFIDENTIAL_SUFFIX):
+                    group_id = group_id[: -len(_CONFIDENTIAL_SUFFIX)] + _WORK_ITEMS_SUFFIX
                 if watermarks is None:
                     await self._update_sync_checkpoint(group_id, last_sync_time)
                 else:

@@ -357,7 +357,11 @@ class LangChainTransport(LLMTransport):
             messages,
             system,
             strip_tool_images=not self._supports_multipart_tool_result,
-            relocate_tool_images=self._tool_images_relocated if relocate is None else relocate,
+            # The cap may keep a tool copy and discard its injected user copy.
+            # Move surviving tool images instead of silently stripping them.
+            relocate_tool_images=(
+                not self._supports_multipart_tool_result or self._tool_images_relocated
+            ) if relocate is None else relocate,
         )
 
     def _tool_image_fallback(

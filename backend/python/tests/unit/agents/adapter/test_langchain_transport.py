@@ -1322,6 +1322,26 @@ class TestToolImageRelocationRespectsTheCap:
         "'user', but this message with role 'tool' contains an image URL"
     )
 
+    @pytest.mark.parametrize("cap", [1, 2])
+    def test_injected_images_survive_tool_copy_deduplication(self, cap):
+        transport = self._transport(cap)
+        transport._supports_multipart_tool_result = False
+        images = [
+            ImagePart(source=ImageSource(type="url", data=f"https://x/{i}.png"))
+            for i in range(cap)
+        ]
+        messages = [
+            UserMessage(content=[TextPart(text="Read the PDF figures"), *images]),
+            ToolMessage(content=[TextPart(text="Retrieved figures"), *images], tool_call_id="fetch"),
+        ]
+
+        converted = transport._to_langchain(messages, None)
+
+        assert self._image_count(converted) == cap
+        assert self._image_count([m for m in converted if m.type == "human"]) == cap
+        assert self._image_count([m for m in converted if m.type == "tool"]) == 0
+        assert self._image_count(transport._to_langchain(messages, None)) == cap
+
     @staticmethod
     def _messages(tool_images: int = 5) -> list:
         messages = [UserMessage(content="what is in these?")]

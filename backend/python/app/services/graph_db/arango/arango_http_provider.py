@@ -1658,20 +1658,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return []
         coll = CollectionNames.RECORDS.value
         try:
-            # FILTER + UPDATE in one statement; a read-then-write would let the
-            # indexing service advance a record in between and get clobbered.
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._key IN @keys AND doc.indexingStatus == @expected
-                UPDATE doc WITH { indexingStatus: @new_status } IN @@collection
-                RETURN NEW._key
-            """
             bind_vars = {
                 "@collection": coll,
                 "keys": unique_ids,
                 "expected": expected,
                 "new_status": new_status,
             }
+            update_fields = "{ indexingStatus: @new_status }"
+            if new_status == ProgressStatus.QUEUED.value:
+                # AQL rejects a declared-but-unused bind var, so only bind it here.
+                update_fields = "{ indexingStatus: @new_status, queuedAtTimestamp: @now }"
+                bind_vars["now"] = get_epoch_timestamp_in_ms()
+            # FILTER + UPDATE in one statement; a read-then-write would let the
+            # indexing service advance a record in between and get clobbered.
+            query = f"""
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys AND doc.indexingStatus == @expected
+                UPDATE doc WITH {update_fields} IN @@collection
+                RETURN NEW._key
+            """
             updated = await self.http_client.execute_aql(query, bind_vars, transaction)
             updated_keys = [k for k in (updated or []) if isinstance(k, str)]
             self.logger.debug(
@@ -4586,7 +4591,48 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "❌ Failed to retrieve child records for parent %s %s: %s",
                 connector_id, parent_external_record_id, str(e)
             )
-            return []
+            raise
+
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: str,
+        transaction: str | None = None,
+    ) -> list[Record]:
+        """Return this connector's records of ``record_type``."""
+        try:
+            self.logger.debug(
+                "Retrieving records of type %s for connector %s",
+                record_type, connector_id,
+            )
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.connectorId == @connector_id
+                    AND record.recordType == @record_type
+                RETURN record
+            """
+            bind_vars = {
+                "connector_id": connector_id,
+                "record_type": record_type,
+            }
+            results = await self.http_client.execute_aql(
+                query, bind_vars, txn_id=transaction
+            )
+            records = [
+                Record.from_arango_base_record(self._translate_node_from_arango(result))
+                for result in results
+            ]
+            self.logger.debug(
+                "Retrieved %d record(s) of type %s for connector %s",
+                len(records), record_type, connector_id,
+            )
+            return records
+        except Exception as e:
+            self.logger.error(
+                "Failed to retrieve records of type %s for connector %s: %s",
+                record_type, connector_id, e,
+            )
+            raise
 
     async def get_record_group_by_external_id(
         self,
@@ -15991,6 +16037,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Note: _get_user_app_ids accepts external userId and converts to user_key internally
             user_apps_ids = await self._get_user_app_ids(user_id, org_id)
 
+            # Get record to verify it exists before running complex query
+            record_doc = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
+            if not record_doc:
+                self.logger.warning(f"⚠️ Record not found: {record_id}")
+                return None
+
             # Build app record filter for connector records
             app_record_filter = 'FILTER record.origin != "CONNECTOR" OR record.connectorId IN @user_apps_ids'
 
@@ -19145,9 +19197,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if k not in ["kb", "apps"] and v
             }
 
-            has_kb_filter = bool(kb_ids)
-            has_app_filter = bool(connector_ids_filter)
-
             tasks = []
 
             # Fetch app types once to distinguish KB apps (type == "KB") from connector apps
@@ -19170,6 +19219,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     kb_app_ids = set(kb_app_keys or [])
                 except Exception as e:
                     self.logger.warning(f"⚠️ Failed to fetch KB app types for filtering, treating all apps as connectors: {e}")
+
+            # Reclassify: move KB app IDs that arrived in the apps filter
+            # to the kb filter. MCP and some clients send all source IDs
+            # (connectors + KB) in a single `apps` array; the backend must
+            # route them to the correct query path.
+            if connector_ids_filter and kb_app_ids:
+                kb_in_apps = [
+                    cid for cid in connector_ids_filter
+                    if cid in kb_app_ids and cid in user_apps_ids
+                ]
+                if kb_in_apps:
+                    self.logger.debug(
+                        f"Reclassifying {len(kb_in_apps)} KB app ID(s) from apps to kb filter: {kb_in_apps}"
+                    )
+                    connector_ids_filter = [cid for cid in connector_ids_filter if cid not in kb_app_ids]
+                    kb_ids = list(dict.fromkeys((kb_ids or []) + kb_in_apps))
+
+            has_kb_filter = bool(kb_ids)
+            has_app_filter = bool(connector_ids_filter)
 
             if has_app_filter and has_kb_filter:
                 connectors_to_query = [

@@ -30,12 +30,23 @@ import re
 import tarfile
 import zipfile
 from dataclasses import dataclass, field
+from http import HTTPStatus
+from typing import IO
 
-import httpx
+from pydantic import BaseModel, ValidationError
 
 from app.agent_loop_lib.modules.providers.skills.loader import parse_skill_md
 from app.agent_loop_lib.modules.providers.skills.validator import SkillFormatError, SkillValidator
 from app.services.skills.npm_command_parser import PackageSpec
+from app.utils.logger import create_logger
+from app.utils.public_http import (
+    PublicFetchError,
+    PublicFetchLimits,
+    PublicUrlFetcher,
+    ResponseTooLargeError,
+    UnsafeUrlError,
+)
+from app.utils.url_redaction import redact_url
 
 __all__ = [
     "ImportPreview",
@@ -43,10 +54,30 @@ __all__ = [
     "SkillPackageImporter",
 ]
 
+logger = create_logger(__name__)
+
+_MIB = 1024 * 1024
 _RESOURCE_KINDS = ("scripts", "references", "assets")
 _NPM_REGISTRY_BASE = "https://registry.npmjs.org"
-_MAX_ARCHIVE_BYTES = 25 * 1024 * 1024  # 25MB — a skill pack is markdown + small scripts, not a model checkpoint
+_MAX_MANIFEST_BYTES = 5 * _MIB
+_MAX_ARCHIVE_BYTES = 25 * _MIB  # a skill pack is markdown + small scripts, not a model checkpoint
+_MAX_EXTRACTED_BYTES = 4 * _MAX_ARCHIVE_BYTES
 _MAX_ARCHIVE_MEMBERS = 500
+_READ_CHUNK_BYTES = 64 * 1024
+_MANIFEST_LIMITS = PublicFetchLimits(max_bytes=_MAX_MANIFEST_BYTES)
+_ARCHIVE_LIMITS = PublicFetchLimits(max_bytes=_MAX_ARCHIVE_BYTES)
+_UNSAFE_URL_MESSAGE = "This URL is not allowed: it must point to a public address."
+
+
+class _NpmDist(BaseModel):
+    tarball: str | None = None
+
+
+class _NpmVersionManifest(BaseModel):
+    """The fields we use from `GET registry.npmjs.org/<name>/<version>`."""
+
+    version: str | None = None
+    dist: _NpmDist = _NpmDist()
 
 
 class PackageImportError(ValueError):
@@ -85,8 +116,24 @@ def _strip_common_prefix(paths: list[str]) -> str:
     return ""
 
 
+def _read_bounded(fileobj: IO[bytes], remaining: int) -> bytes:
+    """Read one archive member, failing once the extraction budget is spent. Counts the
+    bytes actually produced, because the sizes an archive declares can lie."""
+    chunks: list[bytes] = []
+    received = 0
+    while chunk := fileobj.read(_READ_CHUNK_BYTES):
+        received += len(chunk)
+        if received > remaining:
+            raise PackageImportError(
+                f"Archive is too large once extracted (limit {_MAX_EXTRACTED_BYTES // _MIB} MB)."
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _extract_zip(data: bytes) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
+    budget = _MAX_EXTRACTED_BYTES
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             infos = zf.infolist()
@@ -96,7 +143,10 @@ def _extract_zip(data: bytes) -> dict[str, bytes]:
                 if info.is_dir():
                     continue
                 _reject_unsafe_path(info.filename)
-                files[info.filename] = zf.read(info)
+                with zf.open(info) as member:
+                    content = _read_bounded(member, budget)
+                budget -= len(content)
+                files[info.filename] = content
     except zipfile.BadZipFile as e:
         raise PackageImportError(f"Not a valid zip archive: {e}") from e
     return files
@@ -104,6 +154,7 @@ def _extract_zip(data: bytes) -> dict[str, bytes]:
 
 def _extract_tar(data: bytes) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
+    budget = _MAX_EXTRACTED_BYTES
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
             members = tf.getmembers()
@@ -115,10 +166,22 @@ def _extract_tar(data: bytes) -> dict[str, bytes]:
                 _reject_unsafe_path(member.name)
                 extracted = tf.extractfile(member)
                 if extracted is not None:
-                    files[member.name] = extracted.read()
+                    content = _read_bounded(extracted, budget)
+                    budget -= len(content)
+                    files[member.name] = content
     except tarfile.TarError as e:
         raise PackageImportError(f"Not a valid tar/tgz archive: {e}") from e
     return files
+
+
+def _extract_archive(data: bytes) -> dict[str, bytes]:
+    """Pick the parser from the bytes, not a name: a URL ending in .zip can redirect to a
+    tarball, and an upload's name is whatever the user's machine called the file."""
+    if tarfile.is_tarfile(io.BytesIO(data)):
+        return _extract_tar(data)
+    if zipfile.is_zipfile(io.BytesIO(data)):
+        return _extract_zip(data)
+    raise PackageImportError("Not a valid zip or tar/tgz archive.")
 
 
 def _reject_unsafe_path(path: str) -> None:
@@ -197,83 +260,66 @@ class SkillPackageImporter:
     returned `ImportPreview.content`/`.resources` directly via
     `SkillManager.create`/`write_resource`."""
 
-    def __init__(self, http_client: httpx.AsyncClient | None = None) -> None:
-        self._client = http_client
+    def __init__(self, fetcher: PublicUrlFetcher | None = None) -> None:
+        self._fetcher = fetcher or PublicUrlFetcher()
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        return self._client or httpx.AsyncClient(timeout=15.0, follow_redirects=True)
+    async def _download(
+        self,
+        url: str,
+        limits: PublicFetchLimits,
+        label: str,
+        *,
+        not_found_message: str | None = None,
+    ) -> bytes:
+        """Fetch ``url`` through the SSRF-safe fetcher. Every failure becomes a
+        user-safe `PackageImportError`; internal details only reach the server log."""
+        try:
+            response = await self._fetcher.get(url, limits)
+        except UnsafeUrlError as e:
+            logger.info("Blocked skill import download of %s: %s", redact_url(url), e)
+            raise PackageImportError(_UNSAFE_URL_MESSAGE) from e
+        except ResponseTooLargeError as e:
+            raise PackageImportError(
+                f"{label.capitalize()} is too large (limit {limits.max_bytes // _MIB} MB)."
+            ) from e
+        except PublicFetchError as e:
+            logger.warning("Skill import download of %s failed: %s", redact_url(url), e)
+            raise PackageImportError(f"Could not download {label}.") from e
+
+        status = response.status_code
+        if status == HTTPStatus.NOT_FOUND and not_found_message:
+            raise PackageImportError(not_found_message)
+        if not HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES:
+            raise PackageImportError(f"Could not download {label} (HTTP {status}).")
+        return response.content
 
     async def preview_npm(self, spec: PackageSpec) -> ImportPreview:
-        owns_client = self._client is None
-        client = await self._get_client()
+        raw_manifest = await self._download(
+            f"{_NPM_REGISTRY_BASE}/{spec.name}/{spec.version}",
+            _MANIFEST_LIMITS,
+            "the npm package metadata",
+            not_found_message=f"Package {spec.registry_spec!r} was not found on the npm registry.",
+        )
         try:
-            meta_url = f"{_NPM_REGISTRY_BASE}/{spec.name}/{spec.version}"
-            resp = await client.get(meta_url)
-            if resp.status_code == 404:
-                raise PackageImportError(
-                    f"Package {spec.registry_spec!r} was not found on the npm registry."
-                )
-            resp.raise_for_status()
-            manifest = resp.json()
-            tarball_url = (manifest.get("dist") or {}).get("tarball")
-            resolved_version = manifest.get("version") or spec.version
-            if not tarball_url:
-                raise PackageImportError(f"npm registry entry for {spec.name!r} has no downloadable tarball.")
+            manifest = _NpmVersionManifest.model_validate_json(raw_manifest)
+        except ValidationError as e:
+            raise PackageImportError(f"The npm registry returned an invalid entry for {spec.name!r}.") from e
+        tarball_url = manifest.dist.tarball
+        if not tarball_url:
+            raise PackageImportError(f"npm registry entry for {spec.name!r} has no downloadable tarball.")
+        resolved_version = manifest.version or spec.version
 
-            tarball_resp = await client.get(tarball_url)
-            tarball_resp.raise_for_status()
-            data = tarball_resp.content
-            if len(data) > _MAX_ARCHIVE_BYTES:
-                raise PackageImportError(f"Package tarball is too large ({len(data)} bytes).")
-
-            files = _extract_tar(data)
-            return _files_to_preview(files, source_label=f"npm:{spec.name}@{resolved_version}")
-        except httpx.HTTPError as e:
-            raise PackageImportError(f"Failed to fetch {spec.name!r} from the npm registry: {e}") from e
-        finally:
-            if owns_client:
-                await client.aclose()
+        data = await self._download(tarball_url, _ARCHIVE_LIMITS, "the package tarball")
+        files = _extract_tar(data)
+        return _files_to_preview(files, source_label=f"npm:{spec.name}@{resolved_version}")
 
     async def preview_url(self, url: str) -> ImportPreview:
         if not url.lower().startswith(("https://", "http://")):
             raise PackageImportError("Only http(s) URLs are supported.")
-        owns_client = self._client is None
-        client = await self._get_client()
-        try:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            data = resp.content
-            if len(data) > _MAX_ARCHIVE_BYTES:
-                raise PackageImportError(f"Archive is too large ({len(data)} bytes).")
-            content_type = resp.headers.get("content-type", "")
-            files = self._extract_by_hint(data, url=url, content_type=content_type)
-            return _files_to_preview(files, source_label=f"url:{url}")
-        except httpx.HTTPError as e:
-            raise PackageImportError(f"Failed to fetch {url!r}: {e}") from e
-        finally:
-            if owns_client:
-                await client.aclose()
+        data = await self._download(url, _ARCHIVE_LIMITS, "the archive")
+        return _files_to_preview(_extract_archive(data), source_label=f"url:{url}")
 
     def preview_upload(self, filename: str, data: bytes) -> ImportPreview:
         if len(data) > _MAX_ARCHIVE_BYTES:
             raise PackageImportError(f"Uploaded file is too large ({len(data)} bytes).")
-        files = self._extract_by_hint(data, url=filename, content_type="")
-        return _files_to_preview(files, source_label=f"upload:{filename}")
-
-    @staticmethod
-    def _extract_by_hint(data: bytes, *, url: str, content_type: str) -> dict[str, bytes]:
-        lowered = url.lower()
-        is_zip = lowered.endswith(".zip") or "zip" in content_type
-        is_tar = lowered.endswith((".tar", ".tgz", ".tar.gz")) or "tar" in content_type or "gzip" in content_type
-        if is_zip and not is_tar:
-            return _extract_zip(data)
-        if is_tar and not is_zip:
-            return _extract_tar(data)
-        # Ambiguous/no hint (e.g. a bare download URL with no extension) —
-        # sniff by magic bytes rather than guessing from an unreliable name.
-        if data[:4] == b"PK\x03\x04":
-            return _extract_zip(data)
-        try:
-            return _extract_tar(data)
-        except PackageImportError:
-            return _extract_zip(data)
+        return _files_to_preview(_extract_archive(data), source_label=f"upload:{filename}")

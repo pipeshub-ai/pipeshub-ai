@@ -231,6 +231,9 @@ record_schema = {
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
+            # Clocks the stranded-record sweep in indexing_main ages rows on.
+            "queuedAtTimestamp": {"type": ["number", "null"]},
+            "lastRepublishedAt": {"type": ["number", "null"]},
             "parsingStatus": {
                 "type": "string",
                 "enum": [

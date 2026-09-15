@@ -18,6 +18,13 @@ if TYPE_CHECKING:
     from app.services.redis.connection_provider import RedisClient as Redis
 
 
+_INCR_WITH_TTL_SCRIPT = """
+local count = redis.call('INCR', KEYS[1])
+redis.call('EXPIRE', KEYS[1], ARGV[1])
+return count
+"""
+
+
 class RetryManager(IRetryTracker):
     """Redis-based retry tracking for message consumers.
 
@@ -149,16 +156,7 @@ class RetryManager(IRetryTracker):
             raise RuntimeError("RetryManager not initialized. Call initialize() first.")
 
         key = self._build_key(message_id)
-
-        # INCR and EXPIRE in one MULTI/EXEC round trip: issued separately, a
-        # Redis failure between them left a counter with no TTL, persisting
-        # forever, and raised out of the consumer's own exception handler.
-        # One key, so one slot; cluster-safe.
-        async with self._client().pipeline(transaction=True) as pipe:
-            pipe.incr(key)
-            pipe.expire(key, self.ttl_seconds)
-            count, _ = await pipe.execute()
-        count = int(count)
+        count = await self._incr_with_ttl(key)
 
         should_dead_letter = count >= max_attempts
 
@@ -184,10 +182,21 @@ class RetryManager(IRetryTracker):
         if self._redis is None and self._registry is None:
             raise RuntimeError("RetryManager not initialized. Call initialize() first.")
         key = self._build_key(message_id, prefix=self.DELIVERY_KEY_PREFIX)
-        async with self._client().pipeline(transaction=True) as pipe:
-            pipe.incr(key)
-            pipe.expire(key, self.ttl_seconds)
-            count, _ = await pipe.execute()
+        return await self._incr_with_ttl(key)
+
+    async def _incr_with_ttl(self, key: str) -> int:
+        """INCR *key* and (re)set its TTL atomically; returns the new count.
+
+        Issued separately, a Redis failure between the two left a counter with
+        no TTL, persisting forever. A single-key Lua script rather than
+        ``pipeline(transaction=True)``: RedisCluster refuses MULTI/EXEC
+        outright ("transaction is deprecated in cluster mode") even for one
+        slot, while EVAL is routed by KEYS[1] and behaves identically on
+        standalone.
+        """
+        count = await self._client().eval(
+            _INCR_WITH_TTL_SCRIPT, 1, key, self.ttl_seconds
+        )
         return int(count)
 
     async def get_count(self, message_id: str) -> int:

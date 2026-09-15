@@ -487,7 +487,9 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         while retry_count < max_retries:
             try:
-                await self._get_client().publish(self._invalidation_channel(), key)
+                # Through the provider, not `_get_client().publish()`: async
+                # RedisCluster has no such method (see IRedisConnectionProvider.publish).
+                await self._provider.publish(self._invalidation_channel(), key)
                 logger.debug("Published cache invalidation for key: %s", key)
                 return
             except Exception as e:

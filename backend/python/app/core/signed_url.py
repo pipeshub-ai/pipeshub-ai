@@ -3,7 +3,6 @@ from typing import Any, Dict
 
 import jwt
 from fastapi import HTTPException
-from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
 from app.config.configuration_service import ConfigurationService
@@ -137,13 +136,11 @@ class SignedUrlHandler:
     ) -> TokenPayload:
         """Validate the JWT token and optional required claims"""
         try:
-            self.logger.debug(f"Validating token: {token}")
             payload = jwt.decode(
                 token,
                 self.signed_url_config.private_key,
                 algorithms=[self.signed_url_config.algorithm],
             )
-            self.logger.debug(f"Payload: {payload}")
 
             # Convert timestamps back to datetime for validation (ensure UTC timezone)
             if "exp" in payload:
@@ -163,9 +160,11 @@ class SignedUrlHandler:
 
             return token_data
 
-        except JWTError as e:
+        except HTTPException:
+            raise
+        except jwt.PyJWTError as e:
             self.logger.error("JWT validation error: %s", str(e))
-            raise HTTPException(status_code=401, detail="Invalid or expired token")
+            raise HTTPException(status_code=401, detail="Invalid or expired token") from e
         except ValidationError as e:
             self.logger.error("Payload validation error: %s", str(e))
             raise HTTPException(status_code=400, detail="Invalid token payload")

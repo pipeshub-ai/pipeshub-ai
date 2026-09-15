@@ -1,5 +1,13 @@
 import jwt from 'jsonwebtoken';
 import { TokenScopes } from '../enums/token-scopes.enum';
+import { deriveUserActionSecret } from './jwtKeys';
+
+const signUserActionToken = (
+  payload: object,
+  scopedJwtSecret: string,
+  options: jwt.SignOptions,
+): string =>
+  jwt.sign(payload, deriveUserActionSecret(scopedJwtSecret), options);
 
 export const mailJwtGenerator = (email: string, scopedJwtSecret: string) => {
   return jwt.sign(
@@ -18,7 +26,7 @@ export const jwtGeneratorForForgotPasswordLink = (
   scopedJwtSecret: string,
 ) => {
   // Token for password reset
-  const passwordResetToken = jwt.sign(
+  const passwordResetToken = signUserActionToken(
     {
       userEmail,
       userId,
@@ -49,7 +57,7 @@ export const jwtGeneratorForNewAccountPassword = (
   scopedJwtSecret: string,
 ) => {
   // Token for password reset
-  const passwordResetToken = jwt.sign(
+  const passwordResetToken = signUserActionToken(
     {
       userEmail,
       userId,
@@ -80,8 +88,8 @@ export const refreshTokenJwtGenerator = (
 ) => {
   // Read expiry time from environment variable, default to 720h (30 days) if not set
   const expiryTime = (process.env.REFRESH_TOKEN_EXPIRY || '720h') as string;
-  
-  return jwt.sign(
+
+  return signUserActionToken(
     { userId: userId, orgId: orgId, scopes: [TokenScopes.TOKEN_REFRESH] },
     scopedJwtSecret,
     { expiresIn: expiryTime } as jwt.SignOptions,
@@ -181,7 +189,7 @@ export const jwtGeneratorForValidateEmailLink = (
   orgId: string,
   scopedJwtSecret: string,
 ) => {
-  const validateEmailToken = jwt.sign(
+  const validateEmailToken = signUserActionToken(
     {
       userEmail,
       userId,
@@ -212,7 +220,7 @@ export const jwtGeneratorForOrgEmailVerification = (
   scopedJwtSecret: string,
   smtpOrgId: string,
 ) => {
-  const orgVerificationToken = jwt.sign(
+  const orgVerificationToken = signUserActionToken(
     {
       orgId,
       contactEmail,
@@ -249,7 +257,7 @@ export const jwtGeneratorForEmailVerified = (
   hashProof: string[] = [],
 ) => {
   const expiryTime = (process.env.EMAIL_VERIFIED_TOKEN_EXPIRY || '30d') as string;
-  return jwt.sign(
+  return signUserActionToken(
     { email, scopes: [TokenScopes.EMAIL_VERIFIED], hashProof },
     scopedJwtSecret,
     { expiresIn: expiryTime } as jwt.SignOptions,

@@ -21,13 +21,13 @@ from app.utils.stage_timer import StageTimer
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
-from app.api.middlewares.auth import authMiddleware, require_scopes
+from app.api.middlewares.auth import require_scopes
 from app.api.routes.chatbot import get_llm_for_chat, load_system_prompts
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import REASONING_EFFORT_VALUES, validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import OAuthScopes, config_node_constants
+from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.modules.agents.qna.chat_state import _extract_kb_app_ids
 from app.modules.agents.qna.router import (
@@ -205,7 +205,13 @@ class LLMInitializationError(AgentError):
 # ============================================================================
 
 async def get_services(request: Request) -> dict[str, Any]:
-    """Get all required services from container"""
+    """Get all required services from container.
+
+    Deliberately resolves no LLM: listing, reading and templating agents never
+    use one, and requiring it here made every agent route a 500 until a model
+    was configured. Routes that need a model resolve it themselves
+    (get_llm_for_chat) and raise LLMInitializationError there.
+    """
     container = request.app.container
 
     retrieval_service = await container.retrieval_service()
@@ -214,20 +220,12 @@ async def get_services(request: Request) -> dict[str, Any]:
     config_service = container.config_service()
     logger = container.logger()
 
-    # Get and verify LLM
-    llm = retrieval_service.llm
-    if llm is None:
-        llm = await retrieval_service.get_llm_instance()
-        if llm is None:
-            raise LLMInitializationError()
-
     return {
         "retrieval_service": retrieval_service,
         "graph_provider": graph_provider,
         "reranker_service": reranker_service,
         "config_service": config_service,
         "logger": logger,
-        "llm": llm,
     }
 
 
@@ -2044,7 +2042,17 @@ async def create_agent(request: Request) -> JSONResponse:
         logger.error(f"Error creating agent: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-@router.get("/{agent_id}/internal/service-account", dependencies=[Depends(authMiddleware)])
+@router.get(
+    "/{agent_id}/internal/service-account",
+    dependencies=[
+        Depends(
+            require_scopes(
+                OAuthScopes.AGENT_READ,
+                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
+            )
+        )
+    ],
+)
 async def get_agent_internal(request: Request, agent_id: str) -> JSONResponse:
     """
     Internal route: verify that an agent is a service account and return its
@@ -3132,7 +3140,17 @@ async def chat(request: Request, agent_id: str) -> JSONResponse:
     return JSONResponse(content=completion_data)
 
 
-@router.post("/{agent_id}/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
+@router.post(
+    "/{agent_id}/chat/stream",
+    dependencies=[
+        Depends(
+            require_scopes(
+                OAuthScopes.AGENT_EXECUTE,
+                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
+            )
+        )
+    ],
+)
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
     """Chat with an agent using streaming response"""
     timer = StageTimer()
@@ -3145,7 +3163,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         graph_provider = services["graph_provider"]
         retrieval_service = services["retrieval_service"]
-        # llm = services["llm"]
         reranker_service = services["reranker_service"]
         config_service = services["config_service"]
         user_context = _get_user_context(request)
@@ -3523,25 +3540,24 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     import asyncio as _asyncio  # noqa: F401 — may not have run yet if named_toolsets was empty above
 
                     from app.agents.mcp import service as mcp_service
-                    from app.edition_config import build_mcp_fallback_config_services, get_mcp_instance_resolved
+                    from app.edition_config import get_mcp_instance_resolved
 
                     async def _fetch_mcp_server_config(
                         mcp_server: dict,
-                    ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None, list | None]:
-                        """Return (mcp_server, instance_or_None, effective_auth, fallback_config_services) without raising."""
+                    ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None]:
+                        """Return (mcp_server, instance_or_None, effective_auth) without raising."""
                         instance_id = mcp_server["instanceId"]
                         try:
                             instance = await get_mcp_instance_resolved(instance_id, services["config_service"])
                             if not instance:
-                                return mcp_server, None, None, None
+                                return mcp_server, None, None
                             effective_auth = await mcp_service.resolve_effective_user_auth(
                                 instance, credential_lookup_id, services["config_service"],
                             )
-                            fallbacks = await build_mcp_fallback_config_services(instance, services["config_service"])
-                            return mcp_server, instance, effective_auth, fallbacks
+                            return mcp_server, instance, effective_auth
                         except Exception as exc:
                             logger.warning(f"Failed to load MCP server config for instance '{instance_id}': {exc}")
-                            return mcp_server, None, None, None
+                            return mcp_server, None, None
 
                     mcp_fetch_results = await _asyncio.gather(*[_fetch_mcp_server_config(m) for m in named_mcp_servers])
 
@@ -3549,7 +3565,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     missing_mcp_server_display_names: list[str] = []          # instance no longer exists
                     unauthenticated_mcp_server_display_names: list[str] = []  # instance exists, auth incomplete
 
-                    for mcp_server, instance, effective_auth, fallbacks in mcp_fetch_results:
+                    for mcp_server, instance, effective_auth in mcp_fetch_results:
                         instance_id = mcp_server["instanceId"]
                         display_name = mcp_server.get("displayName") or mcp_server.get("name") or instance_id
 
@@ -3561,7 +3577,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         if mcp_service.is_effective_auth_authenticated(effective_auth):
                             mcp_server_configs[instance_id] = {
                                 "instance": instance, "auth": effective_auth or {}, "ownerId": credential_lookup_id,
-                                "fallbackConfigServices": fallbacks,
                             }
                             configured_mcp_servers.append(mcp_server)
                         else:

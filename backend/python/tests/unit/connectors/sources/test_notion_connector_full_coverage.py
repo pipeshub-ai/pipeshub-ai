@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.notion.connector import NotionConnector
 from app.models.blocks import (
     Block,
@@ -48,6 +49,7 @@ def _make_connector():
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_record_group_by_external_id = AsyncMock(return_value=None)
     dep.get_user_by_source_id = AsyncMock(return_value=None)
+    dep.get_records_by_record_type = AsyncMock(return_value=[])
     dsp = MagicMock()
     mock_tx = MagicMock()
     mock_tx.get_record_group_by_external_id = AsyncMock(return_value=None)
@@ -161,19 +163,22 @@ class TestInit:
         conn.notion_client = MagicMock()
         ds = MagicMock()
         ds.retrieve_bot_user = AsyncMock(return_value=_api_resp(True, {"object": "user"}))
+        ds.search = AsyncMock(return_value=_api_resp(True, {"results": [{"id": "page-1"}]}))
+        ds.retrieve_page = AsyncMock(return_value=_api_resp(True, {"id": "page-1"}))
+        ds.retrieve_comments = AsyncMock(return_value=_api_resp(True, {"results": []}))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         result = await conn.test_connection_and_access()
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_test_connection_failure(self):
+    async def test_test_connection_api_token_skips_capability_check(self):
         conn = _make_connector()
         conn.notion_client = MagicMock()
         ds = MagicMock()
-        ds.retrieve_bot_user = AsyncMock(return_value=_api_resp(False, error="unauthorized"))
+        ds.retrieve_bot_user = AsyncMock(return_value=_api_resp(True, {"object": "user"}))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn.test_connection_and_access()
-        assert result is False
+        assert await conn.test_connection_and_access() is True
+        ds.retrieve_bot_user.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_test_connection_exception(self):
@@ -540,7 +545,7 @@ class TestStreamRecord:
     async def test_unsupported_record_type_raises_400(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
-        record = _make_webpage_record(record_type=RecordType.DATABASE)
+        record = _make_webpage_record(record_type=RecordType.TICKET)
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
         assert exc_info.value.status_code == 400
@@ -2230,13 +2235,17 @@ class TestTransformToWebpageRecord:
     @pytest.mark.asyncio
     async def test_page_with_database_parent(self):
         conn = _make_connector()
+        conn._resolve_database_id_as_record_parent = AsyncMock(
+            return_value=("ds-1", RecordType.DATASOURCE)
+        )
         data = {
             "id": "p3",
             "parent": {"type": "database_id", "database_id": "db-parent"},
             "properties": {},
         }
         result = await conn._transform_to_webpage_record(data, "page")
-        assert result.parent_record_type == RecordType.DATABASE
+        assert result.parent_external_record_id == "ds-1"
+        assert result.parent_record_type == RecordType.DATASOURCE
 
     @pytest.mark.asyncio
     async def test_page_with_block_parent(self):
@@ -2270,7 +2279,7 @@ class TestTransformToWebpageRecord:
             "parent": {"type": "workspace"},
         }
         result = await conn._transform_to_webpage_record(data, "database")
-        assert result.record_type == RecordType.DATABASE
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):
@@ -2318,9 +2327,12 @@ class TestResolveBlockParentRecursive:
             "parent": {"type": "database_id", "database_id": "db-parent"}
         }))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
+        conn._resolve_database_id_as_record_parent = AsyncMock(
+            return_value=("ds-parent", RecordType.DATASOURCE)
+        )
         parent_id, parent_type = await conn._resolve_block_parent_recursive("block-1")
-        assert parent_id == "db-parent"
-        assert parent_type == RecordType.DATABASE
+        assert parent_id == "ds-parent"
+        assert parent_type == RecordType.DATASOURCE
 
     @pytest.mark.asyncio
     async def test_datasource_parent(self):
@@ -2417,12 +2429,13 @@ class TestGetDatabaseParentRef:
     async def test_database_parent(self):
         conn = _make_connector()
         ds = MagicMock()
-        ds.retrieve_database = AsyncMock(return_value=_api_resp(True, {
-            "parent": {"type": "database_id", "database_id": "db-p"}
-        }))
+        ds.retrieve_database = AsyncMock(side_effect=[
+            _api_resp(True, {"parent": {"type": "database_id", "database_id": "db-p"}}),
+            _api_resp(True, {"parent": {"type": "page_id", "page_id": "page-p"}}),
+        ])
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         result = await conn._get_database_parent_ref("db-1")
-        assert result == ("db-p", RecordType.DATABASE)
+        assert result == ("page-p", RecordType.WEBPAGE)
 
     @pytest.mark.asyncio
     async def test_block_parent(self):
@@ -3219,6 +3232,8 @@ class TestRunSync:
         conn = _make_connector()
         with patch("app.connectors.sources.notion.connector.load_connector_filters", new_callable=AsyncMock) as mock_filters:
             mock_filters.return_value = (MagicMock(), MagicMock())
+            conn._get_fresh_datasource = AsyncMock()
+            conn._assert_required_capabilities = AsyncMock()
             conn._sync_users = AsyncMock()
             conn._sync_objects_by_type = AsyncMock()
             await conn.run_sync()
@@ -3230,6 +3245,8 @@ class TestRunSync:
         conn = _make_connector()
         with patch("app.connectors.sources.notion.connector.load_connector_filters", new_callable=AsyncMock) as mock_filters:
             mock_filters.return_value = (MagicMock(), MagicMock())
+            conn._get_fresh_datasource = AsyncMock()
+            conn._assert_required_capabilities = AsyncMock()
             conn._sync_users = AsyncMock(side_effect=Exception("sync fail"))
             with pytest.raises(Exception, match="sync fail"):
                 await conn.run_sync()

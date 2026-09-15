@@ -101,54 +101,6 @@ Prefer a fully managed PipesHub without running your own infrastructure? PipesHu
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
-## File Formats Supported
-
-| Format | Details |
-|--------|---------|
-| PDF | Including scanned PDFs |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Comma-separated values |
-| Markdown | .md files |
-| HTML | Web pages |
-| Text | Plain text files |
-| Google Docs, Sheets, Slides | Google Workspace formats |
-| Images | PNG, JPG, etc. |
-| Audio | Audio files (Coming Soon) |
-| Video | Video files (Coming Soon) |
-
-## Tech Stack
-
-### Frontend
-
-| Technology | Description |
-|-----------|-------------|
-| Next.js | App Router UI (client-rendered React) |
-| TypeScript | Strongly typed JavaScript superset |
-| Radix UI Themes | Accessible component primitives and styling |
-| Zod | Schema validation and parsing |
-| React Hook Form | Flexible form state management |
-
-### Backend
-
-| Category | Technologies |
-|----------|--------------|
-| GraphDB | Neo4j / ArangoDB |
-| VectorDB | Qdrant / OpenSearch / Redis |
-| Document Store | MongoDB |
-| Blob Storage | Local filesystem / S3 / Azure Blob |
-| Message Broker | Kafka / Redis Streams |
-| Cache | Redis |
-| KV Store | Redis / etcd |
-| Task Queue | Celery |
-| Web Framework | FastAPI |
-| LLM Interface | LangChain (multi-provider model access) |
-| Embeddings | sentence-transformers / fastembed |
-| Document Parsing | pdfplumber, selectolax, markdown-it, openpyxl, csv (default) — or Docling, opt-in via `PARSER_BACKEND` |
-| Document Conversion | LibreOffice, CairoSVG |
-| Data Analysis | pandas |
-
 ## 🚀 Deployment Guide
 
 PipesHub can be run locally or deployed on any server using Docker Compose. The interactive installer handles all configuration — including secrets, graph DB, broker, and image tag selection — and generates a `.env` for you.
@@ -306,7 +258,11 @@ PipesHub is fully open-source (Apache 2.0) and self-hostable — your data never
 
 ### What connectors does PipesHub support?
 
-PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
+PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. See the [connectors overview](https://docs.pipeshub.com/connectors/overview).
+
+### What file formats can PipesHub index?
+
+PDF (including scans), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, plain text, and images. Audio and video can be stored but are not indexed yet. Storage accepts a wider set of MIME types — see [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### How do I deploy PipesHub?
 
@@ -320,7 +276,19 @@ Developers building from source should clone the repository and run `./install.s
 
 ### What LLM providers does PipesHub support?
 
-PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain for LLM pipelines and workflows.
+PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models.
+
+### What is the tech stack?
+
+PipesHub has three parts:
+
+- **Web app** (Next.js) — search, chat, and admin in the browser.
+- **API** (Node.js) — accounts, permissions, knowledge bases, and files.
+- **Python services** — connectors sync your sources; indexing parses documents; query answers with citations.
+
+Those services call **AI models you bring**. An **embedding model** turns parsed text into vectors for search. An **LLM** writes the cited answer. Use any provider or a local model (Ollama); a local embedding server is the default.
+
+Data sits in a knowledge graph (Neo4j by default, or ArangoDB), a vector store (Qdrant), and MongoDB. Redis is the cache. Files live on disk or object storage. Services hand work to each other over Redis on a local machine, or Kafka in a larger deployment. See the [system overview](https://docs.pipeshub.com/system-overview).
 
 ### What is the Knowledge Graph Retrieval feature?
 

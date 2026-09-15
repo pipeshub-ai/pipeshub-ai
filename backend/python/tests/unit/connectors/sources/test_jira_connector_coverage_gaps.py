@@ -185,12 +185,13 @@ class TestDcModuleHelperGaps:
 
 class TestDcInitAndAuditGaps:
     @pytest.mark.asyncio
-    async def test_init_missing_auth_type_returns_false(self):
+    async def test_init_missing_auth_type_raises(self):
         conn = _make_dc_connector()
         conn.config_service.get_config = AsyncMock(
             return_value={"auth": {"baseUrl": "https://jira.example", "apiToken": "x"}},
         )
-        assert await conn.init() is False
+        with pytest.raises(ConnectorInitError, match="authType is required"):
+            await conn.init()
 
     def test_issue_key_from_auditing_event_skips_non_issue_objects(self):
         entity = {

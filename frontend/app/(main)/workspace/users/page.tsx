@@ -32,6 +32,7 @@ import { USER_ROLES, INVITE_ROLE_OPTIONS } from '../constants';
 import { useUsersStore } from './store';
 import { UsersApi } from './api';
 import { ProfileApi } from '../profile/api';
+import { SmtpApi } from '../mail/api';
 import type { User } from './types';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
 
@@ -127,6 +128,20 @@ function UsersPageContent() {
     newRole: string;
   } | null>(null);
   const [isChangingRole, setIsChangingRole] = useState(false);
+
+  // SMTP is required to send invite emails — the invite APIs 500 without it.
+  // `null` = not yet checked; block new invite sends until status is known.
+  const [isSmtpConfigured, setIsSmtpConfigured] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    SmtpApi.isConfigured().then((configured) => {
+      if (!cancelled) setIsSmtpConfigured(configured);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const smtpBlocksInvite = isSmtpConfigured !== true;
 
   const {
     users,
@@ -1103,6 +1118,15 @@ function UsersPageContent() {
         ctaLabel={t('workspace.users.inviteButton')}
         ctaIcon="person_add_alt"
         onCtaClick={navigateToInvitePanel}
+        ctaDisabled={smtpBlocksInvite}
+        ctaTooltip={
+          smtpBlocksInvite
+            ? t(
+                'workspace.users.inviteDisabledSmtp',
+                'SMTP is not configured. Set up email settings before inviting users.'
+              )
+            : undefined
+        }
         additionalActions={<UsersPageHeaderActions onMemberChanged={fetchUsers} />}
       />
 
@@ -1179,7 +1203,7 @@ function UsersPageContent() {
       </Flex>
 
       {/* Invite Users Sidebar */}
-      <InviteUsersSidebar onInviteSuccess={fetchUsers} />
+      <InviteUsersSidebar onInviteSuccess={fetchUsers} isSmtpConfigured={isSmtpConfigured === true} />
 
       {/* User Profile Sidebar */}
       <UserProfileSidebar />

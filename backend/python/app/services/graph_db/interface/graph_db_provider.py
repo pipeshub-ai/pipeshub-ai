@@ -1323,6 +1323,9 @@ class IGraphDBProvider(ABC):
         the record at QUEUED forever, so the write has to be conditional rather than
         merely ordered.
 
+        A swap into QUEUED also stamps queuedAtTimestamp, the platform-owned clock
+        the stranded-record sweep ages rows on.
+
         Args:
             record_ids: Record keys to attempt the swap on. Pass a one-element list
                         for a single record.
@@ -1460,6 +1463,22 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of child records
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: str,
+        transaction: str | None = None,
+    ) -> list['Record']:
+        """Return this connector's records of ``record_type``.
+
+        Args:
+            connector_id: Connector ID
+            record_type: Record type value (e.g. ``DATABASE``, ``WEBPAGE``)
+            transaction: Optional transaction context
         """
         pass
 

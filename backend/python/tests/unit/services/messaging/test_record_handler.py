@@ -1929,6 +1929,8 @@ class TestProcessEventErrors:
         updates = gp.update_node.await_args[0][2]
         assert updates.get("indexingStatus") == ProgressStatus.QUEUED.value
         assert updates.get("extractionStatus") == ProgressStatus.NOT_STARTED.value
+        # Back in line for its retry: restart the clock the stranded sweep ages on.
+        assert isinstance(updates.get("queuedAtTimestamp"), int)
 
     @pytest.mark.asyncio
     async def test_transient_parse_failure_reverts_all_in_progress_statuses(self):
@@ -3802,6 +3804,28 @@ class TestOnMessageAbandoned:
             self._message(), reason="poison", attempts=3
         )
 
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_never_fails_a_record_whose_handler_is_still_running(self):
+        """Idle-drain can abandon a sibling PEL entry while the original
+        delivery is still IN_PROGRESS. Rewriting FAILED races the worker."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "r1",
+                "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            }
+        )
+        gp.update_node = AsyncMock(return_value=True)
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
+
+        await handler.on_message_abandoned(
+            self._message(), reason="delivered 10 times", attempts=10
+        )
+
+        gp.compare_and_set_indexing_status.assert_not_awaited()
         gp.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio

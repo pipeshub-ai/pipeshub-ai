@@ -1686,12 +1686,35 @@ class TestTraversalAndRecordLookups:
         assert kwargs["txn_id"] == "txn-rbp"
 
     @pytest.mark.asyncio
-    async def test_get_records_by_parent_returns_empty_on_exception(self, neo4j_provider: Neo4jProvider):
+    async def test_get_records_by_parent_raises_on_exception(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("parent fail"))
 
-        result = await neo4j_provider.get_records_by_parent("conn-1", "parent-ext-1")
+        with pytest.raises(RuntimeError, match="parent fail"):
+            await neo4j_provider.get_records_by_parent("conn-1", "parent-ext-1")
 
-        assert result == []
+    @pytest.mark.asyncio
+    async def test_get_records_by_record_type_success(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"record": {"id": "r1"}}])
+        neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "r1"})  # type: ignore[method-assign]
+        with patch(
+            "app.services.graph_db.neo4j.neo4j_provider.Record.from_arango_base_record",
+            return_value={"record": "converted"},
+        ):
+            result = await neo4j_provider.get_records_by_record_type(
+                "conn-1", "DATABASE", transaction="txn-type"
+            )
+
+        assert result == [{"record": "converted"}]
+        kwargs = neo4j_provider.client.execute_query.await_args.kwargs
+        assert kwargs["parameters"]["record_type"] == "DATABASE"
+        assert kwargs["txn_id"] == "txn-type"
+
+    @pytest.mark.asyncio
+    async def test_get_records_by_record_type_raises_on_exception(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("type fail"))
+
+        with pytest.raises(RuntimeError, match="type fail"):
+            await neo4j_provider.get_records_by_record_type("conn-1", "DATABASE")
 
     @pytest.mark.asyncio
     async def test_get_records_by_record_group_validates_depth(self, neo4j_provider: Neo4jProvider):

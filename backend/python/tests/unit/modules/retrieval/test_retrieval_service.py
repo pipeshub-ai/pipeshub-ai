@@ -310,6 +310,15 @@ class TestGetLlmInstance:
             result = await retrieval_service.get_llm_instance()
             assert result is None
 
+    @pytest.mark.asyncio
+    async def test_no_model_config_yet_is_not_an_error(self, retrieval_service, mock_config_service) -> None:
+        """Before onboarding there is no AI-models config at all; that was logged
+        as "Error getting LLM: 'NoneType' object is not subscriptable"."""
+        mock_config_service.get_config.return_value = None
+        with patch.object(retrieval_service, "logger", MagicMock()) as logger:
+            assert await retrieval_service.get_llm_instance() is None
+        logger.error.assert_not_called()
+
 
 # ============================================================================
 # get_embedding_model_instance

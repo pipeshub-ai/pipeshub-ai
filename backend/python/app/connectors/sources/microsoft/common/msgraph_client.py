@@ -681,5 +681,10 @@ class MSGraphClient:
                                 f"Error: {ex.error.message}"
                             )
 
-            self.logger.error(f"Error searching entities {entity_types}: {ex}")
+            error_msg = type(ex).__name__
+            try:
+                error_msg = str(ex)
+            except Exception:
+                pass
+            self.logger.error(f"Error searching entities {entity_types}: {error_msg}")
             raise

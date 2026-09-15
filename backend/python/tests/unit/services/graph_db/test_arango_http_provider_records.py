@@ -566,10 +566,36 @@ class TestGetRecordsByParent:
 
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
-        result = await connected_provider.get_records_by_parent(
-            connector_id="conn1", parent_external_record_id="ext-p1",
+        with pytest.raises(Exception, match="err"):
+            await connected_provider.get_records_by_parent(
+                connector_id="conn1", parent_external_record_id="ext-p1",
+            )
+
+
+class TestGetRecordsByRecordType:
+    async def test_success(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [_arango_record()]
+        result = await connected_provider.get_records_by_record_type(
+            connector_id="conn1", record_type="DATABASE",
+        )
+        assert len(result) == 1
+        bind = _get_bind_vars(connected_provider.http_client.execute_aql)
+        assert bind["connector_id"] == "conn1"
+        assert bind["record_type"] == "DATABASE"
+
+    async def test_empty(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = []
+        result = await connected_provider.get_records_by_record_type(
+            connector_id="conn1", record_type="DATABASE",
         )
         assert result == []
+
+    async def test_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = Exception("err")
+        with pytest.raises(Exception, match="err"):
+            await connected_provider.get_records_by_record_type(
+                connector_id="conn1", record_type="DATABASE",
+            )
 
 
 # ===================================================================

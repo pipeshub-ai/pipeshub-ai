@@ -9,12 +9,30 @@ from app.api.routes.ai_models_registry import router
 from app.config.ai_models.registry import ai_model_registry
 
 
-@pytest.fixture
-def client():
-    """Create a test client with the registry router mounted."""
+def _client_as(user: dict) -> TestClient:
+    """The registry router behind a stand-in for the auth middleware, which in
+    query_main always sets request.state.user before any route runs."""
     app = FastAPI()
+
+    @app.middleware("http")
+    async def authenticated(request, call_next):
+        request.state.user = user
+        return await call_next(request)
+
     app.include_router(router, prefix="/api/v1")
     return TestClient(app)
+
+
+@pytest.fixture
+def client():
+    return _client_as({"userId": "user-1", "orgId": "org-1", "token_type": "regular"})
+
+
+class TestTokenPolicy:
+
+    def test_service_tokens_are_refused(self):
+        service_client = _client_as({"token_type": "scoped", "scopes": ["fetch:config"]})
+        assert service_client.get("/api/v1/ai-models/registry").status_code == 403
 
 
 class TestGetRegistry:

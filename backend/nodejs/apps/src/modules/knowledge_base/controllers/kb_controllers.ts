@@ -1304,6 +1304,11 @@ export const getRecordById =
       );
 
       const responseForClient: Record<string, any> = { ...response, data: { ...(response?.data || {}) } };
+
+      if (responseForClient.statusCode === 404) {
+        throw new NotFoundError(`Record ${recordId} not found`);
+      }
+
       if (responseForClient.data?.record) {
         responseForClient.data.record = { ...responseForClient.data.record };
         // TODO: Move this response shaping into a typed mapper once the connector contract drops record._id.

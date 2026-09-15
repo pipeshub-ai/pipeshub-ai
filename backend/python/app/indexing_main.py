@@ -310,6 +310,7 @@ async def recover_in_progress_records(
                     reset_fields = {
                         "parsingStatus": ProgressStatus.NOT_STARTED.value,
                         "indexingStatus": ProgressStatus.QUEUED.value,
+                        "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
                         "processingStartedAt": None,
                         "reason": "Recovered after restart; re-queued for indexing",
@@ -502,7 +503,7 @@ async def recover_in_progress_records(
 
         # The counterpart for *live* connectors: a row whose event was lost or
         # never published is invisible to both the scan above and the sweep.
-        # Off unless STRANDED_RECORD_REPUBLISH_AFTER_SECONDS is set.
+        # STRANDED_RECORD_REPUBLISH_AFTER_SECONDS=0 disables it.
         total_records += await _republish_stranded_records(
             graph_provider=graph_provider,
             logger=logger,
@@ -800,9 +801,11 @@ async def _republish_stranded_records(
     itself, so it cannot distinguish "the event is on the broker" from "the
     event was never sent"; age can, and it recovers the row either way.
 
-    Off by default. Enable with STRANDED_RECORD_REPUBLISH_AFTER_SECONDS, set
-    comfortably longer than the worst backlog the broker is expected to carry,
-    or healthy records still queued behind it will be re-sent.
+    On by default (one hour); STRANDED_RECORD_REPUBLISH_AFTER_SECONDS=0
+    disables it. Keep the threshold comfortably longer than the worst backlog
+    the broker is expected to carry, or healthy records still queued behind it
+    will be re-sent -- harmlessly, since re-publishing is idempotent, but
+    wastefully.
 
     Re-publishing is safe to repeat: the handler skips a record that is already
     COMPLETED, and the per-record exclusivity lease stops a republished event
@@ -853,27 +856,33 @@ async def _republish_stranded_records(
                 ):
                     continue
 
-                # Two clocks, both of which must be older than the cutoff.
-                # updatedAt moves on every write to the row, so a record still
-                # being touched by a sync is never old enough to qualify.
+                # Aged from the newest of three clocks, so any one being fresh
+                # keeps the row out. queuedAtTimestamp is the platform's own
+                # "put in line for indexing" time. updatedAt cannot carry this
+                # alone: connectors may fill it with source-system time (a Jira
+                # issue last edited a year ago), which made every freshly synced
+                # row look stranded and sent it twice; it stays in the max for
+                # rows written before queuedAtTimestamp existed.
                 # lastRepublishedAt is our own: publishing changes nothing about
                 # the row, so without it a record stays eligible and every tick
                 # sends another copy of the same event -- worst precisely when
                 # the consumer is backlogged, which is the case this sweep
                 # exists for.
-                updated_at = record.get("updatedAtTimestamp") or record.get(
-                    "createdAtTimestamp"
-                )
-                last_republished_at = record.get("lastRepublishedAt")
-                try:
-                    if updated_at is None or float(updated_at) > cutoff_ms:
+                clocks: list[float] = []
+                for value in (
+                    record.get("queuedAtTimestamp"),
+                    record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
+                    record.get("lastRepublishedAt"),
+                ):
+                    try:
+                        clocks.append(float(value))
+                    except (TypeError, ValueError):
+                        # Unset or malformed: one bad clock must not hide the others.
                         continue
-                    if (
-                        last_republished_at is not None
-                        and float(last_republished_at) > cutoff_ms
-                    ):
-                        continue
-                except (TypeError, ValueError):
+                if not clocks:
+                    continue
+                last_touched_at = max(clocks)
+                if last_touched_at > cutoff_ms:
                     continue
 
                 if not await _is_active(connector_id):
@@ -920,38 +929,70 @@ async def _republish_stranded_records(
                         if version > 0 and payload.get("virtualRecordId")
                         else EventTypes.NEW_RECORD.value
                     )
-                    await run_coordination(
-                        producer.send_event(
-                            topic=Topic.RECORD_EVENTS.value,
-                            event_type=event_type,
-                            payload=payload,
-                            key=str(record_key),
-                        )
-                    )
-                    republished += 1
-                    # Recorded before the lease is released, so the cutoff above
-                    # excludes this record until another full interval passes.
-                    # Deliberately not updatedAtTimestamp: that field means "when
-                    # the record last changed" and connectors write it, so a
-                    # recovery sweep must not move it.
-                    marked = await graph_provider.update_node(
+
+                    # The marker is a durable claim written BEFORE the send, not
+                    # a receipt written after it. Written after, a Neo4j failure
+                    # following a successful Redis send left the record eligible
+                    # again next tick -- one duplicate event per minute, per
+                    # record, for as long as the consumer had not yet moved it
+                    # out of QUEUED/NOT_STARTED. Under a backlog that is a
+                    # feedback loop: every tick inflates the very backlog that
+                    # is delaying the consumer. Claiming first bounds it: if the
+                    # claim cannot be persisted, nothing is sent this tick.
+                    # Deliberately not updatedAtTimestamp: that field means
+                    # "when the record last changed" and connectors write it, so
+                    # a recovery sweep must not move it.
+                    claimed = await graph_provider.update_node(
                         record_key,
                         CollectionNames.RECORDS.value,
                         {"lastRepublishedAt": get_epoch_timestamp_in_ms()},
                     )
-                    if not marked:
+                    if not claimed:
                         logger.error(
-                            "Re-published stranded record %s but could not mark "
-                            "it; it will be re-published again next tick",
+                            "Could not record a republish claim for stranded "
+                            "record %s; skipping it this tick rather than risk "
+                            "re-sending it every tick",
                             record_key,
                         )
+                        continue
+
+                    try:
+                        await run_coordination(
+                            producer.send_event(
+                                topic=Topic.RECORD_EVENTS.value,
+                                event_type=event_type,
+                                payload=payload,
+                                key=str(record_key),
+                            )
+                        )
+                    except Exception:
+                        # The claim is already persisted, so without this the
+                        # record would wait a full interval before its next
+                        # attempt. Clearing it (best effort) lets the next tick
+                        # retry; if even that fails the record still only
+                        # waits one interval -- bounded either way.
+                        try:
+                            await graph_provider.update_node(
+                                record_key,
+                                CollectionNames.RECORDS.value,
+                                {"lastRepublishedAt": None},
+                            )
+                        except Exception as clear_exc:
+                            logger.warning(
+                                "Could not clear republish claim for %s after a "
+                                "failed send; it will retry after the interval: %s",
+                                record_key,
+                                clear_exc,
+                            )
+                        raise
+                    republished += 1
                     logger.warning(
                         "Re-published stranded record %s (%s, status %s, "
                         "untouched for %.0fs)",
                         record_key,
                         record.get("recordName"),
                         status_value,
-                        (get_epoch_timestamp_in_ms() - float(updated_at)) / 1000,
+                        (get_epoch_timestamp_in_ms() - last_touched_at) / 1000,
                     )
                 except Exception as exc:
                     logger.error(

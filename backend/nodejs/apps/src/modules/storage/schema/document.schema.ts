@@ -144,6 +144,20 @@ const DocumentSchema = new Schema(
       required: true,
       enum: Object.values(StorageVendor),
     },
+    // Set only when the creator sent an Idempotency-Key; see utils/idempotency.ts.
+    idempotencyKey: {
+      type: String,
+    },
+    idempotencyFingerprint: {
+      type: String,
+    },
+    // A keyed upload attempt's claim on a document it has not finished storing.
+    uploadLeaseToken: {
+      type: String,
+    },
+    uploadLeaseExpiresAt: {
+      type: Number,
+    },
   },
   {
     timestamps: {
@@ -153,6 +167,16 @@ const DocumentSchema = new Schema(
 );
 
 DocumentSchema.index({ orgId: 1, _id: 1 });
+// Lets a retried create find what its first attempt made, and settles two
+// attempts racing each other. Keys are per principal (initiatorUserId, null for
+// service tokens). Partial, so documents without a key are exempt.
+DocumentSchema.index(
+  { orgId: 1, initiatorUserId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: 'string' } },
+  },
+);
 
 // Create and export the model
 export const DocumentModel = mongoose.model<DocumentModel>('Document', DocumentSchema);

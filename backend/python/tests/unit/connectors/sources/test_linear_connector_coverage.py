@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperatorType,
@@ -899,7 +900,8 @@ class TestLinearRunSync:
                     return_value=[MagicMock(email="alice@test.com")]
                 )
                 with patch.object(
-                    c, "_sync_issues_for_teams", new_callable=AsyncMock, return_value=set()
+                    c, "_sync_issues_for_teams", new_callable=AsyncMock,
+                    return_value=(set(), [])
                 ):
                     with patch.object(c, "_sync_attachments", new_callable=AsyncMock):
                         with patch.object(c, "_sync_documents", new_callable=AsyncMock):
@@ -1310,8 +1312,8 @@ class TestLinearInitOrgData:
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             with patch("app.connectors.sources.linear.connector.LinearDataSource") as MockDS:
                 MockDS.return_value = mock_ds
-                result = await c.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await c.init()
 
     @pytest.mark.asyncio
     async def test_init_none_org_data(self):
@@ -1327,8 +1329,8 @@ class TestLinearInitOrgData:
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             with patch("app.connectors.sources.linear.connector.LinearDataSource") as MockDS:
                 MockDS.return_value = mock_ds
-                result = await c.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await c.init()
 
 
 # ===================================================================
@@ -2242,7 +2244,7 @@ class TestLinearPlaceholderSweep:
         )
         c._fetch_users = AsyncMock(return_value=[])
         c._fetch_teams = AsyncMock(return_value=([], [(team_rg, [])]))
-        c._sync_issues_for_teams = AsyncMock(return_value={"team-1"})
+        c._sync_issues_for_teams = AsyncMock(return_value=({"team-1"}, []))
         c._sync_attachments = AsyncMock()
         c._sync_documents = AsyncMock()
         c._sync_projects_for_teams = AsyncMock()
@@ -2274,7 +2276,9 @@ class TestLinearPlaceholderSweep:
         with patch.object(c, "_get_team_sync_checkpoint", new_callable=AsyncMock, return_value=None):
             with patch.object(c, "_fetch_issues_for_team_batch", side_effect=fake_fetch):
                 result = await c._sync_issues_for_teams([(team_rg, perms)])
-        assert result == {"team-1"}
+        full_sync_team_ids, failed_team_keys = result
+        assert full_sync_team_ids == {"team-1"}
+        assert failed_team_keys == []
 
 
 # ===================================================================

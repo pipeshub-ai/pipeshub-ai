@@ -144,7 +144,6 @@ class MCPSessionManager:
 
         new_tokens = await refresh_credential_record(
             server.instance_id, server.owner_id, self._context.config_service,
-            fallback_config_services=server.fallback_config_services,
         )
         server.auth = {
             "isAuthenticated": True,

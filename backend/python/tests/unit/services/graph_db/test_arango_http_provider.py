@@ -954,6 +954,132 @@ class TestGetAccessibleVirtualRecordIds:
             mock_connector.assert_awaited()
 
 
+class TestKbReclassificationFromAppsFilter:
+    """KB app IDs placed in the `apps` filter must be reclassified to the
+    `kb` filter so they reach the KB query path instead of being silently
+    dropped by the connector-only branch.
+
+    This is the root cause of the MCP intermittent 404 bug.
+    """
+
+    @pytest.mark.asyncio
+    async def test_kb_id_in_apps_reclassified_to_kb_filter(self, connected_provider):
+        """A KB app UUID in `apps` with empty `kb` must be moved to the KB
+        query path, not treated as a connector."""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider.http_client, "execute_aql",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vr-1": "rec-1"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "u1", "o1", filters={"apps": [kb_uuid], "kb": []}
+            )
+            mock_kb.assert_awaited_once()
+            mock_connector.assert_not_awaited()
+            assert result == {"vr-1": "rec-1"}
+
+    @pytest.mark.asyncio
+    async def test_mixed_ids_split_correctly(self, connected_provider):
+        """A mix of connector and KB IDs in `apps` must split correctly."""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        conn_uuid = "660e8400-e29b-41d4-a716-446655440000"
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=[conn_uuid, kb_uuid]
+        ), patch.object(
+            connected_provider.http_client, "execute_aql",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={"vr-c": "rec-c"}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vr-k": "rec-k"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "u1", "o1", filters={"apps": [conn_uuid, kb_uuid], "kb": []}
+            )
+            mock_connector.assert_awaited_once()
+            mock_kb.assert_awaited_once()
+            assert "vr-c" in result
+            assert "vr-k" in result
+
+    @pytest.mark.asyncio
+    async def test_only_kb_collection_no_connectors_via_apps(self, connected_provider):
+        """The exact MCP bug scenario: user has only KB collections, MCP
+        sends the KB ID in `apps` with `kb: []`. Must return KB results."""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider.http_client, "execute_aql",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vr-1": "rec-1"}
+        ):
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "u1", "o1", filters={"apps": [kb_uuid], "kb": []}
+            )
+            mock_connector.assert_not_awaited()
+            assert result == {"vr-1": "rec-1"}
+
+    @pytest.mark.asyncio
+    async def test_inaccessible_kb_id_in_apps_is_dropped(self, connected_provider):
+        """A KB ID the user cannot access must not be reclassified."""
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=[]
+        ), patch.object(
+            connected_provider.http_client, "execute_aql",
+            new_callable=AsyncMock, return_value=[]
+        ), patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={}
+        ):
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "u1", "o1", filters={"apps": ["kb-not-mine"], "kb": []}
+            )
+            assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_empty_apps_filter_not_affected(self, connected_provider):
+        """Empty `apps` with empty `kb` must still hit the no-filter path."""
+        conn_uuid = "660e8400-e29b-41d4-a716-446655440000"
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=[conn_uuid, kb_uuid]
+        ), patch.object(
+            connected_provider.http_client, "execute_aql",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={"vr-c": "rec-c"}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vr-k": "rec-k"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "u1", "o1", filters={"apps": [], "kb": []}
+            )
+            mock_connector.assert_awaited()
+            mock_kb.assert_awaited()
+
+
 # ---------------------------------------------------------------------------
 # get_records_by_record_ids
 # ---------------------------------------------------------------------------
@@ -3640,8 +3766,22 @@ class TestGetRecordsByParent:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_records_by_parent("c1", "ext_parent")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records_by_parent("c1", "ext_parent")
+
+
+class TestGetRecordsByRecordType:
+    @pytest.mark.asyncio
+    async def test_empty(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = []
+        result = await connected_provider.get_records_by_record_type("c1", "DATABASE")
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records_by_record_type("c1", "DATABASE")
 
 
 # ---------------------------------------------------------------------------
@@ -9489,8 +9629,8 @@ class TestGetRecordsByParentProvider:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_records_by_parent("c1", "parent_ext_id")
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records_by_parent("c1", "parent_ext_id")
 
 
 class TestGetRecordGroupByExternalIdProvider:

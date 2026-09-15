@@ -18,7 +18,6 @@ import uuid
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,6 +41,7 @@ from app.agents.mcp.discovery import discover_tools
 from app.agents.mcp.models import DiscoveredOAuthMetadata, MCPAuthMode, MCPServerInstanceConfig, MCPTransport
 from app.agents.mcp.registry import MCPRegistry
 from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
@@ -59,7 +59,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 logger = logging.getLogger(__name__)
 DEFAULT_TOOLS_DISCOVERY_TIMEOUT_SECONDS = 8.0
 DEFAULT_ENDPOINTS_PATH = "/services/endpoints"
-ADMIN_CHECK_TIMEOUT_SECONDS = 5.0
 
 
 # ============================================================================
@@ -118,35 +117,10 @@ async def _check_user_is_admin(
     request: Request,
     config_service: ConfigurationService,
 ) -> bool:
-    """Check admin status by calling the Node.js CM backend, mirroring toolsets' `_check_user_is_admin`.
-
-    Python never trusts a client- or proxy-supplied admin flag; it independently verifies via
-    GET /api/v1/users/{userId}/adminCheck using the caller's own auth headers.
-    """
-    try:
-        try:
-            endpoints = await config_service.get_config(DEFAULT_ENDPOINTS_PATH, use_cache=False)
-            nodejs_url = (
-                endpoints.get("nodejs", {}).get("endpoint") if isinstance(endpoints, dict) else None
-            ) or DefaultEndpoints.NODEJS_ENDPOINT.value
-        except Exception:
-            nodejs_url = DefaultEndpoints.NODEJS_ENDPOINT.value
-
-        auth_headers: dict[str, str] = {}
-        for header_name in ("authorization", "x-organization-id", "cookie"):
-            val = request.headers.get(header_name)
-            if val:
-                auth_headers[header_name] = val
-
-        async with httpx.AsyncClient(timeout=ADMIN_CHECK_TIMEOUT_SECONDS) as client:
-            resp = await client.get(
-                f"{nodejs_url}/api/v1/users/{user_id}/adminCheck",
-                headers=auth_headers,
-            )
-            return resp.status_code == HttpStatusCode.OK.value
-    except Exception as e:
-        logger.warning(f"Admin check via REST API failed for user {user_id}: {e}. Defaulting to non-admin.")
-        return False
+    """Admin gate for MCP routes: the live role Node reports for the caller's own token,
+    never a client- or proxy-supplied flag. ``user_id`` is kept for existing callers."""
+    del user_id
+    return (await fetch_caller_role(request, config_service)).is_admin
 
 
 def _get_config_service(request: Request) -> ConfigurationService:
@@ -1169,9 +1143,7 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
     user_id = user_context["user_id"]
 
     try:
-        owner_svc = await resolve_instance_owner_config_service(instance_id, config_service)
-        fallbacks = [owner_svc] if owner_svc is not None and owner_svc is not config_service else None
-        await mcp_token_refresh.refresh_credential_record(instance_id, user_id, config_service, fallbacks)
+        await mcp_token_refresh.refresh_credential_record(instance_id, user_id, config_service)
     except mcp_token_refresh.MCPTokenRefreshError as e:
         # Covers "no credential record", "no refresh token", "no tokenUrl", and "no
         # resolvable OAuth client" — all mean the caller must re-authenticate or an admin

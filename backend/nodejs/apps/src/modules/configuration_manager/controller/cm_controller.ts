@@ -536,21 +536,31 @@ export const createSmtpConfig =
     }
   };
 
+/** Loads, decrypts, and parses the stored SMTP config. Returns `null` when none is set. */
+const getParsedSmtpConfig = async (
+  keyValueStoreService: KeyValueStoreService,
+): Promise<Record<string, unknown> | null> => {
+  const configManagerConfig = loadConfigurationManagerConfig();
+  const encryptedSmtpConfig = await keyValueStoreService.get<string>(
+    configPaths.smtp,
+  );
+  if (!encryptedSmtpConfig) {
+    return null;
+  }
+  return JSON.parse(
+    EncryptionService.getInstance(
+      configManagerConfig.algorithm,
+      configManagerConfig.secretKey,
+    ).decrypt(encryptedSmtpConfig),
+  ) as Record<string, unknown>;
+};
+
 export const getSmtpConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedSmtpConfig = await keyValueStoreService.get<string>(
-        configPaths.smtp,
-      );
-      if (encryptedSmtpConfig) {
-        const smtpConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedSmtpConfig),
-        );
+      const smtpConfig = await getParsedSmtpConfig(keyValueStoreService);
+      if (smtpConfig) {
         const hideSecrets = shouldHideSecrets();
         res
           .status(200)
@@ -561,6 +571,29 @@ export const getSmtpConfig =
       res.status(200).json({}).end();
     } catch (error: any) {
       logger.error('Error getting smtp config', { error });
+      next(error);
+    }
+  };
+
+/**
+ * GET /smtpConfig/status — boolean-only, no secrets. Unlike `getSmtpConfig`
+ * this is intentionally open to any authenticated org member (not just
+ * admins): non-admins can invite users (`USER_INVITE` scope) and need to know
+ * whether that will succeed without being able to read/manage the SMTP
+ * credentials themselves. Mirrors the gate `smtpConfigCheck`
+ * (user_management) actually enforces before sending invite emails.
+ */
+export const getSmtpConfigStatus =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const smtpConfig = await getParsedSmtpConfig(keyValueStoreService);
+      const configured = Boolean(
+        smtpConfig?.host && smtpConfig?.port && smtpConfig?.fromEmail,
+      );
+      res.status(200).json({ configured }).end();
+    } catch (error: any) {
+      logger.error('Error getting smtp config status', { error });
       next(error);
     }
   };

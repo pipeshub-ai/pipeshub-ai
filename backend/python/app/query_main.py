@@ -420,7 +420,15 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
         # Handle authentication errors
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     except Exception:
-        # Handle unexpected errors
+        # Handle unexpected errors. This wraps every route, so an uncaught
+        # exception anywhere in the app ends up here: log it with its
+        # traceback, otherwise the only trace of a crashing route is a
+        # generic 500 and nothing in the server logs.
+        container.logger().exception(
+            "Unhandled exception while processing %s %s",
+            request.method,
+            request.url.path,
+        )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": "Internal server error"},
