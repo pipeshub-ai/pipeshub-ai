@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import {
+  BadRequestError,
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
@@ -12,6 +13,8 @@ import {
   loginWithOTPRequest,
   orgEmailVerification,
   resetEmail,
+  emailChangeNotice,
+  isEmailChangeNoticeData,
   resetPassword,
   suspiciousLoginAttempt,
   joinRequestNotify,
@@ -74,6 +77,16 @@ export class MailController {
         return emailContent;
       case EmailTemplateType.ResetEmail:
         emailContent = resetEmail(templateData);
+        return emailContent;
+      case EmailTemplateType.EmailChangeNotice:
+        // The notice names the person and the new address; a caller that
+        // omits either would render a blank where a reader expects a fact.
+        if (!isEmailChangeNoticeData(templateData)) {
+          throw new BadRequestError(
+            'emailChangeNotice requires name, orgName and newEmail',
+          );
+        }
+        emailContent = emailChangeNotice(templateData);
         return emailContent;
 
       case EmailTemplateType.AppuserInvite:
