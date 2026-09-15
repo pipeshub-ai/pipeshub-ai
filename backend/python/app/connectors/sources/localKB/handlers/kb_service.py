@@ -6,12 +6,15 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ConnectorScopes,
     Connectors,
-    EventTypes,
     OriginTypes,
     ProgressStatus,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.vector_cleanup_events import (
+    build_connector_vector_cleanup_events,
+    log_cleanup_publish_failure,
+)
 from app.models.entities import FileRecord, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -612,26 +615,34 @@ class KnowledgeBaseService:
                     "code": 500,
                 }
 
-            # Single bulkDeleteRecords event drives Qdrant cleanup for all records at once.
-            virtual_record_ids = result.get("virtual_record_ids", [])
-            if virtual_record_ids:
+            # Vector cleanup for every record at once: one connector-scoped
+            # event normally, chunked id lists for a KB whose points predate the
+            # membership arrays.
+            events = build_connector_vector_cleanup_events(
+                org_id=org_id,
+                connector_id=kb_id,
+                vector_membership_backfilled=result.get(
+                    "vector_membership_backfilled", False
+                ),
+                vector_membership_backfill_exhausted=result.get(
+                    "vector_membership_backfill_exhausted", False
+                ),
+                connector_name=result.get("connector_name"),
+                record_group_ids=result.get("record_group_ids", []),
+                virtual_record_ids=result.get("virtual_record_ids", []),
+            )
+            published = 0
+            for event in events:
                 try:
-                    await self.kafka_service.publish_event(
-                        "record-events",
-                        {
-                            "eventType": EventTypes.BULK_DELETE_RECORDS.value,
-                            "timestamp": get_epoch_timestamp_in_ms(),
-                            "payload": {
-                                "orgId": org_id,
-                                "connectorId": kb_id,
-                                "connectorName": result.get("connector_name"),
-                                "virtualRecordIds": virtual_record_ids,
-                                "totalRecords": len(virtual_record_ids),
-                            },
-                        },
-                    )
+                    await self.kafka_service.publish_event("record-events", event)
+                    published += 1
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to publish bulkDeleteRecords for KB {kb_id}: {str(e)}")
+                    log_cleanup_publish_failure(self.logger, event, f"KB {kb_id}", e)
+            if events and published != len(events):
+                self.logger.error(
+                    f"Published only {published}/{len(events)} vector-cleanup "
+                    f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
+                )
 
             self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by user_key={user_key}")
             return {
