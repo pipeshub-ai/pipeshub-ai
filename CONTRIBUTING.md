@@ -54,17 +54,32 @@ A new connector is a large piece of work. The [connector playbook](CONNECTOR_INT
 
 Skip this section if you are only editing documentation.
 
-There are two ways to run the product locally: everything in Docker, or services from source. Use Docker to try a full instance. Use from-source when you are editing Node, Python, or the frontend.
+You need a clone of this repository on your machine. Fork it on GitHub, then:
+
+```bash
+git clone https://github.com/<your-username>/pipeshub-ai.git
+cd pipeshub-ai
+```
+
+The product is two kinds of process:
+
+- **Application services** — the Node.js API, the Python FastAPI services, and the Next.js UI. These are the programs in this repository.
+- **Stores** — the databases those programs talk to: Redis (config and events), Qdrant (search vectors), Neo4j (the knowledge graph), and MongoDB (sessions and metadata). They are not PipesHub code; they run as their own containers.
+
+Two ways to run it locally:
+
+1. **Everything in Docker** — one installer starts the stores and the application services as containers. Use this to try a full instance without starting each process yourself.
+2. **Application services from source** — you still start the stores in Docker, then you run the API, Python services, and UI yourself from the files in this checkout (`npm run dev`, `python -m app....`). Your edits load without rebuilding a Docker image. Use this when you are changing that code.
 
 ### Run everything in Docker
 
-Stores and application processes come up together:
+The installer starts the stores and the application services together:
 
 ```bash
 ./install.sh --build
 ```
 
-The rest of this section is the from-source path.
+The rest of this section is for running application services from source.
 
 ### System packages
 
