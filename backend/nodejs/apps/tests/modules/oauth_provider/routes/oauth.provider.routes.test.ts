@@ -28,6 +28,19 @@ describe('OAuth Provider Routes', () => {
       const router = createOAuthProviderRouter(mockContainer as any)
       expect(router).to.exist
       expect(router.stack).to.be.an('array')
+      const routes = (router as any).stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => {
+          const method = Object.keys(layer.route.methods).find(
+            (m: string) => layer.route.methods[m],
+          )
+          return `${method}:${layer.route.path}`
+        })
+      expect(routes).to.include('post:/device_authorization')
+      expect(routes).to.include('post:/device/verify')
+      expect(routes).to.include('post:/device/consent')
+      expect(routes).to.include('post:/register')
+      expect(routes).to.include('post:/token')
     })
   })
 })
