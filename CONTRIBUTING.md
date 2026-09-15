@@ -6,7 +6,7 @@
 
 </div>
 
-Welcome to our open source project! We're excited that you're interested in contributing. You do not need to run the full local stack for documentation or small fixes. Local Docker setup is further down, for people changing services.
+Welcome. Pick a labeled issue below, or open a pull request with your change.
 
 Questions: [Discord](https://discord.com/invite/K5RskzJBm2), [GitHub Discussions](https://github.com/pipeshub-ai/pipeshub-ai/discussions), or open an issue.
 
@@ -20,19 +20,22 @@ Labeled issues are a good place to start, but other useful changes are welcome t
 
 Comment on the issue so others know you are on it. If you already have a fix, open a pull request and link the issue, or describe the problem in the PR.
 
-## Docs-only contributions
+## Editing the docs
 
-No Docker. Edit markdown in this repository (`README.md`, `docs/`, this file) or in [`pipeshub-ai/documentation`](https://github.com/pipeshub-ai/documentation) (that repo is what [docs.pipeshub.com](https://docs.pipeshub.com) publishes).
+Edit markdown in this repository (`README.md`, `docs/`, this file) or in [`pipeshub-ai/documentation`](https://github.com/pipeshub-ai/documentation) (that repo is what [docs.pipeshub.com](https://docs.pipeshub.com) publishes).
 
 1. Fork the repo that holds the file.
-2. Change the page. Keep the wording consistent with `main` (Python 3.12, `backend/nodejs`, installer at `https://get.pipeshub.com/install`).
+2. Change the page. Match versions, paths, and install commands to this file on `main`.
 3. Open a pull request.
 
-A new connector is a large piece of work. The [connector playbook](CONNECTOR_INTEGRATION_PLAYBOOK.md) is the starting point; Discord is a good place to talk it through.
+## New connectors
+
+A new connector is a large piece of work. The [connector playbook](CONNECTOR_INTEGRATION_PLAYBOOK.md) is the starting point; Discord is a good place to talk through scope first.
 
 ## Table of Contents
 - [Finding something to work on](#finding-something-to-work-on)
-- [Docs-only contributions](#docs-only-contributions)
+- [Editing the docs](#editing-the-docs)
+- [New connectors](#new-connectors)
 - [Setting Up the Development Environment](#setting-up-the-development-environment)
 - [Project Architecture](#project-architecture)
 - [Contribution Workflow](#contribution-workflow)
@@ -324,7 +327,7 @@ When running services locally with `make`, start **embedding** before **indexing
    ```bash
    git checkout -b feature/your-feature-name
    ```
-4. **Make your changes** following our code style guidelines. Docs-only work does not need a local stack.
+4. **Make your changes** following our code style guidelines. Documentation edits do not need a local stack.
 5. **Test your changes** thoroughly
 6. **Commit your changes** with meaningful commit messages:
    ```bash
