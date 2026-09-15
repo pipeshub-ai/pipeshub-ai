@@ -40,7 +40,9 @@ def _method_source(path: str, name: str) -> str:
     """
     import pathlib
 
-    text = pathlib.Path(path).read_text()
+    # Explicit encoding: the providers carry emoji in log strings, and the
+    # platform default is cp1252 on Windows.
+    text = pathlib.Path(path).read_text(encoding="utf-8")
     start = text.index(f"async def {name}(")
     # Next sibling method at the same indentation ends it.
     rest = text[start:]

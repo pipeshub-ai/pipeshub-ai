@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -128,6 +129,7 @@ CONTENT_V1_ATTACHMENT_EXPAND = "version,history,metadata,extensions"
     .with_description("Sync pages, spaces visible to your account into your personal workspace")\
     .with_categories(["Knowledge Management", "Collaboration"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.API_TOKEN).fields([
             AuthField(

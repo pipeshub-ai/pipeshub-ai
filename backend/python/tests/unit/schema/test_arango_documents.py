@@ -221,6 +221,55 @@ def _valid_app_doc(**extra):
     return doc
 
 
+def _valid_record_group_doc(**extra):
+    doc = {
+        "groupName": "Engineering",
+        "groupType": "SLACK_CHANNEL",
+        "connectorName": "SLACK",
+        "createdAtTimestamp": 1,
+    }
+    doc.update(extra)
+    return doc
+
+
+class TestRecordGroupPermissionModel:
+    """The field container-filtered search reads to decide whether it may trust
+    a group's grant instead of verifying every record under it."""
+
+    def test_accepts_group_level_and_record_level(self):
+        validator = Draft4Validator(adapt_schema(documents.record_group_schema))
+        validator.validate(_valid_record_group_doc(permissionModel="RECORD_GROUP_LEVEL"))
+        validator.validate(_valid_record_group_doc(permissionModel="RECORD_LEVEL"))
+
+    def test_unset_is_valid_and_means_verify(self):
+        """Every group is unset until a connector declares otherwise, so the
+        schema must accept both absent and null."""
+        validator = Draft4Validator(adapt_schema(documents.record_group_schema))
+        validator.validate(_valid_record_group_doc())
+        validator.validate(_valid_record_group_doc(permissionModel=None))
+
+    def test_rejects_app_level(self):
+        """APP_LEVEL describes a connector. Accepting it here would let a group
+        claim something the retrieval path has no way to honour."""
+        validator = Draft4Validator(adapt_schema(documents.record_group_schema))
+        with pytest.raises(Exception):
+            validator.validate(_valid_record_group_doc(permissionModel="APP_LEVEL"))
+
+
+class TestAppSchemaPermissionModel:
+    def test_rejects_group_level(self):
+        """Mirror of the connector-builder guard: RECORD_GROUP_LEVEL on an app doc
+        reads as "not APP_LEVEL" downstream and silently means RECORD_LEVEL."""
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        with pytest.raises(Exception):
+            validator.validate(_valid_app_doc(permissionModel="RECORD_GROUP_LEVEL"))
+
+    def test_still_accepts_the_two_connector_values(self):
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        validator.validate(_valid_app_doc(permissionModel="APP_LEVEL"))
+        validator.validate(_valid_app_doc(permissionModel="RECORD_LEVEL"))
+
+
 class TestAppSchemaVectorMembership:
     def test_accepts_backfill_fields(self):
         validator = Draft4Validator(adapt_schema(documents.app_schema))

@@ -23,6 +23,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App
+from app.config.constants.arangodb import PermissionModel
 from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
@@ -48,6 +49,7 @@ class KBApp(App):
     .with_description("Local knowledge base for organizing and managing documents")\
     .with_categories(["Knowledge Management", "Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .configure(lambda builder: builder
         .with_sync_strategies([SyncStrategy.MANUAL])\
         .with_scheduled_config(False, 0)\
