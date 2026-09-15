@@ -14,7 +14,7 @@ from io import BytesIO
 
 import pdfplumber
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.config.constants.ai_models import validate_reasoning_effort
 from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_as_pil_from_bytes_sync
@@ -30,7 +30,10 @@ from app.containers.query import QueryAppContainer
 from app.events.processor import convert_record_dict_to_record
 from app.models.blocks import Block, BlockType, BlocksContainer, CitationMetadata, DataFormat
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.retrieval.retrieval_service import (
+    MAX_SEARCH_LIMIT,
+    RetrievalService,
+)
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.modules.transformers.blob_storage import BlobStorage
@@ -58,7 +61,7 @@ router = APIRouter()
 # Pydantic models
 class ChatQuery(BaseModel):
     query: str
-    limit: int | None = 50
+    limit: int | None = Field(default=50, ge=1, le=MAX_SEARCH_LIMIT)
     previousConversations: list[dict] = []
     filters: dict[str, Any] | None = None
     retrievalMode: str | None = "HYBRID"

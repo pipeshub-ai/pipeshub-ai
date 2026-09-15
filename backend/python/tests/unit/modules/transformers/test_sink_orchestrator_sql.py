@@ -89,6 +89,43 @@ class TestBuildLimitedSqlBlockContainer:
             child_indices.extend(range(r.start, r.end + 1))
         assert set(child_indices) == kept
 
+    def test_non_row_blocks_survive_the_row_cap(self) -> None:
+        """`is_sql` in `index()` is true when *any* block group is a SQL table
+        or view, so the cap must not take a record's prose with it. Blob
+        storage is what `fetch_record` serves back as citation content."""
+        orch = _make_orchestrator()
+        prose = Block(index=0, type=BlockType.TEXT, format="txt", data={"text": "Table notes"})
+        heading = Block(index=1, type=BlockType.TEXT, format="txt", data={"text": "Revenue"})
+        rows = [_make_row_block(i) for i in range(2, 20)]
+        bg = BlockGroup(
+            index=0,
+            type=GroupType.TABLE,
+            sub_type=GroupSubType.SQL_TABLE,
+            children=BlockGroupChildren(
+                block_ranges=[IndexRange(start=2, end=19)],
+                block_group_ranges=[],
+            ),
+        )
+        container = BlocksContainer(blocks=[prose, heading, *rows], block_groups=[bg])
+
+        result = orch._build_limited_sql_block_container(container, limit=5)
+
+        kept = [b.index for b in result.blocks]
+        assert kept[:2] == [0, 1], "non-row blocks must be kept"
+        assert len([b for b in result.blocks if b.type == BlockType.TABLE_ROW]) == 5
+        assert kept == [0, 1, 2, 3, 4, 5, 6]
+
+    def test_original_block_order_is_preserved(self) -> None:
+        orch = _make_orchestrator()
+        rows_a = [_make_row_block(i) for i in range(0, 4)]
+        divider = Block(index=4, type=BlockType.TEXT, format="txt", data={"text": "---"})
+        rows_b = [_make_row_block(i) for i in range(5, 12)]
+        container = BlocksContainer(blocks=[*rows_a, divider, *rows_b], block_groups=[])
+
+        result = orch._build_limited_sql_block_container(container, limit=6)
+
+        assert [b.index for b in result.blocks] == [0, 1, 2, 3, 4, 5, 6]
+
     def test_block_group_with_block_group_ranges_preserved(self):
         orch = _make_orchestrator()
         row_blocks = [_make_row_block(i) for i in range(12)]

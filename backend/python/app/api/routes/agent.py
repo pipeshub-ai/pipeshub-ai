@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
@@ -39,6 +39,7 @@ from app.modules.agents.qna.router import (
 from app.modules.agents.qna.router import (
     build_prior_routing_messages as _build_prior_routing_messages,  # noqa: F401
 )
+from app.modules.retrieval.retrieval_service import MAX_SEARCH_LIMIT
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
 )
@@ -105,7 +106,7 @@ def _parse_agent_capabilities(raw: dict[str, Any] | None) -> AgentCapabilities:
 
 class ChatQuery(BaseModel):
     query: str
-    limit: int | None = 50
+    limit: int | None = Field(default=50, ge=1, le=MAX_SEARCH_LIMIT)
     previousConversations: list[dict] = []
     quickMode: bool = False
     filters: dict[str, Any] | None = None
