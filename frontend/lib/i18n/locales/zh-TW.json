@@ -555,6 +555,7 @@
     "loadingConversation": "正在載入對話...",
     "recents": "最近的對話",
     "sharedChats": "共享的對話",
+    "sharedBy": "由 {{name}} 分享",
     "noSharedChats": "沒有共享的對話",
     "yourChats": "您的對話",
     "noChatsFound": "找不到任何對話",

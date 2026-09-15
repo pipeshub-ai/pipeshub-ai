@@ -100,6 +100,13 @@ export interface SharedWithEntry {
   _id: string;
 }
 
+/** Initiator of a chat, present on conversations shared with the current user */
+export interface SharedByInfo {
+  userId: string;
+  name: string;
+  email?: string;
+}
+
 /**
  * Pagination metadata returned by the conversation detail API.
  * `hasNextPage` means there are older message batches to load;
@@ -133,6 +140,7 @@ export interface ConversationApiResponse {
   updatedAt: string;
   isOwner: boolean;
   accessLevel: string;
+  sharedBy?: SharedByInfo;
 }
 
 export type ConversationSource = 'owned' | 'shared';
@@ -161,6 +169,7 @@ export interface Conversation {
   status?: string;
   modelInfo?: ModelInfo;
   isOwner?: boolean;
+  sharedBy?: SharedByInfo;
 }
 
 export interface ChatSuggestion {

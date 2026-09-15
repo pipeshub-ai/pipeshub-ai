@@ -121,6 +121,16 @@ function createMockAppConfig(): any {
   }
 }
 
+function stubUsersFindForSharedBy(users: any[] = []) {
+  const findChain: any = {
+    select: sinon.stub().returnsThis(),
+    lean: sinon.stub().returnsThis(),
+    exec: sinon.stub().resolves(users),
+  }
+  sinon.stub(Users, 'find').returns(findChain as any)
+  return findChain
+}
+
 function createMockSession(): any {
   const session: any = {
     startTransaction: sinon.stub(),
@@ -4000,6 +4010,9 @@ describe('Enterprise Search Controller', () => {
       }
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
+      stubUsersFindForSharedBy([
+        { _id: VALID_OID3, fullName: 'Priya Sharma', email: 'priya@test.com' },
+      ])
 
       const req = createMockRequest({
         query: { page: '1', limit: '10', source: 'shared' },
@@ -4016,6 +4029,11 @@ describe('Enterprise Search Controller', () => {
         expect(response).to.have.property('conversations')
         expect(response).to.have.property('source', 'shared')
         expect(response).to.have.property('pagination')
+        expect(response.conversations[0].sharedBy).to.deep.equal({
+          userId: VALID_OID3,
+          name: 'Priya Sharma',
+          email: 'priya@test.com',
+        })
         // shared branch strips the sharedWith field from the projection
         expect(findChain.select.getCalls().some((c: any) => c.args[0] === '-sharedWith')).to.be.true
       }
