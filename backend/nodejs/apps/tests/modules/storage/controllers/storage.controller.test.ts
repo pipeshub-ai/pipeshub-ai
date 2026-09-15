@@ -50,6 +50,7 @@ function makeAdapter(): any {
     getSignedUrl: sinon.stub().resolves({ statusCode: 200, data: 'https://signed.url' }),
     updateBuffer: sinon.stub().resolves({ statusCode: 200, data: 'updated-url' }),
     generatePresignedUrlForDirectUpload: sinon.stub().resolves({ statusCode: 200, data: { url: 'https://presigned.url?sig=abc' } }),
+    deleteDocumentFromStorageService: sinon.stub().resolves({ statusCode: 200, data: { deleted: [] } }),
   }
 }
 
@@ -280,6 +281,36 @@ describe('StorageController', () => {
       expect(doc.isDeleted).to.be.true
       expect(doc.save.calledOnce).to.be.true
       expect(res.statusCode).to.equal(HTTP_STATUS.OK)
+    })
+
+    it('should delete the object from storage, not only flag the row', async () => {
+      const doc = makeDocument()
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
+
+      const req = makeReq({ params: { documentId: doc._id.toString() } })
+
+      await controller.deleteDocumentById(req, makeRes(), sinon.stub() as any)
+
+      expect(adapter.deleteDocumentFromStorageService.calledOnce).to.be.true
+      expect(adapter.deleteDocumentFromStorageService.firstCall.args[0]).to.equal(doc)
+    })
+
+    it('should not flag the row when storage deletion fails', async () => {
+      const doc = makeDocument()
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
+      adapter.deleteDocumentFromStorageService.rejects(new Error('AccessDenied'))
+
+      const next = sinon.stub()
+      await controller.deleteDocumentById(
+        makeReq({ params: { documentId: doc._id.toString() } }),
+        makeRes(),
+        next as any,
+      )
+
+      // The row must not record a deletion that did not happen.
+      expect(doc.isDeleted).to.not.equal(true)
+      expect(doc.save.called).to.be.false
+      expect(next.calledOnce).to.be.true
     })
 
     it('should call next with NotFoundError when document missing', async () => {

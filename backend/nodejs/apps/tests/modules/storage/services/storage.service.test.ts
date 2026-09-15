@@ -25,6 +25,10 @@ describe('storage/services/storage.service (StorageServiceInterface)', () => {
           statusCode: 200,
           data: 'uploaded-url',
         }),
+        deleteDocumentFromStorageService: async () => ({
+          statusCode: 200,
+          data: { deleted: [] },
+        }),
         updateBuffer: async () => ({
           statusCode: 200,
           data: 'updated-url',
@@ -48,6 +52,7 @@ describe('storage/services/storage.service (StorageServiceInterface)', () => {
       const mockService: import('../../../../src/modules/storage/services/storage.service').StorageServiceInterface = {
         uploadDocumentToStorageService: async () => ({ statusCode: 200, data: 'ok' }),
         updateBuffer: async () => ({ statusCode: 200, data: 'ok' }),
+        deleteDocumentFromStorageService: async () => ({ statusCode: 200, data: { deleted: [] } }),
         getBufferFromStorageService: async () => ({ statusCode: 200, data: Buffer.from('') }),
         getSignedUrl: async () => ({ statusCode: 200, data: 'url' }),
         getMultipartUploadId: async () => ({

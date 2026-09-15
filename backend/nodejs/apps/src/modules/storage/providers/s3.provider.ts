@@ -12,6 +12,7 @@ import {
   StorageDownloadError,
   StorageNotFoundError,
   StorageValidationError,
+  StorageDeleteError,
   MultipartUploadError,
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
@@ -197,6 +198,121 @@ class AmazonS3Adapter implements StorageServiceInterface {
         originalError: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+  }
+
+  /**
+   * Deletes every object backing a document: the current one and every entry in
+   * its version history.
+   *
+   * Version-aware by necessity. On a bucket with object versioning enabled a
+   * plain `deleteObject` writes a delete marker and leaves every prior version
+   * readable, so the bytes survive a "successful" delete. Each key is therefore
+   * enumerated with `listObjectVersions` and every version and delete marker is
+   * removed.
+   *
+   * An object that is already absent is the desired end state, not a failure.
+   *
+   * @param document - Metadata of the document whose objects should be removed.
+   * @returns A promise resolving to the keys that were deleted.
+   * @throws {StorageDeleteError} If an object exists and cannot be removed
+   */
+  async deleteDocumentFromStorageService(
+    document: Document,
+  ): Promise<StorageServiceResponse<{ deleted: string[] }>> {
+    const urls: string[] = [];
+    if (document?.s3?.url) {
+      urls.push(document.s3.url);
+    }
+    for (const version of document?.versionHistory || []) {
+      if (version?.s3?.url) {
+        urls.push(version.s3.url);
+      }
+    }
+
+    const keys = Array.from(
+      new Set(urls.map((url) => this.extractKeyFromUrl(url))),
+    );
+    const deleted: string[] = [];
+
+    for (const Key of keys) {
+      try {
+        await this.deleteAllVersionsOfKey(Key);
+        deleted.push(Key);
+      } catch (error: any) {
+        // Already gone is the desired end state, not a failure.
+        const code = error?.code || error?.name;
+        if (code === 'NoSuchKey' || error?.statusCode === 404) {
+          this.logger.warn('S3 object already absent', { key: Key });
+          continue;
+        }
+        if (error instanceof StorageError) {
+          throw error;
+        }
+        throw new StorageDeleteError('Failed to delete document from S3', {
+          key: Key,
+          bucket: this.bucketName,
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
+    this.logger.info('S3 objects deleted', {
+      bucket: this.bucketName,
+      deleted,
+    });
+
+    return { statusCode: 200, data: { deleted } };
+  }
+
+  /**
+   * Removes every version and delete marker for a single key.
+   *
+   * On an unversioned bucket `listObjectVersions` returns one entry with
+   * `VersionId: "null"`, so this is correct there too and needs no branch.
+   */
+  private async deleteAllVersionsOfKey(Key: string): Promise<void> {
+    let KeyMarker: string | undefined;
+    let VersionIdMarker: string | undefined;
+
+    do {
+      const listed = await this.s3
+        .listObjectVersions({
+          Bucket: this.bucketName,
+          Prefix: Key,
+          KeyMarker,
+          VersionIdMarker,
+        })
+        .promise();
+
+      // Prefix is not an exact match, so filter to the key itself.
+      const targets = [
+        ...(listed.Versions || []),
+        ...(listed.DeleteMarkers || []),
+      ]
+        .filter((entry) => entry.Key === Key && entry.VersionId)
+        .map((entry) => ({
+          Key: entry.Key as string,
+          VersionId: entry.VersionId as string,
+        }));
+
+      if (targets.length > 0) {
+        // deleteObjects caps at 1000 keys per call.
+        for (let i = 0; i < targets.length; i += 1000) {
+          await this.s3
+            .deleteObjects({
+              Bucket: this.bucketName,
+              Delete: { Objects: targets.slice(i, i + 1000), Quiet: true },
+            })
+            .promise();
+        }
+      }
+
+      KeyMarker = listed.IsTruncated ? listed.NextKeyMarker : undefined;
+      VersionIdMarker = listed.IsTruncated
+        ? listed.NextVersionIdMarker
+        : undefined;
+    } while (KeyMarker || VersionIdMarker);
   }
 
   /**
