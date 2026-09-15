@@ -6,9 +6,9 @@
 
 </div>
 
-Welcome. Pick a labeled issue below, or open a pull request with your change.
+Welcome to our open source project! We're excited that you're interested in contributing. This document provides guidelines and instructions to help you get started as a contributor.
 
-Questions: [Discord](https://discord.com/invite/K5RskzJBm2), [GitHub Discussions](https://github.com/pipeshub-ai/pipeshub-ai/discussions), or open an issue.
+Questions: [Discord](https://discord.com/invite/K5RskzJBm2), [GitHub Discussions](https://github.com/pipeshub-ai/pipeshub-ai/discussions), or open an issue. Pick a labeled issue below, or open a pull request with your change.
 
 ## Table of Contents
 - [Finding something to work on](#finding-something-to-work-on)
@@ -46,278 +46,92 @@ A new connector is a large piece of work. The [connector playbook](CONNECTOR_INT
 
 ## Setting Up the Development Environment
 
-### System Dependencies
+Skip this section if you are only editing documentation.
 
-#### Linux
+**Run the product in Docker** (stores included):
+
 ```bash
-sudo apt update
-sudo apt install python3.12-venv
-sudo apt-get install libreoffice
-sudo apt install libmariadb-dev
+./install.sh --build
 ```
 
-#### Mac
-```bash
-# Install Homebrew if not already installed
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+That is the usual way to try a full instance from this repo. The rest of this section is for running services from source while you edit them.
 
+Install **Python 3.12**, **Node.js 22**, **Docker**, and **LibreOffice**. On Debian/Ubuntu also `python3.12-venv` and `libmariadb-dev`; on macOS `brew install python@3.12 libreoffice mariadb-connector-c`. Windows: Python 3.12, or WSL2.
 
-# Install required packages
-brew install python@3.12
-brew install libreoffice
-brew install mariadb-connector-c # Add to path
-```
+There is no root `package.json`. Use `backend/nodejs/apps` for the API and `frontend` for the UI.
 
-#### Windows
-```bash
-- Install Python 3.12
-- Consider using WSL2 for a Linux-like environment
-```
+Copy `backend/env.template` to `backend/nodejs/apps/.env` and `backend/python/.env`. Defaults there are `DATA_STORE=neo4j`, `MESSAGE_BROKER=redis`, and `KV_STORE_TYPE=redis`. Start only the four stores that match those defaults (passwords and the Qdrant key must match the `.env`):
 
-### Application Dependencies
-```bash
-1. **Docker** - Install Docker for your platform
-2. **Node.js** - Install Node.js(v22.15.0)
-3. **Python 3.12** - Install as shown above
-4. **Optional debugging tools:**
-   - MongoDB Compass or Studio 3T
-   - etcd-manager
-```
-
-### Starting Required Docker Containers
-
-**Redis:**
 ```bash
 docker run -d --name redis --restart always -p 6379:6379 redis:7.4-bookworm
-```
-
-**Qdrant:** (API Key must match with .env)
-```bash
 docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.15
-```
-
-**ETCD Server:**
-
-
-Bash:
-```bash
-docker run -d --name etcd-server --restart always -p 2379:2379 -p 2380:2380 quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd \
-  --name etcd0 \
-  --data-dir /etcd-data \
-  --listen-client-urls http://0.0.0.0:2379 \
-  --advertise-client-urls http://0.0.0.0:2379 \
-  --listen-peer-urls http://0.0.0.0:2380
-```
-
-Powershell:
-```powershell
-docker run -d --name etcd-server --restart always `
-  -p 2379:2379 -p 2380:2380 `
-  quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd `
-  --name etcd0 `
-  --data-dir /etcd-data `
-  --listen-client-urls http://0.0.0.0:2379 `
-  --advertise-client-urls http://0.0.0.0:2379 `
-  --listen-peer-urls http://0.0.0.0:2380
-```
-
-PipesHub supports two graph databases, selected with `DATA_STORE`. **Neo4j is the default** — it is what `install.sh`, the Helm chart and `backend/env.template` ship with, so unless you are specifically working on ArangoDB support, set up Neo4j. ArangoDB remains fully supported for existing installations.
-
-**Neo4j (default):** either run the container
-
-```bash
 docker run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/your_password neo4j:5.26.0
-```
-
-or use Neo4j Desktop if you prefer a local GUI.
-
-1. If using Desktop: install [Neo4j Desktop](https://neo4j.com/download/), create a **local DBMS**, set its password, and **Start** it.
-2. Leave the default Bolt listener on **localhost:7687** (or note the host/port shown in Desktop if you changed them).
-3. In `backend/.env` (the template you copy into `backend/nodejs/apps/.env` and `backend/python/.env`), set at least:
-   ```bash
-   DATA_STORE=neo4j
-   NEO4J_URI=bolt://localhost:7687
-   NEO4J_USERNAME=neo4j
-   NEO4J_PASSWORD=<same password as your DBMS>
-   NEO4J_DATABASE=neo4j
-   ```
-   The Python services read `DATA_STORE` and write `dataStoreType` into the KV store (etcd/Redis) on startup; the Node.js API uses that for health checks and treats `NEO4J_*` as the live Neo4j connection.
-4. Start the **connectors** Python service (`python -m app.connectors_main`) before or with the rest of the stack so deployment metadata stays consistent. If you already bootstrapped against ArangoDB on the same etcd data, reset etcd or the deployment key in KV store before switching graph backends to avoid mismatched state.
-
-To run the whole stack in Docker rather than service by service, use `./install.sh --build` from the repository root. (`deployment/docker-compose/docker-compose.build.neo4j.yml` still exists but is a legacy standalone build file: it hardcodes `DATA_STORE=neo4j` with no ArangoDB or etcd profiles, builds `pipeshub-ai:latest`, pins port 3000, does not generate a `.env`, and is not what `--build` drives.)
-
-**ArangoDB (alternative to Neo4j):** (Password must match with .env)
-```bash
-docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4
-```
-Set `DATA_STORE=arangodb` in `backend/.env`, and do not run the Neo4j container alongside it. If you already bootstrapped against one backend on the same etcd data, reset the deployment key in the KV store before switching.
-
-**MongoDB:** (Password must match with .env MONGO URI)
-
-Bash:
-```bash
+  -e NEO4J_AUTH=neo4j/your_neo4j_password neo4j:5.26.0
 docker run -d --name mongodb --restart always -p 27017:27017 \
   -e MONGO_INITDB_ROOT_USERNAME=admin \
   -e MONGO_INITDB_ROOT_PASSWORD=password \
   mongo:8.0.17
 ```
 
-Powershell:
-```powershell
-docker run -d --name mongodb --restart always -p 27017:27017 `
-  -e MONGO_INITDB_ROOT_USERNAME=admin `
-  -e MONGO_INITDB_ROOT_PASSWORD=password `
-  mongo:8.0.17
-```
+Neo4j Desktop is fine instead of the Neo4j container; Bolt stays on `localhost:7687`. Kafka, ZooKeeper, and etcd are not required unless you set `MESSAGE_BROKER=kafka` or `KV_STORE_TYPE=etcd`. ArangoDB is the other graph option (`DATA_STORE=arangodb`); do not run it next to Neo4j. If you switch graph or KV backend on existing data, reset the deployment key in the KV store first.
 
-**Zookeeper:**
+**Node.js API** (port 3000):
 
-Bash:
-```bash
-docker run -d --name zookeeper --restart always -p 2181:2181 \
-  -e ZOOKEEPER_CLIENT_PORT=2181 \
-  -e ZOOKEEPER_TICK_TIME=2000 \
-  confluentinc/cp-zookeeper:7.9.0
-```
-
-Powershell:
-```powershell
-docker run -d --name zookeeper --restart always -p 2181:2181 `
-  -e ZOOKEEPER_CLIENT_PORT=2181 `
-  -e ZOOKEEPER_TICK_TIME=2000 `
-  confluentinc/cp-zookeeper:7.9.0
-```
-
-
-**Apache Kafka:**
-
-Bash:
-```bash
-docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 \
-  -e KAFKA_BROKER_ID=1 \
-  -e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 \
-  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
-  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT \
-  -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT \
-  -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
-  confluentinc/cp-kafka:7.9.0
-```
-
-Powershell:
-```powershell
-docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 `
-  -e KAFKA_BROKER_ID=1 `
-  -e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 `
-  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 `
-  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT `
-  -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT `
-  -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 `
-  confluentinc/cp-kafka:7.9.0
-```
-
-### JavaScript package directories
-
-This repository does not have a root `package.json`. Run npm commands only from one of these directories:
-
-- `backend/nodejs/apps` for the Node.js backend
-- `frontend` for the Next.js frontend
-
-### Starting Node.js Backend Service
 ```bash
 cd backend/nodejs/apps
-cp ../../env.template .env  # Create .env file from template
 npm install
 npm run dev
 ```
 
-PowerShell:
-```powershell
-cd backend/nodejs/apps
-Copy-Item ../../env.template .env  # Create .env file from template
-npm install
-npm run dev
-```
+**Python services.** Once, then start each process in its own terminal. Start **embedding** before indexing and query when you use the local HuggingFace model:
 
-### Starting Python Backend Services
 ```bash
 cd backend/python
-cp ../env.template .env
-# Create and activate virtual environment
 python3.12 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install uv
+source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install uv
-
-# Install dependencies
 uv pip install -e .
-
-# Install additional language models
 python -c "import nltk; nltk.download('punkt')"
 
-# Run each service in a separate terminal: First, cd backend/python and activate the existing virtual environment
-# Start the embedding server before indexing and query when using default local embeddings (HuggingFace / SentenceTransformers).
 python -m app.embedding_main
 python -m app.connectors_main
 python -m app.indexing_main
 python -m app.query_main
 python -m app.docling_main
-
-# Only when running with USE_PARSING_SERVICE=true
-python -m app.parsing_main
-python -m app.extraction_main
 ```
 
-### Setting Up Frontend
+Parsing (`app.parsing_main`, 8092) and extraction (`app.extraction_main`, 8093) only when `USE_PARSING_SERVICE=true`.
+
+**Frontend** (port 3001; Next.js uses 3000 if `PORT` is unset — that collides with the API):
+
 ```bash
 cd frontend
-cp env.template .env  # Modify port if Node.js backend uses a different one
+cp env.template .env
 npm install
 PORT=3001 npm run dev
 ```
 
-PowerShell:
-```powershell
-cd frontend
-Copy-Item env.template .env  # Modify port if Node.js backend uses a different one
-npm install
-$env:PORT = '3001'
-npm run dev
-```
+Open `http://localhost:3001`. On Windows PowerShell, `Copy-Item` instead of `cp` and `$env:PORT = '3001'`.
 
-Then open your browser to the displayed URL (typically `http://localhost:3001` when using `PORT=3001`; Next.js defaults to port 3000 if `PORT` is unset).
-
-### Verifying Setup and Debugging
-
-If you encounter generic connection errors or the UI fails to load, it is likely that one of the many background microservices failed to start correctly. 
-
-You can use the built-in health check script to instantly verify the status of the entire stack:
-```bash
-./scripts/check_system_health.sh
-```
-This script will ping the Node.js API, Next.js UI, and all core Python microservices on their respective local ports, explicitly highlighting any offline components to save you time digging through terminal logs. 
-
-*(Note: The Parsing and Extraction services are only checked if you run the script with `USE_PARSING_SERVICE=true`).*
+If the UI or API looks down, `./scripts/check_system_health.sh` pings the API (3000), UI (3001), and the Python services. Parsing and extraction are checked only with `USE_PARSING_SERVICE=true`.
 
 ## Project Architecture
 
-Our project consists of three main components:
+Three application layers, plus stores:
 
-1. **Frontend**: Next.js application for the user interface
-2. **Node.js Backend**: Handles API requests, authentication, and business logic
-3. **Python Services**: Seven microservices for:
-   - **Embedding** (port 8002): Serves local HuggingFace / SentenceTransformer models via an OpenAI-compatible API (`app.embedding_main`). Indexing and query call this service for default dense embeddings.
-   - **Connectors** (port 8088): Handles data source connections
-   - **Indexing** (port 8091): Manages document indexing and processing
-   - **Query** (port 8000): Processes search and retrieval requests
-   - **Docling** (port 8081): Advanced PDF/document parsing for complex formats
-   - **Parsing** (port 8092): Turns file bytes into a structured block container
-   - **Extraction** (port 8093): Derives semantic metadata from those blocks
+1. **Frontend** — Next.js UI (`frontend/`). Local `npm run dev` on port **3001**.
+2. **Node.js API** — Express (`backend/nodejs/apps`). Local `npm run dev` on port **3000**. Auth, orgs, knowledge base, object storage, API gateway.
+3. **Python FastAPI services** (`backend/python/`):
+   - **Embedding** (8002, `app.embedding_main`) — local HuggingFace / SentenceTransformers via an OpenAI-compatible API. Indexing and query call this for default dense embeddings. Cloud embedding providers do not need this process.
+   - **Connectors** (8088, `app.connectors_main`) — OAuth, token refresh, and data-source integrations.
+   - **Indexing** (8091, `app.indexing_main`) — parse, chunk, embed; writes vectors and graph nodes.
+   - **Query** (8000, `app.query_main`) — search, RAG, agents.
+   - **Docling** (8081, `app.docling_main`) — PDF and other complex documents.
+   - **Parsing** (8092) and **Extraction** (8093) — optional; only with `USE_PARSING_SERVICE=true`.
 
-   Parsing and Extraction are optional: start them only when running with `USE_PARSING_SERVICE=true`, which is also when `check_system_health.sh` checks them.
+**Stores (defaults in `backend/env.template`):** Redis (config KV and Redis Streams as the event bus), Qdrant (vectors), Neo4j (graph), MongoDB (sessions and metadata). ArangoDB can replace Neo4j. Kafka can replace Redis Streams on a larger deployment. etcd can replace Redis as the KV store.
 
-When running services locally with `make`, start **embedding** before **indexing** and **query** if you rely on the built-in local embedding model (`BAAI/bge-large-en-v1.5`). Cloud/API embedding providers (OpenAI, Cohere, etc.) do not require the embedding server.
+In Docker (`./install.sh --build`), Node serves the API and the built UI together on port **3000**.
 
 ## Contribution Workflow
 
