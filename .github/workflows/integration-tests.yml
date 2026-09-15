@@ -18,6 +18,7 @@ on:
         options:
             - integration
             - s3
+            - sharepoint
             - confluence
             - jira
             - linear
