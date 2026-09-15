@@ -52,30 +52,58 @@ describe('MCP Controller — handleMCPRequest', () => {
   // Activation events
   // =========================================================================
   describe('activation events', () => {
+    // The low-level `server` is where the SDK reports a completed initialize
+    // handshake; the tests drive it by hand, since a mock request never
+    // completes one.
     const arm = () => {
-      mcpServerExports.createMCPServer = sinon.stub().returns({ server: { connect: sinon.stub().resolves() } })
+      const lowLevel: { oninitialized?: () => void } = {}
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves(), server: lowLevel },
+      })
       eventBuffer.drain()
+      return lowLevel
     }
     const patUser = {
       userId: 'user-1', orgId: 'org-1', email: 'dev@example.com',
       isOAuth: true, oauthClientId: 'pat-system:org-1',
     }
 
-    it('records mcp_connected on initialize, with the client name and auth type', async () => {
-      arm()
+    it('records mcp_connected only once the initialize handshake completes', async () => {
+      const lowLevel = arm()
       const req = createMockRequest({
         user: patUser,
         body: { jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'claude-code', version: '2.1.0' } } },
       })
       await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
 
+      // A request that says "initialize" is not a connection. The SDK can
+      // refuse it with an error response, and nothing has been recorded yet.
+      expect(eventBuffer.drain()).to.have.length(0)
+      expect(lowLevel.oninitialized).to.be.a('function')
+
+      lowLevel.oninitialized!()
+
       const events = eventBuffer.drain()
       expect(events).to.have.length(1)
       expect(events[0].event).to.equal('mcp_connected')
       expect(events[0].props).to.deep.equal({
-        orgId: 'org-1', userId: 'user-1', email: 'dev@example.com', domain: 'example.com',
+        orgId: 'org-1', userId: 'user-1', domain: 'example.com',
         auth_type: 'pat', client_name: 'claude-code', client_version: '2.1.0',
       })
+    })
+
+    it('never puts the address itself into an event', async () => {
+      const lowLevel = arm()
+      const req = createMockRequest({
+        user: patUser,
+        body: { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      })
+      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+      lowLevel.oninitialized!()
+
+      const serialised = JSON.stringify(eventBuffer.drain())
+      expect(serialised).to.include('example.com')
+      expect(serialised).to.not.include('dev@example.com')
     })
 
     it('records mcp_tool_called with the tool name only, never its arguments', async () => {
@@ -159,7 +187,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       }
       mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
         opts.getSDK()
-        return { server: { connect: sinon.stub().resolves() } }
+        return { server: { connect: sinon.stub().resolves(), server: {} } }
       })
 
       const req = createMockRequest({ headers: {}, body: {} })
@@ -178,7 +206,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       }
       mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
         opts.getSDK()
-        return { server: { connect: sinon.stub().resolves() } }
+        return { server: { connect: sinon.stub().resolves(), server: {} } }
       })
 
       const req = createMockRequest({
@@ -201,7 +229,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       }
       mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
         opts.getSDK()
-        return { server: { connect: sinon.stub().resolves() } }
+        return { server: { connect: sinon.stub().resolves(), server: {} } }
       })
 
       const req = createMockRequest({
@@ -225,7 +253,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       let capturedServerURL: string | undefined
       mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
         capturedServerURL = opts.serverURL
-        return { server: { connect: sinon.stub().resolves() } }
+        return { server: { connect: sinon.stub().resolves(), server: {} } }
       })
 
       appConfig.oauthBackendUrl = 'https://my-backend.example.com'
@@ -246,7 +274,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
         // Invoke getSDK to trigger PipeshubCore instantiation
         opts.getSDK()
-        return { server: { connect: sinon.stub().resolves() } }
+        return { server: { connect: sinon.stub().resolves(), server: {} } }
       })
 
       appConfig.oauthBackendUrl = 'http://localhost:3001'
@@ -271,7 +299,7 @@ describe('MCP Controller — handleMCPRequest', () => {
         handleRequest() { return Promise.resolve() }
       }
       mcpServerExports.createMCPServer = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
+        server: { connect: sinon.stub().resolves(), server: {} },
       })
 
       const req = createMockRequest({ headers: {}, body: {} })
@@ -311,7 +339,7 @@ describe('MCP Controller — handleMCPRequest', () => {
         handleRequest = handleRequestStub
       }
       mcpServerExports.createMCPServer = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
+        server: { connect: sinon.stub().resolves(), server: {} },
       })
 
       const body = { jsonrpc: '2.0', method: 'initialize', id: 1 }
@@ -334,7 +362,7 @@ describe('MCP Controller — handleMCPRequest', () => {
   describe('createMCPServer configuration', () => {
     it('should call createMCPServer with dynamic: false', async () => {
       const createStub = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
+        server: { connect: sinon.stub().resolves(), server: {} },
       })
       mcpServerExports.createMCPServer = createStub
 
@@ -350,7 +378,7 @@ describe('MCP Controller — handleMCPRequest', () => {
 
     it('should call createMCPServer with correct serverURL', async () => {
       const createStub = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
+        server: { connect: sinon.stub().resolves(), server: {} },
       })
       mcpServerExports.createMCPServer = createStub
       appConfig.oauthBackendUrl = 'https://prod.example.com'
@@ -366,7 +394,7 @@ describe('MCP Controller — handleMCPRequest', () => {
 
     it('should pass logger with level, info, debug, warning, error functions', async () => {
       const createStub = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
+        server: { connect: sinon.stub().resolves(), server: {} },
       })
       mcpServerExports.createMCPServer = createStub
 
@@ -391,7 +419,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       }
       const createStub = sinon.stub().callsFake((opts: any) => {
         opts.getSDK()
-        return { server: { connect: sinon.stub().resolves() } }
+        return { server: { connect: sinon.stub().resolves(), server: {} } }
       })
       mcpServerExports.createMCPServer = createStub
 
@@ -416,7 +444,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       const createStub = sinon.stub().callsFake((opts: any) => {
         opts.getSDK()
         opts.getSDK()
-        return { server: { connect: sinon.stub().resolves() } }
+        return { server: { connect: sinon.stub().resolves(), server: {} } }
       })
       mcpServerExports.createMCPServer = createStub
 
@@ -437,7 +465,7 @@ describe('MCP Controller — handleMCPRequest', () => {
   describe('successful request flow', () => {
     it('should not call next on success', async () => {
       mcpServerExports.createMCPServer = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
+        server: { connect: sinon.stub().resolves(), server: {} },
       })
 
       const req = createMockRequest({ headers: {}, body: {} })
@@ -484,7 +512,7 @@ describe('MCP Controller — handleMCPRequest', () => {
 
     it('should work with POST request', async () => {
       mcpServerExports.createMCPServer = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
+        server: { connect: sinon.stub().resolves(), server: {} },
       })
 
       const req = createMockRequest({
@@ -502,7 +530,7 @@ describe('MCP Controller — handleMCPRequest', () => {
 
     it('should work with GET request', async () => {
       mcpServerExports.createMCPServer = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
+        server: { connect: sinon.stub().resolves(), server: {} },
       })
 
       const req = createMockRequest({
@@ -575,7 +603,7 @@ describe('MCP Controller — handleMCPRequest', () => {
         handleRequest() { return Promise.reject(error) }
       }
       mcpServerExports.createMCPServer = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
+        server: { connect: sinon.stub().resolves(), server: {} },
       })
 
       const req = createMockRequest({ headers: {}, body: {} })
@@ -611,7 +639,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       }
       mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
         opts.getSDK() // This triggers PipeshubCore constructor → throws
-        return { server: { connect: sinon.stub().resolves() } }
+        return { server: { connect: sinon.stub().resolves(), server: {} } }
       })
 
       const req = createMockRequest({ headers: {}, body: {} })
@@ -709,7 +737,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       }
       mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
         opts.getSDK()
-        return { server: { connect: sinon.stub().resolves() } }
+        return { server: { connect: sinon.stub().resolves(), server: {} } }
       })
 
       const handler = handleMCPRequest(appConfig)
@@ -732,7 +760,7 @@ describe('MCP Controller — handleMCPRequest', () => {
         handleRequest() { return Promise.resolve() }
       }
       mcpServerExports.createMCPServer = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
+        server: { connect: sinon.stub().resolves(), server: {} },
       })
 
       const handler = handleMCPRequest(appConfig)

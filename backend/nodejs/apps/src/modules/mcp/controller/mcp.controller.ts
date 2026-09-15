@@ -27,13 +27,10 @@ const coreModule = import('@pipeshub-ai/mcp/esm/core.js');
  * request carries one JSON-RPC message; `initialize` is a client connecting,
  * `tools/call` is it doing work. Only names are recorded, never arguments.
  */
-function recordMcpEvent(req: AuthenticatedUserRequest): void {
-  const body = req.body as
-    | { method?: unknown; params?: Record<string, unknown> }
-    | undefined;
-  const method = typeof body?.method === 'string' ? body.method : undefined;
-  if (method !== 'initialize' && method !== 'tools/call') return;
-
+/** What every MCP event carries. The address itself is never included: the
+ *  domain says which organisation without naming a person, and the user id
+ *  already identifies them where that is needed. */
+function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
   const user = req.user ?? {};
   const email = typeof user.email === 'string' ? user.email : undefined;
   const clientId =
@@ -43,30 +40,44 @@ function recordMcpEvent(req: AuthenticatedUserRequest): void {
     : user.isOAuth === true
       ? 'oauth'
       : 'session';
-  const base = {
+  return {
     orgId: typeof user.orgId === 'string' ? user.orgId : undefined,
     userId: typeof user.userId === 'string' ? user.userId : undefined,
-    email,
     domain: domainFromEmail(email),
     auth_type: authType,
   };
+}
 
-  if (method === 'initialize') {
-    const clientInfo = (body?.params?.clientInfo ?? {}) as Record<
-      string,
-      unknown
-    >;
-    recordEvent('mcp_connected', {
-      ...base,
-      client_name:
-        typeof clientInfo.name === 'string' ? clientInfo.name : undefined,
-      client_version:
-        typeof clientInfo.version === 'string' ? clientInfo.version : undefined,
-    });
-    return;
-  }
+/** Props for `mcp_connected`, or undefined when this request is not an
+ *  initialize. Recording is left to the caller, which has to wait for the
+ *  handshake to actually succeed. */
+function mcpConnectedProps(
+  req: AuthenticatedUserRequest,
+): Record<string, unknown> | undefined {
+  const body = req.body as
+    | { method?: unknown; params?: Record<string, unknown> }
+    | undefined;
+  if (body?.method !== 'initialize') return undefined;
+  const clientInfo = (body?.params?.clientInfo ?? {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    ...mcpEventBase(req),
+    client_name:
+      typeof clientInfo.name === 'string' ? clientInfo.name : undefined,
+    client_version:
+      typeof clientInfo.version === 'string' ? clientInfo.version : undefined,
+  };
+}
+
+function recordMcpToolCall(req: AuthenticatedUserRequest): void {
+  const body = req.body as
+    | { method?: unknown; params?: Record<string, unknown> }
+    | undefined;
+  if (body?.method !== 'tools/call') return;
   recordEvent('mcp_tool_called', {
-    ...base,
+    ...mcpEventBase(req),
     tool: typeof body?.params?.name === 'string' ? body.params.name : undefined,
   });
 }
@@ -113,7 +124,15 @@ export const handleMCPRequest =
       });
 
       await mcpServer.connect(transport);
-      recordMcpEvent(req);
+      // A request can carry method: "initialize" and still be refused — the
+      // SDK writes an error and returns — so the event is tied to the
+      // handshake completing, which is the only point that means "connected".
+      const connectedProps = mcpConnectedProps(req);
+      if (connectedProps) {
+        mcpServer.server.oninitialized = () =>
+          recordEvent('mcp_connected', connectedProps);
+      }
+      recordMcpToolCall(req);
       await transport.handleRequest(req, res, req.body);
     } catch (error: any) {
       logger.error('MCP request failed', {

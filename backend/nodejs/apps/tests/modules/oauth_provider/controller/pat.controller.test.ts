@@ -80,12 +80,12 @@ describe('PatController', () => {
       expect(events[0].props).to.deep.equal({
         orgId: 'org-1',
         userId: 'user-1',
-        email: 'dev@example.com',
         domain: 'example.com',
         scope_count: 2,
         expiry_days: 30,
       })
       expect(JSON.stringify(events[0])).to.not.include('raw-secret')
+      expect(JSON.stringify(events[0])).to.not.include('dev@example.com')
     })
   })
 

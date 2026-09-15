@@ -53,7 +53,6 @@ export class PatController {
       recordEvent('pat_created', {
         orgId,
         userId,
-        email,
         domain: domainFromEmail(email),
         scope_count: token.scopes.length,
         expiry_days: data.expiryDays ?? null,

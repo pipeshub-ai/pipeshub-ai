@@ -278,6 +278,9 @@ class AnswerFinalizer:
                 await event_sink.write(evt)
             state["response"] = answer_text
             state["completion_data"] = fallback_response
+            # The user received an answer, sourceless. Leaving it out would
+            # make the "answers with sources" ratio look better than it is.
+            _record_answer_generated(self._context, state, [])
             return fallback_response
 
         final_results = self._collector.final_results
@@ -480,12 +483,12 @@ def _record_answer_generated(
                 connectors.add(str(name))
             if str(meta.get("connectorId") or "") in demo_ids:
                 demo_sources = True
-        email = str(context.user_email or "")
+        # The address itself stays out: the domain says which organisation
+        # without naming a person, and the user id already identifies them.
         record_event("answer_generated", {
             "orgId": context.org_id,
             "userId": context.user_id,
-            "email": email,
-            "domain": domain_from_email(email),
+            "domain": domain_from_email(str(context.user_email or "")),
             "chat_mode": state.get("chat_mode"),
             "citation_count": len(citations),
             "connectors": sorted(connectors),
