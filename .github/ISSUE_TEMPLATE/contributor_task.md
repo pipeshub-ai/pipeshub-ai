@@ -1,14 +1,14 @@
 ---
 name: Contributor task
-about: Maintainer-scoped work for a new contributor (do not use for product bugs)
+about: Maintainers only — scoped labeled work for a contributor (not bugs or features)
 title: ''
 labels: ''
 assignees: ''
 ---
 
-**For maintainers.** Pick one label: `first-timers-only`, `good first issue`, or `help wanted`. Fill every section before publishing. Commenters: a short “I’ll take this” is enough so others know you are on it.
+**Maintainers only.** Do not use this form to report a bug or request a feature; use those templates instead. Fill every section before publishing. Checking a label below does not apply it — add the matching GitHub label when you open the issue. Commenters: a short “I’ll take this” is enough so others know you are on it.
 
-**Label**
+**Label** (apply on the issue; a check here is a reminder)
 - [ ] `first-timers-only` (no prior merged OSS PR)
 - [ ] `good first issue`
 - [ ] `help wanted`

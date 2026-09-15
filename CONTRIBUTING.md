@@ -4,6 +4,8 @@
 
 **Translations:** [Français](docs/i18n/fr/CONTRIBUTING.md) · [Deutsch](docs/i18n/de/CONTRIBUTING.md) · [简体中文](docs/i18n/zh-CN/CONTRIBUTING.md) · [日本語](docs/i18n/ja/CONTRIBUTING.md) · [Русский](docs/i18n/ru/CONTRIBUTING.md) · [עברית](docs/i18n/he/CONTRIBUTING.md) · [한국어](docs/i18n/ko/CONTRIBUTING.md) · [Español](docs/i18n/es/CONTRIBUTING.md) · [Português](docs/i18n/pt/CONTRIBUTING.md) · [Türkçe](docs/i18n/tr/CONTRIBUTING.md) · [Tiếng Việt](docs/i18n/vi/CONTRIBUTING.md) · [Italiano](docs/i18n/it/CONTRIBUTING.md)
 
+This English file is current. The translations may lag; use this page for labeled issues and local setup until they catch up.
+
 </div>
 
 Welcome to our open source project! We're excited that you're interested in contributing. This document provides guidelines and instructions to help you get started as a contributor.
@@ -163,7 +165,7 @@ Do not start these unless you change the env defaults:
 - Kafka instead of Redis Streams: `MESSAGE_BROKER=kafka` (ZooKeeper and Kafka).
 - etcd instead of Redis KV: `KV_STORE_TYPE=etcd`.
 
-If you switch graph or KV backend on existing data, reset the deployment key in the KV store first.
+If you switch graph or KV backend on existing data, reset `dataStoreType` in the KV store first. Python writes that key from `DATA_STORE` on startup; the Node API reads it for health checks, so a leftover value from the previous backend will disagree with `.env`.
 
 ### Node.js API (port 3000)
 
@@ -192,7 +194,7 @@ python -m app.query_main
 python -m app.docling_main
 ```
 
-Parsing (`app.parsing_main`, 8092) and extraction (`app.extraction_main`, 8093) only when `USE_PARSING_SERVICE=true`.
+Parsing (`app.parsing_main`, 8092) and extraction (`app.extraction_main`, 8093) only when `USE_PARSING_SERVICE=true`. That variable is not in `backend/env.template`; set it in `backend/python/.env`.
 
 ### Frontend (port 3001)
 
@@ -213,7 +215,7 @@ Open `http://localhost:3001`. On Windows PowerShell, use `Copy-Item` instead of 
 ./scripts/check_system_health.sh
 ```
 
-This pings the API (3000), the UI (3001), and the Python services. Parsing and extraction are checked only with `USE_PARSING_SERVICE=true`.
+This pings the API (3000), the UI (3001), and the Python services. Parsing and extraction are checked only if `USE_PARSING_SERVICE=true` in the shell (`export USE_PARSING_SERVICE=true` before the script).
 
 ## Project Architecture
 

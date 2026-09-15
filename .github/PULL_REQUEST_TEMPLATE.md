@@ -2,7 +2,7 @@
 
 [Provide a brief description of the changes in this PR]
 
-If this pull request only changes documentation, markdown, comments, or tests, fill in **Description**, **Type of Change**, and **How Has This Been Tested**, then skip the product, staging, and deployment checklists below.
+If this pull request only changes documentation, markdown, comments, or tests, fill in **Description**, **Type of Change**, and **How Has This Been Tested**, then skip **Core Functionality Testing**, **What You Have Tested**, and **Deployment Notes**.
 
 ### Type of Change
 
