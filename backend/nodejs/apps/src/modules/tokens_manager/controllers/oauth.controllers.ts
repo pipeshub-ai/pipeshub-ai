@@ -144,7 +144,8 @@ export const getOAuthConfigRegistry = (appConfig: AppConfig) =>
 export const getOAuthConfigRegistryByType = (appConfig: AppConfig) =>
   createOAuthApiHandler(
     appConfig,
-    (req) => `/api/v1/oauth/registry/${req.params.connectorType}`,
+    (req) =>
+      `/api/v1/oauth/registry/${encodeURIComponent(req.params.connectorType as string)}`,
     (req) => {
       if (!req.params.connectorType) {
         throw new BadRequestError('Connector type is required');
@@ -177,7 +178,8 @@ export const getAllOAuthConfigs = (appConfig: AppConfig) =>
 export const listOAuthConfigs = (appConfig: AppConfig) =>
   createOAuthApiHandler(
     appConfig,
-    (req) => `/api/v1/oauth/${req.params.connectorType}${buildQueryString(req)}`,
+    (req) =>
+      `/api/v1/oauth/${encodeURIComponent(req.params.connectorType as string)}${buildQueryString(req)}`,
     (req) => {
       if (!req.params.connectorType) {
         throw new BadRequestError('Connector type is required');
@@ -195,7 +197,8 @@ export const listOAuthConfigs = (appConfig: AppConfig) =>
 export const createOAuthConfig = (appConfig: AppConfig) =>
   createOAuthApiHandler(
     appConfig,
-    (req) => `/api/v1/oauth/${req.params.connectorType}`,
+    (req) =>
+      `/api/v1/oauth/${encodeURIComponent(req.params.connectorType as string)}`,
     (req) => {
       const { connectorType } = req.params;
       const { oauthInstanceName, config, baseUrl } = req.body;
@@ -228,7 +231,8 @@ export const createOAuthConfig = (appConfig: AppConfig) =>
 export const getOAuthConfig = (appConfig: AppConfig) =>
   createOAuthApiHandler(
     appConfig,
-    (req) => `/api/v1/oauth/${req.params.connectorType}/${req.params.configId}`,
+    (req) =>
+      `/api/v1/oauth/${encodeURIComponent(req.params.connectorType as string)}/${encodeURIComponent(req.params.configId as string)}`,
     (req) => {
       if (!req.params.connectorType) {
         throw new BadRequestError('Connector type is required');
@@ -249,7 +253,8 @@ export const getOAuthConfig = (appConfig: AppConfig) =>
 export const updateOAuthConfig = (appConfig: AppConfig) =>
   createOAuthApiHandler(
     appConfig,
-    (req) => `/api/v1/oauth/${req.params.connectorType}/${req.params.configId}`,
+    (req) =>
+      `/api/v1/oauth/${encodeURIComponent(req.params.connectorType as string)}/${encodeURIComponent(req.params.configId as string)}`,
     (req) => {
       const { connectorType, configId } = req.params;
       const { oauthInstanceName, config, baseUrl } = req.body;
@@ -292,7 +297,8 @@ export const updateOAuthConfig = (appConfig: AppConfig) =>
 export const deleteOAuthConfig = (appConfig: AppConfig) =>
   createOAuthApiHandler(
     appConfig,
-    (req) => `/api/v1/oauth/${req.params.connectorType}/${req.params.configId}`,
+    (req) =>
+      `/api/v1/oauth/${encodeURIComponent(req.params.connectorType as string)}/${encodeURIComponent(req.params.configId as string)}`,
     (req) => {
       if (!req.params.connectorType) {
         throw new BadRequestError('Connector type is required');
