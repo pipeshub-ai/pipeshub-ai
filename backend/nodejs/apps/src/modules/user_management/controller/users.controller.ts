@@ -550,10 +550,15 @@ export class UserController {
         }
         if (!passwordValidator(password)) {
           throw new BadRequestError(
-            'Password must be at least 8 characters with an uppercase letter, a lowercase letter, a number and a special character',
+            'Password must be at least 8 characters with an uppercase letter, a lowercase letter, a number and a special character, and no longer than 72 bytes',
           );
         }
       }
+      // Hashed before anything is written: a hash that fails here costs
+      // nothing, whereas one that failed after the user was saved would leave
+      // an account with no way to sign in and no way to retry creating it.
+      const hashedPassword =
+        password !== undefined ? await bcrypt.hash(password, SALT_ROUNDS) : undefined;
       const newUser = new Users({
         ...userFields,
         orgId: req.user?.orgId,
@@ -580,12 +585,12 @@ export class UserController {
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
       await newUser.save();
-      if (password !== undefined) {
+      if (hashedPassword !== undefined) {
         await new UserCredentials({
           userId: newUser._id,
           orgId: newUser.orgId,
           isDeleted: false,
-          hashedPassword: await bcrypt.hash(password, SALT_ROUNDS),
+          hashedPassword,
           ipAddress: req.ip,
         }).save();
         this.logger.info('Demo account created with a starting password', {
