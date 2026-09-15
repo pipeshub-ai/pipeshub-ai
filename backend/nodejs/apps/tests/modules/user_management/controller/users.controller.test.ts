@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import bcrypt from 'bcryptjs';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
@@ -3235,6 +3236,105 @@ describe('UserController', () => {
       expect(res.status.calledWith(201)).to.be.true;
       expect(mockEventService.start.calledOnce).to.be.true;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
+    });
+
+    it('should store a hashed credential when a starting password is given', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      const userSave = sinon.stub(Users.prototype, 'save').resolves();
+      const credentialSave = sinon.stub(UserCredentials.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(userSave.calledOnce).to.be.true;
+      expect(credentialSave.calledOnce).to.be.true;
+      const credential = credentialSave.firstCall.thisValue;
+      expect(credential.hashedPassword).to.be.a('string');
+      expect(credential.hashedPassword).to.not.equal('Str0ng-pass!');
+      // The plaintext must not land on the user document.
+      const responseBody = res.json.firstCall.args[0];
+      expect(responseBody.password).to.be.undefined;
+    });
+
+    it('hashes the starting password before anything is written', async () => {
+      // A hash that fails must cost nothing. If it ran after the user was
+      // saved, the account would exist with no way to sign in and no way to
+      // create it again.
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      const userSave = sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(bcrypt, 'hash').rejects(new Error('hash failed'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('hash failed');
+      expect(groupUpdate.called).to.be.false;
+      expect(userSave.called).to.be.false;
+    });
+
+    it('should reject a weak starting password before creating anything', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'weak',
+      };
+
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      const userSave = sinon.stub(Users.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('Password must be');
+      expect(groupUpdate.called).to.be.false;
+      expect(userSave.called).to.be.false;
+    });
+
+    it('should refuse a starting password for any address outside the demo domain', async () => {
+      // Connector permissions attach to the email, so a password on a real
+      // colleague's address would let the admin see everything they can see.
+      for (const email of ['alice@example.com', 'ceo@acme-demo.example.com', 'bob@acme-demo.example.evil.io']) {
+        req.body = { email, fullName: 'Someone Real', password: 'Str0ng-pass!' };
+        const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+        const userSave = sinon.stub(Users.prototype, 'save').resolves();
+        const credentialSave = sinon.stub(UserCredentials.prototype, 'save').resolves();
+
+        await controller.createUser(req, res, next);
+
+        expect(next.calledOnce, email).to.be.true;
+        expect(next.firstCall.args[0].message).to.include('demo accounts');
+        expect(groupUpdate.called, email).to.be.false;
+        expect(userSave.called, email).to.be.false;
+        expect(credentialSave.called, email).to.be.false;
+        sinon.restore();
+        next.resetHistory();
+      }
+    });
+
+    it('should not create a credential when no password is given', async () => {
+      req.body = { email: 'nopass@test.com', fullName: 'No Pass' };
+
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(Users.prototype, 'save').resolves();
+      const credentialSave = sinon.stub(UserCredentials.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(credentialSave.called).to.be.false;
     });
   });
 

@@ -48,6 +48,19 @@ import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { AuthService } from '../services/auth.service';
 import { Org } from '../schema/org.schema';
 import { UserCredentials } from '../../auth/schema/userCredentials.schema';
+import { passwordValidator } from '../../auth/utils/passwordValidator';
+import { SALT_ROUNDS } from '../../auth/controller/userAccount.controller';
+import bcrypt from 'bcryptjs';
+
+/** Reserved domain of the bundled demo personas (RFC 2606 `.example`). */
+export const DEMO_ACCOUNT_DOMAIN = 'acme-demo.example';
+
+export function isDemoAccountEmail(email: unknown): boolean {
+  return (
+    typeof email === 'string' &&
+    email.trim().toLowerCase().endsWith(`@${DEMO_ACCOUNT_DOMAIN}`)
+  );
+}
 import { UserActivities } from '../../auth/schema/userActivities.schema';
 import { userActivitiesType } from '../../../libs/utils/userActivities.utils';
 import { AICommandOptions } from '../../../libs/commands/ai_service/ai.service.command';
@@ -518,8 +531,36 @@ export class UserController {
     next: NextFunction,
   ): Promise<void> {
     try {
+      // A starting password creates a sign-in-ready account without SMTP.
+      // It is allowed only for the bundled demo personas: connector
+      // permissions attach to an email address, so an admin who could set a
+      // password for a real colleague's address would inherit everything
+      // that colleague is allowed to see. The demo domain is IANA-reserved
+      // and can never belong to a real person.
+      const { password, ...userFields } = req.body as {
+        password?: string;
+        email?: string;
+        [field: string]: unknown;
+      };
+      if (password !== undefined) {
+        if (!isDemoAccountEmail(userFields.email)) {
+          throw new BadRequestError(
+            `A starting password can only be set for demo accounts (@${DEMO_ACCOUNT_DOMAIN}); invite real users so they choose their own`,
+          );
+        }
+        if (!passwordValidator(password)) {
+          throw new BadRequestError(
+            'Password must be at least 8 characters with an uppercase letter, a lowercase letter, a number and a special character, and no longer than 72 bytes',
+          );
+        }
+      }
+      // Hashed before anything is written: a hash that fails here costs
+      // nothing, whereas one that failed after the user was saved would leave
+      // an account with no way to sign in and no way to retry creating it.
+      const hashedPassword =
+        password !== undefined ? await bcrypt.hash(password, SALT_ROUNDS) : undefined;
       const newUser = new Users({
-        ...req.body,
+        ...userFields,
         orgId: req.user?.orgId,
         role: resolveOptionalUserRole(req.body.role),
       });
@@ -544,6 +585,20 @@ export class UserController {
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
       await newUser.save();
+      if (hashedPassword !== undefined) {
+        await new UserCredentials({
+          userId: newUser._id,
+          orgId: newUser.orgId,
+          isDeleted: false,
+          hashedPassword,
+          ipAddress: req.ip,
+        }).save();
+        this.logger.info('Demo account created with a starting password', {
+          orgId: newUser.orgId.toString(),
+          createdBy: req.user?.userId,
+          email: newUser.email,
+        });
+      }
       this.logger.debug('user created');
       res.status(201).json(newUser);
     } catch (error) {
