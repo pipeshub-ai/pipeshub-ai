@@ -128,14 +128,15 @@ class GitLabExpected:
     def child_record_group(
         project: dict[str, Any], *, kind: str, connector_id: str,
     ) -> RecordGroup:
-        """One of the three children (``work-items`` / ``merge-requests`` /
-        ``code-repository``).
+        """One of the four children (``work-items`` / ``confidential-work-items`` /
+        ``merge-requests`` / ``code-repository``).
 
         Unlike GitHub, these do NOT inherit from the project group — the connector
         writes a real, separately-gated ACL onto each one.
         """
         names = {
             "work-items": "Work items",
+            "confidential-work-items": "Confidential work items",
             "merge-requests": "Merge requests",
             "code-repository": "Code repository",
         }
@@ -161,8 +162,13 @@ class GitLabExpected:
 
         Note what is absent: this connector sets no assignee, creator or reporter
         fields on a ticket, so no ASSIGNED_TO / CREATED_BY edges can exist.
+
+        A confidential issue is filed under the narrower confidential group rather
+        than the ordinary work items — that group placement is the whole mechanism
+        by which the Guest restriction reaches the graph.
         """
         updated = parse_timestamp(issue["updated_at"])
+        group_kind = "confidential-work-items" if issue.get("confidential") else "work-items"
         return TicketRecord(
             id="", org_id="",
             record_name=issue["title"],
@@ -170,7 +176,7 @@ class GitLabExpected:
             # GitLab's GLOBAL id, not the per-project iid — rename-proof.
             external_record_id=str(issue["id"]),
             external_revision_id=str(updated),
-            external_record_group_id=f"{issue['project_id']}-work-items",
+            external_record_group_id=f"{issue['project_id']}-{group_kind}",
             version=0,
             origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.GITLAB,

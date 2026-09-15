@@ -10,36 +10,39 @@ no code change. Only the two frozen blocks snapshots and the pinned merge reques
 addressed by number.
 
 Every CI leg, every PR and the nightly cron share ONE GitLab group, and different PRs
-run at the same time. The primary project is therefore never written to: the four
-mutation and filter cases (orders 19-23) each create a throw-away connector scoped to
+run at the same time. The primary project is therefore never written to: the six
+mutation and filter cases (orders 20-25) each create a throw-away connector scoped to
 the *mutation* project and assert by external id, so nothing another run does can
 reach an assertion here. Code mutations are further confined to ``it/<run_id>/`` —
 the connector only syncs the default branch, so concurrent runs share it and only a
 path namespace keeps them apart.
 
   order 1  TC-SYNC-001            — full sync baseline + graph self-consistency
-  order 2  TC-GL-RG-001           — the four-way project record-group shape
+  order 2  TC-GL-RG-001           — the five-way project record-group shape
   order 3  TC-GL-RG-002           — namespace group nodes are flat, and each gets an App edge
   order 4  TC-GL-USER-001         — AppUsers keyed by GitLab numeric id + USER_APP edge
   order 5  TC-GL-USER-002         — pseudo-groups stand in for members with no public_email
   order 6  TC-GL-ISSUE-001        — TICKET properties, and the people fields that are absent
   order 7  TC-GL-ISSUE-002        — issue_type mapping and the raw GitLab state
   order 8  TC-GL-ISSUE-BLOCKS-001 — streamed issue blocks snapshot
-  order 9  TC-GL-ATTACH-001       — non-image attachment FileRecord
-  order 10 TC-GL-MR-001           — merged MR PULL_REQUEST properties
-  order 11 TC-GL-MR-BLOCKS-001    — streamed MR blocks snapshot
-  order 12 TC-GL-CODE-001         — CodeFileRecord properties incl. extension-less blob
-  order 13 TC-GL-CODE-002         — folder records, PARENT_CHILD chain, dotfile exclusion
-  order 14 TC-GL-CODE-TS-001      — blob source timestamps arrive from the backfill
-  order 15 TC-GL-PERM-001         — the four-way ACL split by access level
-  order 16 TC-GL-PERM-002         — permission type is always OWNER; 2-hop resolution
-  order 17 TC-GL-CKPT-001         — sync points for all three per-project data groups
-  order 18 TC-GL-IDX-001          — indexing reaches a terminal state
-  order 19 TC-INCR-ISSUE-001      — issue create then update: version += 1, new revision
-  order 20 TC-INCR-MR-001         — MR update-only: no new record, version += 1
-  order 21 TC-INCR-CODE-001       — new/update/rename/move/delete in one commit set
-  order 22 TC-FILTER-001          — group_ids scoping expands subgroups and parents the project
-  order 23 TC-FILTER-002          — Index Code Files off: records exist, AUTO_INDEX_OFF
+  order 9  TC-GL-ATTACH-001       — description-upload FileRecords on an issue and an MR
+  order 10 TC-GL-ATTACH-002       — both attachments reach COMPLETED
+  order 11 TC-GL-MR-001           — merged MR PULL_REQUEST properties
+  order 12 TC-GL-MR-BLOCKS-001    — streamed MR blocks snapshot
+  order 13 TC-GL-CODE-001         — CodeFileRecord properties incl. extension-less blob
+  order 14 TC-GL-CODE-002         — folder records, PARENT_CHILD chain, dotfile exclusion
+  order 15 TC-GL-CODE-TS-001      — blob source timestamps arrive from the backfill
+  order 16 TC-GL-PERM-001         — the ACL split across the five record groups
+  order 17 TC-GL-PERM-002         — permission type is always OWNER; one-hop resolution
+  order 18 TC-GL-CKPT-001         — sync points for the three per-project data groups
+  order 19 TC-GL-IDX-001          — indexing reaches a terminal state
+  order 20 TC-INCR-ISSUE-001      — issue create then update: version += 1, new revision
+  order 21 TC-GL-CONF-001         — confidential issue: own ACL group, exception grants, group swap
+  order 22 TC-INCR-MR-001         — MR update-only: no new record, version += 1
+  order 23 TC-INCR-CODE-001       — new/update/rename/move/delete in one commit set
+  order 24 TC-FILTER-001          — group_ids scoping expands subgroups and parents the project
+  order 25 TC-FILTER-002          — Index Code Files off: records exist, AUTO_INDEX_OFF
+  order 26 TC-GL-FILTEROPT-001    — the group and project pickers behind the sync filters
 """
 
 import logging
@@ -76,9 +79,11 @@ from validation.graph_entity_validator import (  # noqa: E402
 
 from connectors.gitlab.constants import (  # noqa: E402
     ENV_BLOCKS_BOOTSTRAP,
+    GL_ACCESS_GUEST,
     GL_INCR_MR_IID,
     GL_INDEXING_WAIT_SEC,
     GL_IT_RUN_ID,
+    GL_PROJECT_CHILD_KINDS,
     GL_STREAM_WAIT_SEC,
     GL_SYNC_WAIT_SEC,
     GL_TIMESTAMP_WAIT_SEC,
@@ -123,6 +128,7 @@ from connectors.gitlab.gitlab_test_utils import (  # noqa: E402
     indexing_filters,
     list_filter,
     list_notes,
+    list_project_members,
     sync_filters,
     update_issue,
     update_merge_request,
@@ -237,6 +243,26 @@ def _mutation_filters(state: dict[str, Any]) -> dict[str, Any]:
     return sync_filters(project_ids=list_filter("in", [state["mutation_path"]]))
 
 
+async def _principal_node(
+    graph_provider: GraphProviderProtocol, connector_id: str, source_id: str,
+) -> Optional[tuple[str, str]]:
+    """``(collection, node id)`` of the graph node that holds a GitLab member's grants.
+
+    A member with a resolvable ``public_email`` is an AppUser; anyone else is parked
+    on a pseudo-group keyed by the GitLab id. Both are legitimate grant holders, so
+    an edge assertion has to accept either.
+    """
+    user = await graph_provider.get_user_by_source_id(
+        source_user_id=source_id, connector_id=connector_id,
+    )
+    if user is not None:
+        return CollectionNames.USERS.value, user.id
+    group = await graph_provider.get_user_group_by_external_id(connector_id, source_id)
+    if group is not None:
+        return CollectionNames.GROUPS.value, group.id
+    return None
+
+
 async def _await_indexing_terminal(
     graph_provider: GraphProviderProtocol, connector_id: str,
     external_id: str, *, label: str,
@@ -302,8 +328,8 @@ class TestGitLabSyncAndStructure:
         )
 
         # Every record belongs to exactly one record group and inherits permissions.
-        # The ACL lives on the four record groups; a record carrying its own
-        # PERMISSION edge would mean the inheritance chain was bypassed.
+        # The ACL lives on the record groups; a record that does not inherit resolves
+        # only to whoever holds a direct grant on it, which for most records is nobody.
         rg_edges = await graph_provider.count_record_group_edges(connector_id)
         assert rg_edges == total, (
             f"every record needs one BELONGS_TO→RecordGroup ({rg_edges} != {total})"
@@ -349,14 +375,14 @@ class TestGitLabSyncAndStructure:
     async def test_tc_gl_rg_001_project_record_groups(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-GL-RG-001: the project group and its three children.
+        """TC-GL-RG-001: the project group and its four children.
 
         The shape that makes GitLab different from every other repository connector:
-        work items, merge requests and the code repository are separate ACL holders,
-        not passive children of the project. Each child carries its own directly-gated
-        grants and deliberately does **not** inherit from the project group — an
-        inherit edge there would collapse the four-way split, handing the code
-        repository to every project member including Guests.
+        work items, confidential work items, merge requests and the code repository
+        are separate ACL holders, not passive children of the project. Each child
+        carries its own directly-gated grants and deliberately does **not** inherit
+        from the project group — an inherit edge there would collapse the five-way
+        split, handing the code repository to every project member including Guests.
 
         The corollary is asserted too, because it is the surprising half: the project
         group's own grants reach no records at all. Nothing inherits from it, so a
@@ -378,7 +404,7 @@ class TestGitLabSyncAndStructure:
             project_group, entity="record_group", skip_compare=_GROUP_SKIP,
         )
 
-        for kind in ("work-items", "merge-requests", "code-repository"):
+        for kind in GL_PROJECT_CHILD_KINDS:
             child = await graph_provider.get_record_group_by_external_id(
                 connector_id, f"{primary['id']}-{kind}",
             )
@@ -400,9 +426,12 @@ class TestGitLabSyncAndStructure:
                 f"child group {kind} inherits from the project group. Every project "
                 "member holds a project-level grant regardless of access level, so "
                 "inheriting it would hand the code repository and merge requests to "
-                "Guests — the whole point of the four separate ACLs."
+                "Guests — the whole point of the five separate ACLs."
             )
-        logger.info("TC-GL-RG-001 passed: project group + 3 non-inheriting children")
+        logger.info(
+            "TC-GL-RG-001 passed: project group + %d non-inheriting children",
+            len(GL_PROJECT_CHILD_KINDS),
+        )
 
     @pytest.mark.order(3)
     async def test_tc_gl_rg_002_namespace_groups_are_flat(
@@ -1132,12 +1161,14 @@ class TestGitLabPermissions:
     async def test_tc_gl_perm_001_four_way_acl_split(
         self, gitlab_connector: dict[str, Any], graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-GL-PERM-001: the ACL split across the four record groups.
+        """TC-GL-PERM-001: the ACL split across the five record groups.
 
         This is the connector's whole authorization model. The project group is granted
         to *every* member unconditionally — the grant is appended before the access
-        level is even inspected — while the three children are gated: Guest (10) reaches
-        work items only, and level 15 and up reaches all three.
+        level is even inspected — while the four children are gated: Guest (10) reaches
+        the ordinary work items only, and level 15 and up reaches all four. Keeping
+        Guests off the confidential group is how GitLab's own rule — Guests cannot see
+        confidential issues — survives a connector that reads as the token owner.
 
         The ``>= 15`` bound is asserted as-implemented, not as-intended: 15 is Planner,
         a GitLab role that cannot read repository code, and it is granted the code
@@ -1158,7 +1189,7 @@ class TestGitLabPermissions:
             "grants were dropped rather than parked."
         )
 
-        expected_child_counts = {"work-items": 0, "merge-requests": 0, "code-repository": 0}
+        expected_child_counts = {kind: 0 for kind in GL_PROJECT_CHILD_KINDS}
         for member in members_by_id.values():
             for kind in child_groups_for_level(member.get("access_level") or 0):
                 expected_child_counts[kind] += 1
@@ -1407,6 +1438,244 @@ class TestGitLabIncremental:
         logger.info("TC-INCR-ISSUE-001 passed")
 
     @pytest.mark.order(21)
+    async def test_tc_gl_conf_001_confidential_issue(
+        self, gitlab_connector: dict[str, Any], gitlab_rest: GitLabRestClient,
+        pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GL-CONF-001: a confidential issue lands in its own ACL group.
+
+        The connector reads as the token owner and sees every issue, so GitLab's rule
+        that Guests cannot see confidential issues has to be re-imposed in the graph.
+        It is, in two parts: the issue is filed under a fifth record group that only
+        members from Planner (15) up are granted, and the author and assignees keep
+        access through a direct grant on the record — the only direction a
+        union-with-no-deny model can express.
+
+        The Guest member is made the assignee on purpose. They hold no grant on the
+        confidential group, so the record-level edge is the only thing that reaches
+        the issue for them: an exception that can be dropped without moving a single
+        count on the groups.
+
+        Runs on the mutation project — the primary fixture is read-only and has no
+        confidential issue. The issue exists before the connector does, so the base
+        sync builds it; the flip back to public then goes through the incremental path
+        and has to move the record between groups rather than duplicate it.
+        """
+        project = gitlab_connector["mutation_path"]
+        mutation = gitlab_connector["mutation"]
+        confidential_key = f"{mutation['id']}-confidential-work-items"
+        work_items_key = f"{mutation['id']}-work-items"
+
+        members_by_id = dedupe_members(await list_project_members(gitlab_rest, project))
+        guest_id = next(
+            (
+                member_id for member_id, member in sorted(members_by_id.items())
+                if (member.get("access_level") or 0) == GL_ACCESS_GUEST
+            ),
+            None,
+        )
+        if guest_id is None:
+            logger.warning(
+                "GUEST EXCEPTION COVERAGE INACTIVE: %s has no Guest member, so neither "
+                "the Guest exclusion nor the assignee exception is exercised.", project,
+            )
+
+        fields: dict[str, Any] = {"confidential": True}
+        if guest_id is not None:
+            fields["assignee_ids"] = [guest_id]
+        created = await create_issue(
+            gitlab_rest, project, title=artifact_title("Confidential"),
+            description="Created by TC-GL-CONF-001.", **fields,
+        )
+        try:
+            assert created.get("confidential") is True, (
+                "GitLab did not create the issue as confidential; nothing below would "
+                "test the confidential path"
+            )
+            external_id = str(created["id"])
+
+            async with dedicated_connector(
+                pipeshub_client, graph_provider,
+                token=gitlab_connector["token"], name=_connector_name("conf-issue"),
+                instance_url=gitlab_connector["instance_url"],
+                filters=_mutation_filters(gitlab_connector),
+            ) as connector_id:
+                # --- The group, and who is granted on it. ---
+                confidential_group = await graph_provider.get_record_group_by_external_id(
+                    connector_id, confidential_key,
+                )
+                assert confidential_group is not None, "confidential work-items group missing"
+                assert_graph_entity_matches(
+                    GitLabExpected.child_record_group(
+                        mutation, kind="confidential-work-items", connector_id=connector_id,
+                    ),
+                    confidential_group, entity="record_group", skip_compare=_GROUP_SKIP,
+                )
+                work_items_group = await graph_provider.get_record_group_by_external_id(
+                    connector_id, work_items_key,
+                )
+                assert work_items_group is not None, "work-items group missing"
+
+                expected_grants = sum(
+                    "confidential-work-items" in child_groups_for_level(
+                        member.get("access_level") or 0
+                    )
+                    for member in members_by_id.values()
+                )
+                actual_grants = await graph_provider.count_permission_edges_to_record_groups(
+                    connector_id, confidential_key,
+                )
+                assert actual_grants == expected_grants, (
+                    f"the confidential group has {actual_grants} PERMISSION edge(s), "
+                    f"expected {expected_grants} from access levels "
+                    f"{sorted(m.get('access_level') for m in members_by_id.values())}; "
+                    "Guests must not be among them"
+                )
+
+                if guest_id is not None:
+                    guest = await _principal_node(graph_provider, connector_id, str(guest_id))
+                    assert guest is not None, (
+                        f"Guest {guest_id} resolved to neither an AppUser nor a pseudo-group"
+                    )
+                    collection, node_id = guest
+                    assert len(await graph_provider.find_edges_between(
+                        collection, node_id, CollectionNames.RECORD_GROUPS.value,
+                        work_items_group.id, CollectionNames.PERMISSION.value,
+                    )) == 1, f"Guest {guest_id} should reach the ordinary work items"
+                    assert not await graph_provider.find_edges_between(
+                        collection, node_id, CollectionNames.RECORD_GROUPS.value,
+                        confidential_group.id, CollectionNames.PERMISSION.value,
+                    ), (
+                        f"Guest {guest_id} holds a grant on the confidential group. GitLab "
+                        "hides confidential issues from Guests; this group exists to "
+                        "re-impose exactly that."
+                    )
+
+                # --- The record: under the confidential group, not the ordinary one. ---
+                record = await wait_for_record_by_external_id(
+                    graph_provider, connector_id, external_id,
+                    timeout=GL_SYNC_WAIT_SEC, description="confidential issue",
+                )
+                live = await get_issue(gitlab_rest, project, created["iid"])
+                actual = await graph_provider.get_typed_record_by_external_id(
+                    connector_id, external_id,
+                )
+                assert actual is not None, f"typed TICKET record missing for {external_id}"
+                await assert_graph_entity_with_edges(
+                    GitLabExpected.ticket_record(live, connector_id=connector_id),
+                    actual, entity="ticket_record",
+                    connector_id=connector_id, graph_provider=graph_provider,
+                    skip_compare=_RECORD_SKIP,
+                )
+                assert not await graph_provider.find_edges_between(
+                    CollectionNames.RECORDS.value, record.id,
+                    CollectionNames.RECORD_GROUPS.value, work_items_group.id,
+                    CollectionNames.BELONGS_TO.value,
+                ), (
+                    "the confidential issue also belongs to the ordinary work-items group, "
+                    "which every Guest inherits from — the restriction is void"
+                )
+
+                # --- Exceptions: author and assignee hold a direct grant on the record. ---
+                exception_ids = {str(live["author"]["id"])}
+                if guest_id is not None:
+                    exception_ids.add(str(guest_id))
+                for source_id in sorted(exception_ids):
+                    principal = await _principal_node(graph_provider, connector_id, source_id)
+                    assert principal is not None, (
+                        f"principal {source_id} resolved to neither an AppUser nor a "
+                        "pseudo-group, so their exception grant was dropped"
+                    )
+                    collection, node_id = principal
+                    edges = await graph_provider.find_edges_between(
+                        collection, node_id, CollectionNames.RECORDS.value, record.id,
+                        CollectionNames.PERMISSION.value,
+                    )
+                    assert len(edges) == 1, (
+                        f"principal {source_id} holds {len(edges)} direct PERMISSION edge(s) "
+                        "on the confidential issue, expected 1. Author and assignees see a "
+                        "confidential issue whatever their role, and a record-level grant "
+                        "is the only way that survives the group restriction."
+                    )
+                    assert edges[0].get("role") == _GITLAB_PERMISSION_ROLE, (
+                        f"exception grant for {source_id} is {edges[0].get('role')!r}, "
+                        f"not {_GITLAB_PERMISSION_ROLE}"
+                    )
+
+                # --- Checkpoint: advances the work-items key, never a parallel one. ---
+                # Confidential issues come from the same listing as public ones and the
+                # checkpoint is only ever read back under the work-items key. With no
+                # public issue in this project, that key is written by the confidential
+                # issue alone — or not at all, which is the regression this pins.
+                work_items_ckpt = f"GITLAB/{work_items_key}/"
+
+                async def _checkpointed() -> bool:
+                    point = await graph_provider.get_sync_point(connector_id, work_items_ckpt)
+                    return bool(point and point.get("last_sync_time"))
+
+                await wait_until_graph_condition(
+                    connector_id, check=_checkpointed, timeout=GL_SYNC_WAIT_SEC,
+                    description=f"the {work_items_ckpt} checkpoint",
+                )
+                point = await graph_provider.get_sync_point(connector_id, work_items_ckpt)
+                assert int(point["last_sync_time"]) >= _epoch_ms(live["updated_at"]), (
+                    f"{work_items_ckpt} is at {point['last_sync_time']}, behind the "
+                    f"confidential issue's updated_at {_epoch_ms(live['updated_at'])}; the "
+                    "next sync re-walks it instead of the delta"
+                )
+                assert await graph_provider.get_sync_point(
+                    connector_id, f"GITLAB/{confidential_key}/",
+                ) is None, (
+                    "a checkpoint was written under the confidential key. Nothing reads "
+                    "it back, so the work-items checkpoint stops moving and every sync "
+                    "re-walks the whole project."
+                )
+
+                # --- Flip to public: the record moves groups, it is not duplicated. ---
+                await update_issue(gitlab_rest, project, created["iid"], confidential=False)
+                await _resync(pipeshub_client, graph_provider, connector_id)
+
+                async def _moved() -> bool:
+                    row = await graph_provider.get_record_by_external_id(
+                        connector_id, external_id,
+                    )
+                    return bool(row) and row.external_record_group_id == work_items_key
+
+                await wait_until_graph_condition(
+                    connector_id, check=_moved, timeout=GL_SYNC_WAIT_SEC,
+                    description="the issue to move to the work-items group",
+                )
+                live = await get_issue(gitlab_rest, project, created["iid"])
+                after = await graph_provider.get_typed_record_by_external_id(
+                    connector_id, external_id,
+                )
+                assert after is not None and after.id == record.id, (
+                    "a confidentiality change must reuse the record; a new id means the "
+                    "issue was re-created under the other group"
+                )
+                await assert_graph_entity_with_edges(
+                    GitLabExpected.ticket_record(live, connector_id=connector_id),
+                    after, entity="ticket_record",
+                    connector_id=connector_id, graph_provider=graph_provider,
+                    skip_compare=_RECORD_SKIP | frozenset({"version"}),
+                )
+                for edge_collection in (
+                    CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value,
+                ):
+                    assert not await graph_provider.find_edges_between(
+                        CollectionNames.RECORDS.value, after.id,
+                        CollectionNames.RECORD_GROUPS.value, confidential_group.id,
+                        edge_collection,
+                    ), (
+                        f"the now-public issue still has a {edge_collection} edge to the "
+                        "confidential group; the same swap in the other direction would "
+                        "leave a newly-confidential issue readable by every Guest"
+                    )
+        finally:
+            await delete_issue(gitlab_rest, project, created["iid"])
+        logger.info("TC-GL-CONF-001 passed: guest=%s", guest_id)
+
+    @pytest.mark.order(22)
     async def test_tc_incr_mr_001_update_only(
         self, gitlab_connector: dict[str, Any], gitlab_rest: GitLabRestClient,
         pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
@@ -1494,7 +1763,7 @@ class TestGitLabIncremental:
                     )
         logger.info("TC-INCR-MR-001 passed")
 
-    @pytest.mark.order(22)
+    @pytest.mark.order(23)
     async def test_tc_incr_code_001_five_deltas(
         self, gitlab_connector: dict[str, Any], gitlab_rest: GitLabRestClient,
         pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
@@ -1656,7 +1925,7 @@ class TestGitLabIncremental:
 
 class TestGitLabFilters:
 
-    @pytest.mark.order(23)
+    @pytest.mark.order(24)
     async def test_tc_filter_001_group_scope(
         self, gitlab_connector: dict[str, Any],
         pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
@@ -1716,7 +1985,7 @@ class TestGitLabFilters:
             )
         logger.info("TC-FILTER-001 passed: %s expanded, siblings excluded", subgroup)
 
-    @pytest.mark.order(24)
+    @pytest.mark.order(25)
     async def test_tc_filter_002_code_files_indexing_off(
         self, gitlab_connector: dict[str, Any],
         pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
@@ -1769,7 +2038,7 @@ class TestGitLabFilters:
         )
 
 
-    @pytest.mark.order(25)
+    @pytest.mark.order(26)
     async def test_tc_gl_filteropt_001_dynamic_filter_options(
         self, gitlab_connector: dict[str, Any], pipeshub_client: PipeshubClient,
     ) -> None:

@@ -38,10 +38,12 @@ from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 from connectors.gitlab.constants import (  # type: ignore[import-not-found]
     GL_ACCESS_GUEST,
+    GL_ACCESS_PLANNER,
     GL_IT_ARTIFACT_RE,
     GL_IT_PATH_ROOT,
     GL_IT_RUN_ID,
     GL_IT_STALE_ARTIFACT_AGE_SEC,
+    GL_PROJECT_CHILD_KINDS,
     GL_SYNC_WAIT_SEC,
     PINNED_MR_COMMENT_MARKER,
     owns_path,
@@ -302,15 +304,16 @@ def child_groups_for_level(access_level: int) -> set[str]:
     member *before* it looks at the level, so even a level-0 or Minimal (5) member
     holds a project-level grant. Only the children are gated.
 
-    Guest (10) gets work items but not code or merge requests. From Planner (15) up
-    the member gets all three — which is why the bound is ``>= 15`` and not ``>= 20``:
-    Planner, a role that cannot read code on GitLab, is granted the code repository
-    here.
+    Guest (10) gets the ordinary work items only: GitLab hides confidential issues
+    from Guests, so they are kept off the confidential group too. From Planner (15)
+    up the member gets all four — which is why the bound is ``>= 15`` and not
+    ``>= 20``: Planner, a role that cannot read code on GitLab, is granted the code
+    repository here.
     """
     if access_level == GL_ACCESS_GUEST:
         return {"work-items"}
-    if access_level >= 15:
-        return {"work-items", "merge-requests", "code-repository"}
+    if access_level >= GL_ACCESS_PLANNER:
+        return set(GL_PROJECT_CHILD_KINDS)
     return set()
 
 

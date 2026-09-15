@@ -136,7 +136,15 @@ ENV_BLOCKS_BOOTSTRAP = "GITLAB_BLOCKS_BOOTSTRAP"
 # GitLab access levels. The connector uses the level ONLY to decide which record
 # groups a member is granted on — the permission type itself is always OWNER.
 GL_ACCESS_GUEST = 10
+GL_ACCESS_PLANNER = 15
 GL_ACCESS_REPORTER = 20
+
+# The per-project child record groups. Each carries its own directly-gated ACL;
+# the confidential one exists because GitLab hides confidential issues from Guests
+# and the connector, reading as the token owner, has to re-impose that in the graph.
+GL_PROJECT_CHILD_KINDS = (
+    "work-items", "confidential-work-items", "merge-requests", "code-repository",
+)
 
 # Name prefix of the stand-in group the connector creates for a member whose
 # ``public_email`` is unset (constants.py: PSEUDO_USER_GROUP_PREFIX).
