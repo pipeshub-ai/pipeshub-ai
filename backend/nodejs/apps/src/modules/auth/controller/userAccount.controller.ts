@@ -72,6 +72,7 @@ const {
   WRONG_PASSWORD,
   REFRESH_TOKEN,
   PASSWORD_CHANGED,
+  ACCOUNT_BLOCKED,
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
@@ -177,7 +178,7 @@ export class UserAccountController {
     return true;
   }
 
-  async verifyOTP(
+   async verifyOTP(
     userId: string,
     orgId: string,
     inputOTP: any,
@@ -230,6 +231,14 @@ export class UserAccountController {
         userCredentials.isBlocked = true;
         userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
         await userCredentials.save();
+        await UserActivities.create({
+          userId: userId,
+          orgId: orgId,
+          email: email,
+          activityType: ACCOUNT_BLOCKED,
+          ipAddress: ipAddress,
+          loginMode: 'OTP',
+        });
 
         const org = await Org.findOne({ _id: orgId, isDeleted: false });
         const user = await Users.findOne({ _id: userId, orgId, isDeleted: false });
@@ -1126,12 +1135,20 @@ export class UserAccountController {
         email: email,
         activityType: WRONG_PASSWORD,
         ipAddress: ip,
-        loginMode: 'OTP',
+        loginMode: 'PASSWORD',
       });
       if (userCredentials.wrongCredentialCount >= 5) {
         userCredentials.isBlocked = true;
         userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
         await userCredentials.save();
+        await UserActivities.create({
+          userId: userId,
+          orgId: orgId,
+          email: email,
+          activityType: ACCOUNT_BLOCKED,
+          ipAddress: ip,
+          loginMode: 'PASSWORD',
+        });
 
         await this.mailService.sendMail({
           emailTemplateType: 'suspiciousLoginAttempt',
