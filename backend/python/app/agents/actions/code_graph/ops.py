@@ -522,6 +522,72 @@ async def _resolve_anchors(
     return mine[:_NEIGHBOUR_FANOUT + 1]
 
 
+# Candidates a bare name may resolve to before the walk gives up and asks which
+# one was meant. Wide enough that a common method name still shows every owner.
+_NAME_CANDIDATE_LIMIT = 400
+
+
+def _bare_name(qualified_name: str) -> str:
+    """The symbol's own name, dropping any `kind:` prefix and owner path.
+
+    `method:BaseConnector.notify`, `BaseConnector.notify` and `notify` all name
+    the same symbol, and only the first is what the indexer stored. Matching on
+    the last segment lets a caller name a symbol it has only heard of, which is
+    the whole point of resolving without a file.
+    """
+    tail = qualified_name.rsplit(":", 1)[-1]
+    return tail.rsplit(".", 1)[-1].strip()
+
+
+async def _resolve_anchors_by_name(
+    graph_provider: Any,
+    org_id: str,
+    qualified_name: str,
+    connector_id: str,
+) -> list[dict[str, Any]]:
+    """Blocks whose own name matches ``qualified_name``, anywhere in one repo.
+
+    The address rule everywhere else is "copy, do not compose", which leaves a
+    caller holding a name but no file with nothing to call: every supplier of
+    addresses (a search hit, a listing) is large enough to be compacted out of
+    context before it gets used. This is the one lookup that starts from a name,
+    which is what `block_text` (``FOR (n:Block) ON EACH [n.name,
+    n.qualifiedName]``) was indexed for.
+
+    Returns every match; the caller decides between walking a single hit and
+    asking which of several was meant. An exact ``qualifiedName`` match wins
+    outright, so a fully-spelled address never turns into a disambiguation.
+    """
+    name = _bare_name(qualified_name)
+    if not name:
+        return []
+    try:
+        rows = await graph_provider.search_nodes_by_field_terms(
+            collection=_BLOCKS,
+            field_name="name",
+            terms=[name],
+            filters={"orgId": org_id, "connectorId": connector_id},
+            limit=_NAME_CANDIDATE_LIMIT,
+        )
+    except Exception as exc:
+        logger.warning("Symbol name lookup failed for %r: %s", name, exc)
+        return []
+
+    folded = name.casefold()
+    # The index scores partial matches, and a walk anchored on a symbol the
+    # caller did not name is worse than admitting the name did not resolve.
+    matches = [
+        row for row in rows or []
+        if (row.get("name") or "").casefold() == folded
+        and row.get("orgId") == org_id
+        and row.get("connectorId") == connector_id
+    ]
+    exact = [row for row in matches if row.get("qualifiedName") == qualified_name]
+    resolved = exact or matches
+    await attach_file_paths(graph_provider, org_id, resolved)
+    return resolved
+
+
 # Neighbours worth walking next (class of a method, heritage). CALLS rows are
 # for read_code(lines=...); these are for another get_neighbour.
 _CHAIN_RELATIONS = frozenset({*STRUCTURAL_RELATIONS, *HERITAGE_RELATIONS})
@@ -545,13 +611,67 @@ def _chain_targets(neighbors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+async def _name_candidates(
+    graph_provider: Any,
+    anchors: list[dict[str, Any]],
+    relations: list[str],
+    qualified_name: str,
+    direction: str,
+    connector_id: str,
+    org_id: str,
+    include_tests: bool,
+) -> dict[str, Any]:
+    """The addresses a bare name matched, instead of a walk of all of them.
+
+    Walking every match and merging the rows would answer "who calls notify"
+    with the union of several unrelated call sets — confidently wrong, and
+    indistinguishable from the real answer. Returning the addresses keeps the
+    caller's next call exact, and is what turns a name into something the
+    "copy, do not compose" address rule allows.
+    """
+    if not include_tests:
+        rids = {rid for a in anchors if (rid := a.get("recordId"))}
+        roles = await get_record_roles(graph_provider, org_id, rids)
+        kept = [a for a in anchors if roles.get(a.get("recordId")) != TEST_ROLE]
+        anchors = kept or anchors
+
+    degrees, degree_capped = await _degrees(graph_provider, anchors, relations)
+    ranked = sorted(
+        anchors,
+        key=lambda b: (-degrees.get(_key_of(b), 0), b.get("filePath") or ""),
+    )
+
+    candidates = []
+    for block in ranked[:_NEIGHBOUR_FANOUT]:
+        ref = SymbolRef.from_block(block)
+        ref["degree"] = degrees.get(_key_of(block), 0)
+        candidates.append(ref)
+
+    return {
+        "symbol": None,
+        "connector_id": connector_id,
+        "direction": direction,
+        "matched_name": _bare_name(qualified_name),
+        "candidates": candidates,
+        "truncated": len(ranked) > len(candidates),
+        **({"degree_capped": True} if degree_capped else {}),
+        "note": (
+            f"'{qualified_name}' matches {len(ranked)} symbols in this repo, so "
+            "nothing was walked — merging their edges would invent a caller set. "
+            "Ranked by `degree` (edges touching the symbol), highest first. Call "
+            "get_neighbour again with the `file_path` and `qualified_name` of the "
+            "one you mean."
+        ),
+    }
+
+
 async def get_neighbour_impl(
     *,
     graph_provider: Any,
     connector_id: str,
     org_id: str,
     user_id: str,
-    file_path: str,
+    file_path: str | None = None,
     qualified_name: str | None = None,
     direction: str = "any",
     edge_types: list[str] | None = None,
@@ -576,15 +696,26 @@ async def get_neighbour_impl(
     relations = list(edge_types) if edge_types else list(CODE_RELATIONS)
     depth = max(1, min(int(depth or 1), MAX_NEIGHBOUR_DEPTH))
 
+    if not file_path and not qualified_name:
+        return {"error": (
+            "Give `file_path`, `record_id`, or `qualified_name` — a walk needs "
+            "somewhere to start."
+        )}
+
     # One payload for a missing anchor and a denied one: an error naming the
     # path for the miss would say which of the two the caller hit.
     empty = {
         **({"symbol": None} if qualified_name else {"file_path": file_path}),
         "direction": direction, "neighbors": [],
     }
+    by_name = not file_path
+    resolve = (
+        _resolve_anchors_by_name(graph_provider, org_id, qualified_name, connector_id)
+        if by_name else
+        _resolve_anchors(graph_provider, org_id, file_path, qualified_name, connector_id)
+    )
     anchors, accessible = await asyncio.gather(
-        _resolve_anchors(graph_provider, org_id, file_path, qualified_name, connector_id),
-        get_accessible_record_ids(graph_provider, org_id, user_id),
+        resolve, get_accessible_record_ids(graph_provider, org_id, user_id),
     )
     if not anchors:
         return empty
@@ -598,6 +729,11 @@ async def get_neighbour_impl(
     anchors = [a for a in anchors if a.get("recordId") in readable]
     if not anchors:
         return empty
+    if by_name and len(anchors) > 1:
+        return await _name_candidates(
+            graph_provider, anchors, relations, qualified_name, direction,
+            connector_id, org_id, include_tests,
+        )
     fanout_capped = len(anchors) > _NEIGHBOUR_FANOUT
     anchors = anchors[:_NEIGHBOUR_FANOUT]
 

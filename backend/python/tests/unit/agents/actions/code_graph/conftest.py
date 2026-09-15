@@ -118,6 +118,22 @@ class FakeGraphProvider:
     async def get_document(self, document_key, collection):
         return self.records.get(document_key)
 
+    async def search_nodes_by_field_terms(
+        self, collection, field_name, terms, filters=None, limit=400,
+        transaction=None,
+    ):
+        """Substring matching, like the provider's non-full-text fallback.
+
+        On the base fake because both `query.py` and `get_neighbour`'s name-only
+        anchor resolve symbols through it.
+        """
+        return [
+            doc for doc in self.blocks.values()
+            if doc.get(field_name)
+            and any(term.lower() in doc[field_name].lower() for term in terms)
+            and all(doc.get(key) == value for key, value in (filters or {}).items())
+        ][:limit]
+
     async def check_record_access_with_details(self, user_id, org_id, record_id):
         if user_id != self.allow_user or record_id in self.deny_records:
             return None
@@ -236,17 +252,6 @@ class QueryGraphProvider(FakeGraphProvider):
         return [
             doc for doc in docs
             if (doc.get(field_name) or "").startswith(prefix)
-            and all(doc.get(key) == value for key, value in (filters or {}).items())
-        ][:limit]
-
-    async def search_nodes_by_field_terms(
-        self, collection, field_name, terms, filters=None, limit=400,
-        transaction=None,
-    ):
-        return [
-            doc for doc in self.blocks.values()
-            if doc.get(field_name)
-            and any(term.lower() in doc[field_name].lower() for term in terms)
             and all(doc.get(key) == value for key, value in (filters or {}).items())
         ][:limit]
 

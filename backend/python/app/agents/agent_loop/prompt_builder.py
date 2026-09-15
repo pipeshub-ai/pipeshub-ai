@@ -468,45 +468,49 @@ def _build_code_navigation_section() -> str:
     """The order to use the codegraph toolset in, for turns where it is callable.
 
     Each tool's own schema says what that tool returns; what no schema can say
-    is which tool comes next. This section is that sequence — traverse by
-    edges, confirm by reading source — plus the one composition a set-shaped
-    question needs, where one walk gives the members and another the
-    population. How to reach a repository in the first place belongs to the
-    retrieval tools' own schemas (`get_neighbour` states that it needs a
-    `Connector ID` from a search result), so it is not restated here.
+    is which tool comes next. This section is that sequence — walk by edges,
+    confirm by reading source — plus the one composition a set-shaped question
+    needs, where one walk gives the members and another the population.
+
+    Leading with the name-only walk is what keeps the loop from starving. Every
+    other way to obtain an address — a search hit, a listing — returns a result
+    large enough to be truncated by `shape_budget_reduction` and then replaced
+    by `shape_tool_result_clearing` with a "call the tool again with the same
+    arguments" reference. A model that needs a copied address before it can walk
+    therefore re-searches forever; one that can start from a name it thought of
+    never enters that loop.
     """
     return (
         "\n## Navigating Code\n\n"
-        "Code questions are answered by traversing the graph, in this order.\n\n"
-        "Search matches meaning: a symbol name, a quoted token, or a call expression finds "
-        "neither a definition nor a call site, and rewording it will not change that.\n\n"
-        "**1. Traverse with `codegraph__get_neighbour`.** This is how you move through a "
-        "codebase. Give it the address you hold, `edge_types` omitted on the first call, and the "
-        "result tells you what the node is — its container, its heritage, what it reaches and "
-        "what reaches it. Walk outbound for what a symbol depends on, inbound for what depends "
-        "on it; what reaches a symbol leaves no trace in the symbol itself, so no amount of "
-        "reading recovers it. A member a subclass never overrode lives on the base, so walk "
-        "containment and heritage to the definition before taking edges from it. Every "
-        "neighbour returned is the address of the next call — one hop is not a traversal.\n\n"
-        "**2. Confirm with `codegraph__read_code`.** Edges say what connects, source says what "
-        "it does. Read the symbols the answer rests on, and keep alternating: walk, read, walk. "
-        f"This is the only way to read code: `{_FETCH_FULL_RECORD_TOOL_NAME}` returns a whole "
-        "document and can address neither a symbol nor a line range, so never reach for it to "
-        "open a file.\n\n"
-        "**3. Use `codegraph__query_code_graph` to orient** — what a directory or a file holds, "
-        "when you need the shape of an area rather than one symbol's edges. It ranks and caps, "
-        "so read every result as a sample of that area, never as its contents.\n\n"
-        "**4. Answer a question about a set with two walks, not a listing.** The members that "
-        "share a behaviour are the inbound edges of the symbol implementing it. The population "
-        "they are drawn from is also a walk — the inbound heritage edges of the type they all "
-        "extend, or of the interface they implement. Subtract or intersect those two. A set "
-        "assembled from a search result or a directory glob is a guess: both rank and cap, so "
-        "neither can tell you that something is absent.\n\n"
-        "Claim completeness only when a result does. `truncated: false` is a full set; "
-        "`truncated` or `scan_capped` marks a sample, and a sample cannot prove an absence.\n\n"
-        "When the answer describes how components of the code interact — a call chain, a "
-        "module dependency, an inheritance tree — include a Mermaid diagram (flowchart, "
-        "sequence, or graph) built from the edges you walked, one per subsystem or flow.\n"
+        "Code questions are answered by walking the graph. `knowledgegraph__search` ranks "
+        "documents by meaning, so it cannot match a symbol name, a quoted string, or a call "
+        "expression: use it once for the `Connector ID`, then stop — searching again with "
+        "different wording returns another sample of the same thing.\n\n"
+        "**1. `codegraph__get_neighbour` is the default** — reach for it whenever you are "
+        "tempted to search again. You do not need an address to start: pass a bare symbol name "
+        "you can think of (`qualified_name='notify'`) and it resolves across the repo, walking "
+        "the one match or returning ranked `candidates` to pick from. A search hit works too — "
+        "its `Record ID` as `record_id`, with `qualified_name` omitted to walk every symbol the "
+        "file defines. Omit `edge_types` either way. The result names the node's container, its "
+        "heritage, what it calls and what calls it. "
+        "Outbound is what a symbol depends on, inbound what depends on it — callers exist only "
+        "as inbound edges, so reading never recovers them. A member a subclass never overrode "
+        "lives on the base, so walk heritage to the definition first. Every neighbour returned "
+        "is the address of the next call: one hop is not a traversal.\n\n"
+        "**2. `codegraph__read_code` confirms** what a symbol does once its edges show it "
+        "matters; alternate walk, read, walk. It is also the only way to open code — "
+        f"`{_FETCH_FULL_RECORD_TOOL_NAME}` can address neither a symbol nor a line range.\n\n"
+        "**3. `codegraph__query_code_graph` orients** — the shape of a directory or file, not "
+        "one symbol's edges. It ranks and caps; read its result as a sample.\n\n"
+        "**4. A set takes two walks, not a listing.** Members sharing a behaviour are the "
+        "inbound edges of the symbol implementing it — name that symbol and walk `inbound`, "
+        "which needs no path. Their population is the inbound heritage edges of the type they "
+        "all extend. Subtract or intersect those two. A set built from "
+        "search hits or a glob is a guess — both cap, so neither can show something is absent. "
+        "Claim completeness only when a result does: `truncated: false` is a full set, "
+        "`truncated` or `scan_capped` a sample.\n\n"
+        "Include a Mermaid diagram, built from the edges you walked, whenever the answer "
+        "describes how code connects.\n"
     )
 
 

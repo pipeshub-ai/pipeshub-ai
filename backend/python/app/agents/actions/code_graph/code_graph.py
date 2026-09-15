@@ -341,6 +341,11 @@ class CodeGraph:
             "what it reaches, 'any' for both. Every neighbour is an address for the "
             "next get_neighbour or for read_code(lines=...) on a call site.\n\n"
             "Omit `qualified_name` to walk every symbol the file defines at once.\n\n"
+            "With no file at all, `qualified_name` alone is enough: a bare name "
+            "('notify', 'BaseConnector.notify') is looked up across the repo. One match "
+            "is walked; several come back as `candidates`, ranked by `degree`, for you "
+            "to pick from and call again with. Start here when you can name a symbol "
+            "but have not seen its path.\n\n"
             "'inbound' is the direction with no substitute: callers leave no trace in "
             "the code you are reading, and a knowledge search cannot find them because "
             "nothing names them.\n\n"
@@ -359,7 +364,7 @@ class CodeGraph:
                 description=(
                     "Repo-relative path of the file to walk from, or of the file "
                     "holding `qualified_name` — the `Path:` line of a search hit. "
-                    "Give this or `record_id`. " + _ADDRESS_RULE
+                    "Give this, `record_id`, or `qualified_name` alone. " + _ADDRESS_RULE
                 ),
             ),
             ToolParameter(
@@ -382,7 +387,10 @@ class CodeGraph:
                     "though a differently-cased spelling still resolves. OMIT IT to "
                     "walk every symbol the file defines at once, which is what you "
                     "want when a search just handed you the path and you do not know "
-                    "yet which symbol matters. " + _ADDRESS_RULE
+                    "yet which symbol matters. Without `file_path` or `record_id` this "
+                    "may be a bare name you have not seen written down ('notify'), and "
+                    "is resolved across the repo — the one case where you may compose "
+                    "it rather than copy it. " + _ADDRESS_RULE
                 ),
             ),
             ToolParameter(
@@ -444,9 +452,16 @@ class CodeGraph:
         offset: int = 0,
         include_tests: bool = False,
     ) -> tuple[bool, str]:
-        path, error = await self._anchor_path(connector_id, file_path, record_id)
-        if error is not None:
-            return self._to_output(error)
+        # A name with no file is the one call that needs no anchor: the impl
+        # resolves it against the repo and asks which match was meant.
+        if file_path or record_id or not qualified_name:
+            path, error = await self._anchor_path(connector_id, file_path, record_id)
+            if error is not None:
+                return self._to_output(error)
+        else:
+            path, error = None, self._in_scope(connector_id or "")
+            if error is not None:
+                return self._to_output(error)
         result = await self._run(
             "get_neighbour",
             connector_id,

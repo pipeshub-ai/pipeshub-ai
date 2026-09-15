@@ -438,3 +438,79 @@ class TestTraversalCap:
         result = await self._inbound(graph, depth=2, limit=100)
         assert result["fanout_capped"] is True
         assert result["truncated"] is True
+
+
+class TestNameOnlyAnchor:
+    """A name with no file is the only way in for a caller that has not been
+    handed an address. Every other supplier of one -- a search hit, a listing --
+    is big enough to be compacted out of context before it gets used, which is
+    what left this tool uncalled on set-shaped questions."""
+
+    @staticmethod
+    async def _by_name(graph, name, **kwargs):
+        return await get_neighbour_impl(
+            graph_provider=graph, connector_id=CONN, org_id=ORG, user_id=USER,
+            qualified_name=name, **kwargs,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_unique_name_is_walked_without_a_path(self, graph) -> None:
+        result = await self._by_name(graph, "caller", direction="outbound")
+        assert result["symbol"]["qualified_name"] == "function:caller"
+        assert result["symbol"]["file_path"] == "src/a.py", "the path is resolved, not required"
+        assert [n["qualified_name"] for n in result["neighbors"]] == ["function:target"]
+
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_name_returns_addresses_and_walks_nothing(self, graph) -> None:
+        """Merging the edges of several same-named symbols would invent a
+        caller set that looks exactly like a real one."""
+        result = await self._by_name(graph, "run")
+        assert "neighbors" not in result
+        assert result["symbol"] is None
+        assert result["matched_name"] == "run"
+        addresses = {(c["file_path"], c["qualified_name"]) for c in result["candidates"]}
+        assert addresses == {
+            ("src/b.py", "method:run"),
+            ("web/ui/panel.ts", "imports:run"),
+        }
+        assert all("degree" in c for c in result["candidates"])
+
+    @pytest.mark.asyncio
+    async def test_a_fully_spelled_name_beats_its_namesakes(self, graph) -> None:
+        """`method:run` is unambiguous even though `imports:run` shares a name,
+        so it must walk rather than ask which was meant."""
+        result = await self._by_name(graph, "method:run", direction="any")
+        assert result["symbol"]["qualified_name"] == "method:run"
+        assert "candidates" not in result
+
+    @pytest.mark.asyncio
+    async def test_an_owner_prefix_finds_the_symbol_but_does_not_narrow(self, graph) -> None:
+        """`Thing.run` is not the form the indexer stored, so it matches on the
+        last segment and the owner is not used to disambiguate — the caller
+        still gets addresses rather than a walk of the wrong symbol."""
+        result = await self._by_name(graph, "Thing.run", direction="any")
+        names = {c["qualified_name"] for c in result["candidates"]}
+        assert names == {"method:run", "imports:run"}
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_name_is_empty_not_an_error(self, graph) -> None:
+        result = await self._by_name(graph, "no_such_symbol")
+        assert result["symbol"] is None
+        assert result["neighbors"] == []
+
+    @pytest.mark.asyncio
+    async def test_no_anchor_at_all_is_rejected(self, graph) -> None:
+        result = await get_neighbour_impl(
+            graph_provider=graph, connector_id=CONN, org_id=ORG, user_id=USER,
+        )
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_candidates_exclude_records_the_user_cannot_read(self) -> None:
+        """A name lookup spans the repo, so it must not become a way to learn
+        that an unreadable file holds a symbol."""
+        graph = FakeGraphProvider(deny_records=["rec-c"])
+        result = await self._by_name(graph, "run")
+        assert result["symbol"]["qualified_name"] == "method:run", (
+            "with the denied namesake gone the name is unambiguous"
+        )
