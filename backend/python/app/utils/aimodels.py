@@ -1018,7 +1018,8 @@ def _reasoning_effort_kwargs(
     in LangChain, so callers must never pass it unconditionally.
 
     When ``reasoning_effort`` is absent (no explicit user choice and no agent
-    default), a reasoning-capable model defaults to ``DEFAULT_REASONING_EFFORT``
+    default), a reasoning-capable model falls back to its configured
+    ``defaultReasoningEffort`` (if any), or ``DEFAULT_REASONING_EFFORT``
     ("high") rather than silently omitting the parameter and letting each
     provider fall back to its own default — those vary per provider/model and
     are often a lower, cheaper tier than a user picking a "reasoning" model
@@ -1118,7 +1119,13 @@ def _reasoning_effort_kwargs(
     if api_mode == LLMApiMode.NO_REASONING_WITH_TOOLS.value:
         return {}
 
-    effort_input = reasoning_effort or DEFAULT_REASONING_EFFORT
+    model_default = config.get("defaultReasoningEffort")
+    if not model_default:
+        configuration = config.get("configuration")
+        if isinstance(configuration, dict):
+            model_default = configuration.get("defaultReasoningEffort")
+
+    effort_input = reasoning_effort or model_default or DEFAULT_REASONING_EFFORT
     if effort_input == "none":
         # "none" is no longer offered as a UI choice (see the docstring
         # above) — floor it unconditionally rather than only when a
