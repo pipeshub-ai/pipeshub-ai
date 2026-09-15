@@ -12,14 +12,13 @@ Questions: [Discord](https://discord.com/invite/K5RskzJBm2), [GitHub Discussions
 
 ## Table of Contents
 - [Finding something to work on](#finding-something-to-work-on)
-- [Editing the docs](#editing-the-docs)
+- [Documentation](#documentation)
 - [New connectors](#new-connectors)
 - [Setting Up the Development Environment](#setting-up-the-development-environment)
 - [Project Architecture](#project-architecture)
 - [Contribution Workflow](#contribution-workflow)
 - [Code Style Guidelines](#code-style-guidelines)
 - [Testing](#testing)
-- [Documentation](#documentation)
 - [Community Guidelines](#community-guidelines)
 
 ## Finding something to work on
@@ -32,13 +31,20 @@ Labeled issues are a good place to start, but other useful changes are welcome t
 
 Comment on the issue so others know you are on it. If you already have a fix, open a pull request and link the issue, or describe the problem in the PR.
 
-## Editing the docs
+## Documentation
 
-Edit markdown in this repository (`README.md`, `docs/`, this file) or in [`pipeshub-ai/documentation`](https://github.com/pipeshub-ai/documentation) (that repo is what [docs.pipeshub.com](https://docs.pipeshub.com) publishes).
+Documentation lives in two places:
+
+- This repository: `README.md`, `docs/`, this file, and OpenAPI at `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml`. Update the OpenAPI file when you change HTTP routes.
+- [`pipeshub-ai/documentation`](https://github.com/pipeshub-ai/documentation), which is what [docs.pipeshub.com](https://docs.pipeshub.com) publishes.
+
+To change a page:
 
 1. Fork the repo that holds the file.
-2. Change the page. Match versions, paths, and install commands to this file on `main`.
+2. Edit it. Match versions, paths, and install commands to this repository on `main`.
 3. Open a pull request.
+
+Markdown-only work does not need Docker or a local stack. If you add or change a product feature, update the page that describes it in the same PR when you can.
 
 ## New connectors
 
@@ -48,34 +54,103 @@ A new connector is a large piece of work. The [connector playbook](CONNECTOR_INT
 
 Skip this section if you are only editing documentation.
 
-**Run the product in Docker** (stores included):
+There are two ways to run the product locally: everything in Docker, or services from source. Use Docker to try a full instance. Use from-source when you are editing Node, Python, or the frontend.
+
+### Run everything in Docker
+
+Stores and application processes come up together:
 
 ```bash
 ./install.sh --build
 ```
 
-That is the usual way to try a full instance from this repo. The rest of this section is for running services from source while you edit them.
+The rest of this section is the from-source path.
 
-Install **Python 3.12**, **Node.js 22**, **Docker**, and **LibreOffice**. On Debian/Ubuntu also `python3.12-venv` and `libmariadb-dev`; on macOS `brew install python@3.12 libreoffice mariadb-connector-c`. Windows: Python 3.12, or WSL2.
+### System packages
 
-There is no root `package.json`. Use `backend/nodejs/apps` for the API and `frontend` for the UI.
+#### Linux
 
-Copy `backend/env.template` to `backend/nodejs/apps/.env` and `backend/python/.env`. Defaults there are `DATA_STORE=neo4j`, `MESSAGE_BROKER=redis`, and `KV_STORE_TYPE=redis`. Start only the four stores that match those defaults (passwords and the Qdrant key must match the `.env`):
+```bash
+sudo apt update
+sudo apt install python3.12-venv
+sudo apt-get install libreoffice
+sudo apt install libmariadb-dev
+```
+
+#### macOS
+
+Install [Homebrew](https://brew.sh) if `brew` is missing, then:
+
+```bash
+brew install python@3.12
+brew install libreoffice
+brew install mariadb-connector-c
+```
+
+#### Windows
+
+Install Python 3.12, or use WSL2 and follow the Linux steps.
+
+### Application tools
+
+1. **Docker** — Redis, Qdrant, Neo4j, and MongoDB (the default stores below)
+2. **Node.js 22** — API in `backend/nodejs/apps`, frontend in `frontend`. There is no root `package.json`.
+3. **Python 3.12** — FastAPI services in `backend/python`
+
+### Environment files
+
+Copy `backend/env.template` into both backend trees. Defaults are `DATA_STORE=neo4j`, `MESSAGE_BROKER=redis`, and `KV_STORE_TYPE=redis`.
+
+```bash
+cp backend/env.template backend/nodejs/apps/.env
+cp backend/env.template backend/python/.env
+```
+
+Passwords and the Qdrant API key in those files must match the containers in the next step.
+
+### Default stores
+
+Start the four stores those defaults use.
+
+**Redis** (config KV and Redis Streams as the event bus):
 
 ```bash
 docker run -d --name redis --restart always -p 6379:6379 redis:7.4-bookworm
+```
+
+**Qdrant** (vectors). The API key must match `QDRANT_API_KEY` in `.env`:
+
+```bash
 docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.15
+```
+
+**Neo4j** (graph). The password must match `NEO4J_PASSWORD` in `.env`. Neo4j Desktop is fine instead of the container; Bolt stays on `localhost:7687`.
+
+```bash
 docker run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
   -e NEO4J_AUTH=neo4j/your_neo4j_password neo4j:5.26.0
+```
+
+**MongoDB** (sessions and metadata). Username and password must match `MONGO_URI` in `.env`:
+
+```bash
 docker run -d --name mongodb --restart always -p 27017:27017 \
   -e MONGO_INITDB_ROOT_USERNAME=admin \
   -e MONGO_INITDB_ROOT_PASSWORD=password \
   mongo:8.0.17
 ```
 
-Neo4j Desktop is fine instead of the Neo4j container; Bolt stays on `localhost:7687`. Kafka, ZooKeeper, and etcd are not required unless you set `MESSAGE_BROKER=kafka` or `KV_STORE_TYPE=etcd`. ArangoDB is the other graph option (`DATA_STORE=arangodb`); do not run it next to Neo4j. If you switch graph or KV backend on existing data, reset the deployment key in the KV store first.
+### Optional stores
 
-**Node.js API** (port 3000):
+Do not start these unless you change the env defaults:
+
+- ArangoDB instead of Neo4j: `DATA_STORE=arangodb`. Do not run it next to Neo4j.
+- Kafka instead of Redis Streams: `MESSAGE_BROKER=kafka` (ZooKeeper and Kafka).
+- etcd instead of Redis KV: `KV_STORE_TYPE=etcd`.
+
+If you switch graph or KV backend on existing data, reset the deployment key in the KV store first.
+
+### Node.js API (port 3000)
 
 ```bash
 cd backend/nodejs/apps
@@ -83,7 +158,9 @@ npm install
 npm run dev
 ```
 
-**Python services.** Once, then start each process in its own terminal. Start **embedding** before indexing and query when you use the local HuggingFace model:
+### Python services
+
+Create the virtualenv once. Then start each process in its own terminal, with the venv activated. Start **embedding** before indexing and query when you use the local HuggingFace model.
 
 ```bash
 cd backend/python
@@ -102,7 +179,9 @@ python -m app.docling_main
 
 Parsing (`app.parsing_main`, 8092) and extraction (`app.extraction_main`, 8093) only when `USE_PARSING_SERVICE=true`.
 
-**Frontend** (port 3001; Next.js uses 3000 if `PORT` is unset — that collides with the API):
+### Frontend (port 3001)
+
+Next.js uses port 3000 if `PORT` is unset, which collides with the API.
 
 ```bash
 cd frontend
@@ -111,9 +190,15 @@ npm install
 PORT=3001 npm run dev
 ```
 
-Open `http://localhost:3001`. On Windows PowerShell, `Copy-Item` instead of `cp` and `$env:PORT = '3001'`.
+Open `http://localhost:3001`. On Windows PowerShell, use `Copy-Item` instead of `cp` and `$env:PORT = '3001'`.
 
-If the UI or API looks down, `./scripts/check_system_health.sh` pings the API (3000), UI (3001), and the Python services. Parsing and extraction are checked only with `USE_PARSING_SERVICE=true`.
+### Health check
+
+```bash
+./scripts/check_system_health.sh
+```
+
+This pings the API (3000), the UI (3001), and the Python services. Parsing and extraction are checked only with `USE_PARSING_SERVICE=true`.
 
 ## Project Architecture
 
@@ -387,13 +472,6 @@ The following are generated during test runs and are gitignored:
 - `.auth/` — Saved browser auth state
 - `test-results/` — Test artifacts (screenshots, traces)
 - `playwright-report/` — HTML report
-
-## Documentation
-
-- Update documentation for any new features or changes
-- Document APIs with appropriate comments and examples
-- Keep README and other guides up to date
-- Published docs live in [`pipeshub-ai/documentation`](https://github.com/pipeshub-ai/documentation) and appear at [docs.pipeshub.com](https://docs.pipeshub.com). Update OpenAPI (`backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml`) when you change HTTP routes.
 
 ## Community Guidelines
 
