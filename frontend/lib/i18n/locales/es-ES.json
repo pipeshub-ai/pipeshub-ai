@@ -3194,5 +3194,28 @@
     "skip": "Omitir",
     "next": "Siguiente",
     "submit": "Enviar"
+  },
+  "feedback": {
+    "menuLabel": "Enviar comentarios / Solicitud de función",
+    "title": "Enviar comentarios / Solicitud de función",
+    "subtitle": "Cuéntanos un problema o cómo podemos mejorar la plataforma.",
+    "kindIssue": "Comentarios",
+    "kindFeedback": "Solicitud de función",
+    "descriptionPlaceholder": "¿Qué ocurrió o qué deberíamos mejorar?",
+    "addFiles": "Añadir archivos",
+    "removeFile": "Quitar",
+    "fileHint": "Opcional. Hasta 5 archivos, 5 MB cada uno. Imágenes, PDF, texto o CSV.",
+    "cancel": "Cancelar",
+    "submit": "Enviar",
+    "success": "Gracias, hemos recibido tus comentarios.",
+    "submitError": "No se pudo enviar. Inténtalo de nuevo.",
+    "descriptionTooShort": "Añade un poco más de detalle (al menos 10 caracteres).",
+    "invalidType": "Ese tipo de archivo no es compatible.",
+    "fileTooLarge": "Cada archivo debe ser de 5 MB o menos.",
+    "tooManyFiles": "Puedes adjuntar hasta 5 archivos.",
+    "smtpNotConfigured": "SMTP no está configurado",
+    "smtpNotConfiguredAdmin": "Configura SMTP primero y luego envía comentarios.",
+    "smtpConfigureAction": "Configurar SMTP",
+    "smtpNotConfiguredMember": "Pide a tu administrador que configure SMTP primero y vuelve a intentarlo."
   }
 }

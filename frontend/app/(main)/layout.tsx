@@ -38,6 +38,7 @@ import { FullNameDialog } from './components/full-name-dialog'
 import { ServerUrlGuard } from '@/app/components/electron/server-url-setup'
 import { NotificationProvider } from './notifications/websocket-manager'
 import { NotificationsPanel } from './notifications/panel'
+import { SendFeedbackDialog } from '@/config'
 
 // Extra pixels beyond sidebarWidth needed to accommodate the "More Chats"
 // secondary panel that SidebarBase adds when open (it widens the cluster).
@@ -283,6 +284,7 @@ function AppLayout({
           open={showFullNameDialog}
           onSuccess={handleFullNameSuccess}
         />
+        <SendFeedbackDialog key="send-feedback-dialog" />
         {/* User background survey — shown once after login/onboarding */}
         <UserBackgroundSurvey key="user-background-survey" />
         {/* Onboarding tour card — bottom-left corner, guides new users through first steps.
