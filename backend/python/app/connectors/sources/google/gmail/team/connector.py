@@ -18,6 +18,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -2270,6 +2271,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                                 connector_name=self.connector_name,
                                 connector_id=self.connector_id,
                                 group_type=RecordGroupType.MAILBOX,
+                                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                                 source_created_at=user.source_created_at
                             )
 

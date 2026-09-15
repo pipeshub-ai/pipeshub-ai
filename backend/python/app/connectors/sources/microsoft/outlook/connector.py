@@ -19,6 +19,7 @@ from msgraph.generated.models.user import User  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -951,6 +952,7 @@ class OutlookConnector(BaseConnector):
                 connector_name=Connectors.OUTLOOK,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.GROUP_MAILBOX,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 web_url=None,
                 source_created_at=created_at,
                 source_updated_at=created_at,
@@ -1875,6 +1877,7 @@ class OutlookConnector(BaseConnector):
                 connector_name=Connectors.OUTLOOK,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.MAILBOX,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 web_url=None,
                 source_created_at=None,
                 source_updated_at=None,

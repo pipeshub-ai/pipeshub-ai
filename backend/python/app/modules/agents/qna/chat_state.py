@@ -458,6 +458,11 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     has_sql_knowledge to gate the execute_sql_query tool in tool_system.
     """
 
+    logger.info(
+        "build_initial_state: disable_semantic=%s, disable_pattern_match=%s",
+        chat_query.get("disable_semantic"), chat_query.get("disable_pattern_match"),
+    )
+
     # Get user-defined system prompt or use default
     system_prompt = chat_query.get("systemPrompt", DEFAULT_AGENT_SYSTEM_PROMPT)
     instructions = chat_query.get("instructions")
@@ -655,4 +660,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "has_slack_connector": has_slack_connector,
         "has_slack_knowledge": has_slack_knowledge,
         "has_ui_client": bool(client_name),
+
+        "disable_semantic": bool(chat_query.get("disable_semantic", False)),
+        "disable_pattern_match": bool(chat_query.get("disable_pattern_match", False)),
     }

@@ -837,6 +837,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 connector_id=record_dict.get("connector_id", ""),
                 source_created_at=record_dict.get("source_created_at") or None,
                 source_updated_at=record_dict.get("source_updated_at") or None,
+                parent_external_record_id=record_dict.get("parent_external_record_id"),
                 semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
             )
 
@@ -854,6 +855,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
         "mime_type": record_dict.get("mime_type", ""),
         "source_created_at": record_dict.get("source_created_at") or None,
         "source_updated_at": record_dict.get("source_updated_at") or None,
+        "parent_external_record_id": record_dict.get("parent_external_record_id"),
         "location": record_dict.get("location"),
         "weburl": record_dict.get("weburl", ""),
         "semantic_metadata": SemanticMetadata(**record_dict.get("semantic_metadata", {})),
@@ -1067,12 +1069,25 @@ def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, An
     record_dict: dict[str, Any] = {
         "id": base_doc.get("id") or base_doc.get("_key", ""),
         "version": base_doc.get("version", 1),
-        "semantic_metadata": {},
     }
     for graph_key, record_key_name in _GRAPH_TO_RECORD_FIELDS.items():
         record_dict[record_key_name] = base_doc.get(graph_key) or ""
     record_dict["source_created_at"] = base_doc.get("sourceCreatedAtTimestamp")
     record_dict["source_updated_at"] = base_doc.get("sourceLastModifiedTimestamp")
+    record_dict["location"] = base_doc.get("location") or ""
+    record_dict["parent_external_record_id"] = base_doc.get("externalParentId")
+    sem: dict[str, Any] = {}
+    if base_doc.get("summary"):
+        sem["summary"] = base_doc["summary"]
+    if base_doc.get("topics"):
+        sem["topics"] = base_doc["topics"]
+    if base_doc.get("categories"):
+        sem["categories"] = base_doc["categories"]
+    for level in (1, 2, 3):
+        val = base_doc.get(f"subCategoryLevel{level}") or base_doc.get(f"sub_category_level_{level}")
+        if val:
+            sem[f"sub_category_level_{level}"] = val
+    record_dict["semantic_metadata"] = sem
     return record_dict
 
 async def _fetch_type_specific_doc(
