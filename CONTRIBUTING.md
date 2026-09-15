@@ -69,7 +69,7 @@ The product is two kinds of process:
 Two ways to run it locally:
 
 1. **Everything in Docker** — one installer starts the stores and the application services as containers. Use this to try a full instance without starting each process yourself.
-2. **Application services from source** — you still start the stores in Docker, then you run the API, Python services, and UI yourself from the files in this checkout (`npm run dev`, `python -m app....`). Your edits load without rebuilding a Docker image. Use this when you are changing that code.
+2. **Application services from source** — you still start the stores in Docker, then you run the API, Python services, and UI yourself from the files in this checkout (`npm run dev`, `python -m app.embedding_main`, and so on). Your edits load without rebuilding a Docker image. Use this when you are changing that code.
 
 ### Run everything in Docker
 
@@ -125,7 +125,7 @@ Passwords and the Qdrant API key in those files must match the containers in the
 
 ### Default stores
 
-Start the four stores those defaults use.
+Start Redis, Qdrant, Neo4j, and MongoDB. Passwords and keys must match the `.env` files above.
 
 **Redis** (config KV and Redis Streams as the event bus):
 
