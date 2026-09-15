@@ -322,16 +322,42 @@ def create_second_user(client: PipeshubClient) -> SecondUser:
     )
 
 
-def delete_second_user(client: PipeshubClient, user: SecondUser) -> None:
+def delete_second_user(
+    client: PipeshubClient, user: SecondUser, strict: bool = False
+) -> None:
+    """Remove the disposable account.
+
+    ``strict`` decides what a failure means. The default stays lenient because
+    existing suites rely on teardown never failing a run. Callers that care —
+    these accounts are real logins in a shared environment, and one that
+    outlives its test is a credential nobody knows exists — pass ``strict=True``
+    and get an exception on a transport error or a non-2xx reply.
+    """
     _delete_credentials(client.org_id, user.user_id)
     try:
-        requests.delete(
+        response = requests.delete(
             f"{client.base_url}/api/v1/users/{user.user_id}",
             headers=client._headers(),
             timeout=client.timeout_seconds,
         )
-    except Exception:  # noqa: BLE001 - teardown must not fail the run
-        logger.warning("Could not delete test user %s", user.user_id)
+    except Exception as exc:  # noqa: BLE001 - lenient callers must not fail
+        if strict:
+            raise RuntimeError(
+                f"Could not delete test user {user.email}: {exc}"
+            ) from exc
+        logger.warning("Could not delete test user %s: %s", user.user_id, exc)
+        return
+
+    # requests does not raise on 4xx/5xx, so the status has to be read: a
+    # refused delete looks exactly like a successful one otherwise.
+    if response.status_code >= 400:
+        message = (
+            f"Deleting test user {user.email} returned "
+            f"{response.status_code}: {response.text[:200]}"
+        )
+        if strict:
+            raise RuntimeError(message)
+        logger.warning(message)
 
 
 @pytest.fixture(scope="session")

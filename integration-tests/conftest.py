@@ -15,7 +15,10 @@ import pytest_asyncio
 from dotenv import load_dotenv
 
 if TYPE_CHECKING:
+    from helper.blob_store import BlobStoreProbe
     from helper.graph_provider import GraphProviderProtocol
+    from helper.mongo_store import MongoStoreProbe
+    from helper.vector_store import VectorStoreProbe
 
 _THIS_DIR = Path(__file__).resolve().parent
 _HELPER_DIR = _THIS_DIR / "helper"
@@ -471,6 +474,48 @@ def ai_models_configured(
         ),
     ) as models:
         yield models.llm
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def vector_store() -> AsyncGenerator["VectorStoreProbe", None]:
+    """Read-only probe for what the vector database still holds.
+
+    Session-scoped like ``graph_provider``: it holds one client, and the
+    deletion suites ask it many small questions.
+    """
+    from helper.vector_store import VectorStoreProbe
+
+    probe = VectorStoreProbe()
+    try:
+        yield probe
+    finally:
+        await probe.close()
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def blob_store() -> AsyncGenerator["BlobStoreProbe", None]:
+    """Read-only probe for what blob storage still holds."""
+    from helper.blob_store import BlobStoreProbe
+
+    yield BlobStoreProbe()
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def mongo_store() -> AsyncGenerator["MongoStoreProbe", None]:
+    """Read-only probe for the storage documents MongoDB still holds."""
+    from helper.mongo_store import MongoStoreProbe
+
+    probe = MongoStoreProbe()
+    try:
+        yield probe
+    finally:
+        probe.close()
+
+
+@pytest.fixture(scope="session")
+def test_org_id(pipeshub_client) -> str:
+    """The tenant every store scopes its data by."""
+    return pipeshub_client.org_id
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
