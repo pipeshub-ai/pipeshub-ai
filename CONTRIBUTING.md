@@ -10,6 +10,18 @@ Welcome. Pick a labeled issue below, or open a pull request with your change.
 
 Questions: [Discord](https://discord.com/invite/K5RskzJBm2), [GitHub Discussions](https://github.com/pipeshub-ai/pipeshub-ai/discussions), or open an issue.
 
+## Table of Contents
+- [Finding something to work on](#finding-something-to-work-on)
+- [Editing the docs](#editing-the-docs)
+- [New connectors](#new-connectors)
+- [Setting Up the Development Environment](#setting-up-the-development-environment)
+- [Project Architecture](#project-architecture)
+- [Contribution Workflow](#contribution-workflow)
+- [Code Style Guidelines](#code-style-guidelines)
+- [Testing](#testing)
+- [Documentation](#documentation)
+- [Community Guidelines](#community-guidelines)
+
 ## Finding something to work on
 
 Labeled issues are a good place to start, but other useful changes are welcome too.
@@ -31,18 +43,6 @@ Edit markdown in this repository (`README.md`, `docs/`, this file) or in [`pipes
 ## New connectors
 
 A new connector is a large piece of work. The [connector playbook](CONNECTOR_INTEGRATION_PLAYBOOK.md) is the starting point; Discord is a good place to talk through scope first.
-
-## Table of Contents
-- [Finding something to work on](#finding-something-to-work-on)
-- [Editing the docs](#editing-the-docs)
-- [New connectors](#new-connectors)
-- [Setting Up the Development Environment](#setting-up-the-development-environment)
-- [Project Architecture](#project-architecture)
-- [Contribution Workflow](#contribution-workflow)
-- [Code Style Guidelines](#code-style-guidelines)
-- [Testing](#testing)
-- [Documentation](#documentation)
-- [Community Guidelines](#community-guidelines)
 
 ## Setting Up the Development Environment
 
