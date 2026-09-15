@@ -80,6 +80,14 @@ jobs:
           cd frontend
           npm run test:unit
 
+      # The Electron local-sync tests drive a real file watcher against a real
+      # temporary directory, so they are slower than the vitest suite (~45s) and
+      # must run one file at a time — see the note on test:electron:local-sync.
+      - name: Run Electron local-sync tests
+        run: |
+          cd frontend
+          npm run test:electron:local-sync
+
       - name: Build frontend
         run: |
           cd frontend
