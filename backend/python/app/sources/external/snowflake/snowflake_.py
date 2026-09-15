@@ -8,7 +8,7 @@ All methods have explicit parameter signatures - NO Any type, NO **kwargs.
 
 import logging
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 from urllib.parse import urlencode
 
 from app.sources.client.http.http_request import HTTPRequest
@@ -958,6 +958,7 @@ class SnowflakeDataSource:
             return SnowflakeResponse(
                 success=response.status < ERROR_STATUS_CODE,
                 data=response_data,
+                status_code=response.status,
                 message="Successfully executed get_view" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
             )
         except Exception as e:
@@ -3906,10 +3907,15 @@ class SnowflakeDataSource:
         try:
             response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
+            succeeded = response.status < ERROR_STATUS_CODE
+            failure = {} if succeeded or not isinstance(response_data, dict) else response_data
             return SnowflakeResponse(
-                success=response.status < ERROR_STATUS_CODE,
+                success=succeeded,
                 data=response_data,
-                message="Successfully executed SQL statement" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
+                status_code=response.status,
+                sql_state=failure.get("sqlState"),
+                error=failure.get("message"),
+                message="Successfully executed SQL statement" if succeeded else f"Failed with status {response.status}"
             )
         except Exception as e:
             return SnowflakeResponse(success=False, error=str(e), message="Failed to execute SQL statement")
@@ -4489,39 +4495,4 @@ class SnowflakeDataSource:
         except Exception as e:
             return SnowflakeResponse(success=False, error=str(e), message="Failed to get dynamic table")
 
-    async def get_stage_file_stream(
-        self,
-        database: str,
-        schema: str,
-        stage: str,
-        relative_path: str
-    ) -> Any:
-        """Get a stream of a file from a stage.
-        
-        Args:
-            database: Database name
-            schema: Schema name
-            stage: Stage name
-            relative_path: Path to file in stage
-            
-        Returns:
-            Stream/Response object
-        """
-        # Constructing a request specific for file retrieval
-        # Note: This path structure is hypothetical for the REST API wrapper pattern
-        url = self.base_url + f"/databases/{database}/schemas/{schema}/stages/{stage}/files/{relative_path}"
-        
-        headers = self.http.headers.copy()
-        
-        # Ensure we accept binary stream
-        headers["Accept"] = "*/*"
-        
-        request = HTTPRequest(
-            method="GET",
-            url=url,
-            headers=headers
-        )
-        
-        # We return the raw response context manager to allow streaming
-        return await self.http.execute(request)
 

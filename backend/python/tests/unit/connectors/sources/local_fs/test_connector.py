@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import os
@@ -2849,7 +2850,7 @@ class TestStreamRecordLocalFile:
             await folder_connector.stream_record(rec)
         assert ei.value.status_code == HttpStatusCode.NOT_FOUND.value
 
-    async def test_returns_400_when_root_unconfigured(self, folder_connector):
+    async def test_returns_409_when_root_unconfigured(self, folder_connector):
         folder_connector.config_service.get_config = AsyncMock(
             return_value={"sync": {SYNC_ROOT_PATH_KEY: ""}}
         )
@@ -2868,9 +2869,9 @@ class TestStreamRecordLocalFile:
         )
         with pytest.raises(HTTPException) as ei:
             await folder_connector.stream_record(rec)
-        assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert ei.value.status_code == HttpStatusCode.CONFLICT.value
 
-    async def test_returns_400_when_root_invalid(self, folder_connector):
+    async def test_returns_409_when_root_invalid(self, folder_connector):
         folder_connector.config_service.get_config = AsyncMock(
             return_value={
                 "sync": {SYNC_ROOT_PATH_KEY: "/no/such/dir/local-fs-x"}
@@ -2891,9 +2892,10 @@ class TestStreamRecordLocalFile:
         )
         with pytest.raises(HTTPException) as ei:
             await folder_connector.stream_record(rec)
-        assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert ei.value.status_code == HttpStatusCode.CONFLICT.value
+        assert "/no/such/dir/local-fs-x" not in str(ei.value.detail)
 
-    async def test_local_path_resolve_oserror_returns_400(
+    async def test_local_path_resolve_oserror_returns_500(
         self, folder_connector, tmp_path, monkeypatch
     ):
         """Local-file branch: ``(sync_root / rel_path).resolve()`` can raise ``OSError``."""
@@ -2930,8 +2932,8 @@ class TestStreamRecordLocalFile:
 
         with pytest.raises(HTTPException) as ei:
             await folder_connector.stream_record(rec)
-        assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
-        assert "Invalid file path" in str(ei.value.detail)
+        assert ei.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+        assert "broken symlink chain" not in str(ei.value.detail)
 
 
 # --------------------------------------------------------------------------- #
@@ -3377,7 +3379,7 @@ class TestUploadStorageFileNonJsonBody:
 
 @pytest.mark.asyncio
 class TestStreamRecordLocalFileOsError:
-    async def test_open_oserror_raises_400(
+    async def test_open_permission_error_raises_403(
         self, folder_connector, tmp_path, monkeypatch
     ):
         f = tmp_path / "data.bin"
@@ -3406,12 +3408,13 @@ class TestStreamRecordLocalFileOsError:
 
         def _boom(self, *args, **kwargs):
             if self == f.resolve():
-                raise OSError("permission denied")
+                raise PermissionError(errno.EACCES, "Permission denied", str(f))
             return original_open(self, *args, **kwargs)
 
         monkeypatch.setattr(_Path, "open", _boom)
 
         with pytest.raises(HTTPException) as ei:
             await folder_connector.stream_record(rec)
-        assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
-        assert "Cannot read file" in str(ei.value.detail)
+        assert ei.value.status_code == HttpStatusCode.FORBIDDEN.value
+        # The absolute server path must not reach the client.
+        assert str(f) not in str(ei.value.detail)

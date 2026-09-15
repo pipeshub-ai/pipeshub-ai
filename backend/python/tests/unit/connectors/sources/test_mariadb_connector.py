@@ -1245,7 +1245,81 @@ class TestStreamRecord:
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_table_info_failure_does_not_stream_empty_table(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        record = MagicMock()
+        record.record_type = RecordType.SQL_TABLE
+        record.external_record_id = "testdb.users"
+        connector.data_source.get_table_info = AsyncMock(
+            return_value=_mdb_response(False, None, error="Table not found")
+        )
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.stream_record(record)
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_row_read_failure_does_not_stream_empty_rows(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.database_name = "testdb"
+        connector.connector_name = Connectors.MARIADB
+
+        record = MagicMock()
+        record.record_type = RecordType.SQL_TABLE
+        record.external_record_id = "testdb.users"
+
+        connector.data_source.get_table_info = AsyncMock(
+            return_value=_mdb_response(True, {"columns": [{"name": "id"}]})
+        )
+        connector.data_source.get_foreign_keys = AsyncMock(return_value=_mdb_response(True, []))
+        connector.data_source.get_primary_keys = AsyncMock(return_value=_mdb_response(True, []))
+
+        denied = Exception("access denied")
+        denied.errno = 1142
+        connector.data_source.fetch_table_rows = AsyncMock(side_effect=denied)
+
+        from fastapi import HTTPException
+        with patch(
+            "app.connectors.sources.mariadb.connector.load_connector_filters",
+            new_callable=AsyncMock,
+        ) as mock_load:
+            mock_sync = MagicMock()
+            mock_sync.get_value.return_value = 100
+            mock_load.return_value = (mock_sync, MagicMock())
+
+            with pytest.raises(HTTPException) as exc_info:
+                await connector.stream_record(record)
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_constraint_failure_does_not_stream_hollow_table(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        record = MagicMock()
+        record.record_type = RecordType.SQL_TABLE
+        record.external_record_id = "testdb.users"
+
+        connector.data_source.get_table_info = AsyncMock(
+            return_value=_mdb_response(True, {"columns": [{"name": "id"}]})
+        )
+        connector.data_source.get_foreign_keys = AsyncMock(
+            return_value=_mdb_response(
+                False,
+                None,
+                error="SELECT command denied to user 'x'@'y' for table 'key_column_usage'",
+            )
+        )
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.stream_record(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_raises_for_unsupported_record_type(self):

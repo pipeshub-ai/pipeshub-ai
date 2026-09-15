@@ -20,6 +20,8 @@ import pytest
 
 from fastapi import HTTPException
 
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import to_stream_error
 from app.connectors.sources.github_teams.comments import (
     CommentsHelper,
     _file_type_from_url,
@@ -222,8 +224,11 @@ class TestFetchAttachmentContent:
         c = make_mock_connector()
         helper = CommentsHelper(c)
         record = _attachment_record()
-        with pytest.raises(Exception):
+        with pytest.raises(HTTPException) as exc:
             [chunk async for chunk in helper.fetch_attachment_content(record)]
+        # Our stored metadata is incomplete; GitHub has not said the attachment
+        # is gone, so this must not claim a deletion.
+        assert exc.value.status_code == HttpStatusCode.UNPROCESSABLE_ENTITY.value
 
     async def test_streams_from_external_id_not_weburl(self) -> None:
         """weburl is the parent issue/PR page for humans; bytes must come from
@@ -648,19 +653,26 @@ class TestFetchAttachmentContentSizeLimit:
             [chunk async for chunk in helper.fetch_attachment_content(record)]
         assert exc.value.status_code == 413
 
-    async def test_generic_stream_error_is_wrapped(self) -> None:
+    async def test_source_status_error_propagates_unwrapped(self) -> None:
+        """The SDK error must reach the router intact: re-wrapping it in a bare
+        Exception erased the status and turned every download failure into a 500."""
+        import httpx
+
         c = make_mock_connector()
         helper = CommentsHelper(c)
+        request = httpx.Request("GET", "https://github.com/user-attachments/files/1/x.pdf")
+        response = httpx.Response(HttpStatusCode.FORBIDDEN.value, request=request)
 
         async def boom(weburl: str, max_bytes: int | None = None):
-            raise RuntimeError("network")
+            raise httpx.HTTPStatusError("forbidden", request=request, response=response)
             yield b""  # pragma: no cover
 
         c.data_source.get_attachment_files_content = boom
         record = _attachment_record("https://github.com/user-attachments/files/1/x.pdf")
 
-        with pytest.raises(Exception, match="Failed to fetch attachment"):
+        with pytest.raises(httpx.HTTPStatusError) as exc:
             [chunk async for chunk in helper.fetch_attachment_content(record)]
+        assert to_stream_error(exc.value).status_code == HttpStatusCode.FORBIDDEN.value
 
 
 class TestAttachmentRecordBuilding:
@@ -711,23 +723,32 @@ class TestCommentBlockFailures:
         c = make_mock_connector()
         helper = CommentsHelper(c)
         c.runtime.ds_call.side_effect = _dispatch(c, {
-            "list_issue_comments": failed_response("500"),
+            "list_issue_comments": failed_response(
+                "server error", status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value
+            ),
         })
         record, pull_request = _pr_blocks_fixture()
 
-        with pytest.raises(Exception, match="Failed to fetch conversation comments"):
+        with pytest.raises(HTTPException) as exc:
             await helper.build_pr_comment_and_diff_blocks(
                 "acme", "widgets", 1, pull_request, parent_index=0, record=record,
             )
+        assert exc.value.status_code == HttpStatusCode.BAD_GATEWAY.value
 
     async def test_issue_comment_fetch_failure_raises(self) -> None:
         c = make_mock_connector()
-        c.runtime.ds_call.side_effect = _dispatch(c, {"list_issue_comments": failed_response("500")})
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": failed_response(
+                "unauthorized", status_code=HttpStatusCode.UNAUTHORIZED.value
+            ),
+        })
         helper = CommentsHelper(c)
         record, _ = _pr_blocks_fixture()
 
-        with pytest.raises(Exception, match="Failed to fetch comments"):
+        # A revoked token must read as "reconnect" (409), never as a deleted item.
+        with pytest.raises(HTTPException) as exc:
             await helper.build_issue_comment_blocks("acme", "widgets", 1, 0, record)
+        assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
     async def test_reviews_failure_still_builds_conversation(self) -> None:
         c = make_mock_connector()
@@ -755,14 +776,17 @@ class TestCommentBlockFailures:
             "list_issue_comments": ok_response([]),
             "get_pull_reviews": ok_response([]),
             "get_pull_review_comments": ok_response([]),
-            "get_pull_file_changes": failed_response("500"),
+            "get_pull_file_changes": failed_response(
+                "not found", status_code=HttpStatusCode.NOT_FOUND.value
+            ),
         })
         record, pull_request = _pr_blocks_fixture()
 
-        with pytest.raises(Exception, match="Failed to fetch file changes"):
+        with pytest.raises(HTTPException) as exc:
             await helper.build_pr_comment_and_diff_blocks(
                 "acme", "widgets", 1, pull_request, parent_index=0, record=record,
             )
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     async def test_oversized_file_omits_full_content(self) -> None:
         c = make_mock_connector()

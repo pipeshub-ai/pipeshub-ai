@@ -17,14 +17,27 @@ class GraphQLResponse(BaseModel):
     errors: Optional[List[GraphQLError]] = None
     extensions: Optional[Dict[str, Any]] = None
     message: Optional[str] = None
+    # Carried so streaming callers can tell an expired token (401) apart from a
+    # deleted entity (404); GraphQL itself reports both as an errors array.
+    status_code: Optional[int] = None
 
     def to_json(self) -> str:
         return self.model_dump_json()
 
     @classmethod
-    def from_response(cls, response_data: Dict[str, Any]) -> "GraphQLResponse":
+    def from_response(
+        cls,
+        response_data: Dict[str, Any],
+        status_code: Optional[int] = None,
+    ) -> "GraphQLResponse":
         """Create GraphQLResponse from raw GraphQL response."""
-        success = "errors" not in response_data or not response_data["errors"]
+        # An HTTP error is a failure even when the body carries no `errors`
+        # key: a 401 whose body is `{"error": "..."}` would otherwise be
+        # reported as a successful fetch that simply returned nothing.
+        http_failed = status_code is not None and status_code >= 400
+        success = not http_failed and (
+            "errors" not in response_data or not response_data["errors"]
+        )
 
         errors = None
         if "errors" in response_data and response_data["errors"]:
@@ -43,5 +56,6 @@ class GraphQLResponse(BaseModel):
             data=response_data.get("data"),
             errors=errors,
             extensions=response_data.get("extensions"),
-            message=errors[0].message if errors else None
+            message=errors[0].message if errors else None,
+            status_code=status_code,
         )
