@@ -657,9 +657,10 @@
     "diagramRenderFailed": "無法繪製圖表",
     "showDiagramSource": "顯示原始碼",
     "hideDiagramSource": "隱藏原始碼",
+    "stoppedMarker": "已停止",
     "toasts": {
-      "stopStreamTitle": "即將推出",
-      "stopStreamDescription": "目前不支援停止產生",
+      "stopStreamTitle": "正在停止…",
+      "stopStreamDescription": "回應即將停止，已產生的部分內容將被保留。",
       "editComingSoonTitle": "即將推出",
       "editComingSoonDescription": "我們正在開發編輯功能",
       "deprecatedTools": "此代理包含已不再提供的工具。請開啟代理建構器將其移除。",

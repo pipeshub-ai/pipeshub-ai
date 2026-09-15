@@ -79,6 +79,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
     from langchain_core.messages import BaseMessage
 
+    from app.agent_loop_lib.core.context import CancellationToken
     from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.tool_schema import ToolSchema
 
@@ -232,9 +233,16 @@ class LangChainTransport(LLMTransport):
         opik_project_name: str | None = None,
         model_key: str | None = None,
         max_images_per_request: int | None = None,
+        cancellation_token: "CancellationToken | None" = None,
     ) -> None:
         self._llm = chat_model
         self._model = model_name
+        # Stop Generation (Phase 3b): checked once per streamed chunk in
+        # `stream()` — the only place mid-response cancellation can act,
+        # since `complete()` makes one un-chunked provider call with no
+        # earlier exit point. `None` for every transport built without a
+        # `runId` (background/test runs) — `stream()`'s check is a no-op.
+        self._cancellation_token = cancellation_token
         # Final enforcement of this model's image cap (see `image_guard`).
         # `None` means "not wired by this caller" and leaves the messages
         # untouched -- selection at the source already bounded them.
@@ -774,10 +782,24 @@ class LangChainTransport(LLMTransport):
         original_exc: Exception | None = None
         retried = False
         relocated_images = False
+        # Stop Generation (Phase 3b): set once the token fires mid-stream —
+        # short-circuits the retry/fallback logic below (a cancelled call
+        # is not a failure to retry) and overrides `stop_reason` after the
+        # loop regardless of how far generation got.
+        cancelled = False
         current_llm = lc_llm
         while True:
             try:
                 async for chunk in current_llm.astream(lc_messages, config=self._langchain_config()):
+                    if self._cancellation_token is not None and self._cancellation_token.is_cancelled:
+                        # Exiting this `async for` closes LangChain's
+                        # underlying provider stream (the `break` below is
+                        # the SAME one the natural-completion path takes),
+                        # which is what actually stops the provider from
+                        # continuing to generate/bill for tokens nobody
+                        # will read.
+                        cancelled = True
+                        break
                     chunks.append(chunk)
                     text = getattr(chunk, "content", None)
                     if isinstance(text, str) and text:
@@ -929,10 +951,18 @@ class LangChainTransport(LLMTransport):
 
         assistant_message = convert_assistant_message_from_langchain(final_ai_message)
         usage = token_usage_from_ai_message(final_ai_message)
-        stop_reason = (
-            StopReason.MAX_TOKENS if assistant_message.truncated
-            else self._stop_reason_from(final_ai_message)
-        )
+        if cancelled:
+            # Keep the text the user already saw; drop any tool call this
+            # chunk stream was still assembling — its arguments are
+            # truncated mid-JSON and would corrupt the tool-dispatch loop
+            # if `Agent.step()` tried to execute it.
+            assistant_message.tool_calls = None
+            stop_reason = StopReason.CANCELLED
+        else:
+            stop_reason = (
+                StopReason.MAX_TOKENS if assistant_message.truncated
+                else self._stop_reason_from(final_ai_message)
+            )
         self._log_turn_outcome(tools, final_ai_message, stop_reason)
         yield StreamCompleteEvent(
             response=ModelResponse(

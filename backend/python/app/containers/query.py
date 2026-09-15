@@ -1,5 +1,6 @@
 from dependency_injector import containers, providers
 
+from app.agents.agent_loop.cancellation.factory import build_run_cancellation_registry
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
@@ -67,6 +68,13 @@ class QueryAppContainer(BaseAppContainer):
         RerankerService,
         model_name="BAAI/bge-reranker-base",  # Choose model based on speed/accuracy needs
     )
+
+    # Stop Generation (Phase 3a): one registry per worker process, shared by
+    # every `/chat/stream`, `/{agent_id}/chat/stream`, and `/chat/cancel`
+    # request this process handles. KV-backed when a KV store is
+    # configured (always, in practice), else in-process-only — see
+    # `agents/agent_loop/cancellation/factory.py`.
+    run_cancellation_registry = providers.Singleton(build_run_cancellation_registry)
 
     # Query-specific wiring configuration
     wiring_config = containers.WiringConfiguration(

@@ -29,9 +29,12 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.core.context import CancellationToken
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
+from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.confidence import normalize as normalize_confidence
 from app.agents.agent_loop.context import AgentContext
@@ -45,6 +48,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +259,7 @@ async def run_agent_loop_stream(
     context_length: int | None = None,
     is_reasoning_model: bool = False,
     stage_timer: "StageTimer | None" = None,
+    cancellation_registry: "RunCancellationRegistry | None" = None,
 ) -> "AsyncGenerator[str, None]":
     """agent-loop counterpart to `app.api.routes.agent.stream_response()` —
     same signature/SSE wire format, so `chat_stream`'s feature-flag branch
@@ -268,6 +274,23 @@ async def run_agent_loop_stream(
     from app.utils.connector_instances import fetch_user_connector_instances
     from app.utils.execute_query import connector_instances_have_sql
     from app.utils.fetch_slack_thread import connector_instances_have_slack
+
+    # Stop Generation (Phase 3a): registered BEFORE `build_initial_state()`
+    # (never mind the try/except below) so even the "Thinking" phase —
+    # connector-flag fetch, tool/prompt wiring inside `factory.create()` —
+    # is cancellable, not just the model call. The route layer already
+    # validated `runId` (format) and, when present, that it isn't already
+    # active (see `chatbot.py`/`agent.py`'s pre-stream 409 check) before
+    # this generator ever started running.
+    run_id = query_info.get("runId") or str(uuid.uuid4())
+    cancellation_token = CancellationToken()
+    run_owner = RunOwner(
+        user_id=user_info.get("userId", ""),
+        org_id=user_info.get("orgId", ""),
+        conversation_id=query_info.get("conversationId"),
+    )
+    if cancellation_registry is not None:
+        await cancellation_registry.register(run_id, cancellation_token, run_owner)
 
     try:
         # One query feeds both flags; they used to be two identical lookups.
@@ -287,6 +310,8 @@ async def run_agent_loop_stream(
     except Exception as exc:
         log.error("agent-loop stream: failed to build initial state: %s", exc, exc_info=True)
         error_code, user_message = classify_error(str(exc))
+        if cancellation_registry is not None:
+            await cancellation_registry.unregister(run_id)
         yield _pre_stream_error_frame(protocol, user_message, error_code)
         return
 
@@ -307,6 +332,7 @@ async def run_agent_loop_stream(
         chat_state, event_sink=event_sink, protocol=protocol,
         llm_provider=llm_provider, context_length=context_length,
         is_reasoning_model=is_reasoning_model,
+        run_id=run_id, cancellation_token=cancellation_token,
     )
 
     async def _produce() -> None:
@@ -351,6 +377,17 @@ async def run_agent_loop_stream(
                     streamed_answer=streamer.streamed_answer,
                     reasoning_turns=streamer.reasoning_turns,
                     agent_confidence=structured_confidence,
+                    # Stop Generation (Phase 3b): read straight off the SAME
+                    # token every check (PRE_TURN guard, per-tool-call guard,
+                    # `LangChainTransport.stream()`'s mid-chunk check) shares
+                    # — whichever one caught it, this is true. Deliberately
+                    # not derived from `result.success`/`.error`: `Agent.
+                    # fail(..., status="cancelled")` still sets a generic
+                    # `success=False, error="Cancelled"` that `AgentResult`
+                    # has no separate typed field for.
+                    agent_cancelled=bool(
+                        cancellation_token is not None and cancellation_token.is_cancelled
+                    ),
                 )
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)
@@ -371,6 +408,8 @@ async def run_agent_loop_stream(
             await event_sink.flush()
             await queue.put(_DONE)
             log.debug("agent-loop stream: _DONE enqueued, starting cleanup")
+            if cancellation_registry is not None:
+                await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
             if context.sandbox_manager is not None:
                 try:

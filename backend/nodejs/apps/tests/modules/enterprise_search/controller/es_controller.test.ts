@@ -54,6 +54,8 @@ import {
   uploadChatAttachments,
   uploadChatAttachmentsInternal,
   deleteChatAttachment,
+  cancelConversationStream,
+  cancelAgentConversationStream,
 } from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
@@ -12846,6 +12848,121 @@ describe('Enterprise Search Controller', () => {
       // exclusive by sessionType even though merged into one aggregation.
       expect(matchStage.$or[0].sessionType).to.equal('chat')
       expect(matchStage.$or[1].sessionType).to.equal('agent')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // cancelConversationStream / cancelAgentConversationStream — Node's proxy
+  // half of Stop Generation (Phase 3c): ownership check here, `RunOwner`
+  // check on the `runId` itself happens on the Python side.
+  // -----------------------------------------------------------------------
+  describe('cancelConversationStream', () => {
+    it('forwards runId to Python /chat/cancel and returns its response on the happy path', async () => {
+      const handler = cancelConversationStream(createMockAppConfig())
+      restoreIfStubbed(ChatSession, 'findOne')
+      sinon.stub(ChatSession, 'findOne').resolves(createMockConversationDoc())
+      const executeStub = sinon
+        .stub(AIServiceCommand.prototype, 'execute')
+        .resolves({ statusCode: 200, data: { cancelled: true } } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { runId: 'run-123' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.calledWith({ cancelled: true })).to.be.true
+      expect(executeStub.calledOnce).to.be.true
+    })
+
+    it('calls next with NotFoundError when the conversation is not owned by the caller', async () => {
+      const handler = cancelConversationStream(createMockAppConfig())
+      restoreIfStubbed(ChatSession, 'findOne')
+      sinon.stub(ChatSession, 'findOne').resolves(null)
+      const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute')
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { runId: 'run-123' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(executeStub.called).to.be.false
+    })
+
+    it('calls next with a backend error when Python returns a non-200 status', async () => {
+      const handler = cancelConversationStream(createMockAppConfig())
+      restoreIfStubbed(ChatSession, 'findOne')
+      sinon.stub(ChatSession, 'findOne').resolves(createMockConversationDoc())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 500,
+        data: null,
+        msg: 'registry lookup failed',
+      } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { runId: 'run-123' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(res.json.called).to.be.false
+    })
+  })
+
+  describe('cancelAgentConversationStream', () => {
+    it('forwards runId to the same Python /chat/cancel endpoint on the happy path', async () => {
+      const handler = cancelAgentConversationStream(createMockAppConfig())
+      restoreIfStubbed(ChatSession, 'findOne')
+      sinon.stub(ChatSession, 'findOne').resolves(createMockConversationDoc({ agentKey: 'agent-1' }))
+      sinon
+        .stub(AIServiceCommand.prototype, 'execute')
+        .resolves({ statusCode: 200, data: { cancelled: true } } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { runId: 'run-456' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.calledWith({ cancelled: true })).to.be.true
+    })
+
+    it('calls next with NotFoundError when the agent conversation is not owned by the caller', async () => {
+      const handler = cancelAgentConversationStream(createMockAppConfig())
+      restoreIfStubbed(ChatSession, 'findOne')
+      sinon.stub(ChatSession, 'findOne').resolves(null)
+      const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute')
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { runId: 'run-456' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(executeStub.called).to.be.false
     })
   })
 

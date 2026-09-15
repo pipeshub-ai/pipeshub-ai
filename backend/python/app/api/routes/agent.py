@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
+from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.utils.stage_timer import StageTimer
@@ -22,7 +23,11 @@ from app.agents.chat_modes.custom_instructions import resolve_custom_instruction
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import require_scopes
-from app.api.routes.chatbot import get_llm_for_chat, load_system_prompts
+from app.api.routes.chatbot import (
+    get_llm_for_chat,
+    get_run_cancellation_registry,
+    load_system_prompts,
+)
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import REASONING_EFFORT_VALUES, validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
@@ -142,8 +147,13 @@ class ChatQuery(BaseModel):
     # labels are only valid for the request that minted them, so callers
     # that rely on record ids surviving across turns should leave this off.
     enableRecordIdShortening: bool = False
+    # Stop Generation: client-generated UUID identifying this run, so a
+    # later `POST /chat/cancel {runId}` (`chatbot.py` — one endpoint for
+    # both assistant and agent runs) can target it.
+    runId: str | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
+    _validate_run_id = field_validator("runId")(validate_run_id)
 
 
 # ============================================================================
@@ -3175,6 +3185,15 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         logger.debug("chat_stream: resolved protocol=%s (body.protocol=%r, query=%r)",
                      protocol, chat_query.protocol, request.query_params.get("protocol"))
 
+        cancellation_registry = await get_run_cancellation_registry(request)
+        # A real HTTP 409 is only possible here, before `StreamingResponse`
+        # is returned — once `_run()` starts, the response is already
+        # committed to 200. See `RunCancellationRegistry.is_active`.
+        if chat_query.runId and await cancellation_registry.is_active(chat_query.runId):
+            raise HTTPException(
+                status_code=409, detail=f"runId '{chat_query.runId}' is already active",
+            )
+
         record_event("agent_run", {
             "orgId": user_context.get("orgId"),
             "userId": user_context.get("userId"),
@@ -3752,6 +3771,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "webSearchConfig": web_search_tool_config,
                     "attachments": chat_query.attachments,
                     "enableRecordIdShortening": chat_query.enableRecordIdShortening,
+                    "runId": chat_query.runId,
                 }
 
                 client_name = request.headers.get("client-name")
@@ -3775,6 +3795,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     context_length=llm_config.get("contextLength"),
                     is_reasoning_model=bool(llm_config.get("isReasoning", False)),
                     stage_timer=timer,
+                    cancellation_registry=cancellation_registry,
                 )
 
                 async for _evt in generator:

@@ -657,9 +657,10 @@
     "diagramRenderFailed": "无法渲染图表",
     "showDiagramSource": "显示源代码",
     "hideDiagramSource": "隐藏源代码",
+    "stoppedMarker": "已停止",
     "toasts": {
-      "stopStreamTitle": "即将推出",
-      "stopStreamDescription": "暂不支持停止生成",
+      "stopStreamTitle": "正在停止…",
+      "stopStreamDescription": "响应即将停止，已生成的部分内容将被保留。",
       "editComingSoonTitle": "即将推出",
       "editComingSoonDescription": "我们正在开发编辑功能",
       "deprecatedTools": "此智能体包含已不可用的工具。请打开智能体构建器将其移除。",

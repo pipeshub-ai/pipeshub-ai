@@ -316,6 +316,10 @@ class PipesHubAgentFactory:
                 lambda: LangChainTransport(
                     llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
                     max_images_per_request=image_cap,
+                    # Stop Generation (Phase 3b): per-chunk cancellation
+                    # check inside `stream()`. `None` for requests that
+                    # never registered a `runId` — the check is then a no-op.
+                    cancellation_token=context.cancellation_token,
                 ),
                 opik_active=opik_active,
                 project_name=opik_project_name,
@@ -347,11 +351,17 @@ class PipesHubAgentFactory:
                 # they live in `agent_loop_lib` and know nothing about
                 # PipesHub's per-provider policy -- so the same net the
                 # LangChain arm applies inline is wrapped around them here.
+                # `PIPESHUB_AGENT_TRANSPORT=direct`'s own SDK transports have
+                # no `CancellationToken` wiring of their own (out of scope
+                # for Phase 3b — see `LangChainTransport.stream()`); a
+                # cancelled run on this arm still stops at the next PRE_TURN/
+                # per-tool-call check, just not mid-token.
                 return with_image_cap(direct, image_cap)
             return LangChainTransport(
                 llm, model_name=model_name,
                 opik_project_name=opik_project_name, model_key=model_key,
                 max_images_per_request=image_cap,
+                cancellation_token=context.cancellation_token,
             )
 
         transport_registry.register(
@@ -627,6 +637,12 @@ class PipesHubAgentFactory:
             opik_project_name=opik_project_name,
             skills=skill_manager,
             summarizer=PipesHubToolSummarizer(),
+            # Stop Generation (Phase 3a): `None` for callers that never
+            # registered a `runId` (background/test runs) — `Agent.__init__`
+            # only installs the `check_not_cancelled` PRE_TURN guard (and
+            # `step()`'s per-tool-call check) when this is set, so those
+            # callers are unaffected.
+            cancellation_token=context.cancellation_token,
         )
         if skill_manager is not None:
             # `hooks` here is the SAME HookRegistry instance now held by
@@ -822,7 +838,14 @@ class PipesHubAgentFactory:
         # `AgentContext.root_agent_spec`'s docstring.
         context.root_agent_spec = spec
 
-        agent = Agent(spec, runtime, session_id=session_id)
+        # Stop Generation (Phase 3a): `context.run_id`, when already set by
+        # `stream_bridge.py`/`bridge.py` from the client-supplied `runId`,
+        # becomes the root run's OWN `RunContext.run_id` — so every AG-UI
+        # frame this run emits already carries the id the client used to
+        # register the cancel-able run, with no separate mapping to keep
+        # in sync. `None` (callers that never set one) falls through to
+        # `Agent.__init__`'s own `RunContext` default (a fresh uuid4).
+        agent = Agent(spec, runtime, session_id=session_id, run_id=context.run_id)
         # `AGUIFormatter` (direct EventSink writers — see protocol/formatter.py)
         # has no Agent/RunContext reference of its own; stash the top-level
         # run_id here, the one place both `context` and the freshly-built

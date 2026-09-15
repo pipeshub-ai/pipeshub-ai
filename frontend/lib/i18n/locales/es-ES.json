@@ -615,9 +615,10 @@
     "diagramRenderFailed": "No se pudo renderizar el diagrama",
     "showDiagramSource": "Mostrar código",
     "hideDiagramSource": "Ocultar código",
+    "stoppedMarker": "Detenido",
     "toasts": {
-      "stopStreamTitle": "Próximamente",
-      "stopStreamDescription": "La detención de la generación no es compatible",
+      "stopStreamTitle": "Deteniendo…",
+      "stopStreamDescription": "La respuesta se detendrá en breve. Se conservará cualquier respuesta parcial.",
       "editComingSoonTitle": "Próximamente",
       "editComingSoonDescription": "Estamos desarrollando soporte para editar",
       "deprecatedTools": "Este agente tiene herramientas que ya no están disponibles. Abre el Agent Builder para eliminarlas.",
