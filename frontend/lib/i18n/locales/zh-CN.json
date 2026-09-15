@@ -377,6 +377,7 @@
       "subtitleExisting": "确认或更新您的 PipesHub 服务器 URL。",
       "label": "服务器 URL",
       "submit": "连接",
+      "changeServer": "更改服务器",
       "errors": {
         "empty": "请输入服务器 URL。",
         "invalid": "请输入有效的 URL（例如 http://localhost:3000）。",
@@ -1988,7 +1989,9 @@
           "needsAuth": "需要认证",
           "needsAuthTooltip": "配置已保存，但此实例仍需要认证。",
           "ready": "已完成",
-          "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。"
+          "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。",
+          "desktopOffline": "桌面端离线",
+          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。"
         },
         "sync": {
           "kind": "同步",

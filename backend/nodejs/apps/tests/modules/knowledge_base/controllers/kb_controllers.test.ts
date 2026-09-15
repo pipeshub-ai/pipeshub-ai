@@ -3,6 +3,12 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import axios from 'axios'
 import { ConnectorServiceCommand } from '../../../../src/libs/commands/connector_service/connector.service.command'
+import { registerDesktopPresence } from '../../../../src/libs/services/desktop-presence.provider'
+const makePresence = (online: boolean | null, connected: boolean | null = null) => ({
+  isLocalFsDesktopOnline: sinon.stub().returns(online),
+  isDesktopConnected: sinon.stub().returns(connected),
+})
+import { ConflictError } from '../../../../src/libs/errors/http.errors'
 import {
   BadRequestError,
   InternalServerError,
@@ -3473,5 +3479,148 @@ describe('Knowledge Base Controller', () => {
 
       expect(next.calledOnce).to.be.true
     })
+  })
+})
+
+describe('resyncConnectorRecords (Local FS desktop presence)', () => {
+  afterEach(() => {
+    sinon.restore()
+    registerDesktopPresence(null)
+  })
+
+  function stubActiveAndInstance(instance: Record<string, unknown>) {
+    const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
+    executeStub.onFirstCall().resolves({
+      statusCode: 200,
+      data: { connectors: [{ _key: 'c1' }] },
+    })
+    executeStub.onSecondCall().resolves({
+      statusCode: 200,
+      data: { connector: { _key: 'c1', isLocked: false, ...instance } },
+    })
+    return executeStub
+  }
+
+  it('answers 409 DESKTOP_OFFLINE and does not publish when the owner desktop is offline', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS', fullSync: false },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(next.called).to.be.false
+    expect(res.status.calledWith(409)).to.be.true
+    const body = res.json.firstCall.args[0]
+    expect(body.details.code).to.equal('DESKTOP_OFFLINE')
+    expect(mockRecordRelation.resyncConnectorRecords.called).to.be.false
+    // Keyed on the owner, not the caller.
+    expect(presence.isLocalFsDesktopOnline.calledOnceWithExactly('org-1', 'owner-1', 'c1')).to.be.true
+  })
+
+  it('never reports the first-enable reason on resync, even with a desktop connected', async () => {
+    const presence = makePresence(false, true)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({ params: { connectorId: 'c1' }, body: { connectorName: 'Local FS' } })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_OFFLINE')
+    expect(presence.isDesktopConnected.called).to.be.false
+  })
+
+  it('publishes when the desktop is online', async () => {
+    registerDesktopPresence(makePresence(true))
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(next.called).to.be.false
+    expect(res.status.calledWith(200)).to.be.true
+    expect(mockRecordRelation.resyncConnectorRecords.calledOnce).to.be.true
+  })
+
+  it('lets the request through when presence cannot tell', async () => {
+    registerDesktopPresence(makePresence(null))
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(res.status.calledWith(200)).to.be.true
+    expect(mockRecordRelation.resyncConnectorRecords.calledOnce).to.be.true
+  })
+
+  it('ignores presence for non-Local-FS connectors', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Google Drive', createdBy: 'owner-1' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Google Drive' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(res.status.calledWith(200)).to.be.true
+    expect(presence.isLocalFsDesktopOnline.called).to.be.false
+  })
+
+  it('still reports a running sync as a conflict before checking presence', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1', isLocked: true, status: 'SYNCING' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(next.calledOnce).to.be.true
+    expect(next.firstCall.args[0]).to.be.instanceOf(ConflictError)
+    expect(res.status.called).to.be.false
+    expect(presence.isLocalFsDesktopOnline.called).to.be.false
   })
 })

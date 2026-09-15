@@ -7,24 +7,29 @@
  */
 
 import { NextFunction, Response } from 'express';
-import axios from 'axios';
-import FormData from 'form-data';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   ConflictError,
   InternalServerError,
-  NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
+  annotateLocalFsDesktopPresence,
+  DesktopRefusalReason,
   executeConnectorCommand,
   handleBackendError,
   handleConnectorResponse,
+  respondLocalFsDesktopRefusal,
 } from '../utils/connector.utils';
+import { isLocalFsConnector } from '../../../utils/local-fs-utils';
+import {
+  isDesktopConnected,
+  isLocalFsDesktopOnline,
+} from '../../../libs/services/desktop-presence.provider';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import {
   reconcileConnectorSchedule,
@@ -36,15 +41,6 @@ import { RecordRelationService } from '../../knowledge_base/services/kb.relation
 const logger = Logger.getInstance({
   service: 'Connector Controller',
 });
-
-type JsonPrimitive = string | number | boolean | null;
-type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
-type JsonObject = { [key: string]: JsonValue };
-
-type ProxyForwardError = {
-  message?: string;
-  response?: { status?: number; data?: JsonValue };
-};
 
 // Headers we forward to the Python connector backend. Authorization carries
 // the verified caller identity (orgId/userId/role); tracing headers preserve
@@ -78,69 +74,6 @@ export const buildProxyHeaders = (
     }
   }
   return headers;
-};
-
-// Defense-in-depth ownership check at the gateway. Connector instance
-// metadata lives in the Python backend, so we cannot do a local
-// `findOne({ _id, orgId })`. Instead we probe the connector via GET using
-// the caller's auth context — a 4xx means the caller cannot see it (or it
-// does not exist), and we refuse to proxy the write. Returns NotFoundError
-// (not Forbidden) so cross-tenant probing cannot enumerate IDs by status.
-const assertConnectorAccessible = async (
-  appConfig: AppConfig,
-  connectorId: string,
-  headers: Record<string, string>,
-): Promise<void> => {
-  const probe = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
-    HttpMethod.GET,
-    headers,
-  );
-  const status = probe?.statusCode;
-  if (typeof status !== 'number' || status < 200 || status >= 300) {
-    throw new NotFoundError('Connector not found');
-  }
-};
-
-const normalizeConnectorFileEventsBody = (
-  body: JsonValue | undefined,
-): JsonValue | undefined => {
-  let candidate: JsonValue | undefined = body;
-
-  for (let i = 0; i < 3; i += 1) {
-    if (typeof candidate === 'string') {
-      const trimmed = candidate.trim();
-      if (!trimmed) {
-        return candidate;
-      }
-      try {
-        candidate = JSON.parse(trimmed) as JsonValue;
-        continue;
-      } catch {
-        return candidate;
-      }
-    }
-
-    if (
-      candidate === null ||
-      candidate === undefined ||
-      typeof candidate !== 'object' ||
-      Array.isArray(candidate)
-    ) {
-      return candidate;
-    }
-
-    const obj = candidate as JsonObject;
-    const nested = obj.body ?? obj.payload ?? obj.data;
-
-    if (nested === undefined) {
-      return candidate;
-    }
-
-    candidate = nested;
-  }
-
-  return candidate;
 };
 
 /**
@@ -509,6 +442,7 @@ export const getConnectorInstances =
         headers,
       );
 
+      annotateLocalFsDesktopPresence(connectorResponse?.data, req.user?.orgId);
       handleConnectorResponse(
         connectorResponse,
         res,
@@ -773,6 +707,7 @@ export const getConnectorInstance =
         headers,
       );
 
+      annotateLocalFsDesktopPresence(connectorResponse?.data, req.user?.orgId);
       handleConnectorResponse(
         connectorResponse,
         res,
@@ -1473,6 +1408,27 @@ export const toggleConnectorInstance =
       logger.info(`Toggling connector instance ${connectorId} with type ${type}`);
 
       const headers = buildProxyHeaders(req);
+      // Enabling sync publishes an immediate pull, so refuse up front when the
+      // owner's desktop is not connected. Agent toggles and toggle-off skip
+      // the extra round-trip.
+      if (type === 'sync') {
+        const instance = await fetchConnectorInstanceSummary(
+          connectorId,
+          appConfig,
+          headers,
+        );
+        if (
+          instance?.isActive === false &&
+          isLocalFsDesktopOffline(req, connectorId, instance)
+        ) {
+          respondLocalFsDesktopRefusal(
+            res,
+            connectorId,
+            localFsRefusalReason(req, instance),
+          );
+          return;
+        }
+      }
       const body: { type: string; fullSync?: boolean } = { type };
       if (typeof fullSync === 'boolean') {
         body.fullSync = fullSync;
@@ -1512,124 +1468,6 @@ export const toggleConnectorInstance =
       const handledError = handleBackendError(
         error,
         'toggle connector instance',
-      );
-      next(handledError);
-    }
-  };
-
-export const submitConnectorFileEvents =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorId } = req.params;
-      const { userId } = req.user || {};
-
-      if (!userId) {
-        throw new UnauthorizedError('User authentication required');
-      }
-      if (!connectorId) {
-        throw new BadRequestError('Connector ID is required');
-      }
-
-      const headers = buildProxyHeaders(req);
-      await assertConnectorAccessible(appConfig, connectorId, headers);
-      const payload = normalizeConnectorFileEventsBody(req.body);
-
-      const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/file-events`,
-        HttpMethod.POST,
-        headers,
-        payload,
-      );
-
-      handleConnectorResponse(
-        connectorResponse,
-        res,
-        'Submitting connector file events',
-        'Failed to submit connector file events',
-      );
-    } catch (error) {
-      const err = error as ProxyForwardError;
-      logger.error('Error submitting connector file events', {
-        error: err.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: err.response?.status,
-        data: err.response?.data,
-      });
-      const handledError = handleBackendError(
-        error,
-        'submit connector file events',
-      );
-      next(handledError);
-    }
-  };
-
-export const submitConnectorFileEventUploads =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorId } = req.params;
-      const { userId } = req.user || {};
-
-      if (!userId) {
-        throw new UnauthorizedError('User authentication required');
-      }
-      if (!connectorId) {
-        throw new BadRequestError('Connector ID is required');
-      }
-      if (!req.body?.manifest) {
-        throw new BadRequestError("Multipart field 'manifest' is required");
-      }
-
-      const headers = buildProxyHeaders(req);
-      await assertConnectorAccessible(appConfig, connectorId, headers);
-
-      const form = new FormData();
-      form.append('manifest', String(req.body.manifest));
-
-      const files = ((req as AuthenticatedUserRequest & { files?: Express.Multer.File[] }).files || []);
-      for (const file of files) {
-        form.append(file.fieldname, file.buffer, {
-          filename: file.originalname || file.fieldname,
-          contentType: file.mimetype || 'application/octet-stream',
-          knownLength: file.size,
-        });
-      }
-
-      const response = await axios.post(
-        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/file-events/upload`,
-        form,
-        {
-          headers: { ...headers, ...form.getHeaders() },
-          timeout: 0,
-          maxBodyLength: Infinity,
-          maxContentLength: Infinity,
-          validateStatus: () => true,
-        },
-      );
-
-      res.status(response.status).json(response.data);
-    } catch (error) {
-      const err = error as ProxyForwardError;
-      logger.error('Error submitting connector file event uploads', {
-        error: err.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: err.response?.status,
-        data: err.response?.data,
-      });
-      const handledError = handleBackendError(
-        error,
-        'submit connector file event uploads',
       );
       next(handledError);
     }
@@ -1994,8 +1832,14 @@ const validateActiveConnector = async (
   });
 };
 
-interface ConnectorInstanceLock {
-  connector?: { isLocked?: boolean; status?: string };
+interface ConnectorInstanceSummary {
+  _key?: string;
+  type?: string;
+  scope?: string;
+  createdBy?: string;
+  isActive?: boolean;
+  isLocked?: boolean;
+  status?: string;
 }
 
 const LOCK_MESSAGES: Record<string, string> = {
@@ -2003,30 +1847,72 @@ const LOCK_MESSAGES: Record<string, string> = {
   SYNCING: 'A sync is already in progress. Please wait and try again.',
 };
 
-const validateConnectorNotLocked = async (
+/** `null` when Python answers non-200 or without a `connector` body. */
+const fetchConnectorInstanceSummary = async (
   connectorId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
-): Promise<void> => {
+): Promise<ConnectorInstanceSummary | null> => {
   const response = await executeConnectorCommand(
     `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
     HttpMethod.GET,
     headers,
   );
 
-  const data = response.data as ConnectorInstanceLock | undefined;
-  if (response.statusCode !== 200 || !data?.connector) {
-    return;
-  }
+  const data = response.data as
+    | { connector?: ConnectorInstanceSummary }
+    | undefined;
+    if (response.statusCode !== 200 || !data?.connector) {
+      throw new InternalServerError(
+          `Failed to fetch connector ${connectorId} state`,
+        );
+      }
+  return data.connector;
+};
 
-  const connector = data.connector;
-  if (connector.isLocked) {
-    const status = connector.status ?? '';
-    const message =
-      LOCK_MESSAGES[status] ??
-      'Another operation is in progress. Please wait and try again.';
-    throw new ConflictError(message);
+const assertConnectorNotLocked = (
+  instance: ConnectorInstanceSummary | null,
+): void => {
+  if (!instance?.isLocked) return;
+  const status = instance.status ?? '';
+  const message =
+    LOCK_MESSAGES[status] ??
+    'Another operation is in progress. Please wait and try again.';
+  throw new ConflictError(message);
+};
+
+/**
+ * True only when presence answers a definite "no" for a Local FS connector.
+ * Keyed on the owner: the desktop registers under createdBy, which for a
+ * personal connector may differ from an admin caller.
+ */
+const isLocalFsDesktopOffline = (
+  req: AuthenticatedUserRequest,
+  connectorId: string,
+  instance: ConnectorInstanceSummary | null,
+): boolean => {
+  if (!instance || !isLocalFsConnector(String(instance.type ?? ''))) {
+    return false;
   }
+  const orgId = req.user?.orgId;
+  const userId = instance.createdBy ?? req.user?.userId;
+  if (!orgId || !userId) return false;
+  return isLocalFsDesktopOnline(orgId, userId, connectorId) === false;
+};
+
+/**
+ * Toggle-on only. The desktop claims a connector when it first mounts the
+ * watcher, so "a desktop is connected but has no claim" is the first-enable
+ * case and deserves a different message than a closed app.
+ */
+const localFsRefusalReason = (
+  req: AuthenticatedUserRequest,
+  instance: ConnectorInstanceSummary,
+): DesktopRefusalReason => {
+  const orgId = req.user?.orgId;
+  const userId = instance.createdBy ?? req.user?.userId;
+  if (!orgId || !userId) return 'offline';
+  return isDesktopConnected(orgId, userId) === true ? 'unclaimed' : 'offline';
 };
 
 const normalizeAppName = (value: string): string =>
@@ -2131,11 +2017,17 @@ export const resyncConnectorRecords =
         headers,
       );
 
-      await validateConnectorNotLocked(
+      const instance = await fetchConnectorInstanceSummary(
         connectorId,
         appConfig,
         headers,
       );
+      // Lock first: "already running" must win over "desktop offline".
+      assertConnectorNotLocked(instance);
+      if (isLocalFsDesktopOffline(req, connectorId, instance)) {
+        respondLocalFsDesktopRefusal(res, connectorId);
+        return;
+      }
 
       const resyncConnectorPayload = {
         userId,

@@ -95,6 +95,12 @@ class ConnectorRegistryAuthMetadataKeys:
     OAUTH_CONFIGS = "oauthConfigs"
 
 
+class ConnectorErrorCodes:
+    """Stable codes carried by ``ConnectorSyncSkippedError``."""
+
+    DESKTOP_OFFLINE = "DESKTOP_OFFLINE"
+
+
 class ConnectorStateKeys:
     """Keys for connector state/status fields (typically in connector documents)."""
     IS_CONFIGURED = "isConfigured"

@@ -1,9 +1,14 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { Response } from 'express'
 import {
   handleBackendError,
   handleConnectorResponse,
+  annotateLocalFsDesktopPresence,
+  respondLocalFsDesktopRefusal,
+  DESKTOP_OFFLINE_CODE,
+  DESKTOP_UNCLAIMED_CODE,
 } from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import {
   BadRequestError,
@@ -190,6 +195,130 @@ describe('tokens_manager/utils/connector.utils', () => {
       expect(() =>
         handleConnectorResponse(connectorResponse, res, 'Test op', 'Not found'),
       ).to.throw(NotFoundError)
+    })
+  })
+})
+
+describe('tokens_manager/utils/connector.utils - Local FS desktop presence', () => {
+  describe('annotateLocalFsDesktopPresence', () => {
+    const presence = () => ({
+      isLocalFsDesktopOnline: sinon.stub(),
+      isDesktopConnected: sinon.stub().returns(null),
+    })
+
+    it('stamps desktopOnline on a single Local FS connector keyed by its owner', () => {
+      const p = presence()
+      p.isLocalFsDesktopOnline.returns(false)
+      const body = { success: true, connector: { _key: 'c1', type: 'Local FS', createdBy: 'owner-1', isActive: true } }
+
+      annotateLocalFsDesktopPresence(body, 'org-1', p)
+
+      expect(body.connector).to.have.property('desktopOnline', false)
+      expect(p.isLocalFsDesktopOnline.calledOnceWithExactly('org-1', 'owner-1', 'c1')).to.be.true
+    })
+
+    it('stamps only the Local FS rows of a list', () => {
+      const p = presence()
+      p.isLocalFsDesktopOnline.returns(true)
+      const body = {
+        connectors: [
+          { _key: 'c1', type: 'Local FS', createdBy: 'owner-1', isActive: true },
+          { _key: 'c2', type: 'Slack', createdBy: 'owner-1', isActive: true },
+          { _key: 'c3', type: 'local_fs', createdBy: 'owner-2', isActive: true },
+        ],
+      }
+
+      annotateLocalFsDesktopPresence(body, 'org-1', p)
+
+      expect(body.connectors[0]).to.have.property('desktopOnline', true)
+      expect(body.connectors[1]).to.not.have.property('desktopOnline')
+      expect(body.connectors[2]).to.have.property('desktopOnline', true)
+      expect(p.isLocalFsDesktopOnline.calledTwice).to.be.true
+    })
+
+    it('omits the field when presence is unknown', () => {
+      const p = presence()
+      p.isLocalFsDesktopOnline.returns(null)
+      const body = { connector: { _key: 'c1', type: 'Local FS', createdBy: 'owner-1', isActive: true } }
+
+      annotateLocalFsDesktopPresence(body, 'org-1', p)
+
+      expect(body.connector).to.not.have.property('desktopOnline')
+    })
+
+    it('skips connectors whose sync is not enabled: no claim is expected yet', () => {
+      const p = presence()
+      p.isLocalFsDesktopOnline.returns(false)
+      const body = { connector: { _key: 'c1', type: 'Local FS', createdBy: 'owner-1', isActive: false } }
+
+      annotateLocalFsDesktopPresence(body, 'org-1', p)
+
+      expect(body.connector).to.not.have.property('desktopOnline')
+      expect(p.isLocalFsDesktopOnline.called).to.be.false
+    })
+
+    it('is a no-op without presence, orgId, owner, or a body', () => {
+      const p = presence()
+      p.isLocalFsDesktopOnline.returns(false)
+      const noOwner = { connector: { _key: 'c1', type: 'Local FS', isActive: true } }
+
+      annotateLocalFsDesktopPresence(noOwner, 'org-1', p)
+      annotateLocalFsDesktopPresence({ connector: { _key: 'c1', type: 'Local FS', createdBy: 'o', isActive: true } }, undefined, p)
+      annotateLocalFsDesktopPresence({ connector: { _key: 'c1', type: 'Local FS', createdBy: 'o', isActive: true } }, 'org-1', null)
+      annotateLocalFsDesktopPresence(null, 'org-1', p)
+      annotateLocalFsDesktopPresence('text', 'org-1', p)
+
+      expect(noOwner.connector).to.not.have.property('desktopOnline')
+      expect(p.isLocalFsDesktopOnline.called).to.be.false
+    })
+  })
+
+  describe('respondLocalFsDesktopRefusal', () => {
+    type LocalFsRefusalBody = {
+      success: boolean
+      code: string
+      message: string
+      details: { code: string; connectorId: string }
+    }
+
+    type LocalFsRefusalResponse = {
+      status: sinon.SinonStub<[409], LocalFsRefusalResponse>
+      json: sinon.SinonStub<[LocalFsRefusalBody], LocalFsRefusalResponse>
+    }
+
+    function createLocalFsRefusalRes(): LocalFsRefusalResponse {
+      const res = {
+        status: sinon.stub<[409], LocalFsRefusalResponse>(),
+        json: sinon.stub<[LocalFsRefusalBody], LocalFsRefusalResponse>(),
+      }
+      res.status.returns(res)
+      res.json.returns(res)
+      return res
+    }
+
+    it('writes a 409 whose details.code the frontend can match', () => {
+      const res = createLocalFsRefusalRes()
+
+      respondLocalFsDesktopRefusal(res as unknown as Response, 'c1')
+
+      expect(res.status.calledOnceWith(409)).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(body.success).to.equal(false)
+      expect(body.code).to.equal(DESKTOP_OFFLINE_CODE)
+      expect(body.details).to.deep.include({ code: DESKTOP_OFFLINE_CODE, connectorId: 'c1' })
+      expect(body.message).to.be.a('string').and.not.empty
+    })
+
+    it('uses the unclaimed code and first-enable wording for that reason', () => {
+      const res = createLocalFsRefusalRes()
+
+      respondLocalFsDesktopRefusal(res as unknown as Response, 'c1', 'unclaimed')
+
+      expect(res.status.calledOnceWith(409)).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(body.code).to.equal(DESKTOP_UNCLAIMED_CODE)
+      expect(body.details.code).to.equal(DESKTOP_UNCLAIMED_CODE)
+      expect(body.message).to.include('enable sync there once')
     })
   })
 })

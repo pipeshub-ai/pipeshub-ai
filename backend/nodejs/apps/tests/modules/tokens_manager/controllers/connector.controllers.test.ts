@@ -1,8 +1,16 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import axios from 'axios'
+import { Response } from 'express'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
+import { registerDesktopPresence } from '../../../../src/libs/services/desktop-presence.provider'
+import { AuthenticatedUserRequest } from '../../../../src/libs/middlewares/types'
+import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
+import { CrawlingSchedulerService } from '../../../../src/modules/crawling_manager/services/crawling_service'
+const makePresence = (online: boolean | null, connected: boolean | null = null) => ({
+  isLocalFsDesktopOnline: sinon.stub().returns(online),
+  isDesktopConnected: sinon.stub().returns(connected),
+})
 import {
   isUserAdmin,
   getConnectorRegistry,
@@ -26,11 +34,8 @@ import {
   toggleConnectorInstance,
   getConnectorSchema,
   getActiveAgentInstances,
-  submitConnectorFileEvents,
-  submitConnectorFileEventUploads,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
-import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
 
 describe('tokens_manager/controllers/connector.controllers', () => {
   let mockAppConfig: any
@@ -1944,138 +1949,184 @@ describe('tokens_manager/controllers/connector.controllers', () => {
     })
   })
 
-  // =========================================================================
-  // submitConnectorFileEvents / submitConnectorFileEventUploads
-  // =========================================================================
-  describe('submitConnectorFileEvents', () => {
-    it('proxies POST to connector backend /file-events after GET accessibility probe', async () => {
-      const handler = submitConnectorFileEvents(mockAppConfig)
-      req.params = { connectorId: 'conn-1' }
-      req.body = { events: [{ path: '/a' }] }
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
-      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
-      execStub.onFirstCall().resolves({ statusCode: 200, data: { id: 'c' } })
-      execStub.onSecondCall().resolves({ statusCode: 200, data: { ok: true } })
+})
 
-      await handler(req, res, next)
+type StubbedResponse = Response & {
+  status: sinon.SinonStub
+  json: sinon.SinonStub
+  send: sinon.SinonStub
+}
 
-      expect(execStub.calledTwice).to.be.true
-      expect(execStub.firstCall.args[0]).to.equal(
-        `${mockAppConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent('conn-1')}`,
-      )
-      expect(execStub.firstCall.args[1]).to.equal(HttpMethod.GET)
-      expect(execStub.secondCall.args[0]).to.equal(
-        `${mockAppConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent('conn-1')}/file-events`,
-      )
-      expect(execStub.secondCall.args[1]).to.equal(HttpMethod.POST)
-      expect(execStub.secondCall.args[3]).to.deep.equal({ events: [{ path: '/a' }] })
-      expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.calledWith({ ok: true })).to.be.true
-    })
+function createToggleRequest(): AuthenticatedUserRequest {
+  return {
+    user: { userId: 'caller-1', orgId: 'org-1', role: 'admin' },
+    params: { connectorId: 'conn-1' },
+    query: {},
+    body: { type: 'sync' },
+    headers: {},
+  } as unknown as AuthenticatedUserRequest
+}
 
-    it('calls next when userId is missing', async () => {
-      const handler = submitConnectorFileEvents(mockAppConfig)
-      req.params = { connectorId: 'conn-1' }
-      req.user = {}
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args[0].message).to.equal('User authentication required')
-    })
+function createToggleResponse(): StubbedResponse {
+  return {
+    status: sinon.stub().returnsThis(),
+    json: sinon.stub().returnsThis(),
+    send: sinon.stub().returnsThis(),
+  } as unknown as StubbedResponse
+}
 
-    it('calls next when connectorId is missing', async () => {
-      const handler = submitConnectorFileEvents(mockAppConfig)
-      req.params = {}
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args[0].message).to.equal('Connector ID is required')
-    })
+function createToggleAppConfig(): AppConfig {
+  return {
+    jwtSecret: 'test',
+    scopedJwtSecret: 'test',
+    cookieSecret: 'test',
+    rsAvailable: 'false',
+    communicationBackend: '',
+    frontendUrl: '',
+    iamBackend: '',
+    authBackend: '',
+    cmBackend: '',
+    kbBackend: '',
+    esBackend: '',
+    storageBackend: '',
+    tokenBackend: '',
+    aiBackend: '',
+    connectorBackend: 'http://connector-backend:8088',
+    connectorPublicUrl: '',
+    indexingBackend: '',
+    kafka: { brokers: [] },
+    redis: { host: 'localhost', port: 6379 },
+    mongo: { uri: '', db: '' },
+    qdrant: { port: 0, apiKey: '', host: '', grpcPort: 0 },
+    arango: { url: '', db: '', username: '', password: '' },
+    etcd: { host: '', port: 0, dialTimeout: 0 },
+    smtp: null,
+    storage: { storageType: 'local', endpoint: '' },
+    oauthIssuer: '',
+    oauthBackendUrl: '',
+    mcpScopes: [],
+    samlIssuer: 'pipeshub',
+    skipDomainCheck: true,
+    maxRequestsPerMinute: 100,
+    maxOAuthClientRequestsPerMinute: 50,
+    deployment: {
+      dataStoreType: 'neo4j',
+      messageBrokerType: 'kafka',
+      kvStoreType: 'redis',
+      vectorDbType: 'qdrant',
+    },
+  }
+}
 
-    it('calls next when connector probe returns non-2xx', async () => {
-      const handler = submitConnectorFileEvents(mockAppConfig)
-      req.params = { connectorId: 'missing' }
-      req.body = {}
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
-      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 404, data: {} })
+describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
+  let req: AuthenticatedUserRequest
+  let res: StubbedResponse
+  let next: sinon.SinonStub
+  let mockAppConfig: AppConfig
+  let mockScheduler: CrawlingSchedulerService
 
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
+  beforeEach(() => {
+    req = createToggleRequest()
+    res = createToggleResponse()
+    next = sinon.stub()
+    mockAppConfig = createToggleAppConfig()
+    mockScheduler = sinon.createStubInstance(CrawlingSchedulerService)
   })
 
-  describe('submitConnectorFileEventUploads', () => {
-    it("calls next when multipart field 'manifest' is missing", async () => {
-      const handler = submitConnectorFileEventUploads(mockAppConfig)
-      req.params = { connectorId: 'conn-1' }
-      req.body = {}
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
+  afterEach(() => {
+    sinon.restore()
+    registerDesktopPresence(null)
+  })
 
-      await handler(req, res, next)
+  function stubInstanceThenToggle(instance: Record<string, unknown>) {
+    const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+    execStub.onFirstCall().resolves({
+      statusCode: 200,
+      data: { connector: { _key: 'conn-1', ...instance } },
+    })
+    execStub.onSecondCall().resolves({ statusCode: 200, data: { active: true } })
+    return execStub
+  }
 
-      expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args[0].message).to.equal(
-        "Multipart field 'manifest' is required",
-      )
+  it('answers 409 DESKTOP_OFFLINE when enabling a Local FS connector whose desktop is offline', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    expect(next.called).to.be.false
+    expect(res.status.calledWith(409)).to.be.true
+    expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_OFFLINE')
+    expect(execStub.calledOnce).to.be.true
+    expect(presence.isLocalFsDesktopOnline.calledOnceWithExactly('org-1', 'owner-1', 'conn-1')).to.be.true
+  })
+
+  it('answers DESKTOP_UNCLAIMED when a desktop is connected but never claimed the connector', async () => {
+    const presence = makePresence(false, true)
+    registerDesktopPresence(presence)
+    const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    expect(res.status.calledWith(409)).to.be.true
+    expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_UNCLAIMED')
+    expect(execStub.calledOnce).to.be.true
+    expect(presence.isDesktopConnected.calledOnceWithExactly('org-1', 'owner-1')).to.be.true
+  })
+
+  it('answers DESKTOP_OFFLINE when no desktop of the owner is connected at all', async () => {
+    registerDesktopPresence(makePresence(false, false))
+    stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_OFFLINE')
+  })
+
+  it('proxies the toggle when the connector is already active (turning off)', async () => {
+    registerDesktopPresence(makePresence(false))
+    const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: true })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    expect(execStub.calledTwice).to.be.true
+    expect(execStub.secondCall.args[1]).to.equal('POST')
+    expect(res.status.calledWith(200)).to.be.true
+  })
+
+  it('does not fetch the instance for agent toggles', async () => {
+    registerDesktopPresence(makePresence(false))
+    req.body = { type: 'agent' }
+    const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+      statusCode: 200,
+      data: { active: true },
     })
 
-    it('POSTs multipart to connector backend and forwards status and JSON body', async () => {
-      const handler = submitConnectorFileEventUploads(mockAppConfig)
-      req.params = { connectorId: 'conn-1' }
-      req.body = { manifest: '{"batches":1}' }
-      req.files = [
-        {
-          fieldname: 'f0',
-          originalname: 'doc.txt',
-          mimetype: 'text/plain',
-          buffer: Buffer.from('hi'),
-          size: 2,
-        },
-      ]
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
-      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
-        statusCode: 200,
-        data: { ok: true },
-      })
-      const postStub = sinon.stub(axios, 'post').resolves({
-        status: 201,
-        data: { ingested: 2 },
-      })
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
 
-      await handler(req, res, next)
+    expect(execStub.calledOnce).to.be.true
+    expect(execStub.firstCall.args[1]).to.equal('POST')
+  })
 
-      expect(postStub.calledOnce).to.be.true
-      expect(postStub.firstCall.args[0]).to.equal(
-        `${mockAppConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent('conn-1')}/file-events/upload`,
-      )
-      expect(res.status.calledWith(201)).to.be.true
-      expect(res.json.calledWith({ ingested: 2 })).to.be.true
-    })
+  it('lets the toggle through when presence cannot tell', async () => {
+    registerDesktopPresence(makePresence(null))
+    const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false })
 
-    it('calls next when axios.post fails', async () => {
-      const handler = submitConnectorFileEventUploads(mockAppConfig)
-      req.params = { connectorId: 'conn-1' }
-      req.body = { manifest: '{}' }
-      req.files = []
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
-      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
-        statusCode: 200,
-        data: {},
-      })
-      sinon.stub(axios, 'post').rejects(new Error('network'))
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
 
-      await handler(req, res, next)
+    expect(execStub.calledTwice).to.be.true
+    expect(res.status.calledWith(200)).to.be.true
+  })
 
-      expect(next.calledOnce).to.be.true
-    })
+  it('ignores presence for non-Local-FS connectors', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const execStub = stubInstanceThenToggle({ type: 'Slack', createdBy: 'owner-1', isActive: false })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    expect(execStub.calledTwice).to.be.true
+    expect(presence.isLocalFsDesktopOnline.called).to.be.false
   })
 })
