@@ -3830,6 +3830,11 @@ components:
           format: int64
           nullable: true
           description: Epoch ms when parse/index processing began for the current attempt; null when idle
+        queuedAtTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms the platform last queued this record for indexing; absent until first queued. Platform-owned, unlike updatedAtTimestamp
         parsingStatus:
           type: string
           enum: [NOT_STARTED, IN_PROGRESS, FAILED, COMPLETED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, QUEUED]
@@ -4050,6 +4055,10 @@ components:
               type: integer
               format: int64
             processingStartedAt:
+              type: integer
+              format: int64
+              nullable: true
+            queuedAtTimestamp:
               type: integer
               format: int64
               nullable: true
@@ -7733,6 +7742,9 @@ components:
           type: string
           nullable: true
         processingStartedAt:
+          type: number
+          nullable: true
+        queuedAtTimestamp:
           type: number
           nullable: true
         parsingStatus:

@@ -163,6 +163,13 @@ _CODE_SKIP = _RECORD_SKIP | CODE_TIMESTAMP_FIELDS
 # never *what they may do* once there.
 _GITLAB_PERMISSION_ROLE = "OWNER"
 
+# Substrings of a connector failure message that mean GitLab itself stalled or dropped
+# the request, as opposed to the connector answering wrongly.
+_UPSTREAM_TRANSIENT_MARKERS = (
+    "timed out", "timeout", "connection aborted", "connection reset",
+    "max retries exceeded", "temporarily unavailable", "502", "503", "504",
+)
+
 
 # =============================================================================
 # Local helpers
@@ -2061,16 +2068,33 @@ class TestGitLabFilters:
         primary_path = gitlab_connector["primary_path"]
         mutation_path = gitlab_connector["mutation_path"]
 
-        def options(filter_key: str, **params: Any) -> dict[str, Any]:
+        def fetch_options(filter_key: str, params: dict[str, Any]) -> dict[str, Any]:
+            # The connector allows GitLab 60 s per request; waiting longer lets a stall
+            # surface as the connector's own failure reply instead of a client timeout.
             resp = pipeshub_client.request(
                 "GET",
                 f"/api/v1/connectors/{connector_id}/filters/{filter_key}/options",
                 params={"page": 1, "limit": 100, **params},
+                timeout=GL_STREAM_WAIT_SEC,
             )
             assert resp.status_code == 200, (
                 f"{filter_key} options HTTP {resp.status_code}: {resp.text[:200]}"
             )
-            body = resp.json()
+            return resp.json()
+
+        def options(filter_key: str, **params: Any) -> dict[str, Any]:
+            body = fetch_options(filter_key, params)
+            message = str(body.get("message") or "").lower()
+            if body.get("success") is not True and any(
+                marker in message for marker in _UPSTREAM_TRANSIENT_MARKERS
+            ):
+                # One retry absorbs a transient upstream stall; a persistent one still fails.
+                logger.warning(
+                    "TC-GL-FILTEROPT-001: %s options failed upstream (%s); retrying once",
+                    filter_key, body.get("message"),
+                )
+                pipeshub_client.wait(5)
+                body = fetch_options(filter_key, params)
             assert body.get("success") is True, f"{filter_key} options: {body!r}"
             return body
 
