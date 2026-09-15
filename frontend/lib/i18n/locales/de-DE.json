@@ -538,6 +538,7 @@
     "loadingConversation": "Gespräch wird geladen...",
     "recents": "Kürzlich",
     "sharedChats": "Geteilte Chats",
+    "sharedBy": "Geteilt von {{name}}",
     "noSharedChats": "Keine geteilten Chats",
     "yourChats": "Ihre Chats",
     "noChatsFound": "Keine Chats gefunden",

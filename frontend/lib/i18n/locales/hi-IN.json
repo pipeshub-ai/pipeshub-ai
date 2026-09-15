@@ -538,6 +538,7 @@
     "loadingConversation": "कन्वर्सेशन लोड हो रहा है...",
     "recents": "हाल के",
     "sharedChats": "साझा किए गए चैट",
+    "sharedBy": "{{name}} द्वारा साझा किया गया",
     "noSharedChats": "कोई साझा चैट नहीं",
     "yourChats": "आपके चैट",
     "noChatsFound": "कोई चैट नहीं मिली",
