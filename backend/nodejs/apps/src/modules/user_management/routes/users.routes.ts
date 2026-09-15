@@ -23,8 +23,13 @@ import { Users } from '../schema/users.schema';
 import {
   BadRequestError,
   NotFoundError,
+  UnauthorizedError,
 } from '../../../libs/errors/http.errors';
-import { findOrgAdminUserIds, isUserOrgAdmin } from '../services/user-admin.service';
+import {
+  findOrgAdminUserIds,
+  getActiveUserOrgRole,
+  isUserOrgAdmin,
+} from '../services/user-admin.service';
 import { MailService } from '../services/mail.service';
 import { AuthService } from '../services/auth.service';
 import { EntitiesEventProducer } from '../services/entity_events.service';
@@ -276,6 +281,32 @@ export function createUserRouter(container: Container) {
       try {
         const userController = container.get<UserController>('UserController');
         await userController.getAllUsersWithGroups(req, res);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // The caller's own live role. No OAuth scope: it discloses only the bearer's role.
+  // Internal services use it to resolve OAuth/PAT roles and to learn that a token was
+  // revoked or its user deleted (authenticate answers 401 in those cases).
+  router.get(
+    '/me/role',
+    authMiddleware.authenticate,
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const role = await getActiveUserOrgRole(
+          String(req.user?.userId ?? ''),
+          String(req.user?.orgId ?? ''),
+        );
+        if (role === null) {
+          throw new UnauthorizedError('User not found, please login again');
+        }
+        res.status(200).json({ role });
       } catch (error) {
         next(error);
       }

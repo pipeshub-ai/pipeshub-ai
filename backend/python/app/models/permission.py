@@ -28,8 +28,8 @@ class Permission(BaseModel):
     email: Optional[str] = None
     type: PermissionType
     entity_type: EntityType
-    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the permission creation")
-    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the permission update")
+    created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the permission creation")
+    updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the permission update")
 
     def to_arango_permission(
         self,

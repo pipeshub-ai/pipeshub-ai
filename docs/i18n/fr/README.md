@@ -59,7 +59,7 @@
 - 📝 **Réponses explicables :** PipesHub fournit des réponses étayées avec des citations précises par bloc vers les documents d'origine.
 - 🔒 **Recherche tenant compte des permissions :** Applique des contrôles d'accès au niveau de la source afin que les utilisateurs ne voient que ce à quoi ils sont autorisés.
 - 🕸️ **Récupération par graphe de connaissances :** Récupération fondée sur les graphes, qui capture les relations entre les données de l'entreprise.
-- 🔌 **Connecteurs d'entreprise :** Plus de 30 connecteurs avec indexation en temps réel et planifiée, prêts à l'emploi.
+- 🔌 **Connecteurs d'entreprise :** Plus de 50 connecteurs avec indexation en temps réel et planifiée, prêts à l'emploi.
 - 🔍 **Recherche unifiée, recherche approfondie et agents :** Recherche, questions-réponses, recherche approfondie, recherche web et agents IA sur une seule couche de contexte.
 - 📊 **Artefacts et exécution de code :** Générez des rapports, des graphiques et des tableaux de bord dans un bac à sable d'exécution sécurisé.
 - 🎙️ **Prise en charge multimodale :** Compréhension des images, des schémas et des fichiers numérisés, ainsi qu'une interaction vocale.
@@ -86,51 +86,6 @@
 <p align="center">
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
-
-## Formats de fichiers pris en charge
-
-| Format | Détails |
-|--------|---------|
-| PDF | Y compris les PDF numérisés |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Valeurs séparées par des virgules |
-| Markdown | Fichiers .md |
-| HTML | Pages web |
-| Text | Fichiers texte brut |
-| Google Docs, Sheets, Slides | Formats Google Workspace |
-| Images | PNG, JPG, etc. |
-| Audio | Fichiers audio |
-| Vidéo | Fichiers vidéo |
-
-## Stack technique
-
-### Frontend
-
-| Technologie | Description |
-|-----------|-------------|
-| Next.js | UI avec App Router (React rendu côté client) |
-| TypeScript | Sur-ensemble fortement typé de JavaScript |
-| Radix UI Themes | Primitives de composants accessibles et stylisation |
-| Zod | Validation et analyse de schémas |
-| React Hook Form | Gestion flexible de l'état des formulaires |
-
-### Backend
-
-| Technologie | Description |
-|-----------|-------------|
-| FastAPI | Framework web Python hautes performances |
-| LangChain | Framework pour les pipelines de LLM |
-| Qdrant | Moteur de recherche par similarité vectorielle |
-| Neo4j / ArangoDB | Base de données orientée graphe |
-| Kafka / Redis Streams | Plateforme distribuée de streaming d'événements |
-| Redis | Mise en cache |
-| Redis / etcd3 | Magasin de configuration clé-valeur distribué |
-| Celery | Système distribué de files de tâches |
-| Docling | Boîte à outils d'analyse et d'extraction de documents |
-| PyMuPDF | Bibliothèque de traitement de PDF |
-| pandas | Analyse et manipulation de données |
 
 ## 🚀 Guide de déploiement
 
@@ -246,7 +201,11 @@ PipesHub est entièrement open source (Apache 2.0) et auto-hébergeable — vos 
 
 ### Quels connecteurs PipesHub prend-il en charge ?
 
-PipesHub dispose de plus de 30 connecteurs d'entreprise avec indexation en temps réel et planifiée. Il prend en charge des formats de fichiers tels que PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio et vidéo.
+PipesHub dispose de plus de 50 connecteurs d'entreprise avec indexation en temps réel et planifiée. Voir la [vue d'ensemble des connecteurs](https://docs.pipeshub.com/connectors/overview).
+
+### Quels formats de fichiers PipesHub peut-il indexer ?
+
+PDF (y compris les scans), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, texte brut et images. L'audio et la vidéo peuvent être stockés mais ne sont pas encore indexés. Le service de stockage accepte une liste plus large de types MIME — voir [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### Comment déployer PipesHub ?
 
@@ -264,7 +223,19 @@ Remarque : Utilisez HTTPS pour les déploiements dans le cloud. Le HTTP peut ent
 
 ### Quels fournisseurs de LLM PipesHub prend-il en charge ?
 
-PipesHub fonctionne selon le principe « Apportez votre propre modèle » — vous pouvez utiliser n'importe quel fournisseur de LLM. Déployez dans votre VPC avec les modèles de votre choix. La stack technique inclut LangChain pour les pipelines et les workflows de LLM.
+PipesHub fonctionne selon le principe « Apportez votre propre modèle » — vous pouvez utiliser n'importe quel fournisseur de LLM. Déployez dans votre VPC avec les modèles de votre choix.
+
+### Quelle est la stack technique ?
+
+PipesHub a trois parties :
+
+- **Application web** (Next.js) — recherche, chat et administration dans le navigateur.
+- **API** (Node.js) — comptes, permissions, bases de connaissances et fichiers.
+- **Services Python** — les connecteurs synchronisent vos sources ; l'indexation analyse les documents ; la requête répond avec des citations.
+
+Ces services appellent des **modèles d'IA que vous apportez**. Un **modèle d'embeddings** transforme le texte en vecteurs pour la recherche. Un **LLM** rédige la réponse citée. Utilisez n'importe quel fournisseur ou un modèle local (Ollama) ; un serveur d'embeddings local est la valeur par défaut.
+
+Les données sont dans un graphe de connaissances (Neo4j par défaut, ou ArangoDB), un magasin de vecteurs (Qdrant) et MongoDB. Redis est le cache. Les fichiers sont sur disque ou en stockage objet. Les services se transmettent le travail via Redis en local, ou via Kafka dans un déploiement plus large. Voir la [vue d'ensemble du système](https://docs.pipeshub.com/system-overview).
 
 ### Qu'est-ce que la fonctionnalité de récupération par graphe de connaissances ?
 

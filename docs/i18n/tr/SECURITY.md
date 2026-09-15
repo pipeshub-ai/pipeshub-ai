@@ -14,7 +14,7 @@ Güvenlik açıklarını ciddiye alıyoruz ve bulduğunuz sorunları sorumlu bir
 
 **Lütfen güvenlik açıkları için herkese açık GitHub issue'ları OLUŞTURMAYIN.**
 
-Bunun yerine, güvenlik açıklarını şu adrese e-posta göndererek bildirin: **abhishek@pipeshub.com**
+Bunun yerine, güvenlik açıklarını şu adrese e-posta göndererek bildirin: **security@pipeshub.com**
 
 ### Nelerin Dahil Edilmesi Gerekir
 

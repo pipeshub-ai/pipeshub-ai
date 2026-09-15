@@ -24,7 +24,7 @@ from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.service import OAuthScopes, config_node_constants
+from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.containers.query import QueryAppContainer
 from app.events.processor import convert_record_dict_to_record
@@ -453,7 +453,17 @@ async def _rollback_attachment_records(
             )
 
 
-@router.post("/chat/attachments/upload", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@router.post(
+    "/chat/attachments/upload",
+    dependencies=[
+        Depends(
+            require_scopes(
+                OAuthScopes.CONVERSATION_CHAT,
+                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
+            )
+        )
+    ],
+)
 @inject
 async def upload_chat_attachments(
     request: Request,

@@ -14,7 +14,7 @@ Levamos as vulnerabilidades de segurança a sério e agradecemos seus esforços 
 
 **Por favor, NÃO crie issues públicas no GitHub para vulnerabilidades de segurança.**
 
-Em vez disso, relate as vulnerabilidades de segurança enviando um e-mail para: **abhishek@pipeshub.com**
+Em vez disso, relate as vulnerabilidades de segurança enviando um e-mail para: **security@pipeshub.com**
 
 ### O que incluir
 

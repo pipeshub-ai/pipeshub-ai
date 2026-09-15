@@ -310,6 +310,7 @@ async def recover_in_progress_records(
                     reset_fields = {
                         "parsingStatus": ProgressStatus.NOT_STARTED.value,
                         "indexingStatus": ProgressStatus.QUEUED.value,
+                        "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
                         "processingStartedAt": None,
                         "reason": "Recovered after restart; re-queued for indexing",
@@ -855,27 +856,33 @@ async def _republish_stranded_records(
                 ):
                     continue
 
-                # Two clocks, both of which must be older than the cutoff.
-                # updatedAt moves on every write to the row, so a record still
-                # being touched by a sync is never old enough to qualify.
+                # Aged from the newest of three clocks, so any one being fresh
+                # keeps the row out. queuedAtTimestamp is the platform's own
+                # "put in line for indexing" time. updatedAt cannot carry this
+                # alone: connectors may fill it with source-system time (a Jira
+                # issue last edited a year ago), which made every freshly synced
+                # row look stranded and sent it twice; it stays in the max for
+                # rows written before queuedAtTimestamp existed.
                 # lastRepublishedAt is our own: publishing changes nothing about
                 # the row, so without it a record stays eligible and every tick
                 # sends another copy of the same event -- worst precisely when
                 # the consumer is backlogged, which is the case this sweep
                 # exists for.
-                updated_at = record.get("updatedAtTimestamp") or record.get(
-                    "createdAtTimestamp"
-                )
-                last_republished_at = record.get("lastRepublishedAt")
-                try:
-                    if updated_at is None or float(updated_at) > cutoff_ms:
+                clocks: list[float] = []
+                for value in (
+                    record.get("queuedAtTimestamp"),
+                    record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
+                    record.get("lastRepublishedAt"),
+                ):
+                    try:
+                        clocks.append(float(value))
+                    except (TypeError, ValueError):
+                        # Unset or malformed: one bad clock must not hide the others.
                         continue
-                    if (
-                        last_republished_at is not None
-                        and float(last_republished_at) > cutoff_ms
-                    ):
-                        continue
-                except (TypeError, ValueError):
+                if not clocks:
+                    continue
+                last_touched_at = max(clocks)
+                if last_touched_at > cutoff_ms:
                     continue
 
                 if not await _is_active(connector_id):
@@ -985,7 +992,7 @@ async def _republish_stranded_records(
                         record_key,
                         record.get("recordName"),
                         status_value,
-                        (get_epoch_timestamp_in_ms() - float(updated_at)) / 1000,
+                        (get_epoch_timestamp_in_ms() - last_touched_at) / 1000,
                     )
                 except Exception as exc:
                     logger.error(

@@ -59,7 +59,7 @@
 - 📝 **설명 가능한 답변:** PipesHub는 원본 문서의 정확한 블록 단위 인용과 함께 근거 있는 답변을 제공합니다.
 - 🔒 **권한 인식 검색:** 소스 수준의 접근 제어를 적용하여 사용자는 권한이 있는 내용만 볼 수 있습니다.
 - 🕸️ **지식 그래프 검색:** 기업 데이터 전반의 관계를 포착하는 그래프 기반 검색.
-- 🔌 **엔터프라이즈 커넥터:** 실시간 및 예약 색인을 기본 제공하는 30개 이상의 커넥터.
+- 🔌 **엔터프라이즈 커넥터:** 실시간 및 예약 색인을 기본 제공하는 50개 이상의 커넥터.
 - 🔍 **통합 검색, 심층 리서치, 에이전트:** 검색, Q&A, 심층 리서치, 웹 검색, AI 에이전트를 하나의 컨텍스트 계층에서 제공합니다.
 - 📊 **아티팩트 및 코드 실행:** 안전한 실행 샌드박스에서 보고서, 차트, 대시보드를 생성합니다.
 - 🎙️ **멀티모달 지원:** 이미지, 다이어그램, 스캔 파일 이해는 물론 음성 기반 상호작용도 지원합니다.
@@ -86,51 +86,6 @@
 <p align="center">
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
-
-## 지원 파일 형식
-
-| 형식 | 세부 정보 |
-|--------|---------|
-| PDF | 스캔된 PDF 포함 |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | 쉼표로 구분된 값 |
-| Markdown | .md 파일 |
-| HTML | 웹 페이지 |
-| Text | 일반 텍스트 파일 |
-| Google Docs, Sheets, Slides | Google Workspace 형식 |
-| 이미지 | PNG, JPG 등 |
-| 오디오 | 오디오 파일 |
-| 비디오 | 비디오 파일 |
-
-## 기술 스택
-
-### 프런트엔드
-
-| 기술 | 설명 |
-|-----------|-------------|
-| Next.js | App Router UI(클라이언트 렌더링 React) |
-| TypeScript | 강타입 JavaScript 상위 집합 |
-| Radix UI Themes | 접근성 있는 컴포넌트 프리미티브 및 스타일링 |
-| Zod | 스키마 검증 및 파싱 |
-| React Hook Form | 유연한 폼 상태 관리 |
-
-### 백엔드
-
-| 기술 | 설명 |
-|-----------|-------------|
-| FastAPI | 고성능 Python 웹 프레임워크 |
-| LangChain | LLM 파이프라인용 프레임워크 |
-| Qdrant | 벡터 유사도 검색 엔진 |
-| Neo4j / ArangoDB | 그래프 데이터베이스 |
-| Kafka / Redis Streams | 분산 이벤트 스트리밍 플랫폼 |
-| Redis | 캐싱 |
-| Redis / etcd3 | 분산 키-값 구성 저장소 |
-| Celery | 분산 작업 큐 시스템 |
-| Docling | 문서 파싱 및 추출 툴킷 |
-| PyMuPDF | PDF 처리 라이브러리 |
-| pandas | 데이터 분석 및 조작 |
 
 ## 🚀 배포 가이드
 
@@ -246,7 +201,11 @@ PipesHub는 완전한 오픈소스(Apache 2.0)이며 셀프 호스팅이 가능�
 
 ### PipesHub는 어떤 커넥터를 지원하나요?
 
-PipesHub는 실시간 및 예약 색인을 지원하는 30개 이상의 엔터프라이즈 커넥터를 갖추고 있습니다. PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, 이미지, 오디오, 비디오 같은 파일 형식을 지원합니다.
+PipesHub는 실시간 및 예약 색인을 지원하는 50개 이상의 엔터프라이즈 커넥터를 갖추고 있습니다. [커넥터 개요](https://docs.pipeshub.com/connectors/overview)를 참고하세요.
+
+### PipesHub는 어떤 파일 형식을 색인하나요?
+
+PDF(스캔 포함), Microsoft Office(Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, 일반 텍스트, 이미지. 오디오와 비디오는 저장할 수 있지만 아직 색인되지 않습니다. 스토리지는 더 넓은 MIME 유형을 받습니다 — [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage)를 참고하세요.
 
 ### PipesHub는 어떻게 배포하나요?
 
@@ -264,7 +223,19 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### PipesHub는 어떤 LLM 제공업체를 지원하나요?
 
-PipesHub는 "자체 모델 사용(Bring Your Own Model)" 방식으로, 어떤 LLM 제공업체든 사용할 수 있습니다. 원하는 모델을 VPC에 배포하세요. 기술 스택에는 LLM 파이프라인과 워크플로를 위한 LangChain이 포함됩니다.
+PipesHub는 "자체 모델 사용(Bring Your Own Model)" 방식으로, 어떤 LLM 제공업체든 사용할 수 있습니다. 원하는 모델을 VPC에 배포하세요.
+
+### 기술 스택은 무엇인가요?
+
+PipesHub는 세 부분으로 이루어져 있습니다.
+
+- **웹 앱** (Next.js) — 브라우저에서 검색, 채팅, 관리.
+- **API** (Node.js) — 계정, 권한, 지식 베이스, 파일.
+- **Python 서비스** — 커넥터가 소스를 동기화하고, 색인이 문서를 파싱하며, 쿼리가 인용과 함께 답합니다.
+
+이 서비스들은 **직접 가져오는 AI 모델**을 호출합니다. **임베딩 모델**이 텍스트를 검색용 벡터로 바꾸고, **LLM**이 인용이 있는 답을 씁니다. 어떤 제공업체든, 또는 로컬 모델(Ollama)이든 됩니다. 로컬 임베딩 서버가 기본값입니다.
+
+데이터는 지식 그래프(기본 Neo4j, 대안 ArangoDB), 벡터 저장소(Qdrant), MongoDB에 있습니다. 캐시는 Redis입니다. 파일은 디스크 또는 오브젝트 스토리지에 있습니다. 서비스 사이 작업은 로컬에서는 Redis로, 더 큰 환경에서는 Kafka로 넘깁니다. [시스템 개요](https://docs.pipeshub.com/system-overview)를 참고하세요.
 
 ### 지식 그래프 검색 기능이란 무엇인가요?
 

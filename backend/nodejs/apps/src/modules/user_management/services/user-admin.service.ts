@@ -45,19 +45,32 @@ function addValidObjectId(ids: Set<string>, value: unknown): void {
 }
 
 /**
- * Org admin check based on User.role (admin groups are no longer supported).
- * Invalid ids return false (deny) instead of throwing CastError.
+ * Live role of an active (not deleted) user in the org, or null when there is none.
+ * Based on User.role (admin groups are no longer supported). Invalid ids return null
+ * instead of throwing CastError.
+ */
+export const getActiveUserOrgRole = async (
+  userId: string,
+  orgId: string,
+): Promise<UserRole | null> => {
+  if (!mongoose.isValidObjectId(userId) || !mongoose.isValidObjectId(orgId)) {
+    return null;
+  }
+  const user = await UserAdminRepository.findActiveUserRole(userId, orgId);
+  if (!user) {
+    return null;
+  }
+  return user.role === 'admin' ? 'admin' : 'member';
+};
+
+/**
+ * Org admin check based on User.role. Invalid ids return false (deny) instead of
+ * throwing CastError.
  */
 export const isUserOrgAdmin = async (
   userId: string,
   orgId: string,
-): Promise<boolean> => {
-  if (!mongoose.isValidObjectId(userId) || !mongoose.isValidObjectId(orgId)) {
-    return false;
-  }
-  const user = await UserAdminRepository.findActiveUserRole(userId, orgId);
-  return user?.role === 'admin';
-};
+): Promise<boolean> => (await getActiveUserOrgRole(userId, orgId)) === 'admin';
 
 /**
  * Active org admin user IDs for notifications / internal APIs.
