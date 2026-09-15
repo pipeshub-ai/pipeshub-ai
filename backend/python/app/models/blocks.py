@@ -189,7 +189,6 @@ class CodeMetadata(BaseModel):
     # Cross-file edges whose source is this block and whose target is still a
     # bare name; resolved by the corpus pass after every file is indexed.
     pending_edges: Optional[list[dict]] = None
-    pending_edges_truncated: bool = False
     # Receiver-variable -> declared type for the whole file. Cannot be rebuilt
     # without re-parsing, so the file-summary block carries it.
     type_table: Optional[dict[str, str]] = None

@@ -115,7 +115,6 @@ def serialize_block_for_graph(
         "isExternal": False,
         "parentBlockId": parent_block_id,
         "contentHash": item.content_hash,
-        "source": PARSER_SOURCE,
         "createdAtTimestamp": now,
         "updatedAtTimestamp": now,
     }
@@ -129,8 +128,6 @@ def serialize_block_for_graph(
         doc["language"] = meta.language or ctx.language
         if meta.pending_edges:
             doc["pendingEdges"] = meta.pending_edges
-        if meta.pending_edges_truncated:
-            doc["pendingEdgesTruncated"] = True
         if meta.type_table:
             doc["typeTable"] = meta.type_table
     return doc
@@ -247,7 +244,7 @@ async def write_code_file_blocks_to_graph(
     existing = await _with_retry(
         lambda: graph_provider.get_nodes_by_filters(
             collection=CollectionNames.BLOCKS.value,
-            filters={"recordId": context.record_id, "source": PARSER_SOURCE},
+            filters={"recordId": context.record_id},
             return_fields=["_key"],
         ),
         what="load existing blocks", log=log,

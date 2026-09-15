@@ -272,27 +272,3 @@ class TestPendingRules:
 
     def test_nothing_pending_is_never_stale(self) -> None:
         assert not edge_build_trigger.request_is_stale(self.BuildState(None, False, 0), 10**9)
-
-
-class TestDeferralClaim:
-    @pytest.mark.asyncio
-    async def test_claim_outlives_the_delay(self) -> None:
-        redis = MagicMock()
-        redis.set = AsyncMock(return_value=True)
-
-        assert await edge_build_trigger.claim_deferral(redis, "org-1", "repo-1")
-
-        kwargs = redis.set.await_args.kwargs
-        assert kwargs["nx"] is True
-        assert kwargs["ex"] > edge_build_trigger.DEFERRED_BUILD_DELAY_SECONDS
-
-    @pytest.mark.asyncio
-    async def test_release_clears_the_same_key(self) -> None:
-        redis = MagicMock()
-        redis.set = AsyncMock(return_value=True)
-        redis.delete = AsyncMock()
-
-        await edge_build_trigger.claim_deferral(redis, "org-1", "repo-1")
-        await edge_build_trigger.release_deferral(redis, "org-1", "repo-1")
-
-        assert redis.delete.await_args.args[0] == redis.set.await_args.args[0]

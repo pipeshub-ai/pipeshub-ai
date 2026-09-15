@@ -600,10 +600,11 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Block) ON (n.orgId, n.recordGroupId, n.name)"
         )
 
-        # COMPOSITE: recordId + source — per-file reconciliation on re-index.
+        # SINGLE: recordId — per-file reconciliation on re-index, and the
+        # record-scoped block delete.
         indexes.append(
-            "CREATE INDEX block_record_source IF NOT EXISTS "
-            "FOR (n:Block) ON (n.recordId, n.source)"
+            "CREATE INDEX block_record_id IF NOT EXISTS "
+            "FOR (n:Block) ON (n.recordId)"
         )
 
         # SINGLE: connectorId — connector-instance deletion pages by this alone.

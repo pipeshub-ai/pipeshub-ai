@@ -38,7 +38,11 @@ from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.sync.task_manager import (
+    code_edge_build_task_manager,
+    reindex_task_manager,
+    sync_task_manager,
+)
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
@@ -315,6 +319,27 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
         consumers.append(("sync", sync_consumer))
         logger.info("✅ Sync consumer started")
 
+        # 3. Create Code Graph Consumer
+        logger.info(f"🚀 Starting Code Graph Consumer (broker: {broker_type})...")
+        code_graph_config = await MessagingUtils.create_code_graph_consumer_config(
+            app_container
+        )
+        code_graph_consumer = MessagingFactory.create_consumer(
+            broker_type=broker_type,
+            logger=logger,
+            config=code_graph_config,
+            retry_manager=retry_manager,
+        )
+        code_graph_message_handler = (
+            await KafkaUtils.create_code_graph_message_handler(
+                app_container,
+                graph_provider,
+            )
+        )
+        await code_graph_consumer.start(code_graph_message_handler)
+        consumers.append(("code_graph", code_graph_consumer))
+        logger.info("✅ Code graph consumer started")
+
         logger.info(f"✅ All {len(consumers)} consumers started successfully")
         return consumers
 
@@ -376,8 +401,21 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.warning(f"Error cancelling reindex tasks at shutdown: {e}")
 
+        try:
+            await code_edge_build_task_manager.cancel_all()
+        except Exception as e:
+            logger.warning(f"Error cancelling code edge build tasks at shutdown: {e}")
+
         # Stop message consumers
         await stop_kafka_consumers(container)
+
+        code_edge_build_redis = vars(container).get("code_edge_build_redis")
+        if code_edge_build_redis is not None:
+            try:
+                await code_edge_build_redis.aclose()
+                container.code_edge_build_redis = None
+            except Exception as e:
+                logger.warning(f"Error closing code edge build Redis client: {e}")
 
         # Stop messaging producer
         await stop_messaging_producer(container)

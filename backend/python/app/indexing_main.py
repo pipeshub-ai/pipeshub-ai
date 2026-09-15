@@ -1076,8 +1076,7 @@ async def start_kafka_consumers(
         record_event_handler = await KafkaUtils.create_record_event_handler(
             app_container, producer=retry_producer
         )
-        # Kept on the container so shutdown can release the Redis client the
-        # handler caches for edge-build coordination.
+        # Kept on the container so shutdown can release its Redis client.
         app_container.record_event_handler = record_event_handler
 
         # Same process-wide singleton the ParsingClient/DoclingClient/

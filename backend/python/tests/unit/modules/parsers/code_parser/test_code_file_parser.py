@@ -216,27 +216,27 @@ export class Service extends Base implements Runnable {
     assert find["receiverType"] == "Repo"  # from `const r: Repo`
 
 
-def test_pending_edges_are_capped():
-    from app.modules.parsers.code_parser.code_file_parser import MAX_PENDING_EDGES_PER_BLOCK
-
-    body = "\n".join(f"    call_{i}()" for i in range(MAX_PENDING_EDGES_PER_BLOCK + 100))
+def test_pending_edges_are_not_capped() -> None:
+    call_count = 600
+    body = "\n".join(f"    call_{i}()" for i in range(call_count))
     src = f"def big():\n{body}\n".encode()
     container = CodeFileParser().parse_to_blocks(src, "big.py", "src/big.py", "python")
     big = _blocks_by_name(container)["big"]
-    assert len(big.code_metadata.pending_edges) == MAX_PENDING_EDGES_PER_BLOCK
-    assert big.code_metadata.pending_edges_truncated is True
+    targets = {e["toName"] for e in big.code_metadata.pending_edges}
+    assert targets == {f"call_{i}" for i in range(call_count)}
 
 
-def test_file_summary_pending_edges_are_capped_after_exports() -> None:
+def test_file_summary_keeps_every_export() -> None:
     from app.models.blocks import BlockType
-    from app.modules.parsers.code_parser.code_file_parser import (
-        MAX_PENDING_EDGES_PER_BLOCK,
-    )
 
+    export_count = 510
     src = "\n".join(
-        f"export function f{i}() {{}}" for i in range(MAX_PENDING_EDGES_PER_BLOCK + 10)
+        f"export function f{i}() {{}}" for i in range(export_count)
     ).encode()
     container = CodeFileParser().parse_to_blocks(src, "mod.js", "src/mod.js", "javascript")
     summary = next(b for b in container.blocks if b.type == BlockType.RECORD_SUMMARY)
-    assert len(summary.code_metadata.pending_edges) == MAX_PENDING_EDGES_PER_BLOCK
-    assert summary.code_metadata.pending_edges_truncated is True
+    exported = {
+        e["toName"] for e in summary.code_metadata.pending_edges
+        if e["relation"] == "EXPORTS"
+    }
+    assert exported == {f"f{i}" for i in range(export_count)}

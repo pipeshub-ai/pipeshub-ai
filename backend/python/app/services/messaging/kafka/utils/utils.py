@@ -2,15 +2,14 @@ import ssl
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
-from app.edition_services import (
-    EntityEventService,
-    EventService,
-    RecordEventHandler,
-)
+from app.config.constants.service import KafkaConfig as KafkaConstants
+from app.config.constants.service import config_node_constants
+from app.connectors.services.code_graph_event_service import CodeGraphEventService
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
+from app.edition_services import EntityEventService, EventService, RecordEventHandler
+from app.modules.code_graph.edge_build_runner import CodeEdgeBuildRunner
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingMessageHandler,
@@ -24,6 +23,7 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaProducerConfig,
 )
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
+from app.services.vector_db.rebuild_state import redis_from_config_service
 
 
 class KafkaUtils:
@@ -294,6 +294,29 @@ class KafkaUtils:
                 return False
 
         return handle_sync_message
+
+    @staticmethod
+    async def create_code_graph_message_handler(
+        app_container: ConnectorAppContainer,
+        graph_provider: IGraphDBProvider,
+    ) -> MessageHandler:
+        logger = app_container.logger()
+        redis = vars(app_container).get("code_edge_build_redis")
+        if redis is None:
+            redis = await redis_from_config_service(app_container.config_service())
+            app_container.code_edge_build_redis = redis
+        event_service = CodeGraphEventService(
+            logger=logger,
+            runner=CodeEdgeBuildRunner(graph_provider, redis, logger),
+        )
+
+        async def handle_code_graph_message(message: StreamMessage) -> bool:
+            return await event_service.process_event(
+                message.eventType,
+                message.payload,
+            )
+
+        return handle_code_graph_message
 
     @staticmethod
     async def create_aiconfig_message_handler(

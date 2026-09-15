@@ -5379,7 +5379,7 @@ class TestEnsureIndexes:
         assert blocks == {
             ("orgId", "recordGroupId", "name"),           # edge-resolution symbol sweep
             ("orgId", "recordGroupId", "qualifiedName"),  # resolution target lookup
-            ("recordId", "source"),                       # per-file reconciliation
+            ("recordId",),                                # per-file reconciliation
             ("orgId", "recordId", "qualifiedName"),       # the agent tools' addressing
             ("orgId", "name"),                            # free-text select, repo-agnostic
         }

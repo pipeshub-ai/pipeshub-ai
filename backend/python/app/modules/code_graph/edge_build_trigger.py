@@ -36,14 +36,12 @@ __all__ = [
     "BLOCKING_STATUSES",
     "BUILD_LOCK_PREFIX",
     "BuildState",
-    "DEFERRED_BUILD_DELAY_SECONDS",
     "BUILD_LOCK_RENEW_INTERVAL_SECONDS",
     "BUILD_LOCK_TTL_SECONDS",
     "REFRESH_LOCK_IF_OWNER_LUA",
     "RELEASE_LOCK_IF_OWNER_LUA",
     "SYNC_POINT_SUFFIX",
     "acquire_build_lock",
-    "claim_deferral",
     "claim_publish",
     "group_has_unfinished_records",
     "is_code_record",
@@ -51,7 +49,6 @@ __all__ = [
     "read_build_state",
     "records_updated_since",
     "release_build_lock",
-    "release_deferral",
     "renew_build_lock_until_cancelled",
     "request_is_stale",
     "still_owed",
@@ -96,14 +93,6 @@ return 0
 # burst, short enough that a genuine second drain minutes later is not swallowed.
 _PUBLISH_DEDUPE_PREFIX = "pipeshub:code-edge-publish:"
 _PUBLISH_DEDUPE_TTL_SECONDS = 60
-
-# A request that finds another build holding the lock waits this long and asks
-# again, in process: a broker-side delay (`_retry_not_before`) would sit at the
-# head of the connector's fair-scheduling queue and hold its records back for
-# the whole wait. One deferral per repo at a time.
-DEFERRED_BUILD_DELAY_SECONDS = 60
-_DEFERRAL_PREFIX = "pipeshub:code-edge-deferred:"
-
 
 class BuildState(NamedTuple):
     last_build: int | None
@@ -284,34 +273,6 @@ async def claim_publish(
             ex=_PUBLISH_DEDUPE_TTL_SECONDS,
         )
     )
-
-
-async def claim_deferral(
-    redis: "Redis",
-    org_id: str,
-    record_group_id: str,
-) -> bool:
-    """Win the one deferred re-request a busy repo may hold at a time.
-
-    Outlives the delay, so a later busy delivery sees the deferral still
-    scheduled; ``release_deferral`` clears it when the timer fires.
-    """
-    return bool(
-        await redis.set(
-            f"{_DEFERRAL_PREFIX}{org_id}:{record_group_id}",
-            "1",
-            nx=True,
-            ex=DEFERRED_BUILD_DELAY_SECONDS * 2,
-        )
-    )
-
-
-async def release_deferral(
-    redis: "Redis",
-    org_id: str,
-    record_group_id: str,
-) -> None:
-    await redis.delete(f"{_DEFERRAL_PREFIX}{org_id}:{record_group_id}")
 
 
 async def renew_build_lock_until_cancelled(

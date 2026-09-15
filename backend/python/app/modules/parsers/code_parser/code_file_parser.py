@@ -34,11 +34,7 @@ from app.services.parsing.interface import ParseResult, ParserProvider
 if TYPE_CHECKING:
     from app.modules.parsers.code_parser.models import ParsedFile, ParsedSymbol
 
-__all__ = ["CodeFileParser", "MAX_PENDING_EDGES_PER_BLOCK", "qualified_name_for"]
-
-# A typical function block carries 5-15. The cap exists because blocks are
-# traversed nodes and ArangoDB has no configured document-size headroom here.
-MAX_PENDING_EDGES_PER_BLOCK = 500
+__all__ = ["CodeFileParser", "qualified_name_for"]
 
 _MAX_SIGNATURE_CHARS = 300
 _MAX_DOCSTRING_CHARS = 500
@@ -365,17 +361,9 @@ class CodeFileParser:
             target = groups[idx] if is_group else blocks[idx]
             if target.code_metadata is None:
                 target.code_metadata = CodeMetadata()
-            kept, truncated = self._cap(facts)
-            target.code_metadata.pending_edges = kept
-            target.code_metadata.pending_edges_truncated = truncated
+            target.code_metadata.pending_edges = facts
 
         return buckets.get(None, [])
-
-    @staticmethod
-    def _cap(facts: list[dict]) -> tuple[list[dict], bool]:
-        if len(facts) <= MAX_PENDING_EDGES_PER_BLOCK:
-            return facts, False
-        return facts[:MAX_PENDING_EDGES_PER_BLOCK], True
 
     def _build_summary_block(self, parsed: ParsedFile, symbols: list[ParsedSymbol],
                              index: int, record_name: str, file_path: str,
@@ -396,7 +384,6 @@ class CodeFileParser:
             }
             for sym in symbols if sym.is_exported and sym.name
         )
-        kept, truncated = self._cap(facts)
         return Block(
             index=index,
             type=BlockType.RECORD_SUMMARY,
@@ -413,7 +400,6 @@ class CodeFileParser:
                 language=parsed.language,
                 kind="file_summary",
                 type_table=parsed.type_table or None,
-                pending_edges=kept or None,
-                pending_edges_truncated=truncated,
+                pending_edges=facts or None,
             ),
         )

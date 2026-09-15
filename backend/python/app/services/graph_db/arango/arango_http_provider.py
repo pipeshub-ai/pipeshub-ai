@@ -800,10 +800,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["orgId", "recordGroupId", "qualifiedName"],
         )
 
-        # COMPOSITE: per-file reconciliation — replacing one record's blocks.
+        # SINGLE: per-file reconciliation — replacing one record's blocks, and
+        # the record-scoped block delete.
         await self.http_client.ensure_persistent_index(
             CollectionNames.BLOCKS.value,
-            ["recordId", "source"],
+            ["recordId"],
         )
 
         # COMPOSITE: the code-graph agent tools address a symbol by
