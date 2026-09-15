@@ -40,9 +40,16 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from helper.graph_provider import GraphProviderProtocol
+from app.models.entities import RecordGroupType  # noqa: E402
+from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 
 logger = logging.getLogger("sharepoint-lifecycle-test")
+
+
+def _site_key(name: str) -> str:
+    """Case- and whitespace-insensitive, so a display name typed with different
+    spacing or casing in configuration still matches the site."""
+    return " ".join(name.split()).casefold()
 
 
 @pytest.mark.integration
@@ -138,14 +145,21 @@ class TestSharePointConnector:
             pytest.skip("SHAREPOINT_TEST_SITE_NAMES is not set")
 
         connector_id = sharepoint_connector["connector_id"]
-        names = await graph_provider.fetch_record_names(connector_id)
-        haystack = " ".join(names).lower()
+        # A site is a RecordGroup of its own type, named from the site's
+        # display name, so the check is an exact match on those. Searching
+        # record names for the site name as a substring would pass on a file
+        # called after the site while the site itself never synced.
+        site_groups = await graph_provider.fetch_record_group_names(
+            connector_id, group_type=RecordGroupType.SHAREPOINT_SITE.value
+        )
+        synced = {_site_key(name) for name in site_groups}
 
-        missing = [site for site in expected if site.lower() not in haystack]
+        missing = [site for site in expected if _site_key(site) not in synced]
         assert not missing, (
-            f"TC-SITES-001: configured sites {missing} produced no records. "
-            f"Synced {len(names)} records from other sites, so authentication "
-            "worked but these sites were not reached — check the app's "
-            "site-level permissions."
+            f"TC-SITES-001: configured sites {missing} were not synced as "
+            f"sites. Sites that did sync: {sorted(site_groups)}. Authentication "
+            "worked for those, so these were not reached — check the app's "
+            "site-level permissions and that SHAREPOINT_TEST_SITE_NAMES uses "
+            "each site's display name."
         )
         logger.info("TC-SITES-001 passed: sites %s are present", expected)
