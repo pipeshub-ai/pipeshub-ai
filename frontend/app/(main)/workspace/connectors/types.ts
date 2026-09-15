@@ -206,7 +206,7 @@ export interface FilterSchemaField {
     | 'NUMBER'
     | 'BOOLEAN'
     | 'TAGS';
-  filterType?: 'list' | 'datetime' | 'text' | 'string' | 'number' | 'boolean' | 'multiselect';
+  filterType?: 'list' | 'datetime' | 'text' | 'string' | 'number' | 'boolean' | 'multiselect' | 'select';
   category?: 'sync' | 'indexing';
   required?: boolean;
   defaultValue?: unknown;

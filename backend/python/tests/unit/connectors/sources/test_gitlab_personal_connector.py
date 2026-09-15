@@ -31,6 +31,14 @@ from app.connectors.sources.gitlab_personal.common.apps import GitLabPersonalApp
 from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
 from app.models.entities import AppUser, AppUserGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.sources.gitlab_personal import connector as gitlab_personal_mod
+
+
+@pytest.fixture(autouse=True)
+def _single_repo_guard_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These run_sync tests mock load_connector_filters with empty collections;
+    the one-repo rule itself is covered in tests/unit/connectors/core/test_filters.py."""
+    monkeypatch.setattr(gitlab_personal_mod, "require_single_value", lambda *_a, **_k: "org/repo")
 
 
 # ---------------------------------------------------------------------------
