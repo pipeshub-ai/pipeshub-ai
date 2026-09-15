@@ -859,6 +859,12 @@ export class UserController {
       }
 
       const { id } = req.params;
+      // Refuse before looking the target up: whether the operation is allowed
+      // does not depend on whether the user exists, and answering 404 first
+      // reports the wrong reason to someone who was never permitted to try.
+      if (updateFields.email !== undefined) {
+        assertEmailChangeIsSelf(req.user.userId, id);
+      }
       const user = await Users.findOne({
         orgId: req.user.orgId,
         _id: id,
@@ -901,10 +907,11 @@ export class UserController {
         const newEmail = email?.toLowerCase().trim();
 
         if (currentEmail !== newEmail) {
-          assertEmailChangeIsSelf(req.user.userId, id);
-          // Email is being changed - validate uniqueness
+          // Stored addresses are lowercased and the unique index is
+          // case-sensitive, so the raw request value can miss an existing
+          // lowercase match and the change would only fail later on save.
           const existingUser = await Users.findOne({
-            email: email,
+            email: newEmail,
             _id: { $ne: id },
             orgId: req.user.orgId,
             isDeleted: false,
@@ -1211,6 +1218,11 @@ export class UserController {
       }
 
       const { id } = req.params;
+      // Same rules as the email branch of updateUser: owner only, checked
+      // before the lookup so a non-owner is refused rather than told whether
+      // the id exists. The address is applied by /validateEmailChange once
+      // the link sent to the new address is opened — never written here.
+      assertEmailChangeIsSelf(req.user.userId, id);
       const user = await Users.findOne({
         orgId: req.user.orgId,
         _id: id,
@@ -1220,11 +1232,6 @@ export class UserController {
       if (!user) {
         throw new NotFoundError('User not found');
       }
-
-      // Same rules as the email branch of updateUser: owner only, and the
-      // address is applied by /validateEmailChange once the link sent to
-      // the new address is opened — never written here.
-      assertEmailChangeIsSelf(req.user.userId, id);
       const body = req.body as { email?: unknown };
       const requested = typeof body.email === 'string' ? body.email : '';
       const newEmail = requested.toLowerCase().trim();
@@ -1236,7 +1243,7 @@ export class UserController {
         return;
       }
       const existingUser = await Users.findOne({
-        email: requested,
+        email: newEmail,
         _id: { $ne: id },
         orgId: req.user.orgId,
         isDeleted: false,

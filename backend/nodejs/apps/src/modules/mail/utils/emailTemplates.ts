@@ -66,7 +66,25 @@ export const loginWithOTPRequest = (templateData: Record<string,any>): string =>
 export const suspiciousLoginAttempt = (templateData: Record<string,any>): string => compileTemplate(suspiciousLoginTemplate, templateData);
 export const resetPassword = (templateData: Record<string,any>): string => compileTemplate(resetPasswordTemplate, templateData);
 export const resetEmail = (templateData: Record<string,any>): string => compileTemplate(resetEmailTemplate, templateData);
-export const emailChangeNotice = (templateData: Record<string,any>): string => compileTemplate(emailChangeNoticeTemplate, templateData);
+export interface EmailChangeNoticeData {
+  name: string;
+  orgName: string;
+  newEmail: string;
+}
+export const isEmailChangeNoticeData = (
+  data: unknown,
+): data is EmailChangeNoticeData => {
+  if (typeof data !== 'object' || data === null) {
+    return false;
+  }
+  const record = data as Record<string, unknown>;
+  return (
+    typeof record.name === 'string' &&
+    typeof record.orgName === 'string' &&
+    typeof record.newEmail === 'string'
+  );
+};
+export const emailChangeNotice = (templateData: EmailChangeNoticeData): string => compileTemplate(emailChangeNoticeTemplate, templateData);
 export const accountCreation = (templateData: Record<string,any>): string => compileTemplate(accountCreationTemplate, templateData);
 export const appUserInvite = (templateData: Record<string,any>): string => compileTemplate(appUsersInviteTemplate, templateData);
 export const orgEmailVerification = (templateData: Record<string,any>): string => compileTemplate(orgEmailVerificationTemplate, templateData);

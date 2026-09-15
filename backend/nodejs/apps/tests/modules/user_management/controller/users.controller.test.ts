@@ -1309,6 +1309,46 @@ describe('UserController', () => {
       expect(res.json.firstCall.args[0]).to.deep.equal({ email: 'old@test.com', emailChangeMailStatus: 'sent' });
     });
 
+    it('refuses a non-owner before looking the target up, even for an unknown id', async () => {
+      // Whether the change is allowed does not depend on whether the user
+      // exists. Answering 404 first would tell the wrong reason to someone
+      // who was never permitted to try.
+      req.params.id = '507f1f77bcf86cd799439099';
+      req.body = { email: 'attacker@evil.example' };
+      const findOneStub = sinon.stub(Users, 'findOne').resolves(null);
+
+      await controller.updateEmail(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('Only the account owner');
+      expect(findOneStub.called).to.be.false;
+    });
+
+    it('checks for a duplicate with the normalised address, not the raw request', async () => {
+      // Stored addresses are lowercased and the unique index is
+      // case-sensitive, so a mixed-case request that missed an existing
+      // lowercase match would send a verification mail and only fail on save.
+      req.params.id = '507f1f77bcf86cd799439011';
+      req.body = { email: '  Taken@Test.com ' };
+      const mockUser = {
+        _id: '507f1f77bcf86cd799439011',
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'old@test.com',
+        save: sinon.stub().resolves(),
+      };
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().resolves(mockUser as any);
+      findOneStub.onSecondCall().resolves({ _id: 'someone-else' } as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateEmail(req, res, next);
+
+      expect(findOneStub.secondCall.args[0].email).to.equal('taken@test.com');
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('already exists');
+      expect(emailChangeStub.called).to.be.false;
+    });
+
     it('refuses an admin changing another user\'s email address', async () => {
       // Permissions attach to the address; moving a colleague's account to an
       // address the admin controls would let the admin sign in as them.
@@ -3948,7 +3988,16 @@ describe('UserController', () => {
 
       expect(result.statusCode).to.equal(200);
       expect(mockMailService.sendMail.calledTwice).to.be.true;
-      const [verification, notice] = mockMailService.sendMail.args.map((a: any[]) => a[0]);
+      // Only the fields asserted below; the mail payload's full shape is the
+      // service's concern, not this test's.
+      type SentMail = {
+        emailTemplateType: string;
+        usersMails: string[];
+        templateData: { newEmail?: string };
+      };
+      const [verification, notice] = mockMailService.sendMail.args.map(
+        (a: [SentMail, ...unknown[]]) => a[0],
+      );
       expect(verification.emailTemplateType).to.equal('resetEmail');
       expect(verification.usersMails).to.deep.equal(['alice@new.example']);
       expect(notice.emailTemplateType).to.equal('emailChangeNotice');
