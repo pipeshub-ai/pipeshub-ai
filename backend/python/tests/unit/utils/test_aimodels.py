@@ -163,6 +163,26 @@ class TestReasoningEffortKwargs:
         config = {"isReasoning": True}
         assert _reasoning_effort_kwargs(None, config) == {"reasoning_effort": "high"}
 
+    def test_uses_model_default_reasoning_effort_when_effort_is_none(self):
+        config = {"isReasoning": True, "defaultReasoningEffort": "medium"}
+        assert _reasoning_effort_kwargs(None, config) == {"reasoning_effort": "medium"}
+
+    def test_uses_nested_configuration_default_reasoning_effort(self):
+        config = {"isReasoning": True, "configuration": {"defaultReasoningEffort": "low"}}
+        assert _reasoning_effort_kwargs(None, config) == {"reasoning_effort": "low"}
+
+    def test_explicit_reasoning_effort_overrides_model_default(self):
+        config = {"isReasoning": True, "defaultReasoningEffort": "low"}
+        assert _reasoning_effort_kwargs("high", config) == {"reasoning_effort": "high"}
+
+    def test_explicit_reasoning_effort_overrides_nested_configuration_default(self):
+        config = {"isReasoning": True, "configuration": {"defaultReasoningEffort": "low"}}
+        assert _reasoning_effort_kwargs("high", config) == {"reasoning_effort": "high"}
+
+    def test_model_default_ignored_when_not_reasoning_capable(self):
+        config = {"isReasoning": False, "defaultReasoningEffort": "low"}
+        assert _reasoning_effort_kwargs(None, config) == {}
+
     def test_returns_empty_when_effort_is_none_and_not_reasoning(self):
         config = {"isReasoning": False}
         assert _reasoning_effort_kwargs(None, config) == {}
