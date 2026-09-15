@@ -39,7 +39,9 @@ class FakeGitHub:
         if method == "GET" and "/issues" in path:
             return self.open_issues if "page=1" in path else []
         if method == "GET" and "/security-advisories" in path:
-            return self.open_advisories
+            page = int(path.split("page=")[-1]) if "page=" in path else 1
+            start = (page - 1) * 100
+            return self.open_advisories[start:start + 100]
         if method == "POST" and path.endswith("/issues"):
             return {"html_url": f"https://github.com/{REPO}/issues/{len(self.calls)}"}
         if method == "POST" and path.endswith("/security-advisories"):
@@ -123,6 +125,14 @@ def test_a_failed_advisory_does_not_fall_back_to_a_public_issue(tmp_path) -> Non
     assert gh.posts_to("/issues") == [], "an undeliverable security finding is not filed publicly"
 
 
+def test_a_failed_issue_makes_the_run_fail_too(tmp_path, monkeypatch) -> None:
+    """A lost bug report is quieter than a lost security finding, not better."""
+    gh = FakeGitHub(fail={"POST /repos/acme/widgets/issues": 500})
+    monkeypatch.setattr(router, "GitHub", lambda repo, token: type("G", (), {"request": staticmethod(gh)})())
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    assert router.main([write_report(tmp_path, [bug()]), "--repo", REPO]) == 1
+
+
 def test_a_failed_advisory_makes_the_run_fail(tmp_path, monkeypatch) -> None:
     """Green with a lost security finding would be worse than red."""
     gh = FakeGitHub(fail={"POST /repos/acme/widgets/security-advisories": 403})
@@ -195,6 +205,34 @@ def test_a_security_finding_already_in_a_draft_advisory_is_skipped(tmp_path) -> 
     assert gh.posts_to("/security-advisories") == []
 
 
+def test_advisory_dedup_reads_every_page(tmp_path) -> None:
+    """A matching draft on page two must still count as a duplicate."""
+    padding = [f"Unrelated {i} (other{i}.py)" for i in range(100)]
+    match = ["Earlier wording (backend/python/app/api/routes/records.py)"]
+    gh = FakeGitHub(open_advisories=padding + match)
+    out = run(tmp_path, [security()], gh)
+    assert out.skipped_duplicates == 1
+    assert gh.posts_to("/security-advisories") == []
+
+
+def test_a_transient_listing_error_does_not_cause_a_duplicate_advisory(tmp_path) -> None:
+    """Treating a failed listing as "no drafts" would file on top of a real one."""
+    gh = FakeGitHub(fail={"GET /repos/acme/widgets/security-advisories": 500})
+    with pytest.raises(urllib.error.HTTPError):
+        run(tmp_path, [security()], gh)
+    assert gh.posts_to("/security-advisories") == []
+
+
+def test_a_permission_error_listing_advisories_is_not_fatal(tmp_path) -> None:
+    """No permission to list means the create fails visibly on its own."""
+    gh = FakeGitHub(fail={
+        "GET /repos/acme/widgets/security-advisories": 403,
+        "POST /repos/acme/widgets/security-advisories": 403,
+    })
+    out = run(tmp_path, [security()], gh)
+    assert out.security_failed == 1
+
+
 def test_dedup_is_by_file_not_by_title(tmp_path) -> None:
     """The reviewer rewords things between runs; the path does not move."""
     gh = FakeGitHub(open_issues=["Completely different words (backend/python/app/connectors/core/retry.py)"])
@@ -234,6 +272,8 @@ def test_security_and_bug_caps_are_independent(tmp_path) -> None:
         bug(failure_scenario=""),
         bug(kind="suggestion"),
         bug(line="not a number"),
+        bug(line=0),
+        bug(line=-4),
         "not even a dict",
     ],
 )
@@ -242,6 +282,14 @@ def test_unusable_findings_are_dropped_not_filed(tmp_path, broken) -> None:
     out = run(tmp_path, [broken], gh)
     assert out.dropped_malformed == 1
     assert gh.posts_to("/issues") == [] and gh.posts_to("/security-advisories") == []
+
+
+def test_a_report_that_is_not_an_object_is_malformed_not_empty(tmp_path) -> None:
+    path = tmp_path / "sweep-findings.json"
+    path.write_text(json.dumps(["not", "a", "report"]))
+    out = router.Outcome()
+    assert router.load_findings(str(path), out) == []
+    assert out.dropped_malformed == 1
 
 
 def test_an_unknown_severity_is_treated_as_medium(tmp_path) -> None:

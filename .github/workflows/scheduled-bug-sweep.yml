@@ -60,8 +60,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
       - run: pip install --quiet pytest
@@ -77,9 +77,13 @@ jobs:
       id-token: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0   # the sweep reads recent history to find what changed
+          # The AI step below can read any file in the workspace. Without this,
+          # the checkout leaves a write-capable token in .git/config for it to
+          # find. Nothing after checkout needs to push, so nothing needs it.
+          persist-credentials: false
 
       - name: Decide whether this run files anything
         id: mode
@@ -134,7 +138,9 @@ jobs:
           echo "Recently changed source files: $(wc -l < recently-changed.txt)"
 
       - name: Review for defects
-        uses: anthropics/claude-code-action@v1
+        # Pinned to a commit rather than a tag because this step is handed the
+        # API key: a moved tag could run different code with that secret.
+        uses: anthropics/claude-code-action@bf38e86e58df9ebf3420326d019f955bb3be64dd # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
@@ -236,13 +242,17 @@ jobs:
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Findings in report: $(python3 -c 'import json; print(len(json.load(open("sweep-findings.json")).get("findings") or []))')"
           else
+            # A run that produced nothing to route is not a run with no
+            # findings — that is a valid file with an empty list. This one
+            # did not do its job, and a green result would hide that.
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::sweep-findings.json was not produced or is not valid JSON"
+            echo "::error::sweep-findings.json was not produced or is not valid JSON"
+            exit 1
           fi
 
       - name: Set up Python
         if: steps.report.outputs.exists == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 

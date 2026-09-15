@@ -131,6 +131,12 @@ def load_findings(path: str, outcome: Outcome) -> list[Finding]:
     with open(path, encoding="utf-8") as handle:
         report = json.load(handle)
 
+    if not isinstance(report, dict):
+        # A list or scalar at the top level is a broken report, not a report
+        # with no findings; counting it keeps that visible in the summary.
+        outcome.dropped_malformed += 1
+        return []
+
     findings: list[Finding] = []
     for raw in report.get("findings") or []:
         parsed = _parse(raw)
@@ -153,6 +159,9 @@ def _parse(raw: Any) -> Finding | None:
     try:
         line = int(raw.get("line") or 0)
     except (TypeError, ValueError):
+        return None
+    if line < 1:
+        # No line means nobody can look at it; that is the bar for filing.
         return None
     severity = str(raw.get("severity", "medium")).strip().lower()
     if severity not in SEVERITIES:
@@ -215,13 +224,30 @@ def open_sweep_issue_titles(request: Requester, repo: str) -> list[str]:
 
 
 def open_advisory_summaries(request: Requester, repo: str) -> list[str]:
-    try:
-        batch = request("GET", f"/repos/{repo}/security-advisories?state=draft&per_page=100", None)
-    except urllib.error.HTTPError:
-        # Listing needs the same permission as creating. If it is missing the
-        # create will fail too, and that failure is the one reported.
-        return []
-    return [str(item.get("summary", "")) for item in batch or []]
+    summaries: list[str] = []
+    page = 1
+    while True:
+        try:
+            batch = request(
+                "GET",
+                f"/repos/{repo}/security-advisories?state=draft&per_page=100&page={page}",
+                None,
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code in (403, 404):
+                # No permission to list means no permission to create either;
+                # the create is what fails visibly, so nothing is lost here.
+                return []
+            # Anything else is a listing that did not happen. Treating it as
+            # "no drafts exist" would file a duplicate on top of a real one.
+            raise
+        if not batch:
+            break
+        summaries.extend(str(item.get("summary", "")) for item in batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return summaries
 
 
 def is_duplicate(finding: Finding, existing: list[str]) -> bool:
@@ -419,9 +445,8 @@ def main(argv: list[str] | None = None) -> int:
     route(findings, github.request, args.repo, dry_run=args.dry_run, outcome=outcome)
 
     print(summarise(outcome))
-    # A security finding that could not be delivered must not disappear into a
-    # green run.
-    return 1 if outcome.security_failed else 0
+    # A finding that could not be delivered must not disappear into a green run.
+    return 1 if (outcome.security_failed or outcome.bugs_failed) else 0
 
 
 if __name__ == "__main__":
