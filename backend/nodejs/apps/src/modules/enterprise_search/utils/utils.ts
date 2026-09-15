@@ -31,7 +31,13 @@ import {
   validateNoXSS,
   validateNoFormatSpecifiers,
 } from '../../../utils/xss-sanitization';
-import { AGUIEventType, frameAGUI, isAGUI, SSEProtocol } from './agui';
+import {
+  AGUIEventType,
+  aguiRunErrorMetadata,
+  frameAGUI,
+  isAGUI,
+  SSEProtocol,
+} from './agui';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -167,9 +173,9 @@ export const findSessionIdsMatchingContent = async (
   return rows.map((r) => r._id);
 };
 
-export const buildAIFailureResponseMessage = (): IMessage => ({
+export const buildAIFailureResponseMessage = (content?: string): IMessage => ({
   messageType: 'error',
-  content: 'Error Generating Response, Please try again',
+  content: content ?? 'Error Generating Response, Please try again',
   contentFormat: 'MARKDOWN',
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -1202,13 +1208,22 @@ export const addErrorToConversation = (
   if (!conversation.conversationErrors) {
     conversation.conversationErrors = [];
   }
+  const aguiCode = errorType || 'unknown_error';
+  const mergedMetadata = metadata
+    ? new Map(metadata)
+    : new Map<string, unknown>();
+  for (const [key, value] of aguiRunErrorMetadata(aguiCode)) {
+    if (!mergedMetadata.has(key)) {
+      mergedMetadata.set(key, value);
+    }
+  }
   conversation.conversationErrors.push({
     message: errorMessage,
-    errorType: errorType || 'unknown',
+    errorType: aguiCode,
     timestamp: new Date(),
     messageId,
     stack,
-    metadata,
+    metadata: mergedMetadata,
   });
 };
 
@@ -1222,8 +1237,7 @@ export const markConversationFailed = async (
 ): Promise<void> => {
   try {
     // Insert the failure message first — see "Ordering" in the Phase 1 plan.
-    const failedMessage = buildAIFailureResponseMessage();
-    failedMessage.content = failReason;
+    const failedMessage = buildAIFailureResponseMessage(failReason);
     await appendMessages(
       conversation._id as mongoose.Types.ObjectId,
       conversation.orgId,
@@ -1305,8 +1319,7 @@ export const replaceMessageWithError = async (
     );
 
     // Replace the message with an error message, preserving its _id/seq
-    const failedMessage = buildAIFailureResponseMessage();
-    failedMessage.content = errorMessage;
+    const failedMessage = buildAIFailureResponseMessage(errorMessage);
     const updatedMessage = await updateMessageById(
       messageId,
       failedMessage,
@@ -1444,7 +1457,7 @@ export const markAgentConversationFailed = async (
   metadata?: Map<string, any>,
 ): Promise<void> => {
   try {
-    const failedMessage = buildAIFailureResponseMessage();
+    const failedMessage = buildAIFailureResponseMessage(failReason);
     await appendMessages(
       conversation._id as mongoose.Types.ObjectId,
       conversation.orgId,

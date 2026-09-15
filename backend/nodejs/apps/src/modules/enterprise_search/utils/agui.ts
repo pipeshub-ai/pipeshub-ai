@@ -51,3 +51,18 @@ export const AGUIEventType = {
   STATE_SNAPSHOT: 'STATE_SNAPSHOT',
   CUSTOM: 'CUSTOM',
 } as const;
+
+/** AG-UI `RUN_ERROR.code` for Mongo; falls back to the proxy default. */
+export const aguiErrorCodeFromPayload = (
+  errorData: Record<string, unknown>,
+): string => {
+  const code = errorData.code;
+  return typeof code === 'string' && code.trim() ? code.trim() : 'streaming_error';
+};
+
+/** Same `type` + `code` Node sends on the wire, stored on `conversationErrors.metadata`. */
+export const aguiRunErrorMetadata = (code: string): Map<string, string> =>
+  new Map([
+    ['type', AGUIEventType.RUN_ERROR],
+    ['code', code],
+  ]);

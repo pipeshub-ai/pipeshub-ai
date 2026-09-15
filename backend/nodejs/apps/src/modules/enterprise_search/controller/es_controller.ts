@@ -1,5 +1,4 @@
 import {
-  buildAIFailureResponseMessage,
   buildMessageSortOptions,
   markConversationFailed,
   saveCompleteAgentConversation,
@@ -84,6 +83,7 @@ import {
 import {
   AGUIEventType,
   AGUI_PROTOCOL,
+  aguiErrorCodeFromPayload,
   frameAGUI,
   isAGUI,
   resolveProtocol,
@@ -1022,7 +1022,7 @@ export const streamChat =
                     savedConversation,
                     errorMessage,
                     session,
-                    'streaming_error',
+                    aguiErrorCodeFromPayload(errorData),
                     typeof errorData.stack === 'string' ? errorData.stack : undefined,
                   ).catch((markErr: any) => {
                     logger.error('Failed to mark conversation from AI RUN_ERROR SSE', {
@@ -1237,7 +1237,7 @@ export const streamChat =
                 savedConversation,
                 'No complete response received from AI service',
                 session,
-                'incomplete_response',
+                'no_response',
               );
             }
 
@@ -1265,7 +1265,7 @@ export const streamChat =
               savedConversation,
               `Failed to save conversation: ${dbError.message}`,
               session,
-              'database_error',
+              'save_error',
               dbError.stack,
             );
           }
@@ -1613,34 +1613,17 @@ export const createConversation =
         // TODO: Add support for retry mechanism and generate response from retry
         // and append the response to the correct messageId
 
-        savedConversation.status = CONVERSATION_STATUS.FAILED;
-        if (error.cause?.code === 'ECONNREFUSED') {
-          savedConversation.failReason = `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
-        } else {
-          savedConversation.failReason =
-            error.message || 'Unknown error occurred';
-        }
-        // persist and serve the error message to the user.
-        const failedMessage = buildAIFailureResponseMessage();
-        await appendMessages(
-          savedConversation._id as mongoose.Types.ObjectId,
-          savedConversation.orgId,
-          [failedMessage],
+        const failReason =
+          error.cause?.code === 'ECONNREFUSED'
+            ? `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`
+            : error.message || 'Unknown error occurred';
+        await markConversationFailed(
+          savedConversation,
+          failReason,
           session,
+          'internal_error',
+          error.stack,
         );
-        savedConversation.lastActivityAt = Date.now();
-
-        const savedWithError = session
-          ? await savedConversation.save({ session })
-          : await savedConversation.save();
-
-        if (!savedWithError) {
-          logger.error('Failed to save conversation error state', {
-            requestId,
-            conversationId: savedConversation._id,
-            error: error.message,
-          });
-        }
         if (error.cause && error.cause.code === 'ECONNREFUSED') {
           throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
         }
@@ -1986,29 +1969,13 @@ export const addMessage =
           // TODO: Add support for retry mechanism and generate response from retry
           // and append the response to the correct messageId
 
-          // Update conversation status for general errors
-          conversation.status = CONVERSATION_STATUS.FAILED;
-          conversation.failReason = error.message || 'Unknown error occurred';
-
-          // persist and serve the error message to the user.
-          const failedMessage = buildAIFailureResponseMessage();
-          await appendMessages(
-            conversation._id as mongoose.Types.ObjectId,
-            conversation.orgId,
-            [failedMessage],
+          await markConversationFailed(
+            conversation,
+            error.message || 'Unknown error occurred',
             session,
+            'internal_error',
+            error.stack,
           );
-          conversation.lastActivityAt = Date.now();
-          const saveGeneralError = session
-            ? await conversation.save({ session })
-            : await conversation.save();
-
-          if (!saveGeneralError) {
-            logger.error('Failed to save conversation general error status', {
-              requestId,
-              conversationId: conversation._id,
-            });
-          }
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
             throw new InternalServerError(
               AI_SERVICE_UNAVAILABLE_MESSAGE,
@@ -2333,7 +2300,7 @@ export const addMessageStream =
                     existingConversation,
                     errorMessage,
                     session,
-                    'streaming_error',
+                    aguiErrorCodeFromPayload(errorData as Record<string, unknown>),
                     errorData.stack,
                   ).catch((markErr: any) => {
                     logger.error('Failed to mark conversation from AI RUN_ERROR SSE', {
@@ -2593,34 +2560,13 @@ export const addMessageStream =
             } catch (error: any) {
               // Update conversation status for general errors
               if (existingConversation) {
-                existingConversation.status = CONVERSATION_STATUS.FAILED;
-                existingConversation.failReason =
-                  error.message || 'Unknown error occurred';
-
-                // Add error message using existing utility
-                const failedMessage =
-                  buildAIFailureResponseMessage() as IMessageDocument;
-                await appendMessages(
-                  existingConversation._id as mongoose.Types.ObjectId,
-                  existingConversation.orgId,
-                  [failedMessage],
+                await markConversationFailed(
+                  existingConversation,
+                  error.message || 'Unknown error occurred',
                   session,
+                  'internal_error',
+                  error.stack,
                 );
-                existingConversation.lastActivityAt = Date.now();
-
-                const saveGeneralError = session
-                  ? await existingConversation.save({ session })
-                  : await existingConversation.save();
-
-                if (!saveGeneralError) {
-                  logger.error(
-                    'Failed to save conversation general error status',
-                    {
-                      requestId,
-                      conversationId: existingConversation._id,
-                    },
-                  );
-                }
               }
 
               if (error.cause && error.cause.code === 'ECONNREFUSED') {
@@ -2634,21 +2580,12 @@ export const addMessageStream =
           } else if (!upstreamAiErrorEventForwarded) {
           // Mark as failed if no complete data received (and AI did not already send error SSE)
           if (existingConversation) {
-            existingConversation.status = CONVERSATION_STATUS.FAILED;
-            existingConversation.failReason =
-              'No complete response received from AI service';
-            existingConversation.lastActivityAt = Date.now();
-
-            const savedWithError = session
-              ? await existingConversation.save({ session })
-              : await existingConversation.save();
-
-            if (!savedWithError) {
-              logger.error('Failed to save conversation error state', {
-                requestId,
-                conversationId: existingConversation._id,
-              });
-            }
+            await markConversationFailed(
+              existingConversation,
+              'No complete response received from AI service',
+              session,
+              'no_response',
+            );
           }
 
           // Send error event
@@ -2729,34 +2666,13 @@ export const addMessageStream =
       try {
         // Mark conversation as failed if it exists
         if (existingConversation) {
-          const conv = existingConversation as IChatSessionDocument;
-          conv.status = CONVERSATION_STATUS.FAILED;
-          conv.failReason = error.message || 'Internal server error';
-
-          // Add error message using existing utility
-          const failedMessage =
-            buildAIFailureResponseMessage() as IMessageDocument;
-          await appendMessages(
-            conv._id as mongoose.Types.ObjectId,
-            conv.orgId,
-            [failedMessage],
+          await markConversationFailed(
+            existingConversation as IChatSessionDocument,
+            error.message || 'Internal server error',
             session,
+            'internal_error',
+            error.stack,
           );
-          conv.lastActivityAt = Date.now();
-
-          const saveGeneralError = session
-            ? await conv.save({ session })
-            : await conv.save();
-
-          if (!saveGeneralError) {
-            logger.error(
-              'Failed to save conversation general error status in catch block',
-              {
-                requestId,
-                conversationId: conv._id,
-              },
-            );
-          }
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
@@ -3908,7 +3824,7 @@ async function regenerateAnswersInternal(
               messageId,
               errorMessage,
               session,
-              'incomplete_response',
+              'no_response',
             );
 
             // Reload conversation to get updated state
@@ -3964,7 +3880,7 @@ async function regenerateAnswersInternal(
               messageId,
               errorMessage,
               session,
-              'database_error',
+              'save_error',
               dbError.stack,
             );
 
@@ -6181,7 +6097,7 @@ export const deleteAgent =
                     savedConversation,
                     errorMessage,
                     session,
-                    'streaming_error',
+                    aguiErrorCodeFromPayload(errorData),
                     typeof errorData.stack === 'string' ? errorData.stack : undefined,
                   ).catch((markErr: any) => {
                     logger.error('Failed to mark agent conversation from AI RUN_ERROR SSE', {
@@ -6400,6 +6316,7 @@ export const deleteAgent =
                 savedConversation,
                 'No complete response received from AI service',
                 session,
+                'no_response',
               );
             }
 
@@ -6415,13 +6332,23 @@ export const deleteAgent =
                   })}\n\n`,
             );
           }
-        } catch (dbError: any) {
+          } catch (dbError: any) {
           logger.error('Failed to save complete conversation', {
             requestId,
             conversationId: savedConversation?._id,
             agentKey,
             error: dbError.message,
           });
+
+          if (savedConversation) {
+            await markAgentConversationFailed(
+              savedConversation,
+              `Failed to save conversation: ${dbError.message}`,
+              session,
+              'save_error',
+              dbError.stack,
+            );
+          }
 
           // Send error event
           res.write(
@@ -6702,35 +6629,17 @@ export const createAgentConversation =
         // TODO: Add support for retry mechanism and generate response from retry
         // and append the response to the correct messageId
 
-        savedConversation.status = CONVERSATION_STATUS.FAILED as any;
-        if (error.cause?.code === 'ECONNREFUSED') {
-          savedConversation.failReason = `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
-        } else {
-          savedConversation.failReason =
-            error.message || 'Unknown error occurred';
-        }
-        // persist and serve the error message to the user.
-        const failedMessage =
-          buildAIFailureResponseMessage() as IMessageDocument;
-        await appendMessages(
-          savedConversation._id as mongoose.Types.ObjectId,
-          savedConversation.orgId,
-          [failedMessage],
+        const failReason =
+          error.cause?.code === 'ECONNREFUSED'
+            ? `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`
+            : error.message || 'Unknown error occurred';
+        await markAgentConversationFailed(
+          savedConversation,
+          failReason,
           session,
+          'internal_error',
+          error.stack,
         );
-        savedConversation.lastActivityAt = Date.now();
-
-        const savedWithError = session
-          ? await savedConversation.save({ session })
-          : await savedConversation.save();
-
-        if (!savedWithError) {
-          logger.error('Failed to save conversation error state', {
-            requestId,
-            conversationId: savedConversation._id,
-            error: error.message,
-          });
-        }
         if (error.cause && error.cause.code === 'ECONNREFUSED') {
           throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
         }
@@ -7049,29 +6958,13 @@ export const createAgentConversation =
           // and append the response to the correct messageId
 
           // Update conversation status for general errors
-          conversation.status = CONVERSATION_STATUS.FAILED as any;
-          conversation.failReason = error.message || 'Unknown error occurred';
-
-          // persist and serve the error message to the user.
-          const failedMessage =
-            buildAIFailureResponseMessage() as IMessageDocument;
-          await appendMessages(
-            conversation._id as mongoose.Types.ObjectId,
-            conversation.orgId,
-            [failedMessage],
+          await markAgentConversationFailed(
+            conversation,
+            error.message || 'Unknown error occurred',
             session,
+            'internal_error',
+            error.stack,
           );
-          conversation.lastActivityAt = Date.now();
-          const saveGeneralError = session
-            ? await conversation.save({ session })
-            : await conversation.save();
-
-          if (!saveGeneralError) {
-            logger.error('Failed to save conversation general error status', {
-              requestId,
-              conversationId: conversation._id,
-            });
-          }
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
             throw new InternalServerError(
               AI_SERVICE_UNAVAILABLE_MESSAGE,
@@ -7412,7 +7305,7 @@ export const addMessageStreamToAgentConversation =
                     existingConversation,
                     errorMessage,
                     session,
-                    'streaming_error',
+                    aguiErrorCodeFromPayload(errorData as Record<string, unknown>),
                     errorData.stack,
                   ).catch((markErr: any) => {
                     logger.error('Failed to mark agent conversation from AI RUN_ERROR SSE', {
@@ -7669,36 +7562,14 @@ export const addMessageStreamToAgentConversation =
                 },
               );
             } catch (error: any) {
-              // Update conversation status for general errors
               if (existingConversation) {
-                existingConversation.status = CONVERSATION_STATUS.FAILED as any;
-                existingConversation.failReason =
-                  error.message || 'Unknown error occurred';
-
-                // Add error message using existing utility
-                const failedMessage =
-                  buildAIFailureResponseMessage() as IMessageDocument;
-                await appendMessages(
-                  existingConversation._id as mongoose.Types.ObjectId,
-                  existingConversation.orgId,
-                  [failedMessage],
+                await markAgentConversationFailed(
+                  existingConversation,
+                  error.message || 'Unknown error occurred',
                   session,
+                  'internal_error',
+                  error.stack,
                 );
-                existingConversation.lastActivityAt = Date.now();
-
-                const saveGeneralError = session
-                  ? await existingConversation.save({ session })
-                  : await existingConversation.save();
-
-                if (!saveGeneralError) {
-                  logger.error(
-                    'Failed to save conversation general error status',
-                    {
-                      requestId,
-                      conversationId: existingConversation._id,
-                    },
-                  );
-                }
               }
 
               if (error.cause && error.cause.code === 'ECONNREFUSED') {
@@ -7712,21 +7583,12 @@ export const addMessageStreamToAgentConversation =
           } else if (!upstreamAiErrorEventForwarded) {
             // Mark as failed if no complete data received (and AI did not already send error SSE)
             if (existingConversation) {
-              existingConversation.status = CONVERSATION_STATUS.FAILED as any;
-              existingConversation.failReason =
-                'No complete response received from AI service';
-              existingConversation.lastActivityAt = Date.now();
-
-              const savedWithError = session
-                ? await existingConversation.save({ session })
-                : ((await existingConversation.save()) as IChatSessionDocument);
-
-              if (!savedWithError) {
-                logger.error('Failed to save conversation error state', {
-                  requestId,
-                  conversationId: existingConversation._id,
-                });
-              }
+              await markAgentConversationFailed(
+                existingConversation,
+                'No complete response received from AI service',
+                session,
+                'no_response',
+              );
             }
 
             // Send error event
@@ -7806,36 +7668,14 @@ export const addMessageStreamToAgentConversation =
       });
 
       try {
-        // Mark conversation as failed if it exists
         if (existingConversation) {
-          const conv = existingConversation as IChatSessionDocument;
-          conv.status = CONVERSATION_STATUS.FAILED as any;
-          conv.failReason = error.message || 'Internal server error';
-
-          // Add error message using existing utility
-          const failedMessage =
-            buildAIFailureResponseMessage() as IMessageDocument;
-          await appendMessages(
-            conv._id as mongoose.Types.ObjectId,
-            conv.orgId,
-            [failedMessage],
+          await markAgentConversationFailed(
+            existingConversation as IChatSessionDocument,
+            error.message || 'Internal server error',
             session,
+            'internal_error',
+            error.stack,
           );
-          conv.lastActivityAt = Date.now();
-
-          const saveGeneralError = session
-            ? await conv.save({ session })
-            : await conv.save();
-
-          if (!saveGeneralError) {
-            logger.error(
-              'Failed to save conversation general error status in catch block',
-              {
-                requestId,
-                conversationId: conv._id,
-              },
-            );
-          }
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
