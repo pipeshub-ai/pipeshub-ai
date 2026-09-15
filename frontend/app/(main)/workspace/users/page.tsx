@@ -28,7 +28,7 @@ import type { ColumnConfig } from '../components';
 import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
 import { isProcessedError } from '@/lib/api';
-import { USER_ROLES, INVITE_ROLE_OPTIONS } from '../constants';
+import { USER_ROLES, INVITE_ROLE_OPTIONS, isMaxOrgAdminsErrorMessage } from '../constants';
 import { useUsersStore } from './store';
 import { UsersApi } from './api';
 import { ProfileApi } from '../profile/api';
@@ -812,9 +812,13 @@ function UsersPageContent() {
       if (newRole === currentRole) return;
 
       try {
-        await ProfileApi.updateUser(user.userId, {
-          role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
-        });
+        await ProfileApi.updateUser(
+          user.userId,
+          {
+            role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
+          },
+          { suppressErrorToast: true },
+        );
 
         addToast({
           variant: 'success',
@@ -833,13 +837,28 @@ function UsersPageContent() {
         // Refresh users list to reflect the change
         fetchUsers();
       } catch (err: unknown) {
-        const description = isProcessedError(err) ? err.message : undefined;
-        addToast({
-          variant: 'error',
-          title: t('workspace.users.actions.changeRoleError', 'Failed to change role'),
-          ...(description ? { description } : {}),
-          duration: 5000,
-        });
+        const apiMessage = isProcessedError(err) ? err.message : undefined;
+        if (isMaxOrgAdminsErrorMessage(apiMessage)) {
+          addToast({
+            variant: 'error',
+            title: t(
+              'workspace.users.actions.maxAdminsReachedTitle',
+              'Cannot add another admin'
+            ),
+            description: t(
+              'workspace.users.actions.maxAdminsReached',
+              'An organization can have at most 5 admins.'
+            ),
+            duration: 5000,
+          });
+        } else {
+          addToast({
+            variant: 'error',
+            title: t('workspace.users.actions.changeRoleError', 'Failed to change role'),
+            ...(apiMessage ? { description: apiMessage } : {}),
+            duration: 5000,
+          });
+        }
         throw err;
       }
     },

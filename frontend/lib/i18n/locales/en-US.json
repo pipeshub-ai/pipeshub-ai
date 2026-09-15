@@ -830,6 +830,8 @@
         "changeRoleSuccess": "Role updated",
         "changeRoleSuccessDescription": "{{name}} is now {{role}}",
         "changeRoleError": "Failed to change role",
+        "maxAdminsReachedTitle": "Cannot add another admin",
+        "maxAdminsReached": "An organization can have at most 5 admins.",
         "removeFromWorkspace": "Remove from Workplace",
         "demoteAdminBeforeRemoveTitle": "Cannot remove admin",
         "demoteAdminBeforeRemove": "Demote the admin to member, then remove them.",
