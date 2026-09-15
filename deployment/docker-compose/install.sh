@@ -846,6 +846,40 @@ header "Configuration"
 ENV_EXISTS=false
 [[ -f "$ENV_FILE" ]] && ENV_EXISTS=true
 
+# --version / PIPESHUB_VERSION are normally applied inside the configuration
+# wizard, which --upgrade skips. Without this, `--upgrade --version X` sources
+# the old IMAGE_TAG back out of .env and restarts the very version the user was
+# trying to move off, reporting success.
+apply_requested_tag() {
+  local requested="${CLI_VERSION:-${PIPESHUB_VERSION:-}}"
+  [[ -n "$requested" ]] || return 0
+
+  if [[ "$requested" == "${IMAGE_TAG:-}" ]]; then
+    info "Already on image tag ${IMAGE_TAG}; re-pulling and restarting."
+    return 0
+  fi
+
+  info "Image tag: ${IMAGE_TAG:-latest} -> ${requested}"
+  IMAGE_TAG="$requested"
+
+  # Persist it so a later plain --upgrade, or a direct `docker compose up`,
+  # agrees with what is actually running.
+  if grep -qE '^IMAGE_TAG=' "$ENV_FILE"; then
+    sed -i.bak -E "s|^IMAGE_TAG=.*|IMAGE_TAG=${IMAGE_TAG}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+  else
+    printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" >>"$ENV_FILE"
+  fi
+
+  # Only pinned for local builds; a prebuilt install leaves it empty so compose
+  # derives the sandbox image from IMAGE_TAG.
+  if [[ -n "${SANDBOX_DOCKER_IMAGE:-}" ]]; then
+    SANDBOX_DOCKER_IMAGE="pipeshubai/pipeshub-sandbox:${IMAGE_TAG}"
+    if grep -qE '^SANDBOX_DOCKER_IMAGE=' "$ENV_FILE"; then
+      sed -i.bak -E "s|^SANDBOX_DOCKER_IMAGE=.*|SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+    fi
+  fi
+}
+
 # --upgrade always reuses the existing .env. --rotate-signing-secrets does too
 # unless --reconfigure was also passed (wizard still runs, then we rotate).
 if $FLAG_ROTATE_SIGNING_SECRETS && ! $ENV_EXISTS; then
@@ -856,6 +890,7 @@ if $FLAG_UPGRADE; then
   info "Upgrade mode — reusing existing .env."
   set -a; . "$ENV_FILE"; set +a
   SKIP_WIZARD=true
+  apply_requested_tag
 elif $ENV_EXISTS && ! $FLAG_RECONFIGURE && ! $INSTALL_SEPARATE; then
   # .env exists and --reconfigure was not requested: always reuse without prompting.
   # Use --reconfigure to overwrite. A newly chosen separate instance must not
@@ -1450,7 +1485,10 @@ fi
 # On reuse/upgrade the wizard's interactive port scan was skipped. Confirm the
 # app port is free — or already held by our own stack (a restart) — and otherwise
 # fail clearly instead of letting docker emit a cryptic bind error mid-launch.
-if ${SKIP_WIZARD:-false}; then
+# Skipped under --print-env-only: that mode resolves and prints the config
+# without launching, so whether a port is free is not yet relevant and probing
+# it would make a non-launching command fail on the host's unrelated services.
+if ${SKIP_WIZARD:-false} && ! $FLAG_PRINT_ENV_ONLY; then
   if port_in_use "$APP_PORT" 2>/dev/null && ! port_owned_by_project "$APP_PORT"; then
     die "Port ${APP_PORT} is already in use by another process.
   Free it, stop the conflicting service, or change APP_PORT in:
