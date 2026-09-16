@@ -372,7 +372,7 @@ function ScrollableList({ children }: ScrollableListProps) {
       )}
       <Box
         ref={scrollRef}
-        className="upload-scroll-area"
+        data-upload-scroll-area=""
         style={{
           flex: 1,
           minHeight: 0,
@@ -816,7 +816,7 @@ export function UploadDataSidebar({
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Content
-        className="upload-data-dialog"
+        data-upload-data-dialog=""
         onInteractOutside={(event) => event.preventDefault()}
         style={{
           position: 'fixed',
