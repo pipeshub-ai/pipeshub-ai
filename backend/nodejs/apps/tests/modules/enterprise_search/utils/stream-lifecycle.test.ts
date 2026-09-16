@@ -8,9 +8,31 @@ import {
   StreamedContentAccumulator,
 } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 
-/** Minimal stand-in for Express's `Request` — only the `close` emitter matters here. */
-function createMockReq(): EventEmitter {
-  return new EventEmitter()
+/**
+ * Minimal stand-in for Express's `Response` — an EventEmitter plus the two
+ * writable-state flags `attachUpstreamAbort` checks to tell "we finished
+ * the response ourselves" apart from "the client is actually gone".
+ * Defaults to a still-streaming response (both `false`), matching a
+ * genuine disconnect scenario unless a test opts into `finish()`.
+ */
+function createMockRes(): EventEmitter & {
+  writableEnded: boolean
+  writableFinished: boolean
+  finish: () => void
+} {
+  const res = new EventEmitter() as EventEmitter & {
+    writableEnded: boolean
+    writableFinished: boolean
+    finish: () => void
+  }
+  res.writableEnded = false
+  res.writableFinished = false
+  // Mirrors real `res.end()` timing: both flags flip true before 'close' fires.
+  res.finish = () => {
+    res.writableEnded = true
+    res.writableFinished = true
+  }
+  return res
 }
 
 describe('stream-lifecycle', () => {
@@ -22,48 +44,48 @@ describe('stream-lifecycle', () => {
   // attachUpstreamAbort
   // -----------------------------------------------------------------------
   describe('attachUpstreamAbort', () => {
-    it('aborts the signal and reports disconnected once the request emits close', () => {
-      const req = createMockReq()
-      const handle = attachUpstreamAbort(req, 'req-1')
+    it('aborts the signal and reports disconnected once the response emits close', () => {
+      const res = createMockRes()
+      const handle = attachUpstreamAbort(res, 'req-1')
 
       expect(handle.isClientDisconnected()).to.be.false
       expect(handle.signal.aborted).to.be.false
 
-      req.emit('close')
+      res.emit('close')
 
       expect(handle.isClientDisconnected()).to.be.true
       expect(handle.signal.aborted).to.be.true
     })
 
     it('invokes onDisconnect exactly once even if close fires more than once', () => {
-      const req = createMockReq()
+      const res = createMockRes()
       const onDisconnect = sinon.stub()
-      attachUpstreamAbort(req, 'req-2', onDisconnect)
+      attachUpstreamAbort(res, 'req-2', onDisconnect)
 
-      req.emit('close')
-      req.emit('close')
+      res.emit('close')
+      res.emit('close')
 
       expect(onDisconnect.calledOnce).to.be.true
     })
 
     it('destroys a bound stream when close fires after bindStream', () => {
-      const req = createMockReq()
-      const handle = attachUpstreamAbort(req, 'req-3')
+      const res = createMockRes()
+      const handle = attachUpstreamAbort(res, 'req-3')
       const stream = new Readable({ read() {} })
       const destroySpy = sinon.spy(stream, 'destroy')
 
       handle.bindStream(stream)
-      req.emit('close')
+      res.emit('close')
 
       expect(destroySpy.calledOnce).to.be.true
     })
 
     it('destroys a stream bound AFTER the client already disconnected (race with a slow executeStream)', () => {
-      const req = createMockReq()
-      const handle = attachUpstreamAbort(req, 'req-4')
+      const res = createMockRes()
+      const handle = attachUpstreamAbort(res, 'req-4')
 
       // Client disconnects before the upstream Readable exists.
-      req.emit('close')
+      res.emit('close')
       expect(handle.isClientDisconnected()).to.be.true
 
       const stream = new Readable({ read() {} })
@@ -74,9 +96,9 @@ describe('stream-lifecycle', () => {
     })
 
     it('does not re-destroy an already-destroyed stream when binding late', () => {
-      const req = createMockReq()
-      const handle = attachUpstreamAbort(req, 'req-5')
-      req.emit('close')
+      const res = createMockRes()
+      const handle = attachUpstreamAbort(res, 'req-5')
+      res.emit('close')
 
       const stream = new Readable({ read() {} })
       stream.destroy()
@@ -84,6 +106,48 @@ describe('stream-lifecycle', () => {
 
       expect(() => handle.bindStream(stream)).to.not.throw()
       expect(destroySpy.called).to.be.false
+    })
+
+    // Regression coverage: `IncomingMessage` ('req') fires 'close' as soon
+    // as a small POST body finishes being read, unrelated to whether the
+    // SSE response is done — see the module doc comment. `res.on('close')`
+    // fires on normal completion too, so `writableEnded`/`writableFinished`
+    // must gate it or every successful stream would look like a disconnect.
+    it('does NOT report disconnected when close fires after the response finished normally', () => {
+      const res = createMockRes()
+      const onDisconnect = sinon.stub()
+      const handle = attachUpstreamAbort(res, 'req-6', onDisconnect)
+
+      res.finish() // mirrors res.end() having already run
+      res.emit('close')
+
+      expect(handle.isClientDisconnected()).to.be.false
+      expect(handle.signal.aborted).to.be.false
+      expect(onDisconnect.called).to.be.false
+    })
+
+    it('does NOT destroy a bound stream when close fires after normal completion', () => {
+      const res = createMockRes()
+      const handle = attachUpstreamAbort(res, 'req-7')
+      const stream = new Readable({ read() {} })
+      const destroySpy = sinon.spy(stream, 'destroy')
+      handle.bindStream(stream)
+
+      res.finish()
+      res.emit('close')
+
+      expect(destroySpy.called).to.be.false
+    })
+
+    it('treats close as normal completion when only writableFinished is true (checks either flag, not just writableEnded)', () => {
+      const res = createMockRes()
+      res.writableEnded = false
+      res.writableFinished = true
+      const handle = attachUpstreamAbort(res, 'req-8')
+
+      res.emit('close')
+
+      expect(handle.isClientDisconnected()).to.be.false
     })
   })
 

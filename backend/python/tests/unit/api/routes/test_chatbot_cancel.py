@@ -56,6 +56,38 @@ class TestCancelChatStream:
         assert result == {"cancelled": True}
         assert registry.calls == [(run_id, RunOwner(user_id="user-1", org_id="org-1"))]
 
+    async def test_conversation_id_from_the_body_is_forwarded_into_run_owner(self) -> None:
+        """Node's cancel routes forward the already-ownership-checked path
+        conversationId — this must reach the registry's RunOwner so it can
+        reject a runId registered under a different conversation."""
+        from app.api.routes.chatbot import cancel_chat_stream
+
+        run_id = str(uuid.uuid4())
+        registry = _FakeRegistry(outcome="cancelled")
+        request = _mock_request({"runId": run_id, "conversationId": "conv-1"})
+
+        result = await cancel_chat_stream(request, registry)
+
+        assert result == {"cancelled": True}
+        assert registry.calls == [
+            (run_id, RunOwner(user_id="user-1", org_id="org-1", conversation_id="conv-1"))
+        ]
+
+    async def test_missing_conversation_id_builds_a_run_owner_with_none(self) -> None:
+        """An older/rolling-deploy Node build without this field must not
+        raise — RunOwner.conversation_id defaults to None and the registry
+        only enforces the check when both sides carry one."""
+        from app.api.routes.chatbot import cancel_chat_stream
+
+        run_id = str(uuid.uuid4())
+        registry = _FakeRegistry(outcome="cancelled")
+        request = _mock_request({"runId": run_id})
+
+        result = await cancel_chat_stream(request, registry)
+
+        assert result == {"cancelled": True}
+        assert registry.calls == [(run_id, RunOwner(user_id="user-1", org_id="org-1"))]
+
     async def test_not_found_or_already_finished_returns_cancelled_false_not_a_4xx(self) -> None:
         from app.api.routes.chatbot import cancel_chat_stream
 

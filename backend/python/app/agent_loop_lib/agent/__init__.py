@@ -486,7 +486,10 @@ class Agent:
         every "run stopped without succeeding" exit (blocked hooks,
         cancellation, transport errors, max_turns exhausted)."""
         turns = self._scope.turns if self._scope is not None else []
-        result = AgentResult(goal=goal, turns=list(turns), success=False, error=error, usage=self._usage)
+        result = AgentResult(
+            goal=goal, turns=list(turns), success=False, error=error, usage=self._usage,
+            cancelled=(status == "cancelled"),
+        )
         await self.emit(
             EventType.CANCELLATION if status == "cancelled" else EventType.ERROR,
             {"error": error},

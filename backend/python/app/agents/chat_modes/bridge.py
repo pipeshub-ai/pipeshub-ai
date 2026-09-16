@@ -588,11 +588,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,
                     # Stop Generation (Phase 3b) — see the matching call in
                     # `stream_bridge.py::run_agent_loop_stream` for why this
-                    # reads the token directly rather than `result.success`/
-                    # `.error`.
-                    agent_cancelled=bool(
-                        cancellation_token is not None and cancellation_token.is_cancelled
-                    ),
+                    # reads `result.cancelled` (an immutable snapshot taken
+                    # when the agent loop itself observed cancellation)
+                    # rather than live-checking `cancellation_token.
+                    # is_cancelled` here.
+                    agent_cancelled=result.cancelled,
                 )
         except Exception as exc:
             log.error("run_chat_stream: run failed: %s", exc, exc_info=True)

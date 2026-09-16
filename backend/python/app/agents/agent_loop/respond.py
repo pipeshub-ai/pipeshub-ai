@@ -156,12 +156,19 @@ class AnswerFinalizer:
         `AgentResult.confidence` (populated by `final_answer` when the tool is
         enabled). Takes precedence over the legacy text-trailer parser.
 
-        `agent_cancelled` (Stop Generation, Phase 3b) is
-        `context.cancellation_token.is_cancelled` after the run ended — NOT
-        derived from `agent_success`/`agent_error`, since `Agent.fail(...,
-        status="cancelled")` still sets `success=False` with a generic
-        `error="Cancelled"` string. Checked BEFORE `agent_success` below: a
-        cancelled run is always `agent_success=False` too, but must route to
+        `agent_cancelled` (Stop Generation, Phase 3b) is `AgentResult.
+        cancelled` — an immutable snapshot `Agent.fail(..., status=
+        "cancelled")` took the moment the agent loop itself observed
+        cancellation, NOT a live re-check of `context.cancellation_token.
+        is_cancelled` (a late cancel() arriving after the run already
+        finished, successfully or with an unrelated failure, must not
+        relabel that outcome "stopped" — see `AgentResult.cancelled`'s
+        docstring). Also not derived from `agent_success`/`agent_error`
+        directly: `Agent.fail(..., status="cancelled")` still sets
+        `success=False` with a generic `error="Cancelled"` string
+        `AgentResult` has no OTHER way to distinguish from any other
+        failure. Checked BEFORE `agent_success` below: a cancelled run is
+        always `agent_success=False` too, but must route to
         `_run_cancelled_path`, never `_emit_error_response` — the run was
         stopped on purpose, not because it failed.
         """

@@ -16,8 +16,10 @@ from app.agents.agent_loop.cancellation.kv_backed import KVBackedRunCancellation
 from app.agents.agent_loop.cancellation.registry import RunOwner
 
 
-def _owner(user_id: str = "user-1", org_id: str = "org-1") -> RunOwner:
-    return RunOwner(user_id=user_id, org_id=org_id, conversation_id="conv-1")
+def _owner(
+    user_id: str = "user-1", org_id: str = "org-1", conversation_id: str | None = "conv-1"
+) -> RunOwner:
+    return RunOwner(user_id=user_id, org_id=org_id, conversation_id=conversation_id)
 
 
 class _FakeKVStore:
@@ -86,6 +88,23 @@ class TestLocalHit:
         assert store.data == {}
         await registry.unregister("run-1")
 
+    async def test_mismatched_conversation_id_is_forbidden_locally_for_the_same_user_and_org(
+        self,
+    ) -> None:
+        """Same same-user, cross-conversation guard as InProcess, exercised
+        through the KV-backed wrapper's local-hit path."""
+        store = _FakeKVStore()
+        registry = KVBackedRunCancellationRegistry(store)
+        token = CancellationToken()
+        await registry.register("run-1", token, _owner(conversation_id="conv-B"))
+
+        outcome = await registry.cancel("run-1", _owner(conversation_id="conv-A"))
+
+        assert outcome == "forbidden"
+        assert token.is_cancelled is False
+        assert store.data == {}
+        await registry.unregister("run-1")
+
 
 class TestCrossProcessCancel:
     """A cancel POST lands on a worker that doesn't own the run — it must
@@ -128,6 +147,25 @@ class TestCrossProcessCancel:
 
             await asyncio.wait_for(token.wait(), timeout=2.0)
             assert token.is_cancelled is True
+        finally:
+            await owner_registry.unregister("run-1")
+
+    async def test_watcher_rejects_a_cross_process_conversation_id_mismatch(self) -> None:
+        """`conversation_id` must survive the `model_dump_json()`/
+        `model_validate_json()` round trip through the KV store and still
+        be enforced by the owning worker's watcher, not just the local
+        (same-process) `cancel()` path covered by TestLocalHit above."""
+        store = _FakeKVStore()
+        owner_registry = KVBackedRunCancellationRegistry(store)
+        other_registry = KVBackedRunCancellationRegistry(store)
+        token = CancellationToken()
+        await owner_registry.register("run-1", token, _owner(conversation_id="conv-B"))
+        try:
+            outcome = await other_registry.cancel("run-1", _owner(conversation_id="conv-A"))
+            assert outcome == "cancelled"  # delivered — watcher decides
+
+            await asyncio.sleep(0.05)
+            assert token.is_cancelled is False
         finally:
             await owner_registry.unregister("run-1")
 

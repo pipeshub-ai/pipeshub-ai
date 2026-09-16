@@ -377,17 +377,18 @@ async def run_agent_loop_stream(
                     streamed_answer=streamer.streamed_answer,
                     reasoning_turns=streamer.reasoning_turns,
                     agent_confidence=structured_confidence,
-                    # Stop Generation (Phase 3b): read straight off the SAME
-                    # token every check (PRE_TURN guard, per-tool-call guard,
-                    # `LangChainTransport.stream()`'s mid-chunk check) shares
-                    # — whichever one caught it, this is true. Deliberately
-                    # not derived from `result.success`/`.error`: `Agent.
-                    # fail(..., status="cancelled")` still sets a generic
-                    # `success=False, error="Cancelled"` that `AgentResult`
-                    # has no separate typed field for.
-                    agent_cancelled=bool(
-                        cancellation_token is not None and cancellation_token.is_cancelled
-                    ),
+                    # Stop Generation (Phase 3b): `result.cancelled` is an
+                    # immutable snapshot `Agent.fail(..., status=
+                    # "cancelled")` took at the moment the agent loop itself
+                    # (PRE_TURN guard, per-tool-call guard, or
+                    # `LangChainTransport.stream()`'s mid-chunk check)
+                    # observed cancellation — NOT a live re-read of
+                    # `cancellation_token.is_cancelled` here. A live read
+                    # races a cancel() that arrives (a late/duplicate stop
+                    # request) after `agent.stream(goal)` already returned
+                    # a genuinely successful — or independently failed —
+                    # result, which would otherwise mislabel it "stopped".
+                    agent_cancelled=result.cancelled,
                 )
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)

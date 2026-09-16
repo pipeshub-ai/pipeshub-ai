@@ -85,9 +85,20 @@ def build_run_cancellation_registry() -> "RunCancellationRegistry":
     try:
         store = _build_kv_store()
     except Exception:
-        logger.warning(
+        # `.error()`, not `.warning()`: on the default multi-replica Helm
+        # deployment (`replicaCount: 2`) or QUERY_UVICORN_WORKERS>1, this
+        # fallback is silently wrong for any cancel request that lands on a
+        # different worker/replica than the one running the stream — it
+        # returns `cancelled: false` while generation keeps going. Loud by
+        # design so it shows up in log-based alerting; this KV store is
+        # deliberately built straight from env (see `_build_kv_store`), so
+        # construction only fails on a real misconfiguration (bad
+        # KV_STORE_TYPE/REDIS_*/ETCD_* value), not a transient outage.
+        logger.error(
             "build_run_cancellation_registry: failed to build KV store, "
-            "falling back to in-process-only cancellation", exc_info=True,
+            "falling back to in-process-only cancellation — stop-generation "
+            "requests will silently no-op on any other worker/replica until "
+            "this is fixed", exc_info=True,
         )
         store = None
     if store is None:

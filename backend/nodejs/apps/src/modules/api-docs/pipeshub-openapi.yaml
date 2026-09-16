@@ -27319,6 +27319,11 @@ paths:
         `{ cancelled: false }` — not an error — covers a `runId` that
         already finished or was never registered; the caller only needs to
         know the stream is not running anymore, not why.
+
+        `runId` must belong to a run started on THIS `conversationId` — a
+        `runId` that exists but was registered under a different
+        conversation (even one owned by the same caller) is rejected with
+        `403`, same as a `runId` owned by a different user/org.
       operationId: cancelConversationStream
       x-pipeshub-sdk: true
       security:
@@ -27358,6 +27363,10 @@ paths:
           description: Missing or malformed `runId`.
         '401':
           description: Unauthorized
+        '403':
+          description: >-
+            `runId` exists but was registered under a different user, org,
+            or conversation than this request.
         '404':
           description: Conversation not found or unauthorized
 
@@ -29529,6 +29538,11 @@ paths:
         same backend cancellation endpoint, since the run registry is keyed
         by `runId` alone. `{ cancelled: false }` covers a `runId` that
         already finished or was never registered.
+
+        `runId` must belong to a run started on THIS `conversationId` — a
+        `runId` that exists but was registered under a different
+        conversation (even one owned by the same caller) is rejected with
+        `403`, same as a `runId` owned by a different user/org.
       operationId: cancelAgentConversationStream
       x-pipeshub-sdk: true
       security:
@@ -29576,6 +29590,10 @@ paths:
           description: Missing or malformed `runId`.
         '401':
           description: Unauthorized
+        '403':
+          description: >-
+            `runId` exists but was registered under a different user, org,
+            or conversation than this request.
         '404':
           description: Conversation not found or unauthorized
 

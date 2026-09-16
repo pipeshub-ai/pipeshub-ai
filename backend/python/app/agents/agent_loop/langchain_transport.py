@@ -30,6 +30,8 @@ not a replacement for, `OpikTracingTransport`'s own summary span.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -789,16 +791,39 @@ class LangChainTransport(LLMTransport):
         cancelled = False
         current_llm = lc_llm
         while True:
+            stream_iter: AsyncIterator[AIMessage] | None = None
+            cancel_task: asyncio.Task[None] | None = None
             try:
-                async for chunk in current_llm.astream(lc_messages, config=self._langchain_config()):
+                stream_iter = current_llm.astream(
+                    lc_messages, config=self._langchain_config(),
+                ).__aiter__()
+                if self._cancellation_token is not None:
+                    cancel_task = asyncio.ensure_future(self._cancellation_token.wait())
+                while True:
+                    next_chunk_task = asyncio.ensure_future(stream_iter.__anext__())
+                    wait_set = (
+                        {next_chunk_task} if cancel_task is None
+                        else {next_chunk_task, cancel_task}
+                    )
+                    await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
                     if self._cancellation_token is not None and self._cancellation_token.is_cancelled:
-                        # Exiting this `async for` closes LangChain's
-                        # underlying provider stream (the `break` below is
-                        # the SAME one the natural-completion path takes),
-                        # which is what actually stops the provider from
-                        # continuing to generate/bill for tokens nobody
-                        # will read.
+                        # `cancel_task` (racing `CancellationToken.wait()` against
+                        # the next chunk) is what makes this fire even when the
+                        # provider stalls between chunks -- checking is_cancelled
+                        # only inside the loop body (as before) would leave a
+                        # cooperative cancel stuck until another chunk arrived,
+                        # which may never happen. Not awaited for its result: a
+                        # provider error racing the same cancel is irrelevant
+                        # once we've already decided to stop.
+                        if not next_chunk_task.done():
+                            next_chunk_task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await next_chunk_task
                         cancelled = True
+                        break
+                    try:
+                        chunk = next_chunk_task.result()
+                    except StopAsyncIteration:
                         break
                     chunks.append(chunk)
                     text = getattr(chunk, "content", None)
@@ -918,6 +943,22 @@ class LangChainTransport(LLMTransport):
                     "retrying once with api_mode=%s: %s",
                     self._model, fallback_mode, exc,
                 )
+            finally:
+                # Best-effort: never let cleanup mask the real outcome (an
+                # exception from `except Exception` above, or the
+                # cancelled/natural-completion break already decided).
+                if cancel_task is not None and not cancel_task.done():
+                    cancel_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await cancel_task
+                if stream_iter is not None:
+                    # Explicit close, not left to GC: this is what actually
+                    # stops the provider from continuing to generate/bill
+                    # for tokens nobody will read once cancellation wins the
+                    # race above. A no-op on the natural-completion path
+                    # (the generator is already exhausted).
+                    with contextlib.suppress(BaseException):
+                        await stream_iter.aclose()
 
         if relocated_images:
             # Pinned for the rest of this run so every later call builds the

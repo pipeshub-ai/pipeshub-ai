@@ -35,8 +35,10 @@ class RunOwner(BaseModel):
     """Identity a run was registered under — compared against the
     requester's own identity on `cancel()` so one user can never cancel
     another user's (or another org's) in-flight run by guessing/
-    enumerating a `runId`. `conversation_id` is carried for audit/logging
-    only; the enforcement decision is `user_id` + `org_id`."""
+    enumerating a `runId`, NOR cancel one of their OWN other conversations'
+    runs through a cancel request scoped to a different conversation.
+    `conversation_id` is only enforced when both the registered owner and
+    the requester carry one — see `InProcessRunCancellationRegistry.cancel()`."""
 
     user_id: str
     org_id: str

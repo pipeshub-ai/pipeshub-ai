@@ -3,19 +3,36 @@ import { Logger } from '../../../libs/services/logger.service';
 
 const logger = Logger.getInstance({ service: 'StreamLifecycle' });
 
-/** Minimal shape needed from Express's `Request` — kept narrow so this is
- * trivially testable without constructing a real request object. */
-interface CloseWatchable {
+/**
+ * Minimal shape needed from Express's `Response` — kept narrow so this is
+ * trivially testable without constructing a real response object.
+ *
+ * Watching `res` (not `req`) matters: Node's `IncomingMessage` (`req`) fires
+ * `'close'` as soon as the REQUEST body finishes being read — which, for a
+ * small JSON POST body, happens almost immediately, long before an SSE
+ * response is anywhere near done — regardless of whether the client is
+ * still connected (see the `http.IncomingMessage`/`ServerResponse` 'close'
+ * docs and https://github.com/nodejs/node/issues/40775). A `req.on('close')`
+ * listener registered after any await (e.g. the initial conversation-create
+ * write) can race that already-fired event and get skipped by luck, or —
+ * if setup is fast enough — catch it and wrongly treat a perfectly healthy,
+ * still-streaming request as a disconnect. `res`'s `'close'` also fires on
+ * *normal* completion, so `writableEnded`/`writableFinished` distinguish
+ * "we finished the response ourselves" from "the client is actually gone".
+ */
+interface ResponseWatchable {
   on(event: 'close', listener: () => void): unknown;
+  readonly writableEnded?: boolean;
+  readonly writableFinished?: boolean;
 }
 
 /**
  * Handle returned by {@link attachUpstreamAbort}. Callers pass `signal` into
  * the AI-service stream call (`executeStream`/`startAIStream`) so a browser
  * disconnect propagates all the way to the upstream fetch — otherwise
- * `req.on('close')` only ever tore down the Node-side `Readable` wrapper
- * while Python kept generating against a socket nobody was reading (see
- * Gap 1 in the Stop Generation plan).
+ * `res.on('close')` would only ever tear down the Node-side `Readable`
+ * wrapper while Python kept generating against a socket nobody was reading
+ * (see Gap 1 in the Stop Generation plan).
  */
 export interface UpstreamAbortHandle {
   /** Pass to `AIServiceCommand.executeStream(signal)` / `startAIStream(...)`. */
@@ -35,8 +52,8 @@ export interface UpstreamAbortHandle {
 }
 
 /**
- * Wires a request's `close` event to an `AbortController`, returning a
- * handle callers thread through the AI-service stream call and the bound
+ * Wires the SSE response's `close` event to an `AbortController`, returning
+ * a handle callers thread through the AI-service stream call and the bound
  * `Readable`. Must be created BEFORE the upstream fetch is issued (its
  * `signal` needs to be on the request from the start) — call this
  * immediately before `startAIStream(...)`, then `bindStream()` once the
@@ -44,14 +61,15 @@ export interface UpstreamAbortHandle {
  *
  * `onDisconnect`, if given, runs once from the same `close` handler — used
  * by callers to persist a `StreamedContentAccumulator`'s partial text via
- * `savePartialConversation`. Node's `req` emits `close` on BOTH a normal,
- * fully-completed request AND an abnormal disconnect, so `onDisconnect`
- * must itself check whether the run already finalized (e.g. a
- * `streamSettled` flag set by `stream.on('end')`/`'error'`) before acting —
- * this helper does not know that.
+ * `savePartialConversation`. `res` emits `close` on BOTH a normal,
+ * fully-completed response AND an abnormal disconnect, so this checks
+ * `writableEnded`/`writableFinished` first and no-ops on normal completion.
+ * `onDisconnect` should still itself check whether the run already
+ * finalized (e.g. a `streamSettled` flag set by `stream.on('end')`/
+ * `'error'`) before acting, for the case where both fire in the same tick.
  */
 export function attachUpstreamAbort(
-  req: CloseWatchable,
+  res: ResponseWatchable,
   requestId: string | undefined,
   onDisconnect?: () => void,
 ): UpstreamAbortHandle {
@@ -59,8 +77,9 @@ export function attachUpstreamAbort(
   let clientDisconnected = false;
   let boundStream: Readable | null = null;
 
-  req.on('close', () => {
+  res.on('close', () => {
     if (clientDisconnected) return;
+    if (res.writableEnded || res.writableFinished) return;
     clientDisconnected = true;
     logger.debug('Client disconnected', { requestId });
     controller.abort();

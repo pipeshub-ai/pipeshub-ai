@@ -102,9 +102,18 @@ class ChatQuery(BaseModel):
 class CancelRunRequest(BaseModel):
     """Body of `POST /chat/cancel`. One endpoint for both assistant
     (`/chat/stream`) and agent (`/{agent_id}/chat/stream`) runs — the
-    registry is keyed by `runId` alone, not by which route created it."""
+    registry is keyed by `runId` alone, not by which route created it.
+
+    `conversationId` is Node's already-ownership-checked path param,
+    forwarded so the registry can reject a `runId` that is real and owned
+    by this same user/org but was registered under a DIFFERENT
+    conversation (see `RunOwner.conversation_id`). Optional only so an
+    older/rolling-deploy Node build without this field still gets the
+    pre-existing user/org check rather than a hard 400.
+    """
 
     runId: str
+    conversationId: str | None = None
 
     _validate_run_id = field_validator("runId")(validate_run_id)
 
@@ -1214,7 +1223,11 @@ async def cancel_chat_stream(
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
 
     user = getattr(request.state, "user", {}) or {}
-    requester = RunOwner(user_id=user.get("userId", ""), org_id=user.get("orgId", ""))
+    requester = RunOwner(
+        user_id=user.get("userId", ""),
+        org_id=user.get("orgId", ""),
+        conversation_id=cancel_request.conversationId,
+    )
 
     outcome = await cancellation_registry.cancel(cancel_request.runId, requester)
     if outcome == "forbidden":
