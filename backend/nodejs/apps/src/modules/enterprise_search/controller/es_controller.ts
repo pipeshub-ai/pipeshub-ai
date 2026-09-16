@@ -79,6 +79,7 @@ import {
   appendMessageFeedback,
   findSessionIdsMatchingContent,
   validateAndEscapeSearch,
+  recordClassifiedFailureOnSession,
   savePartialConversation,
 } from '../utils/utils';
 import {
@@ -1666,7 +1667,10 @@ export const createConversation =
           session,
         );
         savedConversation.lastActivityAt = Date.now();
-        savedConversation.status = CONVERSATION_STATUS.COMPLETE; // Successful conversation
+        recordClassifiedFailureOnSession(
+          savedConversation,
+          aiResponseData.data as IAIResponse,
+        );
 
         const updatedConversation = session
           ? await savedConversation.save({ session })
@@ -2019,7 +2023,10 @@ export const addMessage =
             session,
           );
           savedConversation.lastActivityAt = Date.now();
-          savedConversation.status = CONVERSATION_STATUS.COMPLETE;
+          recordClassifiedFailureOnSession(
+            savedConversation,
+            aiResponseData.data as IAIResponse,
+          );
 
           // Save the updated conversation with AI response
           const updatedConversation = session
@@ -2649,7 +2656,7 @@ export const addMessageStream =
                 )
               )[0];
               existingConversation.lastActivityAt = Date.now();
-              existingConversation.status = CONVERSATION_STATUS.COMPLETE;
+              recordClassifiedFailureOnSession(existingConversation, completeData);
 
               // Save the updated conversation with AI response
               const updatedConversation = session
@@ -6932,7 +6939,10 @@ export const createAgentConversation =
           )
         )[0];
         savedConversation.lastActivityAt = Date.now();
-        savedConversation.status = CONVERSATION_STATUS.COMPLETE as any; // Successful conversation
+        recordClassifiedFailureOnSession(
+          savedConversation,
+          aiResponseData.data as IAIResponse,
+        );
 
         const updatedConversation = session
           ? await savedConversation.save({ session })
@@ -7257,7 +7267,10 @@ export const createAgentConversation =
             )
           )[0];
           savedConversation.lastActivityAt = Date.now();
-          savedConversation.status = CONVERSATION_STATUS.COMPLETE as any;
+          recordClassifiedFailureOnSession(
+            savedConversation,
+            aiResponseData.data as IAIResponse,
+          );
 
           // Save the updated conversation with AI response
           const updatedConversation = session
@@ -7903,7 +7916,7 @@ export const addMessageStreamToAgentConversation =
                 )
               )[0];
               existingConversation.lastActivityAt = Date.now();
-              existingConversation.status = CONVERSATION_STATUS.COMPLETE as any;
+              recordClassifiedFailureOnSession(existingConversation, completeData);
 
               // Save the updated conversation with AI response
               const updatedConversation = session

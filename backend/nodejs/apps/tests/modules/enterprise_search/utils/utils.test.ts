@@ -32,6 +32,8 @@ import {
   getMessages,
   attachMessages,
   findSessionIdsMatchingContent,
+  isClassifiedFailureAnswer,
+  recordClassifiedFailureOnSession,
   savePartialConversation,
 } from '../../../../src/modules/enterprise_search/utils/utils'
 import { handleRegenerationError, markConversationFailed, replaceMessageWithError, markAgentConversationFailed, deleteAgentConversation, attachPopulatedCitations } from '../../../../src/modules/enterprise_search/utils/utils';
@@ -287,6 +289,29 @@ describe('Enterprise Search Utils', () => {
       expect(result.confidence).to.equal(0.9)
     })
 
+    it('should persist classified failure answers as error messages', () => {
+      const aiResponse = {
+        statusCode: 200,
+        data: {
+          answer: 'There was an authentication issue with the AI service. Please contact your administrator.',
+          confidence: 'Low',
+          answerMatchType: 'Error',
+          errorCode: 'auth_error',
+        },
+      }
+      const result = buildAIResponseMessage(aiResponse as any)
+      expect(result.messageType).to.equal('error')
+      expect(result.content).to.include('authentication issue')
+    })
+
+    it('should persist errorCode-only answers as error messages', () => {
+      const result = buildAIResponseMessage({
+        statusCode: 200,
+        data: { answer: 'Rate limited', errorCode: 'rate_limit' },
+      } as any)
+      expect(result.messageType).to.equal('error')
+    })
+
     it('should handle empty citations', () => {
       const aiResponse = {
         statusCode: 200,
@@ -406,6 +431,72 @@ describe('Enterprise Search Utils', () => {
       const result = buildAIResponseMessage(aiResponse as any, citations)
       expect(result.citations).to.have.length(1)
       expect(result.citations![0].citationId).to.equal(citationId)
+    })
+  })
+
+  describe('recordClassifiedFailureOnSession', () => {
+    it('should mark the session failed and record auth_error', () => {
+      const conversation: any = { conversationErrors: [] }
+      recordClassifiedFailureOnSession(conversation, {
+        answer: 'There was an authentication issue with the AI service. Please contact your administrator.',
+        answerMatchType: 'Error',
+        errorCode: 'auth_error',
+      } as any)
+      expect(isClassifiedFailureAnswer({ answerMatchType: 'Error', errorCode: 'auth_error' })).to.equal(true)
+      expect(conversation.status).to.equal(CONVERSATION_STATUS.FAILED)
+      expect(conversation.failReason).to.include('authentication issue')
+      expect(conversation.conversationErrors).to.have.length(1)
+      expect(conversation.conversationErrors[0].errorType).to.equal('auth_error')
+      expect(conversation.conversationErrors[0].metadata.get('type')).to.equal('RUN_FINISHED')
+      expect(conversation.conversationErrors[0].metadata.get('code')).to.equal('auth_error')
+    })
+
+    it('should persist every classified errorCode as a failed error message', () => {
+      const codes = [
+        'content_filter',
+        'request_too_large',
+        'rate_limit',
+        'auth_error',
+        'invalid_request',
+        'server_error',
+        'timeout',
+        'unknown',
+      ]
+      for (const errorCode of codes) {
+        const conversation: any = { conversationErrors: [] }
+        const message = buildAIResponseMessage({
+          statusCode: 200,
+          data: { answer: `failed: ${errorCode}`, answerMatchType: 'Error', errorCode },
+        } as any)
+        recordClassifiedFailureOnSession(conversation, {
+          answer: `failed: ${errorCode}`,
+          answerMatchType: 'Error',
+          errorCode,
+        } as any)
+        expect(message.messageType, errorCode).to.equal('error')
+        expect(conversation.status, errorCode).to.equal(CONVERSATION_STATUS.FAILED)
+        expect(conversation.conversationErrors[0].errorType, errorCode).to.equal(errorCode)
+      }
+    })
+
+    it('should mark a normal answer complete', () => {
+      const conversation: any = { conversationErrors: [] }
+      recordClassifiedFailureOnSession(conversation, {
+        answer: 'ok',
+        answerMatchType: 'Exact Match',
+      } as any)
+      expect(conversation.status).to.equal(CONVERSATION_STATUS.COMPLETE)
+      expect(conversation.conversationErrors).to.be.empty
+    })
+
+    it('should mark a stopped completion as Stopped', () => {
+      const conversation: any = { conversationErrors: [] }
+      recordClassifiedFailureOnSession(conversation, {
+        answer: 'partial',
+        status: 'stopped',
+      } as any)
+      expect(conversation.status).to.equal(CONVERSATION_STATUS.STOPPED)
+      expect(conversation.conversationErrors).to.be.empty
     })
   })
 

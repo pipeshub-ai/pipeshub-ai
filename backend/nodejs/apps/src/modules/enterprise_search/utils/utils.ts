@@ -459,6 +459,40 @@ export const attachPopulatedCitations = async (
   };
 };
 
+export const isClassifiedFailureAnswer = (
+  data: Pick<IAIResponse, 'answerMatchType'> & { errorCode?: string },
+): boolean =>
+  data.answerMatchType === 'Error' ||
+  (typeof data.errorCode === 'string' && data.errorCode.length > 0);
+
+export const recordClassifiedFailureOnSession = (
+  conversation: IChatSessionDocument,
+  completeData: IAIResponse,
+): void => {
+  if (completeData.status === 'stopped') {
+    conversation.status = CONVERSATION_STATUS.STOPPED;
+    return;
+  }
+  if (!isClassifiedFailureAnswer(completeData)) {
+    conversation.status = CONVERSATION_STATUS.COMPLETE;
+    return;
+  }
+  const code = completeData.errorCode || 'unknown_error';
+  conversation.status = CONVERSATION_STATUS.FAILED;
+  conversation.failReason = completeData.answer;
+  addErrorToConversation(
+    conversation,
+    completeData.answer,
+    code,
+    undefined,
+    undefined,
+    new Map<string, unknown>([
+      ['type', AGUIEventType.RUN_FINISHED],
+      ['code', code],
+    ]),
+  );
+};
+
 export const buildAIResponseMessage = (
   aiResponse: AIServiceResponse<IAIResponse>,
   citations: ICitation[] = [],
@@ -472,7 +506,9 @@ export const buildAIResponseMessage = (
   }
 
   const message: IMessage = {
-    messageType: 'bot_response',
+    messageType: isClassifiedFailureAnswer(aiResponse.data)
+      ? 'error'
+      : 'bot_response',
     createdAt: new Date(),
     updatedAt: new Date(),
     content: aiResponse.data?.answer ?? '',
@@ -1178,10 +1214,7 @@ export const saveCompleteConversation = async (
       }
     }
     conversation.lastActivityAt = Date.now();
-    conversation.status =
-      completeData.status === 'stopped'
-        ? CONVERSATION_STATUS.STOPPED
-        : CONVERSATION_STATUS.COMPLETE;
+    recordClassifiedFailureOnSession(conversation, completeData);
 
     // Save updated conversation
     const updatedConversation = session
@@ -1495,10 +1528,7 @@ export const saveCompleteAgentConversation = async (
       }
     }
     conversation.lastActivityAt = Date.now();
-    conversation.status =
-      completeData.status === 'stopped'
-        ? CONVERSATION_STATUS.STOPPED
-        : CONVERSATION_STATUS.COMPLETE;
+    recordClassifiedFailureOnSession(conversation, completeData);
 
     // Save updated conversation
     const updatedConversation = session
@@ -2225,10 +2255,7 @@ export const handleRegenerationSuccess = async (
   }
 
   existingConversation.lastActivityAt = Date.now();
-  existingConversation.status =
-    completeData.status === 'stopped'
-      ? CONVERSATION_STATUS.STOPPED
-      : CONVERSATION_STATUS.COMPLETE;
+  recordClassifiedFailureOnSession(existingConversation, completeData);
 
   // Save the updated conversation
   const updatedConversation = session
