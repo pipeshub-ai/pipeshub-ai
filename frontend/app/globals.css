@@ -390,6 +390,23 @@ body {
   max-height: none !important;
 }
 
+/* Upload Data: long filenames must scroll inside the file/folder tree, not
+   the Radix DialogScroll wrapper (which otherwise stretches the whole panel). */
+.radix-themes .rt-DialogScroll:has(.upload-data-dialog) {
+  overflow: hidden !important;
+}
+
+.radix-themes .rt-DialogScrollPadding:has(.upload-data-dialog) {
+  overflow: hidden !important;
+  max-width: 100%;
+}
+
+.radix-themes .upload-data-dialog {
+  overflow: hidden !important;
+  min-width: 0 !important;
+  max-width: min(37.5rem, 100vw) !important;
+}
+
 /* ========================
    Cursor Utilities
    ======================== */
