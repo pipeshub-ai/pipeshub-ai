@@ -68,6 +68,17 @@ describe('user_management/utils/org.utils', () => {
       expect(findOneStub.called).to.be.false;
     });
 
+    it('should return null without querying the database when orgId is a non-ObjectId object whose toString returns a valid id', async () => {
+      // Only a real ObjectId is normalised, so an arbitrary object that
+      // happens to stringify to a well-formed id must not reach the database.
+      const findOneStub = sinon.stub(Org, 'findOne').resolves(null);
+
+      const result = await findActiveOrgById({ toString: () => validOrgId });
+
+      expect(result).to.be.null;
+      expect(findOneStub.called).to.be.false;
+    });
+
     it('should return null without querying the database when orgId is not a string', async () => {
       const findOneStub = sinon.stub(Org, 'findOne').resolves(null);
 
