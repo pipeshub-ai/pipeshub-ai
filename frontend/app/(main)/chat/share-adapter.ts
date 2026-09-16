@@ -7,6 +7,7 @@ import type { ShareAdapter, SharedMember, ShareSubmission, ShareRole } from '@/a
 import { useAuthStore } from '@/config';
 import { useUserStore } from '@/lib/store/user-store';
 import { AgentsApi } from '@/app/(main)/agents/api';
+import i18next from 'i18next';
 import type { SharedWithEntry } from './types';
 import { ProjectApi } from './project-api';
 import type { ProjectDetail, ProjectMemberRole } from './project-types';
@@ -179,7 +180,7 @@ export function createProjectShareAdapter(project: ProjectDetail): ShareAdapter 
   return {
     entityType: 'project',
     entityId: projectId,
-    sidebarTitle: 'Share Project',
+    sidebarTitle: i18next.t('chat.projects.shareProject'),
     supportsRoles: true,
     supportsTeams: false,
 

@@ -183,7 +183,8 @@ export class ProjectService {
       filter.isArchived = false;
     }
     if (opts.search) {
-      filter.name = { $regex: opts.search, $options: 'i' };
+      const escaped = opts.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.name = { $regex: escaped, $options: 'i' };
     }
 
     const skip = (opts.page - 1) * opts.limit;
@@ -279,7 +280,7 @@ export class ProjectService {
       orgId,
       userId,
       projectId,
-      'viewer',
+      'editor',
     );
     project.isPinned = isPinned;
     return project.save();

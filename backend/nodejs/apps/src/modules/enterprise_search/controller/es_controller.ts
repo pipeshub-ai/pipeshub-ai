@@ -122,6 +122,7 @@ import {
   applyProjectContext,
   loadProjectForSession,
   resolveProjectLink,
+  type ResolvedProjectLink,
 } from '../utils/project-context';
 import { ProjectService } from '../../projects/services/project.service';
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
@@ -1577,11 +1578,7 @@ export const createConversation =
       throw new BadRequestError('Query is required');
     }
 
-    const projectLink = await resolveProjectLink(
-      orgId as unknown as string,
-      userId as unknown as string,
-      req.body as Record<string, unknown>,
-    );
+    let projectLink: ResolvedProjectLink = {};
 
     // Helper function that contains the common conversation operations.
     async function createConversationUtil(
@@ -1770,6 +1767,12 @@ export const createConversation =
     }
 
     try {
+      projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
       logger.debug('Creating new conversation', {
         requestId,
         userId,
@@ -3188,6 +3191,8 @@ export const getConversationById = async (
         status: 1,
         failReason: 1,
         modelInfo: 1,
+        projectId: 1,
+        projectVisibility: 1,
       })
       .lean()
       .exec();
@@ -7125,11 +7130,7 @@ export const createAgentConversation =
       throw new BadRequestError('Query is required');
     }
 
-    const projectLink = await resolveProjectLink(
-      orgId as unknown as string,
-      userId as unknown as string,
-      req.body as Record<string, unknown>,
-    );
+    let projectLink: ResolvedProjectLink = {};
 
     // Helper function that contains the common conversation operations.
     async function createConversationUtil(
@@ -7327,6 +7328,12 @@ export const createAgentConversation =
     }
 
     try {
+      projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
       logger.debug('Creating new conversation', {
         requestId,
         userId,
@@ -8846,6 +8853,8 @@ export const getAgentConversationById = async (
         status: 1,
         failReason: 1,
         modelInfo: 1,
+        projectId: 1,
+        projectVisibility: 1,
       })
       .lean()
       .exec();

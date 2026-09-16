@@ -46,12 +46,17 @@ export function MoveToProjectDialog({
       .finally(() => setIsLoading(false));
   }, [open, currentProjectId]);
 
+  const [error, setError] = useState<string | null>(null);
+
   const handleConfirm = async () => {
     if (isMoving) return;
     setIsMoving(true);
+    setError(null);
     try {
       await onConfirm(selected);
       onOpenChange(false);
+    } catch {
+      setError(t('chat.projects.moveDialog.moveFailed', 'Failed to move conversation'));
     } finally {
       setIsMoving(false);
     }
@@ -111,6 +116,9 @@ export function MoveToProjectDialog({
             </RadioGroup.Root>
           )}
 
+          {error && (
+            <Text size="1" style={{ color: '#ef4444' }}>{error}</Text>
+          )}
           <Flex gap="2" justify="end">
             <LoadingButton
               type="button"

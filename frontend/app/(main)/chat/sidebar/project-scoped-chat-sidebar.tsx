@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -9,14 +9,14 @@ import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import { SidebarBase, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, selectPendingForSidebar } from '@/chat/store';
 import { ProjectApi, type ProjectConversationRow } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
 import { buildChatHref, openFreshProjectChat } from '@/chat/build-chat-url';
 import { ChatSidebarHeader } from './header';
 import { ChatSidebarFooter } from './footer';
 import { SidebarItem } from './sidebar-item';
-import { ChatItemSkeleton } from './chat-section-element';
+import { ChatItemSkeleton, GeneratingTitleItem } from './chat-section-element';
 import { groupByTime, getNonEmptyGroups, type TimeGroupKey } from '@/lib/utils/group-by-time';
 import { SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE } from '../constants';
 
@@ -56,6 +56,8 @@ export const ProjectScopedChatSidebar = React.memo(function ProjectScopedChatSid
 
   const conversationsVersion = useChatStore((s) => s.conversationsVersion);
   const projectsVersion = useChatStore((s) => s.projectsVersion);
+  const pendingConversations = useChatStore((s) => s.pendingConversations);
+  const slots = useChatStore((s) => s.slots);
 
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const [conversations, setConversations] = useState<ProjectConversationRow[]>([]);
@@ -97,6 +99,11 @@ export const ProjectScopedChatSidebar = React.memo(function ProjectScopedChatSid
   const handleSelectConversation = () => {
     if (isMobile) closeMobile();
   };
+
+  const pendingProjectChats = useMemo(() => {
+    const convIds = new Set(conversations.map((c) => c._id));
+    return selectPendingForSidebar(pendingConversations, slots, convIds, { projectId });
+  }, [pendingConversations, slots, conversations, projectId]);
 
   const timeGroups = getNonEmptyGroups(
     groupByTime(conversations, (c) => c.lastActivityAt),
@@ -161,7 +168,7 @@ export const ProjectScopedChatSidebar = React.memo(function ProjectScopedChatSid
                 <ChatItemSkeleton key={i} />
               ))}
             </Flex>
-          ) : timeGroups.length === 0 ? (
+          ) : timeGroups.length === 0 && pendingProjectChats.length === 0 ? (
             <Text
               size="1"
               style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-10)' }}
@@ -169,7 +176,11 @@ export const ProjectScopedChatSidebar = React.memo(function ProjectScopedChatSid
               {t('chat.projects.noChats')}
             </Text>
           ) : (
-            timeGroups.map(([label, rows]) => (
+            <>
+            {pendingProjectChats.map((p) => (
+              <GeneratingTitleItem key={p.slotId} slotId={p.slotId} />
+            ))}
+            {timeGroups.map(([label, rows]) => (
               <Flex direction="column" key={label}>
                 <Flex align="center" style={{ height: 28, padding: '0 var(--space-3)' }}>
                   <Text size="1" style={{ color: 'var(--slate-10)' }}>
@@ -196,7 +207,8 @@ export const ProjectScopedChatSidebar = React.memo(function ProjectScopedChatSid
                   })}
                 </Flex>
               </Flex>
-            ))
+            ))}
+            </>
           )}
         </Flex>
       </Flex>

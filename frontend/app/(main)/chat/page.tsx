@@ -259,18 +259,25 @@ function ChatContent() {
         store.clearSearchResults();
       }
 
-      const rawAgentInUrl =
+      const urlParams =
         typeof window !== 'undefined'
-          ? new URLSearchParams(window.location.search).get('agentId')
+          ? new URLSearchParams(window.location.search)
           : null;
+      const rawAgentInUrl = urlParams?.get('agentId');
       const agentIdInUrl = rawAgentInUrl?.trim() ? rawAgentInUrl : null;
+      const rawProjectInUrl = urlParams?.get('projectId');
+      const projectIdInUrl = !agentIdInUrl && rawProjectInUrl?.trim() ? rawProjectInUrl : null;
 
       // 1. Detach visible thread only — background streams keep running (parallel chats)
       store.clearActiveSlot();
 
-      // 2–3. Sync URL: stay on agent new-chat when agentId present, else main home
+      // 2–3. Sync URL: stay on agent/project new-chat when scoped, else main home
       if (agentIdInUrl) {
         const href = buildChatHref({ agentId: agentIdInUrl });
+        window.history.replaceState(null, '', href);
+        router.replace(href);
+      } else if (projectIdInUrl) {
+        const href = buildChatHref({ projectId: projectIdInUrl });
         window.history.replaceState(null, '', href);
         router.replace(href);
       } else {
@@ -882,6 +889,8 @@ function ChatContent() {
         agentStreamTools:
           store.agentStreamTools === null ? null : [...store.agentStreamTools],
       });
+    } else if (projectId) {
+      store.updateSlot(slotId, { projectId });
     }
 
     // 1. Set collection filters so they scope the AI query
@@ -935,7 +944,7 @@ function ChatContent() {
       },
       startRun: true,
     });
-  }, [conversationId, threadRuntime, activeSlotId, agentId]);
+  }, [conversationId, threadRuntime, activeSlotId, agentId, projectId]);
 
   const isMobile = useIsMobile();
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);

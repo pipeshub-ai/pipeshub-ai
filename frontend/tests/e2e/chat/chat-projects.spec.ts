@@ -218,7 +218,7 @@ async function mockSharingApis(page: import('@playwright/test').Page) {
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ users: userIds.map((id) => byId[id]).filter(Boolean) }),
+      body: JSON.stringify(userIds.map((id) => byId[id]).filter(Boolean)),
     });
   });
 }

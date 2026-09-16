@@ -463,7 +463,7 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
           <Text size="2" style={{ color: 'var(--slate-11)' }}>
             {t('chat.projects.workspace.membersTitle')}:{' '}
             {t(
-              project.members.length === 1
+              project.members.length + 1 === 1
                 ? 'chat.projects.workspace.memberCount_one'
                 : 'chat.projects.workspace.memberCount_other',
               { count: project.members.length + 1 },

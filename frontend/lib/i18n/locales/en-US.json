@@ -805,6 +805,7 @@
       "archiveProject": "Archive project",
       "unarchiveProject": "Unarchive project",
       "deleteProject": "Delete project",
+      "shareProject": "Share project",
       "backToProjects": "All projects",
       "newChatInProject": "New chat",
       "recentChats": "Recent chats",

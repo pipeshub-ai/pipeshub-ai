@@ -344,7 +344,7 @@ describe('ProjectService', () => {
   });
 
   describe('setPinned / setArchived', () => {
-    it('toggles isPinned for at-least-viewer callers', async () => {
+    it('toggles isPinned for at-least-editor callers', async () => {
       const project = makeProjectDoc();
       sinon.stub(Project, 'findOne').resolves(project);
       const updated = await ProjectService.setPinned(ORG_ID, OWNER_ID, project._id.toString(), true);

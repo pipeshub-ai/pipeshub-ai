@@ -1308,9 +1308,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const isAgentStream =
         options?.isAgentStream ??
         Boolean(slotForPending?.threadAgentId);
-      const nextMain = isAgentStream
-        ? state.conversations
-        : [conversation, ...state.conversations.filter((c) => c.id !== conversation.id)];
+      const isProjectScoped =
+        Boolean(slotForPending?.projectId) || Boolean(conversation.projectId);
+
+      const nextMain =
+        isAgentStream || isProjectScoped
+          ? state.conversations
+          : [conversation, ...state.conversations.filter((c) => c.id !== conversation.id)];
       const nextAgent = isAgentStream
         ? [conversation, ...state.agentConversations.filter((c) => c.id !== conversation.id)]
         : state.agentConversations;
@@ -1321,6 +1325,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         conversations: nextMain,
         agentConversations: nextAgent,
         newlyResolvedIds: nextNewlyResolved,
+        ...(isProjectScoped ? { projectsVersion: state.projectsVersion + 1 } : {}),
       };
     }),
 

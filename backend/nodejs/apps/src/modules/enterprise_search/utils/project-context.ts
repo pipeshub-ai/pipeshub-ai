@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { HttpError } from '../../../libs/errors/http.errors';
+import { BadRequestError, ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors';
 import { IProjectDocument } from '../../projects/types/project.interfaces';
 import { ProjectService } from '../../projects/services/project.service';
 import { IChatAttachmentRef } from '../types/conversation.interfaces';
@@ -129,7 +129,9 @@ export async function loadProjectForSession(
     );
     return project;
   } catch (error) {
-    if (error instanceof HttpError) return undefined;
+    if (error instanceof NotFoundError || error instanceof ForbiddenError || error instanceof BadRequestError) {
+      return undefined;
+    }
     throw error;
   }
 }

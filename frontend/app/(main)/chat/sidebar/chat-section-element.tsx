@@ -222,16 +222,14 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
   };
 
   const handleConfirmMoveToProject = async (projectId: string | null) => {
-    if (convStreamingBlocksSidebarMutation()) return;
-    try {
-      await ProjectApi.setConversationProject(conversation.id, projectId, {
-        agentKey: agentId,
-      });
-      moveConversationToProject(conversation.id, projectId);
-      bumpConversationsVersion();
-    } catch {
-      // Non-fatal — row stays in its current project; user can retry.
+    if (convStreamingBlocksSidebarMutation()) {
+      throw new Error('Cannot move a conversation while it is streaming.');
     }
+    await ProjectApi.setConversationProject(conversation.id, projectId, {
+      agentKey: agentId,
+    });
+    moveConversationToProject(conversation.id, projectId);
+    bumpConversationsVersion();
   };
 
   const handleRemoveFromProject = async () => {

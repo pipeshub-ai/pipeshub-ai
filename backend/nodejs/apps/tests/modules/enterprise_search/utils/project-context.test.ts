@@ -167,7 +167,7 @@ describe('project-context', () => {
     })
 
     it('ignores a non-string projectId in the body', async () => {
-      const result = await resolveProjectLink(ORG_ID, USER_ID, { projectId: 123 as any })
+      const result = await resolveProjectLink(ORG_ID, USER_ID, { projectId: 123 })
       expect(result).to.deep.equal({})
     })
   })
@@ -201,8 +201,9 @@ describe('project-context', () => {
       try {
         await loadProjectForSession(ORG_ID, USER_ID, PROJECT_ID)
         expect.fail('Expected rejection')
-      } catch (error: any) {
-        expect(error.message).to.include('MongoNetworkError')
+      } catch (error: unknown) {
+        expect(error).to.be.instanceOf(Error)
+        expect((error as Error).message).to.include('MongoNetworkError')
       }
     })
 

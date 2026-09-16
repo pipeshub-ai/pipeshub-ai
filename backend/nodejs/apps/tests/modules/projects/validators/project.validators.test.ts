@@ -89,7 +89,7 @@ describe('projects/validators/project.validators', () => {
       })
       expect(result.success).to.equal(true)
       if (result.success) {
-        expect((result.data.body as any).visibility).to.be.undefined
+        expect(result.data.body).to.not.have.property('visibility')
       }
     })
   })
