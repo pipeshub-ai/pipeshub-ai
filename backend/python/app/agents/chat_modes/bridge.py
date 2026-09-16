@@ -322,6 +322,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     protocol: str = "legacy",
     client_name: str | None = None,
     cancellation_registry: "RunCancellationRegistry | None" = None,
+    cancellation_owner: "RunOwner | None" = None,
 ) -> "AsyncGenerator[str, None]":
     """Entry point `chatbot.py::askAIStream()` calls for every `/chat/stream`
     request, regardless of mode. See module docstring."""
@@ -335,28 +336,34 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
     # Stop Generation (Phase 3a): registered BEFORE `build_initial_state()`
     # below (same reasoning as `stream_bridge.py::run_agent_loop_stream`)
-    # so the "Thinking" phase is cancellable too. The no-tools degradation
-    # path (Ollama) has no agent loop to cancel into — it isn't registered.
+    # so the "Thinking" phase is cancellable too. Covers the no-tools path
+    # too — `_run_no_tools_degradation` has no agent loop to cancel INTO,
+    # but registration lets `/chat/cancel` return `{cancelled: true}` so
+    # the frontend's 5-second grace timer fires and aborts the connection.
     run_id = query_info.get("runId") or str(uuid.uuid4())
     cancellation_token = CancellationToken()
-    run_owner = RunOwner(
+    run_owner = cancellation_owner or RunOwner(
         user_id=user_info.get("userId", ""),
         org_id=user_info.get("orgId", ""),
         conversation_id=query_info.get("conversationId"),
     )
 
-    if not supports_tool_calls:
-        async for event in _run_no_tools_degradation(
-            query_info=query_info, user_info=user_info, llm=llm, policy=policy, log=log,
-            retrieval_service=retrieval_service, graph_provider=graph_provider,
-            config_service=config_service, system_prompts_config=system_prompts_config,
-            is_multimodal_llm=is_multimodal_llm, context_length=context_length,
-        ):
-            yield event
-        return
-
     if cancellation_registry is not None:
         await cancellation_registry.register(run_id, cancellation_token, run_owner)
+
+    if not supports_tool_calls:
+        try:
+            async for event in _run_no_tools_degradation(
+                query_info=query_info, user_info=user_info, llm=llm, policy=policy, log=log,
+                retrieval_service=retrieval_service, graph_provider=graph_provider,
+                config_service=config_service, system_prompts_config=system_prompts_config,
+                is_multimodal_llm=is_multimodal_llm, context_length=context_length,
+            ):
+                yield event
+        finally:
+            if cancellation_registry is not None:
+                await cancellation_registry.unregister(run_id)
+        return
 
     try:
         blob_store = BlobStorage(logger=log, config_service=config_service, graph_provider=graph_provider)

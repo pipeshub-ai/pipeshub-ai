@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
+from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
@@ -3796,6 +3797,18 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     is_reasoning_model=bool(llm_config.get("isReasoning", False)),
                     stage_timer=timer,
                     cancellation_registry=cancellation_registry,
+                    # Service-account agents run retrieval as the agent
+                    # creator (enriched_user_info.userId), but the RUN is
+                    # owned by the authenticated caller — without this,
+                    # cancel() compares the creator's userId against the
+                    # caller's and returns 403.
+                    cancellation_owner=(
+                        RunOwner(
+                            user_id=user_context.get("userId", ""),
+                            org_id=user_context.get("orgId", ""),
+                            conversation_id=chat_query.conversationId,
+                        ) if is_service_account else None
+                    ),
                 )
 
                 async for _evt in generator:

@@ -260,6 +260,7 @@ async def run_agent_loop_stream(
     is_reasoning_model: bool = False,
     stage_timer: "StageTimer | None" = None,
     cancellation_registry: "RunCancellationRegistry | None" = None,
+    cancellation_owner: "RunOwner | None" = None,
 ) -> "AsyncGenerator[str, None]":
     """agent-loop counterpart to `app.api.routes.agent.stream_response()` —
     same signature/SSE wire format, so `chat_stream`'s feature-flag branch
@@ -284,7 +285,13 @@ async def run_agent_loop_stream(
     # this generator ever started running.
     run_id = query_info.get("runId") or str(uuid.uuid4())
     cancellation_token = CancellationToken()
-    run_owner = RunOwner(
+    # `cancellation_owner` overrides the default owner built from
+    # `user_info`: service-account agents pass `enriched_user_info`
+    # (the agent creator's identity, needed for retrieval ACL) as
+    # `user_info`, but the RUN is owned by the authenticated caller
+    # (who issued the request and whose cancel request will carry
+    # their own userId). Without this, `cancel()` returns 403.
+    run_owner = cancellation_owner or RunOwner(
         user_id=user_info.get("userId", ""),
         org_id=user_info.get("orgId", ""),
         conversation_id=query_info.get("conversationId"),

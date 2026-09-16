@@ -108,6 +108,12 @@ class CancellationAwareTransport(LLMTransport):
         text_parts: list[str] = []
         try:
             while True:
+                # Fast exit before starting the next provider read: if
+                # cancel() was called after the last yield, skip straight
+                # to the post-loop cancelled-completion path without
+                # issuing another __anext__().
+                if self._token.is_cancelled:
+                    break
                 next_chunk_task = asyncio.ensure_future(stream_iter.__anext__())
                 await asyncio.wait(
                     {next_chunk_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED,
@@ -116,36 +122,12 @@ class CancellationAwareTransport(LLMTransport):
                     # `cancel_task` (racing `token.wait()` against the next
                     # chunk) is what makes this fire even when the provider
                     # stalls between chunks -- see `LangChainTransport.
-                    # stream()` for the same rationale. Not awaited for its
-                    # result: a provider error racing the same cancel is
-                    # irrelevant once we've already decided to stop.
+                    # stream()` for the same rationale.
                     if not next_chunk_task.done():
                         next_chunk_task.cancel()
                     with contextlib.suppress(BaseException):
                         await next_chunk_task
-                    # No `StreamCompleteEvent` reached us (the inner
-                    # transport never got to build one) -- assemble the
-                    # minimal one `Agent.step()` needs to detect
-                    # `StopReason.CANCELLED` from whatever text streamed.
-                    # Any tool call still under construction is dropped,
-                    # not partially reported: its arguments are truncated
-                    # mid-JSON and would corrupt the tool-dispatch loop if
-                    # `Agent.step()` tried to execute it (same rationale
-                    # `LangChainTransport.stream()` documents).
-                    yield StreamCompleteEvent(
-                        response=ModelResponse(
-                            message=AssistantMessage(
-                                content=(
-                                    [TextPart(text="".join(text_parts))]
-                                    if text_parts else []
-                                ),
-                            ),
-                            usage=TokenUsage(),
-                            stop_reason=StopReason.CANCELLED,
-                            model=self._inner.model_name,
-                        ),
-                    )
-                    return
+                    break
                 try:
                     event = next_chunk_task.result()
                 except StopAsyncIteration:
@@ -153,6 +135,31 @@ class CancellationAwareTransport(LLMTransport):
                 if isinstance(event, TextDeltaEvent):
                     text_parts.append(event.delta)
                 yield event
+                # `StreamCompleteEvent` is terminal — exactly one per
+                # `stream()` call. Without this early return, a `cancel()`
+                # racing the next iteration would enter the cancellation
+                # branch and emit a second one.
+                if isinstance(event, StreamCompleteEvent):
+                    return
+
+            # Reached only by `break` from the two cancellation paths
+            # above. One `StreamCompleteEvent` with whatever text we
+            # accumulated, `stop_reason=CANCELLED`, no tool calls (any
+            # in-progress call's arguments are truncated mid-JSON and
+            # would corrupt `Agent.step()`'s tool-dispatch loop).
+            yield StreamCompleteEvent(
+                response=ModelResponse(
+                    message=AssistantMessage(
+                        content=(
+                            [TextPart(text="".join(text_parts))]
+                            if text_parts else []
+                        ),
+                    ),
+                    usage=TokenUsage(),
+                    stop_reason=StopReason.CANCELLED,
+                    model=self._inner.model_name,
+                ),
+            )
         finally:
             if not cancel_task.done():
                 cancel_task.cancel()

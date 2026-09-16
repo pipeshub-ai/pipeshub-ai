@@ -167,6 +167,43 @@ class TestStreamWithoutCancellation:
         # exercised here to prove it does not raise.
         assert inner.aclose_called is True
 
+    async def test_exactly_one_completion_event_when_cancel_races_after_inner_complete(self) -> None:
+        """Regression: if cancel() fires after the inner transport's own
+        StreamCompleteEvent is yielded, the decorator must emit exactly
+        one StreamCompleteEvent total — never a second one from the
+        cancellation path."""
+        token = CancellationToken()
+        complete = StreamCompleteEvent(
+            response=ModelResponse(message=AssistantMessage(content=[TextPart(text="done")])),
+        )
+        inner = _FakeTransport([TextDeltaEvent(delta="done"), complete])
+        transport = CancellationAwareTransport(inner, token)
+
+        stream = transport.stream([UserMessage(content="hi")])
+        await anext(stream)  # TextDeltaEvent
+        token.cancel()  # races with the next iteration
+        second = await anext(stream)
+        assert isinstance(second, StreamCompleteEvent)
+
+        # Must be exactly one StreamCompleteEvent — no double-emit.
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+
+    async def test_cancel_before_next_iteration_skips_provider_read(self) -> None:
+        """cancel() between yields must not start another __anext__()."""
+        token = CancellationToken()
+        inner = _FakeTransport([TextDeltaEvent(delta="a")], stall=True)
+        transport = CancellationAwareTransport(inner, token)
+
+        stream = transport.stream([UserMessage(content="hi")])
+        await anext(stream)  # TextDeltaEvent("a")
+        token.cancel()
+        final = await anext(stream)
+
+        assert isinstance(final, StreamCompleteEvent)
+        assert final.response.stop_reason == StopReason.CANCELLED
+        assert final.response.message.text == "a"
+
 
 class TestCompleteAndCompleteStructuredPassThrough:
     """Single unchunked provider calls have no intermediate point to check
