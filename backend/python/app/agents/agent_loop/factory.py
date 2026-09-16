@@ -102,6 +102,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
 )
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.artifact_store import build_artifact_store
+from app.agents.agent_loop.cancellation_transport import with_cancellation
 from app.agents.agent_loop.direct_transport import build_direct_transport
 from app.agents.agent_loop.domain_agents import (
     plan_domain_agents,
@@ -347,16 +348,18 @@ class PipesHubAgentFactory:
                 llm, model_name=model_name, model_key=model_key,
             )
             if direct is not None:
-                # The direct SDK transports have no image cap of their own --
-                # they live in `agent_loop_lib` and know nothing about
-                # PipesHub's per-provider policy -- so the same net the
-                # LangChain arm applies inline is wrapped around them here.
-                # `PIPESHUB_AGENT_TRANSPORT=direct`'s own SDK transports have
-                # no `CancellationToken` wiring of their own (out of scope
-                # for Phase 3b — see `LangChainTransport.stream()`); a
-                # cancelled run on this arm still stops at the next PRE_TURN/
-                # per-tool-call check, just not mid-token.
-                return with_image_cap(direct, image_cap)
+                # The direct SDK transports have no image cap and no
+                # `CancellationToken` wiring of their own -- they live in
+                # `agent_loop_lib` and know nothing about PipesHub's
+                # per-provider image policy or Stop Generation -- so both
+                # nets the LangChain arm applies inline (`max_images_per_
+                # request`, `cancellation_token=` above) are wrapped around
+                # them here instead. `with_cancellation` is a no-op when
+                # `context.cancellation_token` is `None` (no `runId`
+                # registered for this request).
+                return with_cancellation(
+                    with_image_cap(direct, image_cap), context.cancellation_token,
+                )
             return LangChainTransport(
                 llm, model_name=model_name,
                 opik_project_name=opik_project_name, model_key=model_key,
