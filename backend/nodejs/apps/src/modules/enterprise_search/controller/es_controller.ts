@@ -302,6 +302,20 @@ export const stableObjectIdHexForExternalEmail = (email: string): string =>
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
 
+const failReasonFromCaughtError = (
+  conversation: { failReason?: unknown } | null | undefined,
+  error: { message?: string; cause?: { code?: string } },
+): string => {
+  if (error.cause?.code === 'ECONNREFUSED') {
+    return `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
+  }
+  const existing = conversation?.failReason;
+  if (typeof existing === 'string' && existing.trim()) {
+    return existing;
+  }
+  return error.message || 'Unknown error occurred';
+};
+
 export const hydrateScopedRequestAsUser = async (
   req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
   appConfig: AppConfig,
@@ -1695,10 +1709,7 @@ export const createConversation =
         // TODO: Add support for retry mechanism and generate response from retry
         // and append the response to the correct messageId
 
-        const failReason =
-          error.cause?.code === 'ECONNREFUSED'
-            ? `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`
-            : error.message || 'Unknown error occurred';
+        const failReason = failReasonFromCaughtError(savedConversation, error);
         await markConversationFailed(
           savedConversation,
           failReason,
@@ -2056,7 +2067,7 @@ export const addMessage =
 
           await markConversationFailed(
             conversation,
-            error.message || 'Unknown error occurred',
+            failReasonFromCaughtError(conversation, error),
             session,
             'internal_error',
             error.stack,
@@ -6967,10 +6978,7 @@ export const createAgentConversation =
         // TODO: Add support for retry mechanism and generate response from retry
         // and append the response to the correct messageId
 
-        const failReason =
-          error.cause?.code === 'ECONNREFUSED'
-            ? `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`
-            : error.message || 'Unknown error occurred';
+        const failReason = failReasonFromCaughtError(savedConversation, error);
         await markAgentConversationFailed(
           savedConversation,
           failReason,
@@ -7301,7 +7309,7 @@ export const createAgentConversation =
           // Update conversation status for general errors
           await markAgentConversationFailed(
             conversation,
-            error.message || 'Unknown error occurred',
+            failReasonFromCaughtError(conversation, error),
             session,
             'internal_error',
             error.stack,
