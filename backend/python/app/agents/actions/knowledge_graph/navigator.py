@@ -302,7 +302,11 @@ class GraphNavigator:
             # Breadcrumbs and record metadata only on page 1 to save tokens.
             # Gathered so the extra record read costs no extra latency.
             if page == 1:
-                crumbs = self._graph.get_knowledge_hub_breadcrumbs(node_id=node_id)
+                crumbs = self._graph.get_knowledge_hub_breadcrumbs(
+                    node_id=node_id,
+                    user_key=self._user_key,
+                    org_id=self._org_id,
+                )
                 if parent_type in ("record", "folder"):
                     raw_crumbs, context_block = await asyncio.gather(
                         crumbs, self._context_block(node_id)

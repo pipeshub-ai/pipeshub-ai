@@ -1122,7 +1122,13 @@ class TestGetKnowledgeHubBreadcrumbs:
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=[
             [{"id": "n1", "name": "Node1", "nodeType": "app", "parentId": None}],
         ])
-        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n1")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n1", "u1", "org1")
         assert len(crumbs) == 1
         assert crumbs[0]["id"] == "n1"
 
@@ -1132,14 +1138,26 @@ class TestGetKnowledgeHubBreadcrumbs:
             [{"id": "n2", "name": "Child", "nodeType": "record", "parentId": "n1"}],
             [{"id": "n1", "name": "Parent", "nodeType": "app", "parentId": None}],
         ])
-        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n2")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n2", "u1", "org1")
         assert len(crumbs) == 2
         assert crumbs[0]["id"] == "n1"
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[None])
-        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n1")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n1", "u1", "org1")
         assert crumbs == []
 
 

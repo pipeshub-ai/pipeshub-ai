@@ -665,14 +665,24 @@ class TestGetBreadcrumbs:
             {"id": "r", "name": "Root", "nodeType": "app"},
             {"id": "f", "name": "Folder", "nodeType": "folder", "subType": None},
         ]
-        result = await service._get_breadcrumbs("f")
+        result = await service._get_breadcrumbs("f", "user-1", "org-1")
         assert len(result) == 2
         assert isinstance(result[0], BreadcrumbItem)
 
     @pytest.mark.asyncio
+    async def test_forwards_the_caller_identity(self, service, mock_graph_provider):
+        """Breadcrumbs are permission-filtered by the provider, so dropping the user here
+        would silently restore the leak this filtering exists to close."""
+        mock_graph_provider.get_knowledge_hub_breadcrumbs.return_value = []
+        await service._get_breadcrumbs("f", "user-1", "org-1")
+        kwargs = mock_graph_provider.get_knowledge_hub_breadcrumbs.await_args.kwargs
+        assert kwargs["user_key"] == "user-1"
+        assert kwargs["org_id"] == "org-1"
+
+    @pytest.mark.asyncio
     async def test_returns_empty_on_error(self, service, mock_graph_provider):
         mock_graph_provider.get_knowledge_hub_breadcrumbs.side_effect = RuntimeError("fail")
-        result = await service._get_breadcrumbs("n1")
+        result = await service._get_breadcrumbs("n1", "user-1", "org-1")
         assert result == []
 
 

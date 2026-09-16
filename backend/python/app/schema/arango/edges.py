@@ -340,6 +340,9 @@ user_app_relation_schema = {
             },
             "lastSyncUpdate": {"type": "number"},
             "sourceUserId": {"type": "string"},
+            # Set on principals who reached this app only through a share, not through
+            # app membership. Gates the browse-hoisting branches.
+            "isExternalUser": {"type": "boolean"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },
