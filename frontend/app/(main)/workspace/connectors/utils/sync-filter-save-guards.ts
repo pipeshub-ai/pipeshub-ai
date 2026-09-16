@@ -89,15 +89,24 @@ export function syncFilterRowError(field: FilterSchemaField, raw: unknown): stri
     .map((item) => (item && typeof item === 'object' && 'id' in item ? (item as { id: unknown }).id : item))
     .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
   if (field.required && values.length === 0) {
-    return `Select a ${field.displayName.toLowerCase()} before saving.`;
+    return (
+      `Select a ${field.displayName.toLowerCase()} before saving. ` +
+      `Each connector instance syncs exactly one ${field.displayName.toLowerCase()}.`
+    );
   }
   if (ft === 'select' && values.length > 1) {
-    return `${field.displayName} allows only one selection, but ${values.length} are configured.`;
+    return (
+      `${field.displayName} has ${values.length} selections. Narrow it down to one to ` +
+      `continue, as each connector instance syncs exactly one ${field.displayName.toLowerCase()}.`
+    );
   }
   if (ft === 'select' && values.length === 1) {
     const operator = isFilterRow(raw) ? String(raw.operator ?? '').trim().toLowerCase() : '';
     if (operator !== 'in') {
-      return `${field.displayName} must use the 'in' operator (got '${operator}').`;
+      return (
+        `Re-select the ${field.displayName.toLowerCase()} to continue. The saved ` +
+        `configuration uses an unsupported '${operator}' rule.`
+      );
     }
   }
   return null;

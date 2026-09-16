@@ -1027,15 +1027,22 @@ def sync_filter_selection_problems(
         display = str(field.get("displayName") or name)
         is_select = field.get("filterType") == FilterType.SELECT.value
         if field.get("required") and not values:
-            problems.append(f"Select a {display.lower()} before {action}.")
+            problems.append(
+                f"Select a {display.lower()} before {action}. "
+                f"Each connector instance syncs exactly one {display.lower()}."
+            )
         elif is_select and len(values) > 1:
             problems.append(
-                f"{display} allows only one selection, but {len(values)} are configured."
+                f"{display} has {len(values)} selections. Narrow it down to one to "
+                f"continue, as each connector instance syncs exactly one {display.lower()}."
             )
         elif is_select and values:
             operator = str((entry or {}).get("operator") or "")
             if operator != FilterOperator.IN:
-                problems.append(f"{display} must use the 'in' operator (got '{operator}').")
+                problems.append(
+                    f"Re-select the {display.lower()} to continue. The saved "
+                    f"configuration uses an unsupported '{operator}' rule."
+                )
     return problems
 
 

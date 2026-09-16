@@ -1111,7 +1111,9 @@ export function FiltersSection() {
     for (const field of syncFields) {
       const key = field.name;
       const existing = snapshotForm.filters.sync[key];
-      if (existing === undefined) {
+      // null means the user cleared it, but a required field cannot stay cleared:
+      // the connector cannot be saved or enabled without it, so seed it again.
+      if (existing === undefined || (existing === null && field.required)) {
         if (field.filterType === 'datetime' && !field.defaultOperator?.trim()) continue;
         // Boolean: skip unless backend explicitly provided a defaultValue (true or false).
         // booleanDefaultValue() silently falls back to false which makes isMeaningfulFilterRow
@@ -1140,7 +1142,13 @@ export function FiltersSection() {
         return hasActiveFilterRow(vals[f.name]);
       }).map((f) => f.name);
 
-    setActiveSync(seedSync(syncFields, fd.filters.sync));
+    // Required sync filters are on screen from the start, value or not, so the user
+    // sees what the connector needs instead of finding it under "Add filter".
+    const requiredSync = syncFields.filter((f) => f.required).map((f) => f.name);
+    setActiveSync([
+      ...requiredSync,
+      ...seedSync(syncFields, fd.filters.sync).filter((n) => !requiredSync.includes(n)),
+    ]);
     setActiveIndexing(seedIndexingActive(indexingFields, fd.filters.indexing));
   }, [panelConnectorId, connectorSchema, syncFields, indexingFields]);
 
@@ -1218,7 +1226,9 @@ function FilterCategoryBlock({
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   /** Indexing filters are always-on (legacy); sync filters stay add/remove. */
   const allowRemoveFilter = section === 'sync';
-  const availableToAdd = allowRemoveFilter ? fields.filter((f) => !activeFieldNames.includes(f.name)) : [];
+  const availableToAdd = allowRemoveFilter
+    ? fields.filter((f) => !f.required && !activeFieldNames.includes(f.name))
+    : [];
 
   const addField = (fieldName: string) => {
     const field = fields.find((f) => f.name === fieldName);
@@ -1401,7 +1411,7 @@ function FilterCategoryBlock({
                   connectorId={connectorId}
                   onChange={onChange}
                   onClear={() => removeField(field.name)}
-                  allowClear={allowRemoveFilter}
+                  allowClear={allowRemoveFilter && !field.required}
                   allSyncValues={section === 'sync' ? values : undefined}
                 />
               );

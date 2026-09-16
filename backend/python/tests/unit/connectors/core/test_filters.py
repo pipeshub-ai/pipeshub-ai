@@ -1137,15 +1137,22 @@ class TestSyncFilterSelectionProblems:
     def test_required_field_without_a_value_blocks_enable(self, entry: object) -> None:
         values = {} if entry is None else {"repo_ids": entry}
         problems = sync_filter_selection_problems([REPO_FIELD], values)
-        assert problems == ["Select a repository before enabling this connector."]
+        assert problems == [
+            "Select a repository before enabling this connector. "
+            "Each connector instance syncs exactly one repository."
+        ]
         assert sync_filter_selection_problems([REPO_FIELD], values, "saving") == [
-            "Select a repository before saving."
+            "Select a repository before saving. "
+            "Each connector instance syncs exactly one repository."
         ]
 
     def test_legacy_multi_value_select_blocks_enable(self) -> None:
         values = {"repo_ids": {"operator": "in", "value": ["a/b", "c/d"]}}
         problems = sync_filter_selection_problems([REPO_FIELD], values)
-        assert problems == ["Repository allows only one selection, but 2 are configured."]
+        assert problems == [
+            "Repository has 2 selections. Narrow it down to one to continue, "
+            "as each connector instance syncs exactly one repository."
+        ]
 
     def test_optional_multiselect_is_not_constrained(self) -> None:
         values = {"org_ids": {"operator": "in", "value": ["a", "b"]}}
@@ -1154,12 +1161,18 @@ class TestSyncFilterSelectionProblems:
     def test_legacy_not_in_select_blocks_enable(self) -> None:
         values = {"repo_ids": {"operator": "not_in", "value": [{"id": "o/r", "label": "o/r"}]}}
         problems = sync_filter_selection_problems([REPO_FIELD], values)
-        assert problems == ["Repository must use the 'in' operator (got 'not_in')."]
+        assert problems == [
+            "Re-select the repository to continue. The saved configuration "
+            "uses an unsupported 'not_in' rule."
+        ]
 
     def test_blank_ids_do_not_count_as_a_selection(self) -> None:
         values = {"repo_ids": {"operator": "in", "value": ["", {"id": "  "}]}}
         problems = sync_filter_selection_problems([REPO_FIELD], values)
-        assert problems == ["Select a repository before enabling this connector."]
+        assert problems == [
+            "Select a repository before enabling this connector. "
+            "Each connector instance syncs exactly one repository."
+        ]
 
 
 class TestRequireSingleValue:
