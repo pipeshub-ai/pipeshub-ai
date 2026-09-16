@@ -773,7 +773,76 @@
     "failedToDeleteAgent": "Agent konnte nicht gelöscht werden",
     "failedToRename": "Chat konnte nicht umbenannt werden",
     "rename": "Umbenennen",
-    "renaming": "Umbenennen…"
+    "renaming": "Umbenennen…",
+    "projects": {
+      "title": "Projects",
+      "newProject": "New project",
+      "noProjects": "No projects yet",
+      "failedToLoad": "Failed to load projects",
+      "moreProjects": "More projects",
+      "moveToProject": "Move to project",
+      "removeFromProject": "Remove from project",
+      "pinProject": "Pin",
+      "unpinProject": "Unpin",
+      "archiveProject": "Archive project",
+      "unarchiveProject": "Unarchive project",
+      "deleteProject": "Delete project",
+      "backToProjects": "All projects",
+      "newChatInProject": "New chat",
+      "recentChats": "Recent chats",
+      "noChats": "No chats yet in this project",
+      "startChatInProject": "Start a chat in this project",
+      "createDialog": {
+        "title": "New project",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. Q3 Marketing Plan",
+        "descriptionLabel": "Description",
+        "descriptionPlaceholder": "What's this project about? (optional)",
+        "instructionsLabel": "Instructions",
+        "instructionsPlaceholder": "Instructions the assistant should always follow in this project (optional)",
+        "create": "Create project",
+        "creating": "Creating…",
+        "nameRequired": "Name is required"
+      },
+      "workspace": {
+        "failedToLoad": "Failed to load this project",
+        "instructionsTitle": "Instructions",
+        "instructionsPlaceholder": "Add instructions the assistant should follow for every chat in this project…",
+        "noInstructions": "No instructions added yet",
+        "save": "Save",
+        "saving": "Saving…",
+        "editInstructions": "Edit instructions",
+        "noDescription": "No description",
+        "filesTitle": "Files",
+        "uploadFiles": "Upload files",
+        "uploading": "Uploading…",
+        "noFiles": "No files yet",
+        "removeFile": "Remove file",
+        "membersTitle": "Members",
+        "memberCount_one": "{{count}} member",
+        "memberCount_other": "{{count}} members",
+        "share": "Share",
+        "recentChatsTitle": "Recent chats",
+        "seeAllChats": "See all chats"
+      },
+      "moveDialog": {
+        "title": "Move to project",
+        "noProjects": "You don't have any projects yet",
+        "removeOption": "No project",
+        "moving": "Moving…"
+      },
+      "deleteDialog": {
+        "title": "Delete this project?",
+        "description": "This removes the project and unlinks its chats. The chats themselves are not deleted.",
+        "confirm": "Delete project",
+        "deleting": "Deleting…"
+      },
+      "roles": {
+        "owner": "Owner",
+        "editor": "Editor",
+        "viewer": "Viewer"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -2564,7 +2633,7 @@
     },
     "oauthApps": {
       "title": "OAuth-Apps",
-      "subtitle": "Verwalten Sie OAuth-Zugangsdaten für Connectors und Aktionen. Als \u201eStandard\u201c markierte Apps werden automatisch für neue Verbindungen verwendet, sofern nicht überschrieben.",
+      "subtitle": "Verwalten Sie OAuth-Zugangsdaten für Connectors und Aktionen. Als „Standard“ markierte Apps werden automatisch für neue Verbindungen verwendet, sofern nicht überschrieben.",
       "addButton": "OAuth-App hinzufügen",
       "tabs": {
         "connectors": "Connectors",
@@ -2616,14 +2685,14 @@
         "genericError": "Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut."
       },
       "delete": {
-        "title": "\u201e{{name}}\u201c l\u00f6schen?",
-        "message": "Diese OAuth-App wird dauerhaft gel\u00f6scht. Connector-Instanzen, die sie derzeit verwenden, funktionieren m\u00f6glicherweise nicht mehr.",
-        "confirmLabel": "L\u00f6schen",
-        "forceDeleteButton": "Erzwungen l\u00f6schen",
-        "forceTitle": "\u201e{{name}}\u201c erzwungen l\u00f6schen?",
-        "forceMessage": "Diese OAuth-App wird derzeit verwendet. Das erzwungene L\u00f6schen entfernt sie und kann bestehende Connector-Verbindungen, die darauf basieren, unterbrechen. Diese Aktion kann nicht r\u00fckg\u00e4ngig gemacht werden.",
-        "forceConfirmLabel": "Erzwungen l\u00f6schen",
-        "successMessage": "OAuth-App \u201e{{name}}\u201c wurde gel\u00f6scht."
+        "title": "„{{name}}“ löschen?",
+        "message": "Diese OAuth-App wird dauerhaft gelöscht. Connector-Instanzen, die sie derzeit verwenden, funktionieren möglicherweise nicht mehr.",
+        "confirmLabel": "Löschen",
+        "forceDeleteButton": "Erzwungen löschen",
+        "forceTitle": "„{{name}}“ erzwungen löschen?",
+        "forceMessage": "Diese OAuth-App wird derzeit verwendet. Das erzwungene Löschen entfernt sie und kann bestehende Connector-Verbindungen, die darauf basieren, unterbrechen. Diese Aktion kann nicht rükgängig gemacht werden.",
+        "forceConfirmLabel": "Erzwungen löschen",
+        "successMessage": "OAuth-App „{{name}}“ wurde gelöscht."
       },
       "errors": {
         "loadTypes": "Verfügbare OAuth-App-Typen konnten nicht geladen werden.",
@@ -2727,8 +2796,8 @@
     "lineCount": "{{count}} Zeilen",
     "instructionsLabel": "Anweisungen",
     "startingMessageLabel": "Startnachricht",
-    "defaultReasoningEffortLabel": "Standard-Reasoning-Aufwand",
-    "defaultReasoningEffortHint": "Standard ist Hoch, wenn nichts gesetzt ist.",
+    "defaultReasoningEffortLabel": "Standard-Denkaufwand",
+    "defaultReasoningEffortHint": "Ersatz-Denkaufwand, der verwendet wird, wenn der Benutzer im Chat keinen auswählt.",
     "moreItems": "+{{count}} weitere",
     "toolsetNodeSubtitle": "Toolset",
     "toolsLabel": "Tools",
@@ -2945,9 +3014,7 @@
     "deprecatedToolsBanner": "{{count}} Tool(s) auf diesem Agenten sind veraltet, entferne sie: {{tools}}",
     "removeDeprecatedTools": "Veraltete Tools entfernen",
     "showMore": "Mehr anzeigen",
-    "showLess": "Weniger anzeigen",
-    "defaultReasoningEffortLabel": "Standard-Denkaufwand",
-    "defaultReasoningEffortHint": "Ersatz-Denkaufwand, der verwendet wird, wenn der Benutzer im Chat keinen auswählt."
+    "showLess": "Weniger anzeigen"
   },
   "recordView": {
     "sections": {

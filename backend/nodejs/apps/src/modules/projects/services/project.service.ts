@@ -1,0 +1,581 @@
+import mongoose, { ClientSession, FilterQuery, Types } from 'mongoose';
+import { Logger } from '../../../libs/services/logger.service';
+import {
+  BadRequestError,
+  ForbiddenError,
+  NotFoundError,
+} from '../../../libs/errors/http.errors';
+import { Project } from '../schema/project.schema';
+import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
+import {
+  IProject,
+  IProjectDocument,
+  IProjectFileRef,
+  IProjectMember,
+  ProjectAccess,
+  ProjectContext,
+  ProjectRole,
+  PROJECT_FILE_LIMITS,
+} from '../types/project.interfaces';
+
+/** The subset of project fields `computeRole` needs — satisfied by both a hydrated document and a `.lean()` result. */
+type ProjectAccessFields = Pick<
+  IProject,
+  'orgId' | 'userId' | 'members' | 'visibility'
+>;
+
+/** A `.lean()`-read project row enriched with the list endpoint's computed fields. */
+export type ProjectListItem = IProject & {
+  _id: Types.ObjectId;
+  role: ProjectRole;
+  conversationCount: number;
+};
+
+const logger = Logger.getInstance({ service: 'ProjectService' });
+const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
+
+export interface CreateProjectInput {
+  name: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  instructions?: string;
+  knowledgeScope?: { apps?: string[]; kb?: string[] };
+  appliedFilters?: IProjectDocument['appliedFilters'];
+}
+
+export type UpdateProjectInput = Partial<CreateProjectInput> & {
+  visibility?: IProjectDocument['visibility'];
+  chatSharing?: IProjectDocument['chatSharing'];
+};
+
+export interface ListProjectsOptions {
+  page: number;
+  limit: number;
+  search?: string;
+  scope: 'mine' | 'shared' | 'all';
+  includeArchived: boolean;
+}
+
+const ROLE_RANK: Record<ProjectRole, number> = {
+  none: 0,
+  viewer: 1,
+  editor: 2,
+  owner: 3,
+};
+
+function hasAtLeastRole(role: ProjectRole, required: ProjectRole): boolean {
+  return ROLE_RANK[role] >= ROLE_RANK[required];
+}
+
+/**
+ * Owns all project CRUD, access control, membership, and the derived
+ * "context" (instructions/knowledgeScope/files) that `applyProjectContext`
+ * (enterprise_search/utils/project-context.ts) merges into an AI payload.
+ *
+ * Access control never distinguishes "exists but you can't see it" from
+ * "doesn't exist" across an org boundary — both raise NotFoundError — so a
+ * cross-org projectId guess or leaked id cannot be used to enumerate names.
+ */
+export class ProjectService {
+  /** Computes the caller's role without throwing — used by list/read paths that need to filter, not reject. */
+  static computeRole(
+    project: ProjectAccessFields,
+    userId: string,
+    orgId: string,
+  ): ProjectRole {
+    if (project.orgId.toString() !== orgId) {
+      return 'none';
+    }
+    if (project.userId.toString() === userId) {
+      return 'owner';
+    }
+    const member = project.members.find(
+      (m: IProjectMember) =>
+        m.principalType === 'user' && m.principalId.toString() === userId,
+    );
+    if (member) {
+      return member.role;
+    }
+    if (project.visibility === 'org') {
+      return 'viewer';
+    }
+    return 'none';
+  }
+
+  /** Loads a project and asserts the caller has at least `required` role. Throws NotFoundError otherwise (never Forbidden — see class doc). */
+  static async assertAccess(
+    orgId: string,
+    userId: string,
+    projectId: string,
+    required: ProjectRole = 'viewer',
+  ): Promise<ProjectAccess> {
+    if (!mongoose.Types.ObjectId.isValid(projectId)) {
+      throw new BadRequestError('Invalid project ID format');
+    }
+    const project = await Project.findOne({
+      _id: projectId,
+      isDeleted: false,
+    });
+    if (!project) {
+      throw new NotFoundError('Project not found');
+    }
+    const role = this.computeRole(project, userId, orgId);
+    if (role === 'none' || !hasAtLeastRole(role, required)) {
+      throw new NotFoundError('Project not found');
+    }
+    return { role, project };
+  }
+
+  static async create(
+    orgId: string,
+    userId: string,
+    input: CreateProjectInput,
+  ): Promise<IProjectDocument> {
+    if (!input.name.trim()) {
+      throw new BadRequestError('Project name is required');
+    }
+    const project = new Project({
+      orgId: new Types.ObjectId(orgId),
+      userId: new Types.ObjectId(userId),
+      name: input.name.trim(),
+      description: input.description,
+      icon: input.icon,
+      color: input.color,
+      instructions: input.instructions,
+      knowledgeScope: input.knowledgeScope,
+      appliedFilters: input.appliedFilters,
+      files: [],
+      members: [],
+      lastActivityAt: Date.now(),
+    });
+    return project.save();
+  }
+
+  static async list(
+    orgId: string,
+    userId: string,
+    opts: ListProjectsOptions,
+  ): Promise<{ projects: ProjectListItem[]; totalCount: number }> {
+    const orgObjId = new Types.ObjectId(orgId);
+    const userObjId = new Types.ObjectId(userId);
+
+    const scopeOr: FilterQuery<IProjectDocument>[] = [];
+    if (opts.scope === 'mine' || opts.scope === 'all') {
+      scopeOr.push({ userId: userObjId });
+    }
+    if (opts.scope === 'shared' || opts.scope === 'all') {
+      scopeOr.push({
+        'members.principalType': 'user',
+        'members.principalId': userObjId,
+      });
+    }
+    if (opts.scope === 'all') {
+      scopeOr.push({ visibility: 'org' });
+    }
+
+    const filter: FilterQuery<IProjectDocument> = {
+      orgId: orgObjId,
+      isDeleted: false,
+      $or: scopeOr,
+    };
+    if (!opts.includeArchived) {
+      filter.isArchived = false;
+    }
+    if (opts.search) {
+      filter.name = { $regex: opts.search, $options: 'i' };
+    }
+
+    const skip = (opts.page - 1) * opts.limit;
+    const [projects, totalCount] = await Promise.all([
+      Project.find(filter)
+        .sort({ isPinned: -1, lastActivityAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(opts.limit)
+        .lean()
+        .exec(),
+      Project.countDocuments(filter),
+    ]);
+
+    const projectIds = projects.map((p) => p._id as Types.ObjectId);
+    const counts = projectIds.length
+      ? await ChatSession.aggregate<{ _id: Types.ObjectId; count: number }>([
+          {
+            $match: {
+              projectId: { $in: projectIds },
+              isDeleted: false,
+            },
+          },
+          { $group: { _id: '$projectId', count: { $sum: 1 } } },
+        ])
+      : [];
+    const countByProject = new Map<string, number>(
+      counts.map((c) => [c._id.toString(), c.count]),
+    );
+
+    const enriched: ProjectListItem[] = projects.map((p) => ({
+      ...(p as unknown as IProject),
+      _id: p._id as Types.ObjectId,
+      role: this.computeRole(p, userId, orgId),
+      conversationCount:
+        countByProject.get((p._id as Types.ObjectId).toString()) || 0,
+    }));
+
+    return { projects: enriched, totalCount };
+  }
+
+  static async update(
+    orgId: string,
+    userId: string,
+    projectId: string,
+    patch: UpdateProjectInput,
+  ): Promise<IProjectDocument> {
+    const { role, project } = await this.assertAccess(
+      orgId,
+      userId,
+      projectId,
+      'editor',
+    );
+
+    if (
+      (patch.visibility !== undefined || patch.chatSharing !== undefined) &&
+      role !== 'owner'
+    ) {
+      throw new ForbiddenError(
+        'Only the project owner can change sharing settings',
+      );
+    }
+
+    if (patch.name !== undefined) {
+      if (!patch.name.trim()) {
+        throw new BadRequestError('Project name cannot be empty');
+      }
+      project.name = patch.name.trim();
+    }
+    if (patch.description !== undefined)
+      project.description = patch.description;
+    if (patch.icon !== undefined) project.icon = patch.icon;
+    if (patch.color !== undefined) project.color = patch.color;
+    if (patch.instructions !== undefined)
+      project.instructions = patch.instructions;
+    if (patch.knowledgeScope !== undefined)
+      project.knowledgeScope = patch.knowledgeScope;
+    if (patch.appliedFilters !== undefined)
+      project.appliedFilters = patch.appliedFilters;
+    if (patch.visibility !== undefined) project.visibility = patch.visibility;
+    if (patch.chatSharing !== undefined)
+      project.chatSharing = patch.chatSharing;
+
+    return project.save();
+  }
+
+  static async setPinned(
+    orgId: string,
+    userId: string,
+    projectId: string,
+    isPinned: boolean,
+  ): Promise<IProjectDocument> {
+    const { project } = await this.assertAccess(
+      orgId,
+      userId,
+      projectId,
+      'viewer',
+    );
+    project.isPinned = isPinned;
+    return project.save();
+  }
+
+  static async setArchived(
+    orgId: string,
+    userId: string,
+    projectId: string,
+    isArchived: boolean,
+  ): Promise<IProjectDocument> {
+    const { project } = await this.assertAccess(
+      orgId,
+      userId,
+      projectId,
+      'editor',
+    );
+    project.isArchived = isArchived;
+    project.archivedBy = isArchived ? new Types.ObjectId(userId) : undefined;
+    return project.save();
+  }
+
+  /**
+   * Idempotent soft delete. Unlinks sessions from the project *before*
+   * marking it deleted so a crash between the two steps leaves an
+   * already-unlinked project that is safe to retry (sessions never point at
+   * a deleted project). Owner-only.
+   */
+  static async softDelete(
+    orgId: string,
+    userId: string,
+    projectId: string,
+  ): Promise<void> {
+    const { role, project } = await this.assertAccess(
+      orgId,
+      userId,
+      projectId,
+      'viewer',
+    );
+    if (role !== 'owner') {
+      throw new ForbiddenError(
+        'Only the project owner can delete this project',
+      );
+    }
+    if (project.isDeleted) {
+      return;
+    }
+
+    async function unlinkAndDelete(
+      session?: ClientSession | null,
+    ): Promise<void> {
+      await ChatSession.updateMany(
+        { projectId: project._id },
+        { $unset: { projectId: '', projectVisibility: '' } },
+        session ? { session } : undefined,
+      );
+      project.isDeleted = true;
+      project.deletedBy = new Types.ObjectId(userId);
+      await project.save(session ? { session } : undefined);
+    }
+
+    if (rsAvailable) {
+      const session = await mongoose.startSession();
+      try {
+        session.startTransaction();
+        await unlinkAndDelete(session);
+        await session.commitTransaction();
+      } catch (error) {
+        await session.abortTransaction();
+        throw error;
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      await unlinkAndDelete();
+    }
+  }
+
+  /** Assembled once per AI call site by `applyProjectContext`. Returns undefined fields rather than throwing on an empty project. */
+  static buildContext(project: IProjectDocument): ProjectContext {
+    return {
+      projectId: (project._id as Types.ObjectId).toString(),
+      instructions: project.instructions?.trim() || undefined,
+      knowledgeScope: project.knowledgeScope,
+      attachments: project.files.map((f: IProjectFileRef) => ({
+        recordId: f.recordId,
+        recordName: f.recordName,
+        mimeType: f.mimeType,
+        extension: f.extension,
+        virtualRecordId: f.virtualRecordId,
+        source: f.source,
+      })),
+    };
+  }
+
+  static async addFile(
+    orgId: string,
+    userId: string,
+    projectId: string,
+    file: Omit<IProjectFileRef, 'uploadedBy' | 'uploadedAt'>,
+  ): Promise<IProjectDocument> {
+    const { project } = await this.assertAccess(
+      orgId,
+      userId,
+      projectId,
+      'editor',
+    );
+
+    if (project.files.some((f) => f.recordId === file.recordId)) {
+      return project;
+    }
+    if (project.files.length >= PROJECT_FILE_LIMITS.MAX_FILES) {
+      throw new BadRequestError(
+        `A project can have at most ${PROJECT_FILE_LIMITS.MAX_FILES} files`,
+      );
+    }
+    const totalBytes =
+      project.files.reduce((sum, f) => sum + (f.sizeBytes || 0), 0) +
+      (file.sizeBytes || 0);
+    if (totalBytes > PROJECT_FILE_LIMITS.MAX_TOTAL_SIZE_BYTES) {
+      throw new BadRequestError('Project file storage limit exceeded');
+    }
+
+    const newFile: IProjectFileRef = {
+      ...file,
+      uploadedBy: new Types.ObjectId(userId),
+      uploadedAt: new Date(),
+    };
+    project.files.push(newFile);
+    return project.save();
+  }
+
+  static async removeFile(
+    orgId: string,
+    userId: string,
+    projectId: string,
+    recordId: string,
+  ): Promise<IProjectDocument> {
+    const { project } = await this.assertAccess(
+      orgId,
+      userId,
+      projectId,
+      'editor',
+    );
+    project.files = project.files.filter((f) => f.recordId !== recordId);
+    return project.save();
+  }
+
+  static async listMembers(
+    orgId: string,
+    userId: string,
+    projectId: string,
+  ): Promise<IProjectMember[]> {
+    const { project } = await this.assertAccess(
+      orgId,
+      userId,
+      projectId,
+      'viewer',
+    );
+    return project.members;
+  }
+
+  static async upsertMembers(
+    orgId: string,
+    userId: string,
+    projectId: string,
+    members: Array<{ principalId: string; role: 'viewer' | 'editor' }>,
+  ): Promise<IProjectDocument> {
+    const { role, project } = await this.assertAccess(
+      orgId,
+      userId,
+      projectId,
+      'viewer',
+    );
+    if (role !== 'owner') {
+      throw new ForbiddenError('Only the project owner can manage members');
+    }
+
+    const existingByPrincipal = new Map(
+      project.members.map((m) => [m.principalId.toString(), m]),
+    );
+    for (const incoming of members) {
+      if (incoming.principalId === project.userId.toString()) {
+        continue; // owner is implicit, never a member row
+      }
+      const existing = existingByPrincipal.get(incoming.principalId);
+      if (existing) {
+        existing.role = incoming.role;
+      } else {
+        project.members.push({
+          principalType: 'user',
+          principalId: new Types.ObjectId(incoming.principalId),
+          role: incoming.role,
+          addedBy: new Types.ObjectId(userId),
+          addedAt: new Date(),
+        });
+      }
+    }
+    return project.save();
+  }
+
+  static async removeMember(
+    orgId: string,
+    userId: string,
+    projectId: string,
+    memberUserId: string,
+  ): Promise<IProjectDocument> {
+    const { role, project } = await this.assertAccess(
+      orgId,
+      userId,
+      projectId,
+      'viewer',
+    );
+    if (role !== 'owner') {
+      throw new ForbiddenError('Only the project owner can manage members');
+    }
+    project.members = project.members.filter(
+      (m) => m.principalId.toString() !== memberUserId,
+    );
+    return project.save();
+  }
+
+  /** Org-wide cleanup hook for the user-offboarding path — removes a departed user from every project's member list. Throws on failure so the caller's deletion flow aborts and can be retried. */
+  static async removeUserFromAllProjects(
+    orgId: string,
+    userId: string,
+  ): Promise<void> {
+    await Project.updateMany(
+      { orgId: new Types.ObjectId(orgId) },
+      {
+        $pull: {
+          members: {
+            principalType: 'user',
+            principalId: new Types.ObjectId(userId),
+          },
+        },
+      },
+    );
+  }
+
+  /**
+   * All project ids the caller has at least viewer access to (owner, member,
+   * or org-visible) — used by `buildFilter` / `buildAgentConversationFilter`
+   * (enterprise_search/utils/utils.ts) to extend conversation access with
+   * the "projectId ∈ accessibleProjectIds && projectVisibility === 'project'"
+   * branch, so a chat shared to a project's members shows up for all of them
+   * without granting write access to anyone else's chat.
+   */
+  static async getAccessibleProjectIds(
+    orgId: string,
+    userId: string,
+  ): Promise<Types.ObjectId[]> {
+    const orgObjId = new Types.ObjectId(orgId);
+    const userObjId = new Types.ObjectId(userId);
+    const projects = await Project.find(
+      {
+        orgId: orgObjId,
+        isDeleted: false,
+        $or: [
+          { userId: userObjId },
+          { 'members.principalType': 'user', 'members.principalId': userObjId },
+          { visibility: 'org' },
+        ],
+      },
+      { _id: 1 },
+    ).lean();
+    return projects.map((p) => p._id as Types.ObjectId);
+  }
+
+  static async touchActivity(projectId: string): Promise<void> {
+    // All current callers already pass a projectId that survived
+    // `assertAccess` (or a Mongoose ObjectId field's `.toString()`), but this
+    // is a fire-and-forget best-effort bump with no caller-side validation
+    // contract of its own — re-validate defensively rather than build a
+    // Mongo filter straight from a caller-supplied string (CWE-943 / NoSQL
+    // operator injection). The cast to `Types.ObjectId`, not just the
+    // `isValid` check, is what removes the raw string from the query.
+    if (!Types.ObjectId.isValid(projectId)) {
+      logger.warn('Skipping project activity touch due to invalid projectId', {
+        projectId,
+      });
+      return;
+    }
+    const projectObjectId = new Types.ObjectId(projectId);
+    try {
+      await Project.updateOne(
+        { _id: projectObjectId },
+        { $set: { lastActivityAt: Date.now() } },
+      );
+    } catch (error) {
+      logger.error('Failed to bump project lastActivityAt', {
+        projectId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+export default ProjectService;

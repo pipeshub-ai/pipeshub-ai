@@ -17,6 +17,7 @@ import {
 } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
 import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-token-service.provider';
 import * as XLSX from 'xlsx';
+import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 
 /** Query chain stub for OAuthApp.find(...).select().lean().exec() used in softDeleteOAuthAppsForUser */
 function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
@@ -132,6 +133,13 @@ describe('UserController', () => {
     };
 
     next = sinon.stub();
+
+    // deleteUser calls this as a best-effort offboarding hook; default to a
+    // no-op so tests that don't care about project cleanup don't buffer
+    // against a real Mongo connection for 10s.
+    if (!(ProjectService.removeUserFromAllProjects as any).restore) {
+      sinon.stub(ProjectService, 'removeUserFromAllProjects').resolves();
+    }
   });
 
   afterEach(() => {

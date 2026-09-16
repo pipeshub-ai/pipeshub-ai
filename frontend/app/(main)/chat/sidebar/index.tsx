@@ -7,15 +7,18 @@ import { SidebarBase } from '@/app/components/sidebar';
 import { useChatStore } from '@/chat/store';
 import { debugLog } from '@/chat/debug-logger';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
+import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { ChatSidebarHeader } from './header';
 import { ChatSidebarFooter } from './footer';
 import { StaticNavSection } from './static-nav-section';
 import { MyAgentsSection } from './my-agents-section';
+import { ProjectsSection } from './projects-section';
 import { ChatSections } from './chat-sections';
 import { MoreChatsSidebar } from './more-chats-sidebar';
 import { AgentsSidebar } from './agents-sidebar';
 import { AgentScopedChatSidebar } from './agent-scoped-chat-sidebar';
+import { ProjectScopedChatSidebar } from './project-scoped-chat-sidebar';
 
 /**
  * Chat sidebar — uses SidebarBase shell with header, footer, and custom content.
@@ -34,6 +37,7 @@ function ChatSidebarInner() {
   const toggleMoreChatsPanel = useChatStore((s) => s.toggleMoreChatsPanel);
   const closeMoreChatsPanel = useChatStore((s) => s.closeMoreChatsPanel);
   const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
+  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
 
   const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
@@ -67,6 +71,7 @@ function ChatSidebarInner() {
       <Flex direction="column" gap="3">
         <StaticNavSection />
         <MyAgentsSection />
+        {projectsEnabled && <ProjectsSection />}
         <ChatSections onOpenMoreChats={toggleMoreChatsPanel} />
       </Flex>
     </SidebarBase>
@@ -77,7 +82,12 @@ function ChatSidebarInner() {
  * Chooses the main chat sidebar vs agent-scoped conversation list from URL.
  */
 function ChatSidebarRoot() {
-  const agentId = useSearchParams().get('agentId');
+  const searchParams = useSearchParams();
+  const agentId = searchParams.get('agentId');
+  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  // A thread can't be scoped to both an agent and a project — agentId wins.
+  const rawProjectId = searchParams.get('projectId');
+  const projectId = !agentId && projectsEnabled && rawProjectId?.trim() ? rawProjectId : null;
   const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
   const prevAgentIdRef = useRef<string | null>(null);
 
@@ -94,6 +104,9 @@ function ChatSidebarRoot() {
 
   if (agentId) {
     return <AgentScopedChatSidebar agentId={agentId} />;
+  }
+  if (projectId) {
+    return <ProjectScopedChatSidebar projectId={projectId} />;
   }
   return <ChatSidebarInner />;
 }

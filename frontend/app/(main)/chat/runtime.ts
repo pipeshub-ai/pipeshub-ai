@@ -278,6 +278,11 @@ export function buildStreamChatRequestForSlot(
     filters: resolvedFilters,
     ...(appliedFilters ? { appliedFilters } : {}),
     conversationId: currentSlot.convId || undefined,
+    // Only meaningful for a brand-new conversation — once `convId` exists the
+    // session row is the source of truth and this is ignored server-side.
+    ...(!currentSlot.convId && currentSlot.projectId
+      ? { projectId: currentSlot.projectId }
+      : {}),
     ...(effectiveAgentId
       ? {
           agentId: effectiveAgentId,

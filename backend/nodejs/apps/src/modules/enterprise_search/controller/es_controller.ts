@@ -118,6 +118,12 @@ import {
 import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
 import { Org } from '../../user_management/schema/org.schema';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
+import {
+  applyProjectContext,
+  loadProjectForSession,
+  resolveProjectLink,
+} from '../utils/project-context';
+import { ProjectService } from '../../projects/services/project.service';
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 
@@ -628,7 +634,8 @@ export const compressImageIfNeeded = async (
   }
 };
 
-const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
+/** Shared with `projects/controller/project.controller.ts` — project file uploads reuse this same chat-attachment pipeline. */
+export const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
   'image/jpeg',
   'image/jpg',
   'image/png',
@@ -832,6 +839,12 @@ export const streamChat =
         req.body.attachments,
       );
 
+      const projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
       const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
@@ -842,6 +855,12 @@ export const streamChat =
         // Store model and mode information
         modelInfo: modelInfo,
         sessionType: 'chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
       // Start transaction if replica set is available
@@ -891,12 +910,14 @@ export const streamChat =
               value: {
                 conversationId: newConversationId,
                 title: savedConversation.title || undefined,
+                ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
               },
             })
           : `event: connected\ndata: ${JSON.stringify({
               message: 'SSE connection established',
               conversationId: newConversationId,
               title: savedConversation.title || undefined,
+              ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
             })}\n\n`,
       );
       (res as any).flush?.();
@@ -929,6 +950,10 @@ export const streamChat =
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
         assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
+      }
+      applyProjectContext(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
       }
 
       const aiCommandOptions: AICommandOptions = {
@@ -1552,6 +1577,12 @@ export const createConversation =
       throw new BadRequestError('Query is required');
     }
 
+    const projectLink = await resolveProjectLink(
+      orgId as unknown as string,
+      userId as unknown as string,
+      req.body as Record<string, unknown>,
+    );
+
     // Helper function that contains the common conversation operations.
     async function createConversationUtil(
       session?: ClientSession | null,
@@ -1572,6 +1603,12 @@ export const createConversation =
         status: CONVERSATION_STATUS.INPROGRESS,
         modelInfo: modelInfo,
         sessionType: 'chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
       const conversation = new ChatSession(userConversationData);
@@ -1588,23 +1625,29 @@ export const createConversation =
         session,
       );
 
+      const aiPayload: Record<string, unknown> = {
+        query: req.body.query,
+        previousConversations: req.body.previousConversations || [],
+        recordIds: req.body.recordIds || [],
+        filters: req.body.filters || {},
+        attachments: req.body.attachments || [],
+        // New fields for multi-model support
+        modelKey: req.body.modelKey || null,
+        modelName: req.body.modelName || null,
+        modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
+        chatMode: req.body.chatMode || 'quick',
+      };
+      applyProjectContext(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
+      }
+
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/chat`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
-        body: {
-          query: req.body.query,
-          previousConversations: req.body.previousConversations || [],
-          recordIds: req.body.recordIds || [],
-          filters: req.body.filters || {},
-          attachments: req.body.attachments || [],
-          // New fields for multi-model support
-          modelKey: req.body.modelKey || null,
-          modelName: req.body.modelName || null,
-          modelFriendlyName: req.body.modelFriendlyName || null,
-          reasoningEffort: req.body.reasoningEffort || null,
-          chatMode: req.body.chatMode || 'quick',
-        },
+        body: aiPayload,
       };
 
       logger.debug('Sending query to AI service', {
@@ -1933,21 +1976,34 @@ export const addMessage =
           },
         });
 
+        const aiPayload: Record<string, unknown> = {
+          query: req.body.query,
+          previousConversations: previousConversations,
+          filters: req.body.filters || {},
+          attachments: req.body.attachments || [],
+          // New fields for multi-model support
+          modelKey: req.body.modelKey || null,
+          modelName: req.body.modelName || null,
+          reasoningEffort: req.body.reasoningEffort || null,
+          chatMode: req.body.chatMode || 'quick',
+        };
+        // Project context always comes from the session row, never the
+        // request body — a follow-up turn cannot move itself into a project.
+        const followUpProject = await loadProjectForSession(
+          conversation.orgId.toString(),
+          (conversation.userId as unknown as Types.ObjectId).toString(),
+          conversation.projectId,
+        );
+        applyProjectContext(aiPayload, followUpProject);
+        if (conversation.projectId) {
+          void ProjectService.touchActivity(conversation.projectId.toString());
+        }
+
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/chat`,
           method: HttpMethod.POST,
           headers: req.headers as Record<string, string>,
-          body: {
-            query: req.body.query,
-            previousConversations: previousConversations,
-            filters: req.body.filters || {},
-            attachments: req.body.attachments || [],
-            // New fields for multi-model support
-            modelKey: req.body.modelKey || null,
-            modelName: req.body.modelName || null,
-            reasoningEffort: req.body.reasoningEffort || null,
-            chatMode: req.body.chatMode || 'quick',
-          },
+          body: aiPayload,
         };
         try {
           const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -2317,6 +2373,15 @@ export const addMessageStream =
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
         assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
+      }
+      const followUpProject = await loadProjectForSession(
+        confirmedConversation.orgId.toString(),
+        (confirmedConversation.userId as unknown as Types.ObjectId).toString(),
+        confirmedConversation.projectId,
+      );
+      applyProjectContext(aiPayload, followUpProject);
+      if (confirmedConversation.projectId) {
+        void ProjectService.touchActivity(confirmedConversation.projectId.toString());
       }
 
       const aiCommandOptions: AICommandOptions = {
@@ -2989,6 +3054,9 @@ export const getAllConversations = async (
         escapedSearch,
       );
     }
+    const accessibleProjectIds = !isOwned
+      ? await ProjectService.getAccessibleProjectIds(orgId, userId)
+      : undefined;
     const filter = {
       ...buildFilter(
         req,
@@ -2998,6 +3066,7 @@ export const getAllConversations = async (
         isOwned,
         !isOwned,
         contentMatchIds,
+        accessibleProjectIds,
       ),
       ...EXCLUDE_AGENT,
     };
@@ -3082,6 +3151,10 @@ export const getConversationById = async (
         escapedSearch,
       );
     }
+    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
+      orgId,
+      userId,
+    );
     const baseFilter = buildFilter(
       req,
       orgId,
@@ -3090,6 +3163,7 @@ export const getConversationById = async (
       true,
       true,
       contentMatchIds,
+      accessibleProjectIds,
     );
 
     // Build message filter
@@ -3752,6 +3826,149 @@ export const unshareConversationById =
 };
 
 /**
+ * PUT /api/v1/conversations/:conversationId/project
+ * PUT /api/v1/agents/:agentKey/conversations/:conversationId/project
+ * @desc Link or unlink a chat/agent session to a project. Initiator-only
+ * (mirrors `shareConversationById`'s ownership check) — a chat shared to
+ * this user does not let them move someone else's conversation between
+ * projects. `projectId: null` unlinks. `ProjectService.assertAccess`
+ * enforces the caller has at least viewer access to the target project
+ * (cross-org / no-access -> 404, never a leak of the project's existence).
+ */
+export const setConversationProject = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    const { conversationId, agentKey } = req.params;
+    const { projectId } = req.body as { projectId: string | null };
+
+    const sessionTypeFilter = agentKey
+      ? { ...ONLY_AGENT, agentKey }
+      : EXCLUDE_AGENT;
+
+    const conversation = await ChatSession.findOne({
+      _id: conversationId,
+      orgId,
+      userId,
+      initiator: userId,
+      isDeleted: false,
+      ...sessionTypeFilter,
+    });
+    if (!conversation) {
+      throw new NotFoundError('Conversation not found or unauthorized');
+    }
+
+    let update: Record<string, unknown>;
+    if (projectId === null) {
+      update = { $unset: { projectId: '', projectVisibility: '' } };
+    } else {
+      const { project } = await ProjectService.assertAccess(
+        orgId,
+        userId,
+        projectId,
+        'viewer',
+      );
+      const projectVisibility =
+        conversation.projectVisibility === 'project'
+          ? 'project'
+          : project.chatSharing === 'members'
+            ? 'project'
+            : 'private';
+      update = {
+        $set: {
+          projectId: new mongoose.Types.ObjectId(projectId),
+          projectVisibility,
+        },
+      };
+      void ProjectService.touchActivity(projectId);
+    }
+
+    const updated = await ChatSession.findOneAndUpdate(
+      { _id: conversationId, ...sessionTypeFilter },
+      update,
+      { new: true },
+    );
+    if (!updated) {
+      throw new InternalServerError('Failed to update conversation project link');
+    }
+
+    res.status(200).json({
+      conversationId: updated._id,
+      projectId: updated.projectId,
+      projectVisibility: updated.projectVisibility,
+    });
+  } catch (error: any) {
+    logger.error('Error linking conversation to project', {
+      requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  }
+};
+
+/**
+ * PATCH /api/v1/conversations/:conversationId/project-visibility
+ * PATCH /api/v1/agents/:agentKey/conversations/:conversationId/project-visibility
+ * @desc Override, per conversation, whether this chat is visible to other
+ * members of its project ('project') or stays visible only to its owner
+ * ('private', the default — see plan's "Chats in shared projects are
+ * private by default"). Requires the session already be linked to a project.
+ */
+export const setConversationProjectVisibility = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    const { conversationId, agentKey } = req.params;
+    const { visibility } = req.body as { visibility: 'private' | 'project' };
+
+    const sessionTypeFilter = agentKey
+      ? { ...ONLY_AGENT, agentKey }
+      : EXCLUDE_AGENT;
+
+    const conversation = await ChatSession.findOne({
+      _id: conversationId,
+      orgId,
+      userId,
+      initiator: userId,
+      isDeleted: false,
+      ...sessionTypeFilter,
+    });
+    if (!conversation) {
+      throw new NotFoundError('Conversation not found or unauthorized');
+    }
+    if (!conversation.projectId) {
+      throw new BadRequestError('Conversation is not linked to a project');
+    }
+
+    const updated = await ChatSession.findOneAndUpdate(
+      { _id: conversationId, ...sessionTypeFilter },
+      { $set: { projectVisibility: visibility } },
+      { new: true },
+    );
+    if (!updated) {
+      throw new InternalServerError('Failed to update conversation visibility');
+    }
+
+    res.status(200).json({
+      conversationId: updated._id,
+      projectVisibility: updated.projectVisibility,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * Configuration for regeneration function
  */
 interface RegenerationConfig {
@@ -3925,6 +4142,15 @@ async function regenerateAnswersInternal(
     if (agentKey || regenIsAgentMode) {
       assignToolsToPayload(aiPayload, req.body.tools);
       assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
+    }
+    const regenProject = await loadProjectForSession(
+      existingConversation.orgId.toString(),
+      (existingConversation.userId as unknown as Types.ObjectId).toString(),
+      existingConversation.projectId,
+    );
+    applyProjectContext(aiPayload, regenProject);
+    if (existingConversation.projectId) {
+      void ProjectService.touchActivity(existingConversation.projectId.toString());
     }
 
     const regenEndpoint = regenIsAgentMode
@@ -6240,6 +6466,12 @@ export const deleteAgent =
         req.body.attachments,
       );
 
+      const projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
       const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
@@ -6253,6 +6485,12 @@ export const deleteAgent =
         // Set explicitly: the legacy agentConversations schema defaulted this,
         // the unified chatSessions schema can't (it also backs plain chats).
         conversationSource: 'agent_chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
       // Start transaction if replica set is available
@@ -6308,12 +6546,14 @@ export const deleteAgent =
               value: {
                 conversationId: newAgentConversationId,
                 title: savedConversation.title || undefined,
+                ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
               },
             })
           : `event: connected\ndata: ${JSON.stringify({
               message: 'SSE connection established',
               conversationId: newAgentConversationId,
               title: savedConversation.title || undefined,
+              ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
             })}\n\n`,
       );
       (res as any).flush?.();
@@ -6339,6 +6579,10 @@ export const deleteAgent =
         // so a header alone would never reach Python (see agui.ts docstring).
         ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
       };
+      applyProjectContext(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
+      }
 
       assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
@@ -6881,6 +7125,12 @@ export const createAgentConversation =
       throw new BadRequestError('Query is required');
     }
 
+    const projectLink = await resolveProjectLink(
+      orgId as unknown as string,
+      userId as unknown as string,
+      req.body as Record<string, unknown>,
+    );
+
     // Helper function that contains the common conversation operations.
     async function createConversationUtil(
       session?: ClientSession | null,
@@ -6905,6 +7155,12 @@ export const createAgentConversation =
         // Set explicitly: the legacy agentConversations schema defaulted this,
         // the unified chatSessions schema can't (it also backs plain chats).
         conversationSource: 'agent_chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
       const conversation = new ChatSession(userConversationData);
@@ -6936,6 +7192,10 @@ export const createAgentConversation =
         attachments: req.body.attachments || [],
       };
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+      applyProjectContext(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
@@ -7252,6 +7512,15 @@ export const createAgentConversation =
         };
         assignToolsToPayload(aiPayload, req.body.tools);
         assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+        const followUpProject = await loadProjectForSession(
+          conversation.orgId.toString(),
+          (conversation.userId as unknown as Types.ObjectId).toString(),
+          conversation.projectId,
+        );
+        applyProjectContext(aiPayload, followUpProject);
+        if (conversation.projectId) {
+          void ProjectService.touchActivity(conversation.projectId.toString());
+        }
 
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
@@ -7647,6 +7916,15 @@ export const addMessageStreamToAgentConversation =
       assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
       assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
+      const followUpProject = await loadProjectForSession(
+        confirmedConversation.orgId.toString(),
+        (confirmedConversation.userId as unknown as Types.ObjectId).toString(),
+        confirmedConversation.projectId,
+      );
+      applyProjectContext(aiPayload, followUpProject);
+      if (confirmedConversation.projectId) {
+        void ProjectService.touchActivity(confirmedConversation.projectId.toString());
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
@@ -8399,6 +8677,10 @@ export const getAllAgentConversations = async (
         escapedSearch,
       );
     }
+    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
+      orgId,
+      userId,
+    );
     const filter = {
       ...buildAgentConversationFilter(
         req,
@@ -8407,6 +8689,7 @@ export const getAllAgentConversations = async (
         agentKey as string,
         conversationId as string,
         contentMatchIds,
+        accessibleProjectIds,
       ),
       // Sidebar / chat list: omit archived threads (archived view uses a dedicated route).
       isArchived: { $ne: true },
@@ -8527,6 +8810,10 @@ export const getAgentConversationById = async (
         escapedSearch,
       );
     }
+    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
+      orgId,
+      userId,
+    );
     const baseFilter = buildAgentConversationFilter(
       req,
       orgId,
@@ -8534,6 +8821,7 @@ export const getAgentConversationById = async (
       agentKey as string,
       conversationId as string,
       contentMatchIds,
+      accessibleProjectIds,
     );
 
     // Build message filter

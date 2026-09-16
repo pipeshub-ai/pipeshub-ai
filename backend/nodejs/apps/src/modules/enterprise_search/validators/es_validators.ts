@@ -157,6 +157,14 @@ const userIdsSchema = z
   .array(objectId('user ID'))
   .min(1, { message: 'At least one user ID is required' });
 
+/** `?projectId=<id>|unassigned` — narrows a conversation list to one project or to unlinked sessions. */
+const projectIdQuerySchema = z
+  .string()
+  .refine((value) => value === 'unassigned' || OBJECT_ID_REGEX.test(value), {
+    message: "projectId must be a valid project ID or 'unassigned'",
+  })
+  .optional();
+
 // ---------------------------------------------------------------------------
 // Reusable param shapes
 // ---------------------------------------------------------------------------
@@ -205,6 +213,10 @@ const enterpriseSearchCreateBodySchema = z.object({
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
     chatMode: z.nativeEnum(PIPESHUB_CHAT_MODE).optional(),
+    // Only honored when creating a *new* conversation — see resolveProjectLink
+    // (enterprise_search/utils/project-context.ts). Ignored on follow-up turns.
+    projectId: objectId('project ID').optional(),
+    projectVisibility: z.enum(['private', 'project']).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
@@ -249,6 +261,37 @@ export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
 /** Schema for POST /:conversationId/cancel — cooperatively stop an in-flight assistant run. */
 export const cancelConversationStreamParamsSchema = conversationIdParamsSchema.extend({
   body: cancelRunBodySchema,
+});
+
+/** `projectId: null` unlinks — see `setConversationProject`, es_controller.ts. */
+export const conversationProjectLinkSchema = conversationIdParamsSchema.extend({
+  body: z.object({
+    projectId: z
+      .union([objectId('project ID'), z.null()])
+      .refine((v) => v !== undefined, { message: 'projectId is required' }),
+  }),
+});
+
+export const conversationProjectVisibilitySchema = conversationIdParamsSchema.extend({
+  body: z.object({
+    visibility: z.enum(['private', 'project']),
+  }),
+});
+
+export const agentConversationProjectLinkSchema = z.object({
+  params: z.object({ ...agentKeyParam, ...conversationIdParam }),
+  body: z.object({
+    projectId: z
+      .union([objectId('project ID'), z.null()])
+      .refine((v) => v !== undefined, { message: 'projectId is required' }),
+  }),
+});
+
+export const agentConversationProjectVisibilitySchema = z.object({
+  params: z.object({ ...agentKeyParam, ...conversationIdParam }),
+  body: z.object({
+    visibility: z.enum(['private', 'project']),
+  }),
 });
 
 // ---------------------------------------------------------------------------
@@ -843,6 +886,7 @@ export const getAllConversationsQuerySchema = z.object({
     startDate: z.string().datetime({ offset: true }).optional(),
     endDate: z.string().datetime({ offset: true }).optional(),
     shared: z.enum(['true', 'false', '1', '0']).optional(),
+    projectId: projectIdQuerySchema,
   }),
 });
 
@@ -854,6 +898,7 @@ export const getAllAgentConversationsQuerySchema = z.object({
   query: z.object({
     page: pageSchema.optional().default(1),
     limit: conversationListLimitSchema.optional().default(20),
+    projectId: projectIdQuerySchema,
     sortBy: z
       .string()
       .optional()

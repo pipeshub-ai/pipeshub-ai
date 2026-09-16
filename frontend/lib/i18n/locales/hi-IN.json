@@ -773,7 +773,76 @@
     "failedToDeleteAgent": "एजेंट हटाया नहीं जा सका",
     "failedToRename": "चैट का नाम बदलने में विफल",
     "rename": "नाम बदलें",
-    "renaming": "नाम बदला जा रहा है…"
+    "renaming": "नाम बदला जा रहा है…",
+    "projects": {
+      "title": "Projects",
+      "newProject": "New project",
+      "noProjects": "No projects yet",
+      "failedToLoad": "Failed to load projects",
+      "moreProjects": "More projects",
+      "moveToProject": "Move to project",
+      "removeFromProject": "Remove from project",
+      "pinProject": "Pin",
+      "unpinProject": "Unpin",
+      "archiveProject": "Archive project",
+      "unarchiveProject": "Unarchive project",
+      "deleteProject": "Delete project",
+      "backToProjects": "All projects",
+      "newChatInProject": "New chat",
+      "recentChats": "Recent chats",
+      "noChats": "No chats yet in this project",
+      "startChatInProject": "Start a chat in this project",
+      "createDialog": {
+        "title": "New project",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. Q3 Marketing Plan",
+        "descriptionLabel": "Description",
+        "descriptionPlaceholder": "What's this project about? (optional)",
+        "instructionsLabel": "Instructions",
+        "instructionsPlaceholder": "Instructions the assistant should always follow in this project (optional)",
+        "create": "Create project",
+        "creating": "Creating…",
+        "nameRequired": "Name is required"
+      },
+      "workspace": {
+        "failedToLoad": "Failed to load this project",
+        "instructionsTitle": "Instructions",
+        "instructionsPlaceholder": "Add instructions the assistant should follow for every chat in this project…",
+        "noInstructions": "No instructions added yet",
+        "save": "Save",
+        "saving": "Saving…",
+        "editInstructions": "Edit instructions",
+        "noDescription": "No description",
+        "filesTitle": "Files",
+        "uploadFiles": "Upload files",
+        "uploading": "Uploading…",
+        "noFiles": "No files yet",
+        "removeFile": "Remove file",
+        "membersTitle": "Members",
+        "memberCount_one": "{{count}} member",
+        "memberCount_other": "{{count}} members",
+        "share": "Share",
+        "recentChatsTitle": "Recent chats",
+        "seeAllChats": "See all chats"
+      },
+      "moveDialog": {
+        "title": "Move to project",
+        "noProjects": "You don't have any projects yet",
+        "removeOption": "No project",
+        "moving": "Moving…"
+      },
+      "deleteDialog": {
+        "title": "Delete this project?",
+        "description": "This removes the project and unlinks its chats. The chats themselves are not deleted.",
+        "confirm": "Delete project",
+        "deleting": "Deleting…"
+      },
+      "roles": {
+        "owner": "Owner",
+        "editor": "Editor",
+        "viewer": "Viewer"
+      }
+    }
   },
   "workspaceSettings": {
     "title": "वर्कस्पेस सेटिंग्स"
@@ -2562,7 +2631,7 @@
     },
     "oauthApps": {
       "title": "OAuth ऐप्स",
-      "subtitle": "कनेक्टर्स और एक्शन्स के लिए OAuth क्रेडेंशियल प्रबंधित करें। \u00abडिफ़ॉल्ट\u00bb के रूप में चिह्नित ऐप्स स्वचालित रूप से नए कनेक्शन के लिए उपयोग की जाती हैं, जब तक ओवरराइड न किया जाए।",
+      "subtitle": "कनेक्टर्स और एक्शन्स के लिए OAuth क्रेडेंशियल प्रबंधित करें। «डिफ़ॉल्ट» के रूप में चिह्नित ऐप्स स्वचालित रूप से नए कनेक्शन के लिए उपयोग की जाती हैं, जब तक ओवरराइड न किया जाए।",
       "addButton": "OAuth ऐप जोड़ें",
       "tabs": {
         "connectors": "कनेक्टर्स",
@@ -2571,15 +2640,15 @@
       "typeSelector": {
         "connectorLabel": "कनेक्टर प्रकार",
         "toolsetLabel": "एक्शन प्रकार",
-        "loading": "लोड हो रहा है\u2026"
+        "loading": "लोड हो रहा है…"
       },
       "scope": {
         "team": "टीम",
         "personal": "व्यक्तिगत"
       },
-      "loading": "लोड हो रहा है\u2026",
+      "loading": "लोड हो रहा है…",
       "search": {
-        "placeholder": "ऐप्स खोजें\u2026"
+        "placeholder": "ऐप्स खोजें…"
       },
       "empty": {
         "title": "{{typeLabel}} के लिए कोई OAuth ऐप नहीं",
@@ -2609,19 +2678,19 @@
         "cancelButton": "रद्द करें",
         "createButton": "बनाएं",
         "saveButton": "परिवर्तन सहेजें",
-        "savingLabel": "सहेजा जा रहा है\u2026",
+        "savingLabel": "सहेजा जा रहा है…",
         "schemaError": "इस प्रकार के लिए स्कीमा लोड करने में विफल।",
         "genericError": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।"
       },
       "delete": {
-        "title": "\u00ab{{name}}\u00bb हटाएं?",
+        "title": "«{{name}}» हटाएं?",
         "message": "यह OAuth ऐप स्थायी रूप से हटा दी जाएगी। इसे वर्तमान में उपयोग करने वाले कनेक्टर इंस्टेंस काम करना बंद कर सकते हैं।",
         "confirmLabel": "हटाएं",
         "forceDeleteButton": "जबरन हटाएं",
-        "forceTitle": "\u00ab{{name}}\u00bb को जबरन हटाएं?",
+        "forceTitle": "«{{name}}» को जबरन हटाएं?",
         "forceMessage": "यह OAuth ऐप अभी उपयोग में है। इसे जबरन हटाने से यह ऐप हट जाएगी और इस पर निर्भर मौजूदा कनेक्टर कनेक्शन टूट सकते हैं। यह क्रिया पूर्ववत नहीं की जा सकती।",
         "forceConfirmLabel": "जबरन हटाएं",
-        "successMessage": "OAuth ऐप \u00ab{{name}}\u00bb हटा दी गई।"
+        "successMessage": "OAuth ऐप «{{name}}» हटा दी गई।"
       },
       "errors": {
         "loadTypes": "उपलब्ध OAuth ऐप प्रकार लोड करने में विफल।",
@@ -2726,7 +2795,7 @@
     "instructionsLabel": "निर्देश",
     "startingMessageLabel": "प्रारंभिक संदेश",
     "defaultReasoningEffortLabel": "डिफ़ॉल्ट रीज़निंग प्रयास",
-    "defaultReasoningEffortHint": "सेट न होने पर डिफ़ॉल्ट हाई है।",
+    "defaultReasoningEffortHint": "जब उपयोगकर्ता चैट में कोई विकल्प नहीं चुनता तब उपयोग किया जाने वाला फ़ॉलबैक रीज़निंग प्रयास।",
     "moreItems": "+{{count}} और",
     "toolsetNodeSubtitle": "टूलसेट",
     "toolsLabel": "टूल",
@@ -2942,9 +3011,7 @@
     "deprecatedToolsBanner": "इस एजेंट पर {{count}} टूल(s) पुराने हैं, इन्हें हटाएं: {{tools}}",
     "removeDeprecatedTools": "पुराने टूल हटाएं",
     "showMore": "और दिखाएं",
-    "showLess": "कम दिखाएं",
-    "defaultReasoningEffortLabel": "डिफ़ॉल्ट रीज़निंग प्रयास",
-    "defaultReasoningEffortHint": "जब उपयोगकर्ता चैट में कोई विकल्प नहीं चुनता तब उपयोग किया जाने वाला फ़ॉलबैक रीज़निंग प्रयास।"
+    "showLess": "कम दिखाएं"
   },
   "recordView": {
     "sections": {

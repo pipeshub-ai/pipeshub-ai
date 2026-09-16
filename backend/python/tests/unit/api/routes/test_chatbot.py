@@ -96,6 +96,30 @@ class TestChatQueryModel:
         with pytest.raises(ValidationError, match="Invalid reasoningEffort"):
             ChatQuery(query="q", reasoningEffort="extreme")
 
+    def test_project_instructions_defaults_to_none(self):
+        from app.api.routes.chatbot import ChatQuery
+        q = ChatQuery(query="q")
+        assert q.projectInstructions is None
+
+    def test_project_instructions_accepts_value(self):
+        from app.api.routes.chatbot import ChatQuery
+        q = ChatQuery(query="q", projectInstructions="Cite the Q3 report.")
+        assert q.projectInstructions == "Cite the Q3 report."
+
+    def test_project_instructions_rejects_over_max_length(self):
+        """Defense in depth: Node caps `Project.instructions` at 8000 chars
+        (`PROJECT_INSTRUCTIONS_MAX_LENGTH`) before persisting, but a direct
+        API caller could bypass Node — the Python model enforces the same
+        cap independently."""
+        from app.api.routes.chatbot import ChatQuery
+        with pytest.raises(ValidationError):
+            ChatQuery(query="q", projectInstructions="x" * 8001)
+
+    def test_project_instructions_accepts_exactly_max_length(self):
+        from app.api.routes.chatbot import ChatQuery
+        q = ChatQuery(query="q", projectInstructions="x" * 8000)
+        assert len(q.projectInstructions) == 8000
+
 
 
 

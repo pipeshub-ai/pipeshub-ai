@@ -58,6 +58,8 @@ import {
   listAllArchivesAgentConversation,
   listAllAgentsArchivedConversationsGrouped,
   searchArchivedConversations,
+  setConversationProject,
+  setConversationProjectVisibility,
 } from '../controller/es_controller';
 import {
   getSpeechCapabilities,
@@ -76,6 +78,10 @@ import {
   addMessageStreamParamsSchema,
   conversationShareParamsSchema,
   conversationTitleParamsSchema,
+  conversationProjectLinkSchema,
+  conversationProjectVisibilitySchema,
+  agentConversationProjectLinkSchema,
+  agentConversationProjectVisibilitySchema,
   regenerateAnswersParamsSchema,
   cancelConversationStreamParamsSchema,
   cancelAgentConversationStreamParamsSchema,
@@ -348,6 +354,30 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationShareParamsSchema),
     unshareConversationById(appConfig),
+  );
+
+  /**
+   * @route PUT /api/v1/conversations/:conversationId/project
+   * @desc Link (or, with `projectId: null`, unlink) a conversation to a project. Initiator-only.
+   */
+  router.put(
+    '/:conversationId/project',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    ValidationMiddleware.validate(conversationProjectLinkSchema),
+    setConversationProject,
+  );
+
+  /**
+   * @route PATCH /api/v1/conversations/:conversationId/project-visibility
+   * @desc Override whether this project-linked conversation is visible to other project members.
+   */
+  router.patch(
+    '/:conversationId/project-visibility',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    ValidationMiddleware.validate(conversationProjectVisibilitySchema),
+    setConversationProjectVisibility,
   );
 
   /**
@@ -744,6 +774,30 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     ValidationMiddleware.validate(agentConversationTitleParamsSchema),
     updateAgentConversationTitle,
+  );
+
+  /**
+   * @route PUT /api/v1/agents/:agentKey/conversations/:conversationId/project
+   * @desc Link (or unlink) an agent conversation to a project. Initiator-only.
+   */
+  router.put(
+    '/:agentKey/conversations/:conversationId/project',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    ValidationMiddleware.validate(agentConversationProjectLinkSchema),
+    setConversationProject,
+  );
+
+  /**
+   * @route PATCH /api/v1/agents/:agentKey/conversations/:conversationId/project-visibility
+   * @desc Override whether this project-linked agent conversation is visible to other project members.
+   */
+  router.patch(
+    '/:agentKey/conversations/:conversationId/project-visibility',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    ValidationMiddleware.validate(agentConversationProjectVisibilitySchema),
+    setConversationProjectVisibility,
   );
 
   /**

@@ -790,7 +790,76 @@
         "有没有需要注意的依赖项或阻碍",
         "到目前为止学到了哪些经验教训"
       ]
-    ]
+    ],
+    "projects": {
+      "title": "Projects",
+      "newProject": "New project",
+      "noProjects": "No projects yet",
+      "failedToLoad": "Failed to load projects",
+      "moreProjects": "More projects",
+      "moveToProject": "Move to project",
+      "removeFromProject": "Remove from project",
+      "pinProject": "Pin",
+      "unpinProject": "Unpin",
+      "archiveProject": "Archive project",
+      "unarchiveProject": "Unarchive project",
+      "deleteProject": "Delete project",
+      "backToProjects": "All projects",
+      "newChatInProject": "New chat",
+      "recentChats": "Recent chats",
+      "noChats": "No chats yet in this project",
+      "startChatInProject": "Start a chat in this project",
+      "createDialog": {
+        "title": "New project",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. Q3 Marketing Plan",
+        "descriptionLabel": "Description",
+        "descriptionPlaceholder": "What's this project about? (optional)",
+        "instructionsLabel": "Instructions",
+        "instructionsPlaceholder": "Instructions the assistant should always follow in this project (optional)",
+        "create": "Create project",
+        "creating": "Creating…",
+        "nameRequired": "Name is required"
+      },
+      "workspace": {
+        "failedToLoad": "Failed to load this project",
+        "instructionsTitle": "Instructions",
+        "instructionsPlaceholder": "Add instructions the assistant should follow for every chat in this project…",
+        "noInstructions": "No instructions added yet",
+        "save": "Save",
+        "saving": "Saving…",
+        "editInstructions": "Edit instructions",
+        "noDescription": "No description",
+        "filesTitle": "Files",
+        "uploadFiles": "Upload files",
+        "uploading": "Uploading…",
+        "noFiles": "No files yet",
+        "removeFile": "Remove file",
+        "membersTitle": "Members",
+        "memberCount_one": "{{count}} member",
+        "memberCount_other": "{{count}} members",
+        "share": "Share",
+        "recentChatsTitle": "Recent chats",
+        "seeAllChats": "See all chats"
+      },
+      "moveDialog": {
+        "title": "Move to project",
+        "noProjects": "You don't have any projects yet",
+        "removeOption": "No project",
+        "moving": "Moving…"
+      },
+      "deleteDialog": {
+        "title": "Delete this project?",
+        "description": "This removes the project and unlinks its chats. The chats themselves are not deleted.",
+        "confirm": "Delete project",
+        "deleting": "Deleting…"
+      },
+      "roles": {
+        "owner": "Owner",
+        "editor": "Editor",
+        "viewer": "Viewer"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -3011,8 +3080,8 @@
     "lineCount": "{{count}} 行",
     "instructionsLabel": "指令",
     "startingMessageLabel": "起始消息",
-    "defaultReasoningEffortLabel": "默认推理强度",
-    "defaultReasoningEffortHint": "未设置时默认为高。",
+    "defaultReasoningEffortLabel": "默认推理力度",
+    "defaultReasoningEffortHint": "当用户在聊天中未选择时使用的备用推理力度。",
     "moreItems": "还有 {{count}} 项",
     "toolsetNodeSubtitle": "工具集",
     "toolsLabel": "工具",
@@ -3173,9 +3242,7 @@
     "deprecatedToolsBanner": "此智能体上有 {{count}} 个工具已弃用，请移除它们：{{tools}}",
     "removeDeprecatedTools": "移除已弃用的工具",
     "showMore": "显示更多",
-    "showLess": "显示更少",
-    "defaultReasoningEffortLabel": "默认推理力度",
-    "defaultReasoningEffortHint": "当用户在聊天中未选择时使用的备用推理力度。"
+    "showLess": "显示更少"
   },
   "recordView": {
     "sections": {

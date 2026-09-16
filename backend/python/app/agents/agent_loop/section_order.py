@@ -41,6 +41,10 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # ── Band A — static ──────────────────────────────────────────────────────
     ("identity",                   Volatility.STATIC),
     ("agent_instructions",         Volatility.STATIC),
+    # Author-set instructions from a linked Project (Node ProjectService) —
+    # set for any conversation (Chat Assistant, Universal Agent Mode, or a
+    # real Agent Builder agent) that is linked to a project.
+    ("project_instructions",       Volatility.STATIC),
     # Org-level "Custom Instructions" (workspace settings), mode-resolved by
     # `chat_modes.bridge` — Chat Assistant only, never set for Agent Builder.
     ("custom_instructions",        Volatility.STATIC),

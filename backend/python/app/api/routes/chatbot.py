@@ -14,7 +14,7 @@ from io import BytesIO
 
 import pdfplumber
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.config.constants.ai_models import validate_reasoning_effort
 from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_as_pil_from_bytes_sync
@@ -77,6 +77,10 @@ class ChatQuery(BaseModel):
     timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
+    # Author-set instructions from the Project this conversation is linked
+    # to (Node `ProjectService.buildContext`). Additive — rendered as its
+    # own prompt section, never merged into system_prompt/instructions.
+    projectInstructions: str | None = Field(default=None, max_length=8000)
     attachments: list[dict[str, Any]] = []
     # AG-UI is the only supported SSE wire protocol. This field is
     # accepted but ignored — `resolve_protocol` always returns "agui".
@@ -1077,6 +1081,7 @@ async def _generate_chat_stream_via_agent_loop(
         "timezone": query_info.timezone,
         "currentTime": query_info.currentTime,
         "conversationId": query_info.conversationId,
+        "projectInstructions": query_info.projectInstructions,
         "attachments": query_info.attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
         "runId": query_info.runId,

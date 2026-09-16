@@ -547,6 +547,17 @@ class PipesHubPromptBuilder:
             else None
         ))
 
+        # ── Project instructions (author-set, from a linked Project) ───────
+        # Additive only — never overrides `agent_instructions`/`system_prompt`,
+        # so a custom Agent Builder agent's identity is untouched even when
+        # its conversation is linked to a project. See `AgentContext.
+        # project_instructions`.
+        tpl.set("project_instructions", (
+            f"## Project Instructions\n{self._context.project_instructions.strip()}"
+            if self._context.project_instructions and self._context.project_instructions.strip()
+            else None
+        ))
+
         # ── Org-level custom instructions (Chat Assistant + Universal Agent) ─
         # Populated by `chat_modes.bridge` (/chat/stream) or `agent.py` for
         # `agentIdPlaceholder` (Universal Agent Mode). Never set for real

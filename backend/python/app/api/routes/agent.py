@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
@@ -129,6 +129,11 @@ class ChatQuery(BaseModel):
     timezone: str | None = None
     currentTime: str | None = None
     conversationId: str | None = None
+    # Author-set instructions from the Project this conversation is linked
+    # to (Node `ProjectService.buildContext`). Additive — rendered as its
+    # own prompt section, never merged into the agent's system_prompt/
+    # instructions, so a real Agent Builder agent's identity is untouched.
+    projectInstructions: str | None = Field(default=None, max_length=8000)
     # End-user display name when JWT userId is synthetic (e.g. Slack) — see
     # _merge_end_user_into_service_account_user_info.
     callerDisplayName: str | None = None
@@ -3754,6 +3759,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "systemPrompt": agent.get("systemPrompt"),
                     "instructions": agent.get("instructions"),
                     "custom_instructions": custom_instructions,
+                    "projectInstructions": chat_query.projectInstructions,
                     "timezone": chat_query.timezone,
                     "currentTime": chat_query.currentTime,
                     "toolsets": agent_toolsets,

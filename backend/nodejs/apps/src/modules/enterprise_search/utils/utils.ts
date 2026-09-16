@@ -11,7 +11,7 @@ import {
   IMessagePart,
 } from '../types/conversation.interfaces';
 import { IAIResponse } from '../types/conversation.interfaces';
-import mongoose, { ClientSession } from 'mongoose';
+import mongoose, { ClientSession, FilterQuery } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
@@ -686,6 +686,35 @@ export const addComputedFields = <
  * `EnterpriseSemanticSearch` call sites, whose documents have no `messages`)
  * get exactly today's title-only search behaviour.
  */
+/** Sentinel accepted by `?projectId=` to mean "sessions with no project link". Mirrors projects/types/project.interfaces.ts::PROJECT_ID_UNASSIGNED. */
+export const PROJECT_ID_UNASSIGNED_QUERY_VALUE = 'unassigned';
+
+/**
+ * AND-composes an optional `?projectId=<id>|unassigned` query filter onto an
+ * existing chatSessions filter object, mutating it in place. Shared by
+ * `buildFilter` and `buildAgentConversationFilter` so both the plain-chat
+ * and agent conversation list/detail endpoints support the same query
+ * contract. A malformed (non-ObjectId, non-'unassigned') value is ignored
+ * rather than thrown, since it only narrows a list — never called on a
+ * `require`d id param.
+ */
+export const applyProjectIdQueryFilter = (
+  filter: FilterQuery<IChatSessionDocument>,
+  req: AuthenticatedUserRequest,
+): void => {
+  const projectIdRaw = req.query?.projectId;
+  if (typeof projectIdRaw !== 'string' || projectIdRaw.length === 0) {
+    return;
+  }
+  if (projectIdRaw === PROJECT_ID_UNASSIGNED_QUERY_VALUE) {
+    filter.projectId = { $exists: false };
+    return;
+  }
+  if (mongoose.Types.ObjectId.isValid(projectIdRaw)) {
+    filter.projectId = new mongoose.Types.ObjectId(projectIdRaw);
+  }
+};
+
 export const buildFilter = (
   req: AuthenticatedUserRequest,
   orgId: string,
@@ -694,6 +723,7 @@ export const buildFilter = (
   owned: boolean = true,
   shared: boolean = true,
   contentMatchIds?: mongoose.Types.ObjectId[],
+  accessibleProjectIds?: mongoose.Types.ObjectId[],
 ) => {
   if (!owned && !shared) {
     throw new BadRequestError('Either owned or shared must be true');
@@ -716,12 +746,25 @@ export const buildFilter = (
             },
           ]
         : []),
+      // Third access branch: a chat explicitly shared to its project
+      // ('projectVisibility: project') is visible to every member with at
+      // least viewer access to that project — see ProjectService.
+      ...(shared && accessibleProjectIds && accessibleProjectIds.length > 0
+        ? [
+            {
+              projectId: { $in: accessibleProjectIds },
+              projectVisibility: 'project',
+            },
+          ]
+        : []),
     ],
   };
 
   if (id) {
     filter._id = new mongoose.Types.ObjectId(id);
   }
+
+  applyProjectIdQueryFilter(filter, req);
 
   // Handle search with XSS validation
   if (req.query.search) {
@@ -1082,6 +1125,8 @@ export const buildConversationResponse = (
     sharedWith: conversation.sharedWith,
     status: conversation.status,
     failReason: conversation.failReason,
+    projectId: conversation.projectId,
+    projectVisibility: conversation.projectVisibility,
     messages: messages.map((message) => ({
       ...message,
       citations:
@@ -1585,18 +1630,31 @@ export const buildAgentConversationFilter = (
   agentKey: string,
   conversationId?: string,
   contentMatchIds?: mongoose.Types.ObjectId[],
+  accessibleProjectIds?: mongoose.Types.ObjectId[],
 ) => {
   const filter: any = {
     ...ONLY_AGENT,
     agentKey,
     orgId: new mongoose.Types.ObjectId(orgId),
-    $or: [{ userId: new mongoose.Types.ObjectId(userId) }],
+    $or: [
+      { userId: new mongoose.Types.ObjectId(userId) },
+      ...(accessibleProjectIds && accessibleProjectIds.length > 0
+        ? [
+            {
+              projectId: { $in: accessibleProjectIds },
+              projectVisibility: 'project',
+            },
+          ]
+        : []),
+    ],
     isDeleted: false,
   };
 
   if (conversationId) {
     filter._id = new mongoose.Types.ObjectId(conversationId);
   }
+
+  applyProjectIdQueryFilter(filter, req);
 
   // Handle search with XSS and format string validation
   if (req.query.search) {

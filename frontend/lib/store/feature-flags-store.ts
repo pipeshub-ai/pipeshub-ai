@@ -90,3 +90,6 @@ export const selectActionsEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_AC
 /** Vector store rebuild defaults to disabled; admins opt in from Labs. */
 export const selectVectorStoreRebuildEnabled = (s: FeatureFlagsStore) =>
   s.flags?.ENABLE_VECTOR_STORE_REBUILD === true;
+/** Projects defaults to disabled; admins opt in from Labs. */
+export const selectProjectsEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_PROJECTS === true;

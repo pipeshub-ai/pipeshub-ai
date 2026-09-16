@@ -69,6 +69,21 @@ class TestChatQueryModel:
         q = ChatQuery(query="q", attachments=att)
         assert q.attachments == att
 
+    def test_project_instructions_defaults_to_none(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="q")
+        assert q.projectInstructions is None
+
+    def test_project_instructions_accepts_value(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="q", projectInstructions="Cite the Q3 report.")
+        assert q.projectInstructions == "Cite the Q3 report."
+
+    def test_project_instructions_rejects_over_max_length(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        with pytest.raises(ValidationError):
+            ChatQuery(query="q", projectInstructions="x" * 8001)
+
 
 class TestMergeEndUserServiceAccountUserInfo:
     def _creator_like(self) -> dict:

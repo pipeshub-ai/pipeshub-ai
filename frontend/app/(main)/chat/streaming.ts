@@ -726,6 +726,7 @@ export async function streamMessageForSlot(
               modelInfo: data.conversation.modelInfo,
               isOwner: true,
               sharedWith: [],
+              projectId: data.conversation.projectId ?? slot.projectId ?? undefined,
             },
             { isAgentStream: Boolean(request.agentId) }
           );

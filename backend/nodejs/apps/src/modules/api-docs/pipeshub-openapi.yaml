@@ -186,6 +186,16 @@ tags:
   # Enterprise Search
   - name: Conversations
     description: AI-powered conversational chat management with citations and follow-up questions
+  - name: Projects
+    description: |
+      Workspaces that group related assistant and agent conversations under a
+      shared name, custom instructions, a knowledge scope, and reference
+      files. Projects can be shared with teammates; project membership only
+      grants read access to conversations explicitly marked
+      `projectVisibility: project` — a member never gets access to another
+      member's private chats. See `Conversations` for the two fields
+      (`projectId`, `projectVisibility`) that link a conversation to a
+      project.
   - name: Semantic Search
     description: Enterprise semantic search across all indexed knowledge with relevance scoring
   - name: Agents
@@ -372,6 +382,9 @@ components:
             conversation:read: Read conversations
             conversation:write: Create and manage conversations
             conversation:chat: Send messages in conversations
+            project:read: Read projects and their conversations
+            project:write: Create and manage projects
+            project:delete: Delete projects
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
@@ -412,6 +425,9 @@ components:
             conversation:read: Read conversations
             conversation:write: Create and manage conversations
             conversation:chat: Send messages in conversations
+            project:read: Read projects and their conversations
+            project:write: Create and manage projects
+            project:delete: Delete projects
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
@@ -5887,6 +5903,25 @@ components:
           description: |
             Uploaded chat attachments to associate with this conversation turn (see
             `POST /conversations/attachments/upload`).
+        projectId:
+          type: string
+          format: objectId
+          description: |
+            Link the new conversation to a project the caller has at least
+            viewer access to. When the project's instructions, knowledge
+            scope, or files are set and this request didn't supply its own
+            `filters`/`attachments`, they are merged in as a fallback (the
+            request always wins). Ignored on follow-up turns — only
+            meaningful when creating a conversation.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          description: |
+            Only meaningful together with `projectId`. Overrides the
+            project's default sharing behavior for this one conversation:
+            `private` keeps it visible to the owner only; `project` exposes
+            it to every project member. Defaults from the project's
+            `chatSharing` setting when omitted.
         modelKey:
           type: string
           description: |
@@ -6048,6 +6083,20 @@ components:
           description: |
             Uploaded attachments to ground this turn. Each entry references a
             record id returned from the agent attachment upload endpoint.
+        projectId:
+          type: string
+          format: objectId
+          description: |
+            Link the new agent conversation to a project the caller has at
+            least viewer access to. Same fallback/merge semantics as
+            `POST /conversations/create`. Ignored on follow-up turns — the
+            session row is the source of truth once the conversation exists.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          description: |
+            Only meaningful together with `projectId`. Overrides the
+            project's default sharing behavior for this one conversation.
         chatMode:
           type: string
           enum:
@@ -7287,6 +7336,23 @@ components:
             Computed per request. The requester's effective access level:
             their entry in `sharedWith`, or `read` by default.
           readOnly: true
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: |
+            The project this conversation is linked to, if any. Set via
+            `PUT /conversations/{conversationId}/project` or at creation
+            time; absent on conversations that were never linked.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `private` (default)
+            keeps the conversation visible to its owner only; `project`
+            exposes it to every member of the linked project. See
+            `PATCH /conversations/{conversationId}/project-visibility`.
 
     ConversationListItem:
       type: object
@@ -7395,6 +7461,350 @@ components:
           type: string
           enum: [read, write]
           readOnly: true
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: |
+            The project this conversation is linked to, if any. Set via
+            `PUT /conversations/{conversationId}/project` or at creation
+            time; absent on conversations that were never linked.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `private` (default)
+            keeps the conversation visible to its owner only; `project`
+            exposes it to every member of the linked project. See
+            `PATCH /conversations/{conversationId}/project-visibility`.
+
+    # ==================== PROJECT SCHEMAS ====================
+
+    ProjectKnowledgeScope:
+      type: object
+      additionalProperties: false
+      description: |
+        Retrieval scope (app connector / knowledge-base ids) inherited by
+        every conversation in the project when the request itself carries no
+        `filters`. Same id shapes as `Filters`.
+      properties:
+        apps:
+          type: array
+          items:
+            type: string
+          description: Connector instance ids scoping this project's default retrieval.
+        kb:
+          type: array
+          items:
+            type: string
+          description: Knowledge-base app ids scoping this project's default retrieval.
+
+    ProjectAppliedFilters:
+      type: object
+      additionalProperties: false
+      description: Display-friendly mirror of `knowledgeScope`, for rendering scope chips without a round trip.
+      properties:
+        apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+        kb:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+
+    ProjectFileRef:
+      type: object
+      additionalProperties: false
+      description: |
+        One file attached to a project. Reuses the chat-attachment ref
+        shape (graph record + blob store) — a project file is uploaded
+        through the same
+        `POST /projects/{projectId}/files` → Python
+        `POST /chat/attachments/upload` pipeline as chat attachments, so
+        it lands in the graph and blob store identically. Merged into
+        `attachments[]` on every conversation started inside the project.
+        Flattened (not `allOf: [ChatAttachmentRef, ...]`) since `ChatAttachmentRef`
+        itself is `additionalProperties: false` — composing two closed
+        schemas would reject every real instance.
+      required:
+        - recordId
+      properties:
+        recordId:
+          type: string
+          minLength: 1
+          description: Attachment record id returned from the upload endpoint.
+        recordName:
+          type: string
+          minLength: 1
+          description: Original display name of the file when known.
+        mimeType:
+          type: string
+          minLength: 1
+          description: MIME type of the uploaded file.
+        extension:
+          type: string
+          minLength: 1
+          description: File extension (e.g. `pdf`).
+        virtualRecordId:
+          type: string
+          minLength: 1
+          description: Optional synthetic record id used by the graph layer.
+        sizeBytes:
+          type: integer
+          minimum: 0
+          description: Size of the uploaded file in bytes, used to enforce the project's total-storage cap.
+        uploadedBy:
+          type: string
+          format: objectId
+        uploadedAt:
+          type: string
+          format: date-time
+
+    ProjectMember:
+      type: object
+      additionalProperties: false
+      required:
+        - principalType
+        - principalId
+        - role
+        - addedBy
+        - addedAt
+      properties:
+        principalType:
+          type: string
+          enum: [user]
+          description: Only `user` principals are supported; team principals are deferred.
+        principalId:
+          type: string
+          format: objectId
+          description: User id of the member. The project owner is implicit and never appears in this list.
+        role:
+          type: string
+          enum: [viewer, editor]
+          description: |
+            `viewer` can read the project and its `project`-visible
+            conversations. `editor` can additionally update project
+            metadata, instructions, scope, and files. Only the owner can
+            manage members or change `visibility`/`chatSharing`.
+        addedBy:
+          type: string
+          format: objectId
+        addedAt:
+          type: string
+          format: date-time
+
+    Project:
+      type: object
+      description: |
+        A workspace that groups related assistant and agent conversations
+        under a shared name, instructions, knowledge scope, and files. See
+        the `Projects` tag description for the sharing model.
+      properties:
+        _id:
+          type: string
+          format: objectId
+        orgId:
+          type: string
+          format: objectId
+        userId:
+          type: string
+          format: objectId
+          description: Owner. Ownership never transfers.
+        name:
+          type: string
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 1000
+        icon:
+          type: string
+        color:
+          type: string
+        instructions:
+          type: string
+          maxLength: 8000
+          description: |
+            Injected into every conversation in this project as a dedicated,
+            author-attributed `project_instructions` prompt section — additive,
+            never overrides agent identity or system prompts.
+        knowledgeScope:
+          $ref: '#/components/schemas/ProjectKnowledgeScope'
+        appliedFilters:
+          $ref: '#/components/schemas/ProjectAppliedFilters'
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectFileRef'
+          description: Capped at 20 files, 5 MB each, 25 MB total.
+        visibility:
+          type: string
+          enum: [private, org]
+          default: private
+          description: |
+            `org` makes the project (and, per `chatSharing`, its
+            `project`-visible conversations) readable by every member of the
+            organization, without adding them to `members[]`.
+        chatSharing:
+          type: string
+          enum: [private, members]
+          default: private
+          description: |
+            Owner-controlled default for new conversations created in this
+            project. `private` keeps new chats visible to their own owner
+            only; `members` exposes them to every project member
+            (`projectVisibility: project`). A conversation's own
+            `projectVisibility` can override this default per-chat.
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectMember'
+        isPinned:
+          type: boolean
+          default: false
+          description: Owner-scoped pin state in V1 (not per-viewer).
+        isArchived:
+          type: boolean
+          default: false
+        archivedBy:
+          type: string
+          format: objectId
+          nullable: true
+        isDeleted:
+          type: boolean
+          default: false
+        deletedBy:
+          type: string
+          format: objectId
+          nullable: true
+        lastActivityAt:
+          type: integer
+          format: int64
+          description: Epoch milliseconds, bumped whenever a linked conversation streams a turn.
+        metadata:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ProjectListItem:
+      allOf:
+        - $ref: '#/components/schemas/Project'
+        - type: object
+          description: Project summary returned by `GET /projects`, enriched with request-computed fields.
+          properties:
+            role:
+              type: string
+              enum: [owner, editor, viewer]
+              readOnly: true
+              description: |
+                Caller's effective role on this project (owner, explicit
+                member role, or `viewer` via `visibility: org`).
+            conversationCount:
+              type: integer
+              minimum: 0
+              readOnly: true
+              description: Count of non-deleted conversations (chat + agent) linked to this project.
+
+    CreateProjectRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 1000
+        icon:
+          type: string
+          maxLength: 100
+        color:
+          type: string
+          maxLength: 50
+        instructions:
+          type: string
+          maxLength: 8000
+        knowledgeScope:
+          $ref: '#/components/schemas/ProjectKnowledgeScope'
+        appliedFilters:
+          $ref: '#/components/schemas/ProjectAppliedFilters'
+
+    UpdateProjectRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        All fields optional; only supplied fields are updated.
+        `visibility`/`chatSharing` are owner-only — an editor who is not
+        the owner gets `403` if they include either field. Flattened (not
+        `allOf: [CreateProjectRequest, ...]`) since `CreateProjectRequest`
+        itself is `additionalProperties: false` — composing two closed
+        schemas would reject `visibility`/`chatSharing` on every real update.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 1000
+        icon:
+          type: string
+          maxLength: 100
+        color:
+          type: string
+          maxLength: 50
+        instructions:
+          type: string
+          maxLength: 8000
+        knowledgeScope:
+          $ref: '#/components/schemas/ProjectKnowledgeScope'
+        appliedFilters:
+          $ref: '#/components/schemas/ProjectAppliedFilters'
+        visibility:
+          type: string
+          enum: [private, org]
+        chatSharing:
+          type: string
+          enum: [private, members]
+
+    ProjectMembersUpsertRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - members
+      properties:
+        members:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - principalId
+              - role
+            properties:
+              principalId:
+                type: string
+                format: objectId
+                description: |
+                  User id to add or update. Must exist in this org's IAM
+                  service (validated the same way as
+                  `POST /conversations/{conversationId}/share`).
+              role:
+                type: string
+                enum: [viewer, editor]
+          description: |
+            Upserted by `principalId`: existing members get their `role`
+            updated, new ids are added. The project owner is silently
+            skipped if included (ownership is implicit).
 
     ShareRequest:
       type: object
@@ -10197,6 +10607,18 @@ components:
         updatedAt:
           type: string
           format: date-time
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: The project this agent conversation is linked to, if any.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `project` exposes the
+            conversation to every member of the linked project.
 
     AgentConversationListItem:
       type: object
@@ -10312,6 +10734,18 @@ components:
           description: |
             Computed per request from `sharedWith`; defaults to `read` when no
             explicit share grant is attached to the serialized row.
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: The project this agent conversation is linked to, if any.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `project` exposes the
+            conversation to every member of the linked project.
 
     AgentConversationListResponse:
       type: object
@@ -25061,6 +25495,17 @@ paths:
             `true`/`false`, or `1`/`0`.
           schema:
             type: string
+        - name: projectId
+          in: query
+          required: false
+          description: |
+            Restrict results to a single project. Pass a project's `id` to
+            list conversations linked to that project (visible to the
+            caller — owner, member, or org-visible project with
+            `projectVisibility: project`), or the literal string
+            `unassigned` to list conversations with no `projectId`.
+          schema:
+            type: string
       responses:
         '200':
           description: List of conversations for the requested source
@@ -27581,6 +28026,851 @@ paths:
         '500':
           description: Persistence layer failed to update the conversation document.
 
+  /conversations/{conversationId}/project:
+    put:
+      tags:
+        - Conversations
+        - Projects
+      summary: Link or unlink a conversation to a project
+      description: |
+        Set (`projectId: <id>`) or clear (`projectId: null`) the project this
+        conversation belongs to. Initiator-only.
+
+        **Access:**
+
+        The caller must be the conversation's initiator. Linking to a
+        non-null `projectId` also requires at least viewer access to that
+        project (`404` if not visible to the caller — never `403`, to avoid
+        leaking project existence across an org boundary).
+
+        **Visibility on link:**
+
+        When linking, `projectVisibility` defaults from the project's
+        `chatSharing` setting (`members` → `project`, otherwise `private`)
+        unless the conversation was already `project`-visible, in which case
+        that is preserved. Use
+        `PATCH /conversations/{conversationId}/project-visibility` to
+        override it explicitly. Unlinking (`projectId: null`) always clears
+        both `projectId` and `projectVisibility`.
+      operationId: setConversationProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Unique conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - projectId
+              properties:
+                projectId:
+                  type: string
+                  format: objectId
+                  nullable: true
+                  description: Target project id, or `null` to unlink.
+      responses:
+        '200':
+          description: Conversation's project link updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - conversationId
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectId:
+                    type: string
+                    format: objectId
+                    nullable: true
+                  projectVisibility:
+                    type: string
+                    enum: [private, project]
+                    nullable: true
+        '400':
+          description: "`projectId` missing or not a valid ObjectId/`null`."
+        '401':
+          description: Unauthorized
+        '404':
+          description: |
+            Conversation not found or caller is not the initiator, or the
+            target project does not exist or is not visible to the caller.
+
+  /conversations/{conversationId}/project-visibility:
+    patch:
+      tags:
+        - Conversations
+        - Projects
+      summary: Override a conversation's project visibility
+      description: |
+        Explicitly set whether a project-linked conversation is visible to
+        other members of that project (`project`) or only to its owner
+        (`private`). Initiator-only. Requires the conversation to already be
+        linked to a project via
+        `PUT /conversations/{conversationId}/project`.
+      operationId: setConversationProjectVisibility
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Unique conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - visibility
+              properties:
+                visibility:
+                  type: string
+                  enum: [private, project]
+      responses:
+        '200':
+          description: Conversation's project visibility updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - conversationId
+                  - projectVisibility
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectVisibility:
+                    type: string
+                    enum: [private, project]
+        '400':
+          description: |
+            `visibility` missing/invalid, or the conversation is not linked
+            to a project.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found or caller is not the initiator.
+
+  # -------------------- Projects --------------------
+  /projects:
+    post:
+      tags:
+        - Projects
+      summary: Create a project
+      description: |
+        Create a new project workspace owned by the caller.
+      operationId: createProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Project created
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - project
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '400':
+          description: "`name` missing, empty after trimming, or exceeds length limits."
+        '401':
+          description: Unauthorized
+    get:
+      tags:
+        - Projects
+      summary: List projects
+      description: |
+        Paginated, non-deleted projects visible to the caller, sorted pinned
+        first then by `lastActivityAt` descending.
+      operationId: listProjects
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:read]
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          description: Case-insensitive match on project name.
+          schema:
+            type: string
+            maxLength: 200
+        - name: scope
+          in: query
+          description: |
+            `mine` — owned only. `shared` — projects the caller is a member
+            of. `all` — owned, member, and `visibility: org` projects.
+            Defaults to `mine`.
+          schema:
+            type: string
+            enum: [mine, shared, all]
+            default: mine
+        - name: includeArchived
+          in: query
+          schema:
+            type: string
+            enum: ['true', 'false']
+            default: 'false'
+      responses:
+        '200':
+          description: Paginated project list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - projects
+                  - pagination
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectListItem'
+                  pagination:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+        '401':
+          description: Unauthorized
+
+  /projects/{projectId}:
+    get:
+      tags:
+        - Projects
+      summary: Get a project
+      description: |
+        Requires at least viewer access. Cross-org ids and ids the caller
+        cannot see both return `404` — never `403` — to avoid leaking
+        project existence across an org boundary.
+      operationId: getProjectById
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:read]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project detail
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - project
+                properties:
+                  project:
+                    allOf:
+                      - $ref: '#/components/schemas/Project'
+                      - type: object
+                        properties:
+                          role:
+                            type: string
+                            enum: [owner, editor, viewer]
+                            readOnly: true
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+    patch:
+      tags:
+        - Projects
+      summary: Update a project
+      description: |
+        Requires editor access. `visibility` and `chatSharing` are
+        owner-only fields — including either as a non-owner editor
+        returns `403`.
+      operationId: updateProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+      responses:
+        '200':
+          description: Project updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - project
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '400':
+          description: "`name` provided but empty after trimming, or a field exceeds its length limit."
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller has editor (not owner) access and the request includes `visibility` or `chatSharing`.
+        '404':
+          description: Project not found or not visible to the caller.
+    delete:
+      tags:
+        - Projects
+      summary: Delete a project
+      description: |
+        Owner-only soft delete. Unlinks every `chatSessions` row pointing at
+        this project (clearing `projectId`/`projectVisibility`) before
+        marking the project deleted, so no conversation is left pointing at
+        a deleted project; wrapped in a transaction when the deployment's
+        replica set supports it. Idempotent — deleting an already-deleted
+        project returns `200` without re-running the unlink step.
+      operationId: deleteProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:delete]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project deleted (or already deleted)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller has access but is not the owner.
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/archive:
+    post:
+      tags:
+        - Projects
+      summary: Archive a project
+      description: |
+        Requires editor access. Archived projects are hidden from the
+        default sidebar but their conversations remain reachable directly.
+      operationId: archiveProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project archived
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/unarchive:
+    post:
+      tags:
+        - Projects
+      summary: Unarchive a project
+      operationId: unarchiveProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project unarchived
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/pin:
+    post:
+      tags:
+        - Projects
+      summary: Pin a project
+      description: |
+        Requires viewer access. Pin state is owner-scoped on the document in
+        V1 — pinning affects the project for every viewer, not just the
+        caller (per-user pins are deferred).
+      operationId: pinProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project pinned
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/unpin:
+    post:
+      tags:
+        - Projects
+      summary: Unpin a project
+      operationId: unpinProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project unpinned
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/conversations:
+    get:
+      tags:
+        - Projects
+        - Conversations
+      summary: List a project's conversations
+      description: |
+        Requires viewer access to the project. Returns both chat and agent
+        sessions (`chatSessions`, discriminated by `sessionType`/`agentKey`)
+        that the caller may see: rows they own, plus rows with
+        `projectVisibility: project`. Access to the project is asserted
+        first, so a private conversation belonging to a *different* project
+        member never leaks through this endpoint.
+      operationId: getProjectConversations
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:read]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Paginated conversations linked to the project
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - conversations
+                  - pagination
+                properties:
+                  conversations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConversationListItem'
+                  pagination:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/files:
+    post:
+      tags:
+        - Projects
+      summary: Upload files to a project
+      description: |
+        Requires editor access. Proxies each upload through the same Python
+        `POST /chat/attachments/upload` pipeline used by chat attachments
+        (see `POST /conversations/attachments/upload`), so project files
+        land in the graph and blob store identically, then records the
+        returned refs on the project document.
+
+        **Limits:** up to 10 files per request (multipart field name
+        `files`), 5 MB per file, 20 files and 25 MB total per project.
+        Unsupported MIME types are rejected before any upload is attempted.
+      operationId: uploadProjectFiles
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - files
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '200':
+          description: Files uploaded and attached to the project
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectFileRef'
+        '400':
+          description: |
+            No files provided, an unsupported MIME type, or the upload would
+            exceed the project's file-count or total-size cap.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/files/{recordId}:
+    delete:
+      tags:
+        - Projects
+      summary: Remove a file from a project
+      description: |
+        Requires editor access. Removes the ref from the project immediately;
+        the upstream graph record delete (Python
+        `DELETE /chat/attachments/{recordId}`) is best-effort — failures are
+        logged, not surfaced, since the ref is already gone from the project
+        either way.
+      operationId: deleteProjectFile
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: recordId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File removed
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectFileRef'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/members:
+    get:
+      tags:
+        - Projects
+      summary: List project members
+      description: Requires viewer access.
+      operationId: listProjectMembers
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:read]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project member list (excludes the implicit owner)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectMember'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+    put:
+      tags:
+        - Projects
+      summary: Add or update project members
+      description: |
+        Owner-only. Each `principalId` is validated against this org's IAM
+        service the same way as
+        `POST /conversations/{conversationId}/share` — a `principalId` with
+        no matching user returns `400`. Upserts by `principalId`; the owner
+        is silently skipped if included.
+      operationId: upsertProjectMembers
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectMembersUpsertRequest'
+      responses:
+        '200':
+          description: Updated member list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectMember'
+        '400':
+          description: A `principalId` does not exist in this org's IAM service.
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller has access but is not the owner.
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/members/{memberUserId}:
+    delete:
+      tags:
+        - Projects
+      summary: Remove a project member
+      description: Owner-only.
+      operationId: removeProjectMember
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: memberUserId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Updated member list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectMember'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller has access but is not the owner.
+        '404':
+          description: Project not found or not visible to the caller.
+
   # -------------------- Conversational Speech --------------------
   /chat/transcribe:
     post:
@@ -29892,6 +31182,149 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /agents/{agentKey}/conversations/{conversationId}/project:
+    put:
+      tags:
+        - Agents
+        - Projects
+      summary: Link or unlink an agent conversation to a project
+      description: |
+        Agent-conversation equivalent of
+        `PUT /conversations/{conversationId}/project`. Set
+        (`projectId: <id>`) or clear (`projectId: null`) the project this
+        agent conversation belongs to. Initiator-only; linking requires at
+        least viewer access to the target project.
+      operationId: setAgentConversationProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - projectId
+              properties:
+                projectId:
+                  type: string
+                  format: objectId
+                  nullable: true
+                  description: Target project id, or `null` to unlink.
+      responses:
+        '200':
+          description: Agent conversation's project link updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - conversationId
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectId:
+                    type: string
+                    format: objectId
+                    nullable: true
+                  projectVisibility:
+                    type: string
+                    enum: [private, project]
+                    nullable: true
+        '400':
+          description: "`projectId` missing or not a valid ObjectId/`null`."
+        '401':
+          description: Unauthorized
+        '404':
+          description: |
+            Agent conversation not found or caller is not the initiator, or
+            the target project does not exist or is not visible to the caller.
+
+  /agents/{agentKey}/conversations/{conversationId}/project-visibility:
+    patch:
+      tags:
+        - Agents
+        - Projects
+      summary: Override an agent conversation's project visibility
+      description: |
+        Agent-conversation equivalent of
+        `PATCH /conversations/{conversationId}/project-visibility`.
+        Initiator-only; requires the conversation to already be linked to a
+        project.
+      operationId: setAgentConversationProjectVisibility
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - visibility
+              properties:
+                visibility:
+                  type: string
+                  enum: [private, project]
+      responses:
+        '200':
+          description: Agent conversation's project visibility updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - conversationId
+                  - projectVisibility
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectVisibility:
+                    type: string
+                    enum: [private, project]
+        '400':
+          description: |
+            `visibility` missing/invalid, or the conversation is not linked
+            to a project.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent conversation not found or caller is not the initiator.
+
   /agents/{agentKey}/conversations/{conversationId}:
     delete:
       tags:
@@ -30140,6 +31573,15 @@ paths:
           schema:
             type: string
             enum: ['true', 'false']
+        - name: projectId
+          in: query
+          required: false
+          description: |
+            Restrict results to a single project. Pass a project's `id`, or
+            the literal string `unassigned` to list agent conversations with
+            no `projectId`.
+          schema:
+            type: string
       responses:
         '200':
           description: Conversation list

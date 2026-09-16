@@ -67,6 +67,7 @@ function makeSlot(overrides: Partial<ChatSlot> = {}): ChatSlot {
     convId: 'conv-1',
     threadAgentId: null,
     agentStreamTools: null,
+    projectId: null,
     isTemp: false,
     isInitialized: true,
     hasLoaded: true,

@@ -64,6 +64,7 @@ import Citation from '../../../../src/modules/enterprise_search/schema/citation.
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 
 // ---------------------------------------------------------------------------
@@ -313,6 +314,14 @@ describe('Enterprise Search Controller', () => {
     }
     if (!(ChatSessionMessage.aggregate as any).restore) {
       sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
+    }
+    // getConversationById / getAllConversations(source=shared) / getAllAgentConversations
+    // call this on every request to extend the access filter with
+    // project-shared conversations; default to "no accessible projects" so
+    // unrelated tests don't buffer against a real Mongo connection for 10s.
+    // Individual tests can `.resolves(...)` a different value after this.
+    if (!(ProjectService.getAccessibleProjectIds as any).restore) {
+      sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
     }
   })
 

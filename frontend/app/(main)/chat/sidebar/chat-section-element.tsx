@@ -10,10 +10,12 @@ import { Conversation } from '@/chat/types';
 import { useChatStore, isConversationStreamingInScope } from '@/chat/store';
 import { ChatApi } from '@/chat/api';
 import { AgentsApi } from '@/app/(main)/agents/api';
+import { ProjectApi } from '@/chat/project-api';
+import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { ICON_SIZE_DEFAULT, CHAT_ITEM_HEIGHT } from '@/app/components/sidebar';
 import { SidebarItem } from './sidebar-item';
 import { ChatItemMenu } from './chat-item-menu';
-import { DeleteChatDialog, ArchiveChatDialog } from './dialogs';
+import { DeleteChatDialog, ArchiveChatDialog, MoveToProjectDialog } from './dialogs';
 import { Spinner } from '@/app/components/ui/spinner';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
@@ -68,6 +70,8 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
   const [isSavingRename, setIsSavingRename] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
   const [isTypingTitle, setIsTypingTitle] = useState(false);
@@ -102,6 +106,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
   const removeConversation = useChatStore((s) => s.removeConversation);
   const renameConversation = useChatStore((s) => s.renameConversation);
   const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
+  const moveConversationToProject = useChatStore((s) => s.moveConversationToProject);
 
   useEffect(() => {
     if (isRenaming) {
@@ -216,6 +221,30 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
     }
   };
 
+  const handleConfirmMoveToProject = async (projectId: string | null) => {
+    if (convStreamingBlocksSidebarMutation()) return;
+    try {
+      await ProjectApi.setConversationProject(conversation.id, projectId, {
+        agentKey: agentId,
+      });
+      moveConversationToProject(conversation.id, projectId);
+      bumpConversationsVersion();
+    } catch {
+      // Non-fatal — row stays in its current project; user can retry.
+    }
+  };
+
+  const handleRemoveFromProject = async () => {
+    if (convStreamingBlocksSidebarMutation()) return;
+    try {
+      await ProjectApi.setConversationProject(conversation.id, null, { agentKey: agentId });
+      moveConversationToProject(conversation.id, null);
+      bumpConversationsVersion();
+    } catch {
+      // Non-fatal — row simply stays linked; user can retry from the menu.
+    }
+  };
+
   // Inline rename mode — render a plain input instead of SidebarItem
   if (isRenaming) {
     return (
@@ -285,6 +314,10 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
               onDelete={() => setDeleteDialogOpen(true)}
               showRename={true}
               showArchive={true}
+              onMoveToProject={projectsEnabled ? () => setMoveDialogOpen(true) : undefined}
+              onRemoveFromProject={
+                projectsEnabled && conversation.projectId ? () => void handleRemoveFromProject() : undefined
+              }
             />
           ) : undefined
         }
@@ -305,6 +338,13 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
         onConfirm={handleConfirmArchive}
         chatTitle={conversation.title}
         isArchiving={isArchiving}
+      />
+
+      <MoveToProjectDialog
+        open={moveDialogOpen}
+        onOpenChange={setMoveDialogOpen}
+        currentProjectId={conversation.projectId ?? null}
+        onConfirm={handleConfirmMoveToProject}
       />
     </>
   );

@@ -52,6 +52,8 @@ import {
   chatContentColumnStyle,
 } from './constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
+import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
+import { ProjectWorkspace } from './components/project-workspace';
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -159,6 +161,12 @@ function ChatContent() {
   const conversationId = searchParams.get('conversationId');
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
+  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  // A thread can't be scoped to both an agent and a project — agentId wins.
+  // When the feature flag is off, projectId is always null so the UI degrades
+  // to a normal chat without project context.
+  const rawProjectParam = searchParams.get('projectId');
+  const projectId = !agentId && projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
 
   const threadRuntime = useThreadRuntime();
 
@@ -483,6 +491,12 @@ function ChatContent() {
     };
   }, [agentId, router, t]);
 
+  // Keep the store's `activeProjectId` (read by ProjectsSection /
+  // ProjectScopedChatSidebar to highlight the open project) in sync with the URL.
+  useEffect(() => {
+    useChatStore.getState().setActiveProjectId(projectId);
+  }, [projectId]);
+
   // ── URL → Store sync ──────────────────────────────────────────────
   // When URL changes (sidebar click, browser back), create/reuse a slot.
   // useRef flag prevents the store→URL effect from bouncing back.
@@ -509,6 +523,15 @@ function ChatContent() {
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'leave-agent-for-main-home' });
         useChatStore.setState({ activeSlotId: null });
         store.bumpConversationsVersion();
+      } else if (
+        store.activeSlotId &&
+        activeSlot?.isTemp &&
+        activeSlot.projectId !== projectId
+      ) {
+        // Switched project workspace (or left it) while a draft new-chat slot
+        // for a *different* project scope was active — don't leak it here.
+        debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'switch-project-scope' });
+        store.clearActiveSlot();
       } else if (store.activeSlotId && (!activeSlot || !activeSlot.isTemp)) {
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null });
         useChatStore.setState({ activeSlotId: null });
@@ -624,7 +647,7 @@ function ChatContent() {
     requestAnimationFrame(() => {
       urlSyncingRef.current = false;
     });
-  }, [conversationId, agentId]);
+  }, [conversationId, agentId, projectId]);
 
   // ── Store → URL sync ──────────────────────────────────────────────
   // When streaming completes and assigns a convId to a temp slot, update URL.
@@ -649,8 +672,13 @@ function ChatContent() {
         const loc = new URLSearchParams(window.location.search);
         const rawAid = slot.threadAgentId ?? loc.get('agentId');
         const aid = rawAid?.trim() ? rawAid : null;
+        // A thread can't be scoped to both an agent and a project — agentId wins,
+        // mirroring buildChatHref()'s precedence.
+        const rawPid = aid ? null : (slot.projectId ?? loc.get('projectId'));
+        const pid = rawPid?.trim() ? rawPid : null;
         const q = new URLSearchParams();
         if (aid) q.set('agentId', aid);
+        else if (pid) q.set('projectId', pid);
         q.set('conversationId', slot.convId);
         window.history.replaceState(null, '', `/chat/?${q.toString()}`);
       }
@@ -819,6 +847,8 @@ function ChatContent() {
           agentStreamTools:
             store.agentStreamTools === null ? null : [...store.agentStreamTools],
         });
+      } else if (projectId) {
+        store.updateSlot(newSlotId, { projectId });
       }
     }
 
@@ -1295,6 +1325,24 @@ function ChatContent() {
           >
             <Box style={{ ...chatContentColumnStyle(isMobile), flex: 1, minHeight: 0, display: 'flex' }}>
               <SearchResultsView />
+            </Box>
+          </Flex>
+        ) : showNewChatView && projectId ? (
+          <Flex
+            direction="column"
+            align="center"
+            style={{ flex: 1, width: '100%', overflowY: 'auto' }}
+            className="no-scrollbar"
+          >
+            <Box style={{ ...chatContentColumnStyle(isMobile), width: '100%' }}>
+              <Flex direction="column" align="center" style={{ width: '100%' }}>
+                <ProjectWorkspace projectId={projectId} />
+                {isInputCentered && showChatInput && (
+                  <Box style={{ width: '100%', marginTop: 'var(--space-4)' }}>
+                    <ChatInputWrapper />
+                  </Box>
+                )}
+              </Flex>
             </Box>
           </Flex>
         ) : showNewChatView ? (

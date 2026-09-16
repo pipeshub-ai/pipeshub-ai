@@ -298,6 +298,12 @@ export interface IChatSession {
   compactedSummary?: string;
   compactedAtTurnIndex?: number;
   compactedAtTimestamp?: number;
+
+  // ---- Project linking (optional on both chat and agent sessions) ----
+  /** Reference to `projects` collection — see modules/projects/types/project.interfaces.ts. */
+  projectId?: Types.ObjectId;
+  /** Per-conversation override of the project's default chat-sharing visibility. */
+  projectVisibility?: 'private' | 'project';
 }
 
 export interface IChatSessionDocument extends Document, IChatSession {

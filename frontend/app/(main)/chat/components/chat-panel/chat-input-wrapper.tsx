@@ -168,10 +168,9 @@ export function ChatInputWrapper() {
     if (!activeSlotId) {
       activeSlotId = store.createSlot(null);
       store.setActiveSlot(activeSlotId);
-      const rawAgentId =
-        typeof window !== 'undefined'
-          ? new URLSearchParams(window.location.search).get('agentId')
-          : null;
+      const urlParams =
+        typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+      const rawAgentId = urlParams?.get('agentId');
       const agentIdFromUrl = rawAgentId?.trim() ? rawAgentId : null;
       if (agentIdFromUrl) {
         store.updateSlot(activeSlotId, {
@@ -179,6 +178,13 @@ export function ChatInputWrapper() {
           agentStreamTools:
             store.agentStreamTools === null ? null : [...store.agentStreamTools],
         });
+      } else {
+        // A thread can't be scoped to both an agent and a project.
+        const rawProjectId = urlParams?.get('projectId');
+        const projectIdFromUrl = rawProjectId?.trim() ? rawProjectId : null;
+        if (projectIdFromUrl) {
+          store.updateSlot(activeSlotId, { projectId: projectIdFromUrl });
+        }
       }
     }
 
