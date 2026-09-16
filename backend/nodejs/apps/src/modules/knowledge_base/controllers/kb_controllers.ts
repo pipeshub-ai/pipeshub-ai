@@ -496,8 +496,7 @@ export const createFolder =
     try {
       const { userId, orgId } = req.user || {};
       const { kbId } = req.params;
-      const rawFolderId = req.params.folderId || (req.query.folderId as string);
-      const folderId = rawFolderId ? encodeURIComponent(rawFolderId) : undefined;
+      const folderId = req.params.folderId || (req.query.folderId as string);
       const { folderName } = req.body;
 
       if (!userId || !orgId) {

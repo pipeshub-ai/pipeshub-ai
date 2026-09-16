@@ -273,10 +273,10 @@ export const createFolderSchema = z.object({
   }),
   params: z.object({
     kbId: z.string().uuid(),
-    folderId: z.string().min(1).optional(),
+    folderId: z.string().uuid().optional(),
   }),
   query: z.object({
-    folderId: z.string().min(1).optional(),
+    folderId: z.string().uuid().optional(),
   }),
 });
 
