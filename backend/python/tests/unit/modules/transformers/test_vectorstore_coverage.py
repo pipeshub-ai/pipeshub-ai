@@ -575,3 +575,63 @@ class TestProcessDocumentChunksRemoteFailure:
             await vs._process_document_chunks(chunks, "rec-1", "test_collection")
 
 
+# ===================================================================
+# get_embedding_model_instance — null ai_models guard (issue #3237)
+# ===================================================================
+
+
+class TestGetEmbeddingModelInstanceNullGuard:
+    """Regression tests for issue #3237.
+
+    When no AI models are configured, get_config returns None.
+    The code must not crash with TypeError; it must fall back to the
+    local embedding service instead.  If that fallback also fails, it
+    must raise an IndexingError with a human-readable message.
+    """
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_local_when_ai_models_is_none(self):
+        """config_service returns None → falls back to local embedding, no crash."""
+        vs = _make_vectorstore()
+        vs.config_service.get_config = AsyncMock(return_value=None)
+
+        fake_embeddings = AsyncMock()
+        fake_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 384)
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            return_value=fake_embeddings,
+        ):
+            result = await vs.get_embedding_model_instance()
+
+        assert result is False  # is_multimodal defaults to False for local model
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_local_when_embedding_key_missing(self):
+        """config_service returns dict without 'embedding' key → fallback, no crash."""
+        vs = _make_vectorstore()
+        vs.config_service.get_config = AsyncMock(return_value={"llm": []})
+
+        fake_embeddings = AsyncMock()
+        fake_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 384)
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            return_value=fake_embeddings,
+        ):
+            result = await vs.get_embedding_model_instance()
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_raises_clear_error_when_local_fallback_unavailable(self):
+        """When ai_models is None AND the local service is down, raise a clear IndexingError."""
+        vs = _make_vectorstore()
+        vs.config_service.get_config = AsyncMock(return_value=None)
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            side_effect=RuntimeError("connection refused"),
+        ):
+            with pytest.raises(IndexingError, match="No embedding model is configured"):
+                await vs.get_embedding_model_instance()
