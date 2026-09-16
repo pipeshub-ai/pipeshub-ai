@@ -30,7 +30,7 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 12 TC-GH-CODE-HIER-001    — folder PARENT_CHILD chain + folder inventory
   order 13 TC-GH-CODE-TS-001      — code/folder source timestamps (polled)
   order 14 TC-GH-PERM-001         — private repo ACL, role mapping, 2-hop inheritance
-  order 15 TC-GH-PERM-002         — public repo ORG grant placement
+  order 15 TC-GH-PERM-002         — public repo ORG grant placement (its own connector)
   order 16 TC-GH-IDX-001          — indexing reaches COMPLETED / AUTO_INDEX_OFF
   order 17 TC-GH-CKPT-001         — issue / PR / code checkpoints at their exact values
   order 18 TC-INCR-ISSUE-001      — new issues (one pre-closed → DONE), then edit + not_planned close
@@ -39,6 +39,8 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 21 TC-FILTER-001          — REPO_IDS scoping: unlisted repos do not sync
   order 22 TC-FILTER-002          — Index Code Files off: records exist, AUTO_INDEX_OFF
   order 23 TC-GH-FILTEROPT-001    — org/repo picker options, search ranking, paging
+  order 24 TC-GH-ONEREPO-001      — enable refused for an instance holding two repositories
+  order 25 TC-GH-ONEREPO-002      — one repository saved via filters-sync enables and syncs alone
 """
 
 import logging
@@ -108,6 +110,7 @@ from connectors.github_teams.github_test_utils import (  # noqa: E402
     blob_sha_for_path,
     delete_issue,
     commit_changes,
+    create_github_connector,
     create_issue,
     dedicated_connector,
     delete_issue_comment,
@@ -117,6 +120,7 @@ from connectors.github_teams.github_test_utils import (  # noqa: E402
     list_filter,
     list_pulls,
     sync_filters,
+    teardown_connector,
     tree_dirs,
     update_issue,
     update_pull,
@@ -242,10 +246,8 @@ class TestGitHubTeamsConnector:
 
         Counts are asserted as *structural invariants* (which hold exactly, whatever
         the fixture contains) plus presence of every record the primary repo should
-        have produced. A global exact count would also have to model the public repo's
-        contents, which the fixture deliberately does not enumerate — and an exact
-        total would be the first thing to break when someone adds a file to a fixture
-        repo, without catching any real defect.
+        have produced. An exact total would be the first thing to break when someone
+        adds a file to the fixture repo, without catching any real defect.
         """
         connector_id = github_connector["connector_id"]
 
@@ -1254,70 +1256,80 @@ class TestGitHubTeamsPermissions:
         of every repo's grants. What keeps that union from leaking is that nothing
         inherits FROM it: the repo group deliberately does not, which is what this test
         asserts alongside the grant itself.
+
+        An instance syncs exactly one repository, so the public repo gets its own
+        connector here. The shared fixture connector holds only the private primary
+        repo, which is where the negative half is asserted.
         """
-        connector_id = github_connector["connector_id"]
+        primary = github_connector["primary_repo"]
         public = github_connector["public_repo"]
 
-        public_group = await graph_provider.get_record_group_by_external_id(
-            connector_id, str(public["id"]),
-        )
-        assert public_group is not None, "public repo record group missing"
-
-        # The ORG grant is materialised as a PERMISSION edge from the organization
-        # node to the record group. Counting edges alone would pass on collaborator
-        # grants and never notice the visibility-derived one was missing.
-        org_edges = await graph_provider.find_edges_between(
-            CollectionNames.ORGS.value, pipeshub_client.org_id,
-            CollectionNames.RECORD_GROUPS.value, public_group.id,
-            CollectionNames.PERMISSION.value,
-        )
-        assert org_edges, (
-            f"public repo {public['full_name']} has no organization → record-group "
-            "PERMISSION edge; the visibility-derived Permission(READ, ORG) is missing"
-        )
-        org_props = org_edges[0]
-        assert org_props.get("type") == "ORG", (
-            f"the visibility grant must be an ORG permission, got {org_props.get('type')!r}"
-        )
-        assert org_props.get("role") in _VALID_PERMISSION_ROLES, (
-            f"ORG grant carries role {org_props.get('role')!r}, which is not a "
-            f"PermissionType ({sorted(_VALID_PERMISSION_ROLES)})"
-        )
-
-        # The mirror image: a PRIVATE repo has no visibility floor, so it must carry no
-        # org-wide grant at all. Without this the ORG assertion above would still pass
-        # if the connector handed every repo an ORG grant regardless of visibility.
+        # The mirror image first: a PRIVATE repo has no visibility floor, so it must
+        # carry no org-wide grant at all. Without this the ORG assertion below would
+        # still pass if the connector handed every repo an ORG grant regardless of
+        # visibility.
         private_group = await graph_provider.get_record_group_by_external_id(
-            connector_id, str(github_connector["primary_repo"]["id"]),
+            github_connector["connector_id"], str(primary["id"]),
         )
-        assert private_group is not None
+        assert private_group is not None, "private primary repo record group missing"
         private_org_edges = await graph_provider.find_edges_between(
             CollectionNames.ORGS.value, pipeshub_client.org_id,
             CollectionNames.RECORD_GROUPS.value, private_group.id,
             CollectionNames.PERMISSION.value,
         )
         assert not private_org_edges, (
-            f"private repo {github_connector['primary_repo']['full_name']} carries an "
-            "org-wide PERMISSION edge; access to a private repo must come solely from "
-            "collaborators"
-        )
-        repo_group_perms = await graph_provider.count_permission_edges_to_record_groups(
-            connector_id, str(public["id"]),
+            f"private repo {primary['full_name']} carries an org-wide PERMISSION edge; "
+            "access to a private repo must come solely from collaborators"
         )
 
-        # The org group legitimately carries the union of every repo's grants, which is
-        # why nothing may inherit FROM it — the repo group deliberately does not.
-        org_group = await graph_provider.get_record_group_by_external_id(
-            connector_id, f"org-{github_connector['org_id']}",
-        )
-        assert org_group is not None
-        assert await _group_edge_count(
-            graph_provider, from_group=public_group, to_group=org_group,
-            edge_collection=CollectionNames.INHERIT_PERMISSIONS.value,
-        ) == 0, (
-            "the public repo group must not inherit from the org group; the org group "
-            "holds the union of every repo's grants in this org"
-        )
+        async with dedicated_connector(
+            pipeshub_client, graph_provider,
+            token=github_connector["token"], name=_connector_name("perm-public"),
+            filters=sync_filters(repo_ids=list_filter("in", [public["full_name"]])),
+            min_records=1,
+        ) as connector_id:
+            public_group = await graph_provider.get_record_group_by_external_id(
+                connector_id, str(public["id"]),
+            )
+            assert public_group is not None, "public repo record group missing"
+
+            # The ORG grant is materialised as a PERMISSION edge from the organization
+            # node to the record group. Counting edges alone would pass on collaborator
+            # grants and never notice the visibility-derived one was missing.
+            org_edges = await graph_provider.find_edges_between(
+                CollectionNames.ORGS.value, pipeshub_client.org_id,
+                CollectionNames.RECORD_GROUPS.value, public_group.id,
+                CollectionNames.PERMISSION.value,
+            )
+            assert org_edges, (
+                f"public repo {public['full_name']} has no organization → record-group "
+                "PERMISSION edge; the visibility-derived Permission(READ, ORG) is missing"
+            )
+            org_props = org_edges[0]
+            assert org_props.get("type") == "ORG", (
+                f"the visibility grant must be an ORG permission, got {org_props.get('type')!r}"
+            )
+            assert org_props.get("role") in _VALID_PERMISSION_ROLES, (
+                f"ORG grant carries role {org_props.get('role')!r}, which is not a "
+                f"PermissionType ({sorted(_VALID_PERMISSION_ROLES)})"
+            )
+            repo_group_perms = await graph_provider.count_permission_edges_to_record_groups(
+                connector_id, str(public["id"]),
+            )
+
+            # The org group legitimately carries the union of every repo's grants, which
+            # is why nothing may inherit FROM it — the repo group deliberately does not.
+            org_group = await graph_provider.get_record_group_by_external_id(
+                connector_id, f"org-{github_connector['org_id']}",
+            )
+            assert org_group is not None
+            assert await _group_edge_count(
+                graph_provider, from_group=public_group, to_group=org_group,
+                edge_collection=CollectionNames.INHERIT_PERMISSIONS.value,
+            ) == 0, (
+                "the public repo group must not inherit from the org group; the org group "
+                "holds the union of every repo's grants in this org"
+            )
         logger.info(
             "TC-GH-PERM-002 passed: %d grant(s) on the public repo group",
             repo_group_perms,
@@ -2247,4 +2259,101 @@ class TestGitHubTeamsFilters:
         logger.info(
             "TC-GH-FILTEROPT-001 passed: %d org(s), %d repo(s), search + paging verified",
             len(org_ids), len(repo_ids),
+        )
+
+    @pytest.mark.order(24)
+    async def test_tc_gh_onerepo_001_enable_refused_for_two_repositories(
+        self,
+        github_connector: dict[str, Any],
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GH-ONEREPO-001: an instance holding two repositories is refused on Enable.
+
+        One repository per instance is enforced at the toggle, the gate every connector
+        passes before it syncs; an instance configured before the rule never went through
+        the save check. It must be refused with a message telling the user to narrow the
+        selection down, and stay disabled.
+        """
+        state = github_connector
+        two = [state["primary_repo"]["full_name"], state["public_repo"]["full_name"]]
+        connector_id = create_github_connector(
+            pipeshub_client, token=state["token"], name=_connector_name("onerepo-refused"),
+            filters=sync_filters(repo_ids=list_filter("in", two)),
+        )
+        try:
+            resp = pipeshub_client.request(
+                "POST", f"/api/v1/connectors/{connector_id}/toggle", json={"type": "sync"},
+            )
+            assert resp.status_code == 400, (
+                "enabling an instance that holds two repositories must be refused; got "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+            assert "Narrow it down to one" in resp.text, (
+                "the refusal must tell the user to narrow the selection to one "
+                f"repository; body: {resp.text[:300]}"
+            )
+            assert not pipeshub_client.get_connector(connector_id).get("isActive"), (
+                "the enable was refused yet the connector is active"
+            )
+        finally:
+            # Log, never raise: a cleanup error must not replace the assertion that failed.
+            try:
+                await teardown_connector(pipeshub_client, graph_provider, connector_id)
+            except Exception as e:
+                logger.error("connector %s cleanup leaked: %s", connector_id, e)
+        logger.info("TC-GH-ONEREPO-001 passed: two repositories refused on enable")
+
+    @pytest.mark.order(25)
+    async def test_tc_gh_onerepo_002_single_repository_saves_enables_and_syncs(
+        self,
+        github_connector: dict[str, Any],
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GH-ONEREPO-002: one repository saved through filters-sync enables and syncs,
+        and nothing else does.
+
+        The happy path through every check the rule added: the save route validates the
+        merged config, the toggle validates the stored one, and ``run_sync`` checks it
+        again before calling GitHub. A regression in any of them either refuses a valid
+        instance or lets a second repository in.
+        """
+        state = github_connector
+        public = state["public_repo"]
+        primary = state["primary_repo"]
+        connector_id = create_github_connector(
+            pipeshub_client, token=state["token"], name=_connector_name("onerepo-sync"),
+        )
+        try:
+            saved = pipeshub_client.request(
+                "PUT", f"/api/v1/connectors/{connector_id}/config/filters-sync",
+                json={"filters": sync_filters(repo_ids=list_filter("in", [public["full_name"]]))},
+            )
+            assert saved.status_code == 200, (
+                "saving exactly one repository must succeed; got HTTP "
+                f"{saved.status_code}: {saved.text[:300]}"
+            )
+
+            pipeshub_client.toggle_sync(connector_id, enable=True)
+            await wait_for_sync_completion(
+                pipeshub_client, graph_provider, connector_id,
+                min_records=1, timeout=GH_SYNC_WAIT_SEC,
+            )
+            assert await graph_provider.get_record_group_by_external_id(
+                connector_id, str(public["id"]),
+            ) is not None, f"{public['full_name']} was saved and enabled but did not sync"
+            assert await graph_provider.get_record_group_by_external_id(
+                connector_id, str(primary["id"]),
+            ) is None, (
+                f"{primary['full_name']} was never selected yet synced; the instance must "
+                "hold exactly one repository"
+            )
+        finally:
+            try:
+                await teardown_connector(pipeshub_client, graph_provider, connector_id)
+            except Exception as e:
+                logger.error("connector %s cleanup leaked: %s", connector_id, e)
+        logger.info(
+            "TC-GH-ONEREPO-002 passed: %s saved, enabled and synced alone", public["full_name"],
         )
