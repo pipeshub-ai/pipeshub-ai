@@ -22595,6 +22595,7 @@ paths:
           description: Parent folder ID. Omit to create at the knowledge base root.
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         description: "Request payload"
@@ -22712,6 +22713,7 @@ paths:
           description: Parent folder ID
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         description: "Request payload"
@@ -22812,6 +22814,7 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         description: "Request payload"
@@ -22915,6 +22918,7 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
       responses:
         '200':
           description: Folder deleted successfully
@@ -23009,6 +23013,7 @@ paths:
           description: Target folder ID. Omit to upload to the KB root.
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         description: "Request payload"
