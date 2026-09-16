@@ -208,9 +208,6 @@ export const MAX_VISIBLE_AGENTS_IN_SIDEBAR = 3;
 /** Fetch at least this many agents to decide if "More" is needed. */
 export const SIDEBAR_AGENTS_PREVIEW_FETCH_LIMIT = 20;
 
-/** How many projects to show in the main chat sidebar (pinned first, then by recent activity). */
-export const MAX_VISIBLE_PROJECTS_IN_SIDEBAR = 5;
-
 /** Page size for GET /api/v1/projects/:id/conversations in the project-scoped sidebar. */
 export const SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE = 10;
 

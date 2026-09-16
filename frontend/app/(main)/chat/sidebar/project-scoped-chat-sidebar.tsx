@@ -12,7 +12,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useChatStore, selectPendingForSidebar } from '@/chat/store';
 import { ProjectApi, type ProjectConversationRow } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
-import { buildChatHref, openFreshProjectChat } from '@/chat/build-chat-url';
+import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatSidebarHeader } from './header';
 import { ChatSidebarFooter } from './footer';
 import { SidebarItem } from './sidebar-item';
@@ -87,13 +87,19 @@ export const ProjectScopedChatSidebar = React.memo(function ProjectScopedChatSid
     load();
   }, [projectId, conversationsVersion, projectsVersion, load]);
 
-  const handleBackHome = () => {
+  const handleBackToProject = () => {
     if (isMobile) closeMobile();
   };
 
+  /**
+   * Starting a new project chat now goes through the project workspace
+   * (`/projects?projectId=…`) rather than opening a bare composer on `/chat`
+   * — the workspace composer is where new project-scoped chats are started.
+   */
   const handleNewProjectChat = () => {
     if (isMobile) closeMobile();
-    openFreshProjectChat(projectId, router);
+    useChatStore.getState().clearActiveSlot();
+    router.push(`/projects/?projectId=${encodeURIComponent(projectId)}`);
   };
 
   const handleSelectConversation = () => {
@@ -120,9 +126,9 @@ export const ProjectScopedChatSidebar = React.memo(function ProjectScopedChatSid
       <Flex direction="column" gap="3" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
         <SidebarItem
           icon={<MaterialIcon name="chevron_left" size={ICON_SIZE_DEFAULT} />}
-          label={t('chat.projects.backToProjects')}
-          href="/chat/"
-          onClick={handleBackHome}
+          label={t('chat.projects.backToProject')}
+          href={`/projects/?projectId=${encodeURIComponent(projectId)}`}
+          onClick={handleBackToProject}
         />
 
         <Flex align="center" gap="2" style={{ padding: '0 var(--space-3)' }}>

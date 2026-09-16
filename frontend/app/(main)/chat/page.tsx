@@ -53,7 +53,6 @@ import {
 } from './constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
-import { ProjectWorkspace } from './components/project-workspace';
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -866,6 +865,21 @@ function ChatContent() {
     });
   };
 
+  // ── Redirect bare project URLs to the project workspace ────────────
+  // `/chat/?projectId=…` with no conversationId is no longer a resting
+  // state — the pre-conversation workspace (composer, instructions, files,
+  // members) lives at `/projects?projectId=…` now. This must run BEFORE the
+  // pending-chat-consumption effect below (source order = execution order
+  // for effects declared in the same component): when the project workspace
+  // composer sends a message, it stashes it via `usePendingChatStore` and
+  // pushes here — that pending buffer is the signal to skip the redirect and
+  // let the next effect auto-send it instead.
+  useEffect(() => {
+    if (projectId && !conversationId && !usePendingChatStore.getState().pending) {
+      router.replace(`/projects/?projectId=${encodeURIComponent(projectId)}`);
+    }
+  }, [projectId, conversationId, router]);
+
   // ── Consume pending chat context from widget ──────────────────────
   const pendingConsumedRef = useRef(false);
   useEffect(() => {
@@ -1334,24 +1348,6 @@ function ChatContent() {
           >
             <Box style={{ ...chatContentColumnStyle(isMobile), flex: 1, minHeight: 0, display: 'flex' }}>
               <SearchResultsView />
-            </Box>
-          </Flex>
-        ) : showNewChatView && projectId ? (
-          <Flex
-            direction="column"
-            align="center"
-            style={{ flex: 1, width: '100%', overflowY: 'auto' }}
-            className="no-scrollbar"
-          >
-            <Box style={{ ...chatContentColumnStyle(isMobile), width: '100%' }}>
-              <Flex direction="column" align="center" style={{ width: '100%' }}>
-                <ProjectWorkspace projectId={projectId} />
-                {isInputCentered && showChatInput && (
-                  <Box style={{ width: '100%', marginTop: 'var(--space-4)' }}>
-                    <ChatInputWrapper />
-                  </Box>
-                )}
-              </Flex>
             </Box>
           </Flex>
         ) : showNewChatView ? (

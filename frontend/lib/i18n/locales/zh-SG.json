@@ -29,6 +29,19 @@
     "missingAgentKey": "缺少智能体密钥。请从聊天侧边栏打开智能体，或使用有效的链接。",
     "loading": "正在加载…"
   },
+  "projects": {
+    "pageTitle": "项目",
+    "searchPlaceholder": "搜索项目…",
+    "emptyState": "暂无项目",
+    "emptyStateHint": "创建一个项目来整理聊天、文件和指令。",
+    "failedToLoad": "加载项目失败",
+    "chatCount_one": "{{count}} 个对话",
+    "chatCount_other": "{{count}} 个对话",
+    "lastActive": "活跃于 {{date}}",
+    "pinnedSection": "已置顶",
+    "allSection": "所有项目",
+    "backToAllProjects": "所有项目"
+  },
   "timeGroup": {
     "today": "今天",
     "yesterday": "昨天",
@@ -212,6 +225,7 @@
     "moreConnectors": "更多连接器",
     "all": "全部",
     "agents": "智能体",
+    "projects": "项目",
     "searchChats": "搜索聊天",
     "inbox": "收件箱",
     "notifications": "通知"
@@ -806,6 +820,7 @@
       "deleteProject": "删除项目",
       "shareProject": "分享项目",
       "backToProjects": "所有项目",
+      "backToProject": "返回项目",
       "newChatInProject": "新对话",
       "recentChats": "最近对话",
       "noChats": "此项目中暂无对话",

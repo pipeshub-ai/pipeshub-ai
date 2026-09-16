@@ -29,6 +29,19 @@
     "missingAgentKey": "缺少代理程式金鑰。請從對話側邊欄開啟代理程式，或使用有效的連結。",
     "loading": "載入中…"
   },
+  "projects": {
+    "pageTitle": "專案",
+    "searchPlaceholder": "搜尋專案…",
+    "emptyState": "尚無專案",
+    "emptyStateHint": "建立專案來整理聊天、檔案和指示。",
+    "failedToLoad": "載入專案失敗",
+    "chatCount_one": "{{count}} 個對話",
+    "chatCount_other": "{{count}} 個對話",
+    "lastActive": "活躍於 {{date}}",
+    "pinnedSection": "已置頂",
+    "allSection": "所有專案",
+    "backToAllProjects": "所有專案"
+  },
   "timeGroup": {
     "today": "今天",
     "yesterday": "昨天",
@@ -212,6 +225,7 @@
     "moreConnectors": "更多連接器",
     "all": "全部",
     "agents": "代理程式",
+    "projects": "專案",
     "searchChats": "搜尋對話",
     "inbox": "收件匣",
     "notifications": "通知"
@@ -806,6 +820,7 @@
       "deleteProject": "刪除專案",
       "shareProject": "分享專案",
       "backToProjects": "所有專案",
+      "backToProject": "返回專案",
       "newChatInProject": "新對話",
       "recentChats": "最近對話",
       "noChats": "此專案中尚無對話",

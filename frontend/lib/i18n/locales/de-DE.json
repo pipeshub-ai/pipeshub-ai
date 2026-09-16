@@ -16,6 +16,19 @@
     "missingAgentKey": "Agentenschlüssel fehlt. Öffnen Sie einen Agenten über die Chat-Seitenleiste oder verwenden Sie einen gültigen Link.",
     "loading": "Wird geladen…"
   },
+  "projects": {
+    "pageTitle": "Projekte",
+    "searchPlaceholder": "Projekte durchsuchen…",
+    "emptyState": "Noch keine Projekte",
+    "emptyStateHint": "Erstelle ein Projekt, um Chats, Dateien und Anweisungen zu organisieren.",
+    "failedToLoad": "Projekte konnten nicht geladen werden",
+    "chatCount_one": "{{count}} Chat",
+    "chatCount_other": "{{count}} Chats",
+    "lastActive": "Aktiv {{date}}",
+    "pinnedSection": "Angepinnt",
+    "allSection": "Alle Projekte",
+    "backToAllProjects": "Alle Projekte"
+  },
   "timeGroup": {
     "today": "Heute",
     "yesterday": "Gestern",
@@ -199,6 +212,7 @@
     "moreConnectors": "Weitere Konnektoren",
     "all": "Alle",
     "agents": "Agenten",
+    "projects": "Projekte",
     "searchChats": "Chats suchen",
     "inbox": "Posteingang",
     "notifications": "Benachrichtigungen"
@@ -789,6 +803,7 @@
       "deleteProject": "Projekt löschen",
       "shareProject": "Projekt teilen",
       "backToProjects": "Alle Projekte",
+      "backToProject": "Zurück zum Projekt",
       "newChatInProject": "Neuer Chat",
       "recentChats": "Letzte Chats",
       "noChats": "Noch keine Chats in diesem Projekt",

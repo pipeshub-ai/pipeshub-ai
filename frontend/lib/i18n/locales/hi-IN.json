@@ -16,6 +16,19 @@
     "missingAgentKey": "एजेंट कुंजी गायब है। चैट साइडबार से एजेंट खोलें या वैध लिंक का उपयोग करें।",
     "loading": "लोड हो रहा है…"
   },
+  "projects": {
+    "pageTitle": "प्रोजेक्ट्स",
+    "searchPlaceholder": "प्रोजेक्ट खोजें…",
+    "emptyState": "अभी तक कोई प्रोजेक्ट नहीं",
+    "emptyStateHint": "चैट, फ़ाइलें और निर्देशों को व्यवस्थित करने के लिए एक प्रोजेक्ट बनाएं।",
+    "failedToLoad": "प्रोजेक्ट लोड करने में विफल",
+    "chatCount_one": "{{count}} चैट",
+    "chatCount_other": "{{count}} चैट",
+    "lastActive": "सक्रिय {{date}}",
+    "pinnedSection": "पिन किया गया",
+    "allSection": "सभी प्रोजेक्ट",
+    "backToAllProjects": "सभी प्रोजेक्ट"
+  },
   "timeGroup": {
     "today": "आज",
     "yesterday": "कल",
@@ -199,6 +212,7 @@
     "moreConnectors": "अधिक कनेक्टर्स",
     "all": "सभी",
     "agents": "एजेंट",
+    "projects": "प्रोजेक्ट्स",
     "searchChats": "चैट खोजें",
     "inbox": "इनबॉक्स",
     "notifications": "सूचनाएँ"
@@ -789,6 +803,7 @@
       "deleteProject": "प्रोजेक्ट हटाएँ",
       "shareProject": "प्रोजेक्ट साझा करें",
       "backToProjects": "सभी प्रोजेक्ट",
+      "backToProject": "प्रोजेक्ट पर वापस जाएं",
       "newChatInProject": "नई चैट",
       "recentChats": "हाल की चैट",
       "noChats": "इस प्रोजेक्ट में अभी तक कोई चैट नहीं",

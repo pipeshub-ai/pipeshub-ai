@@ -16,6 +16,19 @@
     "missingAgentKey": "Falta la clave del agente. Abra un agente desde la barra lateral del chat o use un enlace válido.",
     "loading": "Cargando…"
   },
+  "projects": {
+    "pageTitle": "Proyectos",
+    "searchPlaceholder": "Buscar proyectos…",
+    "emptyState": "Aún no hay proyectos",
+    "emptyStateHint": "Crea un proyecto para organizar chats, archivos e instrucciones.",
+    "failedToLoad": "No se pudieron cargar los proyectos",
+    "chatCount_one": "{{count}} chat",
+    "chatCount_other": "{{count}} chats",
+    "lastActive": "Activo {{date}}",
+    "pinnedSection": "Fijados",
+    "allSection": "Todos los proyectos",
+    "backToAllProjects": "Todos los proyectos"
+  },
   "timeGroup": {
     "today": "Hoy",
     "yesterday": "Ayer",
@@ -198,6 +211,7 @@
     "moreConnectors": "Más conectores",
     "all": "Todos",
     "agents": "Agentes",
+    "projects": "Proyectos",
     "searchChats": "Buscar chats",
     "inbox": "Bandeja de entrada",
     "notifications": "Notificaciones"
@@ -788,6 +802,7 @@
       "deleteProject": "Eliminar proyecto",
       "shareProject": "Compartir proyecto",
       "backToProjects": "Todos los proyectos",
+      "backToProject": "Volver al proyecto",
       "newChatInProject": "Nuevo chat",
       "recentChats": "Chats recientes",
       "noChats": "Aún no hay chats en este proyecto",

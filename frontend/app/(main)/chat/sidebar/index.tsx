@@ -13,7 +13,6 @@ import { ChatSidebarHeader } from './header';
 import { ChatSidebarFooter } from './footer';
 import { StaticNavSection } from './static-nav-section';
 import { MyAgentsSection } from './my-agents-section';
-import { ProjectsSection } from './projects-section';
 import { ChatSections } from './chat-sections';
 import { MoreChatsSidebar } from './more-chats-sidebar';
 import { AgentsSidebar } from './agents-sidebar';
@@ -37,7 +36,6 @@ function ChatSidebarInner() {
   const toggleMoreChatsPanel = useChatStore((s) => s.toggleMoreChatsPanel);
   const closeMoreChatsPanel = useChatStore((s) => s.closeMoreChatsPanel);
   const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
-  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
 
   const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
@@ -71,7 +69,6 @@ function ChatSidebarInner() {
       <Flex direction="column" gap="3">
         <StaticNavSection />
         <MyAgentsSection />
-        {projectsEnabled && <ProjectsSection />}
         <ChatSections onOpenMoreChats={toggleMoreChatsPanel} />
       </Flex>
     </SidebarBase>
@@ -87,7 +84,16 @@ function ChatSidebarRoot() {
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
   // A thread can't be scoped to both an agent and a project — agentId wins.
   const rawProjectId = searchParams.get('projectId');
-  const projectId = !agentId && projectsEnabled && rawProjectId?.trim() ? rawProjectId : null;
+  // The project-scoped sidebar only applies once inside an actual conversation
+  // (`conversationId` present). The pre-conversation workspace now lives at
+  // `/projects?projectId=…`; `/chat/?projectId=…` with no conversationId
+  // redirects there (see chat/page.tsx), so this stays the main sidebar for
+  // that brief transition instead of flashing the project chat list.
+  const conversationId = searchParams.get('conversationId');
+  const projectId =
+    !agentId && projectsEnabled && rawProjectId?.trim() && conversationId?.trim()
+      ? rawProjectId
+      : null;
   const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
   const prevAgentIdRef = useRef<string | null>(null);
 

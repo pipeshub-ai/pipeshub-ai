@@ -29,6 +29,19 @@
     "missingAgentKey": "에이전트 키가 없습니다. 채팅 사이드바에서 에이전트를 열거나 유효한 링크를 사용하세요.",
     "loading": "로드 중…"
   },
+  "projects": {
+    "pageTitle": "프로젝트",
+    "searchPlaceholder": "프로젝트 검색…",
+    "emptyState": "아직 프로젝트가 없습니다",
+    "emptyStateHint": "채팅, 파일, 지침을 정리할 프로젝트를 만드세요.",
+    "failedToLoad": "프로젝트를 불러오지 못했습니다",
+    "chatCount_one": "채팅 {{count}}개",
+    "chatCount_other": "채팅 {{count}}개",
+    "lastActive": "{{date}} 활동",
+    "pinnedSection": "고정됨",
+    "allSection": "모든 프로젝트",
+    "backToAllProjects": "모든 프로젝트"
+  },
   "timeGroup": {
     "today": "오늘",
     "yesterday": "어제",
@@ -212,6 +225,7 @@
     "moreConnectors": "더 많은 커넥터",
     "all": "전체",
     "agents": "에이전트",
+    "projects": "프로젝트",
     "searchChats": "채팅 검색",
     "inbox": "받은 편지함",
     "notifications": "알림"
@@ -806,6 +820,7 @@
       "deleteProject": "프로젝트 삭제",
       "shareProject": "프로젝트 공유",
       "backToProjects": "모든 프로젝트",
+      "backToProject": "프로젝트로 돌아가기",
       "newChatInProject": "새 채팅",
       "recentChats": "최근 채팅",
       "noChats": "이 프로젝트에 아직 채팅이 없습니다",

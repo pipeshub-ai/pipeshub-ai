@@ -1,17 +1,22 @@
 /**
  * chat-projects.spec.ts
  *
- * e2e coverage for the Projects feature (Phase 3 frontend):
- *  - Sidebar `ProjectsSection` lists the caller's projects.
- *  - `/chat/?projectId=…` renders `ProjectWorkspace` with project details.
- *  - Sending a message from the project workspace starts a project-scoped
- *    conversation (`projectId` on the stream request) and, once the
- *    conversation is created, keeps `?projectId=` in the URL alongside
- *    `conversationId` so `ProjectScopedChatSidebar` stays active.
+ * e2e coverage for the Projects feature:
+ *  - `/projects` renders the project list (grid of cards) and the "Projects"
+ *    nav item is visible in the chat sidebar.
+ *  - `/projects?projectId=…` renders the redesigned two-column workspace
+ *    (header, composer, recent chats, and the Instructions/Files/Members
+ *    settings panel) with project details.
+ *  - Sending a message from the workspace composer hands off to `/chat` via
+ *    the pending-chat buffer, starting a project-scoped conversation
+ *    (`projectId` on the stream request) and, once the conversation is
+ *    created, keeps `?projectId=` in the URL alongside `conversationId` so
+ *    `ProjectScopedChatSidebar` stays active.
  *
  * All backend calls are intercepted with page.route(); the SSE body uses the
  * shared AG-UI frame builder (see agui-sse-builder.ts) since `chat/api.ts`
- * always negotiates `protocol: 'agui'`.
+ * always negotiates `protocol: 'agui'`. `ENABLE_PROJECTS` defaults to false,
+ * so every test mocks the effective feature-flags endpoint to enable it.
  */
 
 import { test, expect } from '../fixtures/base.fixture';
@@ -83,6 +88,16 @@ function makeProjectDetail() {
 }
 
 async function mockBaselineApis(page: import('@playwright/test').Page) {
+  // `ENABLE_PROJECTS` is off by default — every Projects surface (nav item,
+  // /projects route, chat.tsx's projectId handling) is gated on this.
+  await page.route('**/api/v1/configurationManager/platform/feature-flags/effective', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ featureFlags: { ENABLE_PROJECTS: true } }),
+    }),
+  );
+
   await page.route('**/api/v1/configurationManager/ai-models/available/llm', (route) =>
     route.fulfill({
       status: 200,
@@ -103,7 +118,7 @@ async function mockBaselineApis(page: import('@playwright/test').Page) {
   });
 }
 
-/** Sidebar preview (`ProjectsSection`) + workspace detail + empty recent conversations. */
+/** Project list (`/projects`) + workspace detail + empty recent conversations. */
 async function mockProjectApis(page: import('@playwright/test').Page) {
   await page.route('**/api/v1/projects?*', (route) => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -112,7 +127,7 @@ async function mockProjectApis(page: import('@playwright/test').Page) {
       contentType: 'application/json',
       body: JSON.stringify({
         projects: [makeProjectSummary()],
-        pagination: { page: 1, limit: 10, totalCount: 1, totalPages: 1 },
+        pagination: { page: 1, limit: 30, totalCount: 1, totalPages: 1 },
       }),
     });
   });
@@ -154,7 +169,7 @@ const OWNER_USER_ID = 'user-e2e';
 /**
  * Mocks the org-user lookups the generic `ShareSidebar` needs
  * (`app/components/share/`) plus the projects members endpoints, so the
- * "Share" flow in `ProjectWorkspace` (see `share-adapter.ts`'s
+ * "Share" flow in the workspace's Members card (see `share-adapter.ts`'s
  * `createProjectShareAdapter`) can run end-to-end against a stub backend.
  */
 async function mockSharingApis(page: import('@playwright/test').Page) {
@@ -223,27 +238,28 @@ async function mockSharingApis(page: import('@playwright/test').Page) {
   });
 }
 
-test.describe('Projects — sidebar + workspace (mocked backend)', () => {
+test.describe('Projects — nav + list + workspace (mocked backend)', () => {
   test.beforeEach(async ({ page }) => {
     await mockBaselineApis(page);
     await mockProjectApis(page);
   });
 
-  test('sidebar lists the project under "Projects"', async ({ page }) => {
+  test('"Projects" nav item is visible and navigates to /projects', async ({ page }) => {
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
-    await expect(page.getByText(PROJECT_NAME).first()).toBeVisible({ timeout: 10_000 });
+    await page.getByText('Projects', { exact: true }).first().click();
+    await expect(page).toHaveURL(/\/projects\/?$/, { timeout: 10_000 });
   });
 
-  test('clicking the project in the sidebar navigates to ?projectId=', async ({ page }) => {
-    await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+  test('project list shows the project and navigates to ?projectId=', async ({ page }) => {
+    await page.goto('/projects/');
+    await expect(page.getByText(PROJECT_NAME).first()).toBeVisible({ timeout: 10_000 });
     await page.getByText(PROJECT_NAME).first().click();
     await expect(page).toHaveURL(new RegExp(`projectId=${PROJECT_ID}`), { timeout: 10_000 });
   });
 
   test('project workspace renders name, description, and instructions', async ({ page }) => {
-    await page.goto(`/chat/?projectId=${PROJECT_ID}`);
+    await page.goto(`/projects/?projectId=${PROJECT_ID}`);
     await page.waitForSelector('textarea', { timeout: 15_000 });
     await expect(page.getByText(PROJECT_NAME).first()).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText('Coordinate the Q3 product launch').first()).toBeVisible();
@@ -253,10 +269,19 @@ test.describe('Projects — sidebar + workspace (mocked backend)', () => {
   });
 
   test('composer is available directly from the project workspace', async ({ page }) => {
-    await page.goto(`/chat/?projectId=${PROJECT_ID}`);
+    await page.goto(`/projects/?projectId=${PROJECT_ID}`);
     await page.waitForSelector('textarea', { timeout: 15_000 });
     const textarea = page.locator('textarea').last();
     await expect(textarea).toBeVisible();
+  });
+
+  test('`/chat/?projectId=…` with no conversationId redirects back to the workspace', async ({
+    page,
+  }) => {
+    await page.goto(`/chat/?projectId=${PROJECT_ID}`);
+    await expect(page).toHaveURL(new RegExp(`/projects/\\?projectId=${PROJECT_ID}`), {
+      timeout: 10_000,
+    });
   });
 });
 
@@ -294,7 +319,7 @@ test.describe('Projects — starting a new project-scoped conversation', () => {
       });
     });
 
-    await page.goto(`/chat/?projectId=${PROJECT_ID}`);
+    await page.goto(`/projects/?projectId=${PROJECT_ID}`);
     await page.waitForSelector('textarea', { timeout: 15_000 });
 
     await sendMessage(page, QUESTION);
@@ -328,7 +353,7 @@ test.describe('Projects — starting a new project-scoped conversation', () => {
       });
     });
 
-    await page.goto(`/chat/?projectId=${PROJECT_ID}`);
+    await page.goto(`/projects/?projectId=${PROJECT_ID}`);
     await page.waitForSelector('textarea', { timeout: 15_000 });
 
     await sendMessage(page, QUESTION);
@@ -347,12 +372,11 @@ test.describe('Projects — sharing (owner)', () => {
   });
 
   test('owner can open Share, add a member, and see them in the member count', async ({ page }) => {
-    await page.goto(`/chat/?projectId=${PROJECT_ID}`);
+    await page.goto(`/projects/?projectId=${PROJECT_ID}`);
     await page.waitForSelector('textarea', { timeout: 15_000 });
 
-    // makeProjectDetail() sets role: 'owner', so the Share entry point is visible.
-    // Not yet scoped to a dialog since the dialog isn't open — only the
-    // workspace's own "Share" button matches at this point.
+    // makeProjectDetail() sets role: 'owner', so the Members card's Share
+    // action is visible (settings-panel.tsx only renders it for isOwner).
     await page.getByRole('button', { name: 'Share', exact: true }).click();
 
     // Generic ShareSidebar (app/components/share/) driven by createProjectShareAdapter.

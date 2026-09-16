@@ -1,11 +1,15 @@
-import { Router } from 'express';
+import { Router, Response, NextFunction, RequestHandler } from 'express';
 import { Container } from 'inversify';
 import multer from 'multer';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
+import type { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/util';
+import { KB_UPLOAD_LIMITS } from '../../knowledge_base/constants/kb.constants';
 import {
   createProjectSchema,
   listProjectConversationsQuerySchema,
@@ -34,18 +38,39 @@ import {
   upsertProjectMembers,
 } from '../controller/project.controller';
 
-/** Mirrors the chat-attachment upload cap (5 MB/file, 10 files/request) — see es.routes.ts. */
-const PROJECT_FILE_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+const PROJECT_FILE_MAX_COUNT = 10;
 
 export function createProjectsRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const appConfig = container.get<AppConfig>('AppConfig');
 
-  const projectFileUpload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: PROJECT_FILE_UPLOAD_MAX_BYTES, files: 10 },
-  });
+  const resolveMaxUploadSize = async (): Promise<number> => {
+    try {
+      const kvs = container.get<KeyValueStoreService>('KeyValueStoreService');
+      const settings = await getPlatformSettingsFromStore(kvs);
+      return settings.fileUploadMaxSizeBytes;
+    } catch {
+      return KB_UPLOAD_LIMITS.defaultMaxFileSizeBytes;
+    }
+  };
+
+  const projectFileUploadMiddleware: RequestHandler = async (
+    req: AuthenticatedUserRequest,
+    _res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const maxFileSize = await resolveMaxUploadSize();
+      const upload = multer({
+        storage: multer.memoryStorage(),
+        limits: { fileSize: maxFileSize, files: PROJECT_FILE_MAX_COUNT },
+      });
+      upload.array('files')(req, _res, next);
+    } catch (error) {
+      next(error);
+    }
+  };
 
   router.post(
     '/',
@@ -131,7 +156,7 @@ export function createProjectsRouter(container: Container): Router {
     '/:projectId/files',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.PROJECT_WRITE),
-    projectFileUpload.array('files'),
+    projectFileUploadMiddleware,
     ValidationMiddleware.validate(projectIdParamsSchema),
     uploadProjectFiles(appConfig),
   );

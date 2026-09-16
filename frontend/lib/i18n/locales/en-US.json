@@ -29,6 +29,19 @@
     "missingAgentKey": "Missing agent key. Open an agent from the chat sidebar or use a valid link.",
     "loading": "Loading…"
   },
+  "projects": {
+    "pageTitle": "Projects",
+    "searchPlaceholder": "Search projects…",
+    "emptyState": "No projects yet",
+    "emptyStateHint": "Create a project to organize chats, files, and instructions.",
+    "failedToLoad": "Failed to load projects",
+    "chatCount_one": "{{count}} chat",
+    "chatCount_other": "{{count}} chats",
+    "lastActive": "Active {{date}}",
+    "pinnedSection": "Pinned",
+    "allSection": "All projects",
+    "backToAllProjects": "All projects"
+  },
   "timeGroup": {
     "today": "Today",
     "yesterday": "Yesterday",
@@ -212,6 +225,7 @@
     "moreConnectors": "More Connectors",
     "all": "All",
     "agents": "Agents",
+    "projects": "Projects",
     "searchChats": "Search Chats",
     "inbox": "Inbox",
     "notifications": "Notifications"
@@ -807,6 +821,7 @@
       "deleteProject": "Delete project",
       "shareProject": "Share project",
       "backToProjects": "All projects",
+      "backToProject": "Back to project",
       "newChatInProject": "New chat",
       "recentChats": "Recent chats",
       "noChats": "No chats yet in this project",
