@@ -117,6 +117,7 @@ from app.agents.agent_loop.hooks import (
     citation_tracking,
     completion_gate,
     conversation_enrichment,
+    progressive_entity_tools,
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
@@ -130,6 +131,11 @@ from app.agents.agent_loop.image_guard import with_image_cap
 from app.agents.agent_loop.langchain_transport import (
     LangChainTransport,
     _supports_multipart_tool_result,
+)
+from app.agents.agent_loop.hooks.progressive_tools import (
+    ENTITY_TOOL_NAMES,
+    PROGRESSIVE_TOOL_NAMES,
+    entity_tools_used_in_history,
 )
 from app.agents.agent_loop.lazy_tools_wiring import (
     CONNECTORS_PARENT,
@@ -255,6 +261,18 @@ def _composed_agents_enabled() -> bool:
     customer-facing setting, exists so a deployment can fall back to the
     flat all-tools agent without a code change."""
     return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"
+
+
+def _initial_entity_tool_grant(tool_names: list[str], context: "AgentContext") -> list[str]:
+    """Entity tools are hidden when no entity store is wired (they could only
+    fail). ``find_records_by_entity`` needs an entityId, so it starts hidden
+    until ``search_entities`` runs (``hooks/progressive_tools.py``) — unless an
+    earlier turn already used an entity tool and its ids are in the history."""
+    if not context.tool_state.get("entity_vector_store"):
+        return [n for n in tool_names if n not in ENTITY_TOOL_NAMES]
+    if entity_tools_used_in_history(context.previous_conversations):
+        return tool_names
+    return [n for n in tool_names if n not in PROGRESSIVE_TOOL_NAMES]
 
 
 class PipesHubAgentFactory:
@@ -720,7 +738,8 @@ class PipesHubAgentFactory:
             if mode.loop_kind == "orchestrator":
                 runtime.spec_factory = domain_spec_factory(
                     provider=_transport_provider(), model_name=model_name,
-                    default_tool_names=composed_names, context=context,
+                    default_tool_names=_initial_entity_tool_grant(composed_names, context),
+                    context=context,
                 )
             elif mode.loop_kind == "plan_execute":
                 # `composition_plan` was snapshotted by `plan_domain_agents()`
@@ -739,9 +758,10 @@ class PipesHubAgentFactory:
             # this feature's pre-existing behavior.
             runtime.spec_factory = domain_spec_factory(
                 provider=_transport_provider(), model_name=model_name,
-                default_tool_names=[
-                    n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES
-                ],
+                default_tool_names=_initial_entity_tool_grant(
+                    [n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES],
+                    context,
+                ),
                 context=context,
             )
 
@@ -829,6 +849,8 @@ class PipesHubAgentFactory:
                 "(org_id=%s conversation_id=%s)",
                 len(tool_names), context.org_id, context.conversation_id,
             )
+
+        tool_names = _initial_entity_tool_grant(tool_names, context)
 
         spec = AgentSpec(
             name="pipeshub-agent",
@@ -1002,6 +1024,7 @@ class PipesHubAgentFactory:
 
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))
+        hooks.on(HookEvent.POST_TOOL_USE).use(progressive_entity_tools(context))
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))

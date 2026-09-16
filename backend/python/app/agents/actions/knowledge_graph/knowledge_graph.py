@@ -739,6 +739,21 @@ class KnowledgeGraph:
                 ),
                 required=False,
             ),
+            ToolParameter(
+                name="entity_ids",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Optional entityIds returned by search_entities in this conversation — "
+                    "restricts the search to content connected to those entities. Accepts "
+                    "department/category/subcategory/topic/language entities and record_group "
+                    "entities (a Drive folder, Jira project, Slack channel, ...; restricts to "
+                    "that group's records). Nothing is detected from the query text "
+                    "automatically. If nothing matches inside the entity, the result says the "
+                    "entity filter was dropped."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
         args_summary=lambda args: (
@@ -760,6 +775,7 @@ class KnowledgeGraph:
         created_before: str | None = None,
         modified_after: str | None = None,
         modified_before: str | None = None,
+        entity_ids: list[str] | None = None,
     ) -> str:
         """Semantic search — calls ops/search.py execute_search."""
         from .ops.search import execute_search
@@ -771,6 +787,167 @@ class KnowledgeGraph:
             created_before=created_before,
             modified_after=modified_after,
             modified_before=modified_before,
+            entity_ids=entity_ids,
+        )
+
+    # -----------------------------------------------------------------------
+    # search_entities — essential (turn-0) entity discovery
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/search_entities",
+        short_description="Find departments, categories, topics, languages, record groups and record titles the user can access",
+        description=(
+            "Semantic lookup of knowledge-graph entities by name or description: departments, "
+            "categories, subcategories, topics, languages, record groups (a project, space, "
+            "folder, channel, ...) and record titles. Only entities backed by records you can "
+            "access are returned.\n\n"
+            "Call it when the question names one of these — a team, a topic, a category, a "
+            "project or space, a document title — to find the matching entity, alongside or "
+            "before a content search.\n\n"
+            "Each result has entityId, entityType, name, score and the apps it appears in. The "
+            "top few department/category/topic/language/record_group results also include a "
+            "short preview of records (newest first) with moreRecords when there are more.\n\n"
+            "Next steps:\n"
+            "  - knowledgegraph__find_records_by_entity(entity_id=...) lists the records "
+            "connected to one entity, newest first, with paging.\n"
+            "  - search(query=..., entity_ids=[...]) searches content inside a "
+            "department/category/subcategory/topic/language or record_group entity.\n"
+            "  - A 'record' result's entityId is a Record ID: pass it straight to "
+            "fetch_record or navigate."
+        ),
+        parameters=[
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="The entity name or description to look for — e.g. 'legal', 'Q3 roadmap', 'the design team', 'onboarding checklist'.",
+                required=True,
+            ),
+            ToolParameter(
+                name="entity_types",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Optional filter on entity type: 'department', 'category', 'subcategory', "
+                    "'topic', 'language', 'record_group', 'record'. Omit to search all types."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="top_k",
+                type=ParameterType.INTEGER,
+                description="Maximum entities to return (1-25, default 10).",
+                required=False,
+                default=10,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Searched entities for "{args.get("query", "")}"' if args.get("query") else None
+        ),
+        result_summary=lambda args, result: (
+            _search_entities_result_summary(args, result)
+        ),
+        display_name="Searched knowledge graph entities",
+    )
+    async def search_entities(
+        self,
+        query: str | None = None,
+        entity_types: list[str] | None = None,
+        top_k: int = 10,
+    ) -> tuple[bool, str]:
+        """Entity discovery — calls ops/entity_discovery.py."""
+        from .ops.entity_discovery import execute_search_entities
+        return await execute_search_entities(
+            self.state,
+            query=query,
+            entity_types=entity_types,
+            top_k=top_k,
+        )
+
+    # -----------------------------------------------------------------------
+    # find_records_by_entity — granted once search_entities has been called
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/find_records_by_entity",
+        short_description="List the records connected to one entity that the user can access",
+        description=(
+            "Given an entityId from search_entities, list the records connected to it that you "
+            "can access, newest first: every record tagged with a department, category, "
+            "subcategory, topic or language, every record directly inside a record_group, or "
+            "the record itself for a 'record' entity.\n\n"
+            "Use it when the question is about an entity's records as a whole ('what's tagged "
+            "Q3 Roadmap', 'what's in this Drive folder', 'Legal's documents'). For content "
+            "inside an entity, use search(entity_ids=[...]) instead.\n\n"
+            "Pages with cursor: when more records may exist the output ends with the exact "
+            "call for the next page. There are no totals. 'No accessible records found' is the "
+            "same response whether the entity has no records or none you can access."
+        ),
+        parameters=[
+            ToolParameter(
+                name="entity_id",
+                type=ParameterType.STRING,
+                description="The entityId from search_entities.",
+                required=True,
+            ),
+            ToolParameter(
+                name="entity_type",
+                type=ParameterType.STRING,
+                description=(
+                    "The entity's type: 'department', 'category', 'subcategory', 'topic', "
+                    "'language', 'record_group' or 'record'. Optional when the entityId came "
+                    "from search_entities in this conversation."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="record_types",
+                type=ParameterType.ARRAY,
+                description="Optional filter by record type (e.g. 'FILE', 'MAIL', 'TICKET', 'CONFLUENCE_PAGE').",
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="limit",
+                type=ParameterType.INTEGER,
+                description="Records per page (1-50, default 20).",
+                required=False,
+                default=20,
+            ),
+            ToolParameter(
+                name="cursor",
+                type=ParameterType.STRING,
+                description="Cursor from the previous page's output. Omit for the first page.",
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Found records for entity {args.get("entity_id", "")}' if args.get("entity_id") else None
+        ),
+        result_summary=lambda args, result: (
+            _find_records_by_entity_result_summary(args, result)
+        ),
+        display_name="Found records connected to entity",
+    )
+    async def find_records_by_entity(
+        self,
+        entity_id: str | None = None,
+        entity_type: str | None = None,
+        record_types: list[str] | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> tuple[bool, str]:
+        """Entity-to-record listing — calls ops/entity_records.py."""
+        from .ops.entity_records import execute_find_records_by_entity
+        return await execute_find_records_by_entity(
+            self.state,
+            entity_id=entity_id,
+            entity_type=entity_type,
+            record_types=record_types,
+            limit=limit,
+            cursor=cursor,
         )
 
     # -----------------------------------------------------------------------
@@ -938,6 +1115,36 @@ def _search_result_summary(args: dict[str, Any], result: "ToolResult") -> str | 
     if not names:
         return header
     return header + "\n" + bullet_list(names)
+
+
+def _search_entities_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    from app.agents.actions.util.tool_summaries import as_text, parse_json_maybe
+
+    text = as_text(result.content)
+    if not text:
+        return None
+    parsed = parse_json_maybe(text)
+    if not isinstance(parsed, dict):
+        return "Entity search failed" if result.is_error else None
+    if result.is_error or parsed.get("status") == "error":
+        return parsed.get("message") or "Entity search failed"
+    results = parsed.get("results") or []
+    if not results:
+        return parsed.get("message") or "No matching entities found"
+    names = [r.get("name") for r in results[:3] if isinstance(r, dict) and r.get("name")]
+    suffix = f" (+{len(results) - 3} more)" if len(results) > 3 else ""
+    return f"Found {len(results)} entit{'y' if len(results) == 1 else 'ies'}: " + ", ".join(names) + suffix
+
+
+def _find_records_by_entity_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    content = result.content or ""
+    if not content:
+        return None
+    text = str(content)
+    first_line = text.split("\n", 1)[0]
+    if result.is_error:
+        return f"Lookup failed: {first_line}"
+    return first_line or "Found records"
 
 
 def _list_files_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:

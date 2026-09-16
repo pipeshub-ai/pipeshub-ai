@@ -306,6 +306,7 @@ class EventService:
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
 
             await self._store_connector(connector_id, connector)
+
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
@@ -806,6 +807,29 @@ class EventService:
                     f"❌ Failed to delete etcd config for connector {connector_id}: {config_err}. "
                     f"Orphaned configuration may remain."
                 )
+
+            # Remove connector-scoped entities from the entity vector store.
+            # This is a single filtered delete on (orgId, connectorId) — entities
+            # not scoped to a specific connector (e.g. cross-connector taxonomy
+            # entities) are untouched. The graph DB remains the source of truth;
+            # a subsequent entity-sync/trigger will restore anything still valid.
+            if hasattr(self.app_container, "entity_vector_store"):
+                try:
+                    entity_vector_store = await self.app_container.entity_vector_store()
+                    if entity_vector_store is not None:
+                        await entity_vector_store.delete_entities_by_connector(
+                            org_id=org_id,
+                            connector_id=connector_id,
+                        )
+                        self.logger.info(
+                            f"✅ Entity vector store entries removed for connector {connector_id}"
+                        )
+                except Exception as evt_err:
+                    self.logger.error(
+                        f"❌ Failed to remove entity vector store entries for "
+                        f"connector {connector_id}: {evt_err}. "
+                        f"Orphaned entity vectors may remain — use entity-sync/trigger to repair."
+                    )
 
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
             return True

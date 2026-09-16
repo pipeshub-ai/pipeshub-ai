@@ -538,8 +538,6 @@ class TestExtractMetadata:
             category="Technical",
             subcategories=SubCategories(level1="Software", level2="Backend", level3="API"),
             languages=["English"],
-            sentiment="Positive",
-            confidence_score=0.95,
             topics=["microservices"],
             summary="A document about microservices.",
         )
@@ -584,8 +582,6 @@ class TestExtractMetadata:
             category="",
             subcategories=SubCategories(level1="", level2="", level3=""),
             languages=[],
-            sentiment="Neutral",
-            confidence_score=0.0,
             topics=[],
             summary="Fallback summary text",
         )
@@ -666,8 +662,6 @@ class TestFallbackSummary:
 
         assert result is not None
         assert result.summary == "This is a summary of the doc."
-        assert result.sentiment == "Neutral"
-        assert result.confidence_score == 0.0
 
     @pytest.mark.asyncio
     async def test_fallback_empty_response_returns_none(self):
@@ -777,8 +771,6 @@ class TestDocumentExtractionApply:
             category="Policy",
             subcategories=SubCategories(level1="Benefits", level2="Health", level3="Insurance"),
             languages=["English"],
-            sentiment="Neutral",
-            confidence_score=0.85,
             topics=["benefits"],
             summary="A benefits policy document.",
         )
@@ -954,8 +946,6 @@ class TestExtractMetadataDeeper:
             category="Technical",
             subcategories=SubCategories(level1="Software", level2="", level3=""),
             languages=["English"],
-            sentiment="Positive",
-            confidence_score=0.9,
             topics=["API"],
             summary="API documentation with images.",
         )
@@ -1007,8 +997,6 @@ class TestExtractMetadataDeeper:
             category="General",
             subcategories=SubCategories(level1="", level2="", level3=""),
             languages=["English"],
-            sentiment="Neutral",
-            confidence_score=0.5,
             topics=[],
             summary="Short summary.",
         )
@@ -1047,6 +1035,140 @@ class TestExtractMetadataDeeper:
         ):
             with pytest.raises(RuntimeError, match="LLM unavailable"):
                 await ext.extract_metadata([_make_text_block("text")], "org-1")
+
+
+# =========================================================================
+# extract_metadata / classify — record_name / record_type substitution
+# =========================================================================
+class TestRecordMetadataSubstitution:
+    """The prompt carries {record_name}/{record_type} as classification
+    evidence; both must reach the filled prompt without .format() exploding
+    on braces that occur naturally in connector-sourced file names."""
+
+    @pytest.mark.asyncio
+    async def test_extract_metadata_substitutes_record_name_and_type(self):
+        from app.modules.transformers.document_extraction import (
+            DocumentClassification,
+            SubCategories,
+        )
+
+        ext = _build_extractor()
+        fake_classification = DocumentClassification(
+            departments=[],
+            category="General",
+            subcategories=SubCategories(level1="", level2="", level3=""),
+            languages=["English"],
+            topics=[],
+            summary="Summary.",
+        )
+        fake_llm = MagicMock()
+        fake_config = {"isMultimodal": False, "contextLength": 128000}
+        blocks = [_make_text_block("Some content")]
+
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(fake_llm, fake_config),
+        ), patch.object(
+            ext, "graph_provider"
+        ) as mock_graph, patch(
+            "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=fake_classification,
+        ) as mock_invoke:
+            mock_graph.get_departments = AsyncMock(return_value=[])
+
+            await ext.extract_metadata(
+                blocks, "org-1", record_name="Q3 Board Deck.pdf", record_type="FILE",
+            )
+
+        messages = mock_invoke.call_args[0][1]
+        filled_prompt = messages[0].content[0]["text"]
+        assert "Q3 Board Deck.pdf" in filled_prompt
+        assert "FILE" in filled_prompt
+        assert "{record_name}" not in filled_prompt
+        assert "{record_type}" not in filled_prompt
+
+    @pytest.mark.asyncio
+    async def test_extract_metadata_defaults_when_record_metadata_missing(self):
+        from app.modules.transformers.document_extraction import (
+            DocumentClassification,
+            SubCategories,
+        )
+
+        ext = _build_extractor()
+        fake_classification = DocumentClassification(
+            departments=[],
+            category="General",
+            subcategories=SubCategories(level1="", level2="", level3=""),
+            languages=["English"],
+            topics=[],
+            summary="Summary.",
+        )
+        fake_llm = MagicMock()
+        fake_config = {"isMultimodal": False, "contextLength": 128000}
+        blocks = [_make_text_block("Some content")]
+
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(fake_llm, fake_config),
+        ), patch.object(
+            ext, "graph_provider"
+        ) as mock_graph, patch(
+            "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=fake_classification,
+        ) as mock_invoke:
+            mock_graph.get_departments = AsyncMock(return_value=[])
+
+            await ext.extract_metadata(blocks, "org-1")
+
+        messages = mock_invoke.call_args[0][1]
+        filled_prompt = messages[0].content[0]["text"]
+        assert "(unknown)" in filled_prompt
+
+    @pytest.mark.asyncio
+    async def test_classify_record_name_with_braces_does_not_raise(self):
+        """A record name from a connector can legitimately contain braces
+        (e.g. "report_{final}.pdf"); `.format()` would raise on that, which
+        is why substitution uses `.replace()` instead."""
+        from app.modules.transformers.document_extraction import (
+            DocumentClassification,
+            SubCategories,
+        )
+
+        ext = _build_extractor()
+        fake_classification = DocumentClassification(
+            departments=[],
+            category="General",
+            subcategories=SubCategories(level1="", level2="", level3=""),
+            languages=["English"],
+            topics=[],
+            summary="Summary.",
+        )
+        fake_llm = MagicMock()
+        fake_config = {"isMultimodal": False, "contextLength": 128000}
+        blocks = [_make_text_block("Some content")]
+
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(fake_llm, fake_config),
+        ), patch(
+            "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=fake_classification,
+        ) as mock_invoke:
+            result = await ext.classify(
+                blocks,
+                "org-1",
+                departments=["Engineering"],
+                record_name="report_{final}.pdf",
+                record_type="FILE",
+            )
+
+        assert result is not None
+        messages = mock_invoke.call_args[0][1]
+        filled_prompt = messages[0].content[0]["text"]
+        assert "report_{final}.pdf" in filled_prompt
 
 
 # =========================================================================

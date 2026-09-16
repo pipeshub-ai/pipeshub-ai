@@ -243,12 +243,30 @@ async def get_services(request: Request) -> dict[str, Any]:
     config_service = container.config_service()
     logger = container.logger()
 
+    # Get and verify LLM
+    llm = retrieval_service.llm
+    if llm is None:
+        llm = await retrieval_service.get_llm_instance()
+        if llm is None:
+            raise LLMInitializationError()
+
+    # Optional — backs the knowledgegraph search_entities /
+    # find_records_by_entity tools; when unavailable they are not granted.
+    entity_vector_store = None
+    if hasattr(container, "entity_vector_store"):
+        try:
+            entity_vector_store = await container.entity_vector_store()
+        except Exception as exc:
+            logger.warning("entity_vector_store unavailable for agent chat: %s", exc)
+
     return {
         "retrieval_service": retrieval_service,
         "graph_provider": graph_provider,
         "reranker_service": reranker_service,
         "config_service": config_service,
         "logger": logger,
+        "llm": llm,
+        "entity_vector_store": entity_vector_store,
     }
 
 
@@ -3195,6 +3213,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         retrieval_service = services["retrieval_service"]
         reranker_service = services["reranker_service"]
         config_service = services["config_service"]
+        entity_vector_store = services["entity_vector_store"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
 
@@ -3840,6 +3859,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                             conversation_id=chat_query.conversationId,
                         ) if is_service_account else None
                     ),
+                    entity_vector_store=entity_vector_store,
                 )
 
                 async for _evt in generator:

@@ -240,8 +240,6 @@ class TestProcessDocument:
             category="Policy",
             subcategories=SubCategories(level1="a", level2="b", level3="c"),
             languages=["en"],
-            sentiment="Neutral",
-            confidence_score=0.8,
             topics=["test"],
             summary="Test summary",
         )
@@ -287,8 +285,6 @@ class TestExtractMetadataDepartmentsFallback:
             category="Technical",
             subcategories=SubCategories(level1="SW", level2="", level3=""),
             languages=["English"],
-            sentiment="Neutral",
-            confidence_score=0.8,
             topics=["test"],
             summary="Test summary",
         )
@@ -327,8 +323,6 @@ class TestExtractMetadataDepartmentsFallback:
             category="General",
             subcategories=SubCategories(level1="", level2="", level3=""),
             languages=["en"],
-            sentiment="Neutral",
-            confidence_score=0.5,
             topics=[],
             summary="A summary",
         )
