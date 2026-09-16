@@ -35,6 +35,7 @@ from app.services.messaging.consumer_concurrency import (
     parse_ceiling,
     parse_lease_pool,
     pending_task_ceiling,
+    record_worker_loop_exit,
     release_admission,
     release_distributed_slot,
     report_memory_incident_if_applicable,
@@ -1187,3 +1188,36 @@ class TestDispatchBudget:
         assert payload["total"] == {"waiters": 5, "ceiling": 64}
         assert payload["tiers"]["heavy"] == {"waiters": 3, "ceiling": 8, "allows": True}
         assert payload["blocked"] is False
+
+
+class TestRecordWorkerLoopExit:
+    def test_exit_requested_by_stop_is_not_a_failure(self) -> None:
+        host = _make_host(running=False)
+        host.worker_loop_error = None
+
+        record_worker_loop_exit(host, None)
+
+        assert host.worker_loop_error is None
+        host.logger.critical.assert_not_called()
+
+    def test_escaping_exception_stops_the_consumer_and_is_logged(self) -> None:
+        host = _make_host(running=True)
+        host.worker_loop_error = None
+        error = SystemExit(3)
+
+        record_worker_loop_exit(host, error)
+
+        assert host.running is False
+        assert host.worker_loop_error is error
+        host.logger.critical.assert_called_once()
+        assert host.logger.critical.call_args.kwargs["exc_info"] is error
+
+    def test_unrequested_clean_return_is_still_a_failure(self) -> None:
+        host = _make_host(running=True)
+        host.worker_loop_error = None
+
+        record_worker_loop_exit(host, None)
+
+        assert host.running is False
+        assert isinstance(host.worker_loop_error, RuntimeError)
+        host.logger.critical.assert_called_once()

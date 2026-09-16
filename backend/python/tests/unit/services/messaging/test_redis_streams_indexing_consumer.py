@@ -371,6 +371,103 @@ class TestStartStopWorkerThread:
         assert consumer.worker_executor is None
 
 
+def _kill_worker_loop(consumer, error: BaseException | None = None) -> None:
+    """Exit the worker loop from inside, with no stop() call, and wait for
+    its thread to finish."""
+    loop = consumer.worker_loop
+
+    def die() -> None:
+        if error is None:
+            loop.stop()
+        else:
+            raise error
+
+    loop.call_soon_threadsafe(die)
+    consumer.worker_executor.shutdown(wait=True)
+
+
+class TestWorkerLoopDiesWithoutStopRequest:
+    """A worker loop that exited on its own used to leave the consumer
+    dispatching into a closed loop ("Event loop is closed" per message) while
+    recovery re-claimed the same entries until the delivery backstop
+    dead-lettered healthy records."""
+
+    @staticmethod
+    def _start(consumer) -> None:
+        consumer.running = True
+        consumer._start_worker_thread()
+        assert consumer.worker_loop_ready.wait(timeout=5.0)
+
+    def test_escaping_exception_is_logged_and_stops_the_consumer(
+        self, consumer, caplog
+    ) -> None:
+        self._start(consumer)
+        error = SystemExit("boom")
+
+        with caplog.at_level(logging.CRITICAL, logger=consumer.logger.name):
+            _kill_worker_loop(consumer, error)
+
+        assert consumer.running is False
+        assert consumer.worker_loop_error is error
+        assert consumer.worker_loop.is_closed()
+        critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(critical) == 1
+        assert critical[0].exc_info[1] is error
+
+    def test_loop_stopped_from_inside_is_a_failure(self, consumer) -> None:
+        self._start(consumer)
+
+        _kill_worker_loop(consumer)
+
+        assert consumer.running is False
+        assert isinstance(consumer.worker_loop_error, RuntimeError)
+
+    @pytest.mark.asyncio
+    async def test_dead_loop_is_not_handed_work(self, consumer) -> None:
+        self._start(consumer)
+        _kill_worker_loop(consumer, SystemExit())
+
+        await consumer._start_processing_task("topic-a", "1-0", _valid_fields())
+
+        assert consumer._is_in_flight("1-0") is False
+        assert consumer._get_active_task_count() == 0
+        assert consumer._get_gate_waiter_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_recovery_claims_nothing_after_the_loop_dies(self, consumer) -> None:
+        """Every XAUTOCLAIM bumps times_delivered toward the dead-letter
+        backstop, so claiming for a loop that cannot run the work fails
+        healthy records."""
+        self._start(consumer)
+        _kill_worker_loop(consumer, SystemExit())
+        consumer.redis = AsyncMock()
+
+        await consumer._drain_pending()
+
+        consumer.redis.xautoclaim.assert_not_awaited()
+
+    def test_requested_stop_is_not_reported(self, consumer, caplog) -> None:
+        self._start(consumer)
+        consumer.running = False  # stop() clears this before stopping the loop
+
+        with caplog.at_level(logging.CRITICAL, logger=consumer.logger.name):
+            consumer._stop_worker_thread()
+
+        assert consumer.worker_loop_error is None
+        assert not [r for r in caplog.records if r.levelno == logging.CRITICAL]
+
+    def test_restart_clears_the_previous_failure(self, consumer) -> None:
+        self._start(consumer)
+        _kill_worker_loop(consumer, SystemExit())
+
+        self._start(consumer)
+        try:
+            assert consumer.worker_loop_error is None
+        finally:
+            consumer.running = False
+            consumer._stop_worker_thread()
+
+
 class TestConsumerMetadataCleanup:
     @pytest.mark.asyncio
     async def test_deletes_only_empty_idle_consumers(self, consumer):

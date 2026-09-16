@@ -163,6 +163,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.worker_executor: ThreadPoolExecutor | None = None
         self.worker_loop: asyncio.AbstractEventLoop | None = None
         self.worker_loop_ready = threading.Event()
+        self.worker_loop_error: BaseException | None = None
         self.main_loop: asyncio.AbstractEventLoop | None = None
         # Legacy fallback only: unused (stay None) once a governor is set.
         self.parsing_semaphore: asyncio.Semaphore | None = None
@@ -375,9 +376,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 )
                 self.worker_loop.call_soon(self.lease_renewer.start)
             self.worker_loop_ready.set()
+            exit_error: BaseException | None = None
             try:
                 self.worker_loop.run_forever()
+            except BaseException as exc:
+                exit_error = exc
+                raise
             finally:
+                concurrency.record_worker_loop_exit(self, exit_error)
                 pending = asyncio.all_tasks(self.worker_loop)
                 for task in pending:
                     task.cancel()
@@ -394,6 +400,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.logger.info("Worker thread event loop closed")
 
         self.worker_loop_ready.clear()
+        self.worker_loop_error = None
         self.worker_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="indexing-worker"
         )

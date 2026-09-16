@@ -104,6 +104,9 @@ class ConcurrencyHost(Protocol):
     # gate/semaphore, by index tier (see GateWaiters / GateWaiterToken).
     gate_waiters: "GateWaiters"
     _futures_lock: Any
+    # Set when the worker event loop exits without a stop request; None while
+    # it is healthy. Read by the indexing service's /health route.
+    worker_loop_error: BaseException | None
 
 
 async def bridge_to_main_loop(
@@ -152,6 +155,34 @@ def _consume_orphaned_result(fut: "asyncio.Future[Any]") -> None:
     exc = fut.exception()
     if exc is not None:
         logger.debug("Detached main-loop operation failed after its caller gave up: %r", exc)
+
+
+def record_worker_loop_exit(
+    host: ConcurrencyHost, error: BaseException | None
+) -> None:
+    """Stop the consumer taking work when its worker loop exits unrequested.
+
+    Call from the worker thread as ``run_forever()`` returns or raises, before
+    its tasks are cancelled and the loop closed. ``stop()`` clears ``running``
+    first, so ``running`` still being set means nothing asked for this exit.
+    Left running, the consumer hands every entry to the closed loop and
+    recovery re-claims those entries until their delivery count dead-letters
+    healthy records. Nothing reads the worker thread's executor future, so
+    this log line is the only place the cause surfaces.
+    """
+    if not host.running:
+        return
+    host.worker_loop_error = error or RuntimeError(
+        "worker event loop stopped without a stop request"
+    )
+    host.running = False
+    host.logger.critical(
+        "Indexing worker event loop exited unexpectedly (%r); this consumer "
+        "has stopped taking work and un-acknowledged messages stay pending "
+        "for redelivery. Restart the indexing service to resume.",
+        host.worker_loop_error,
+        exc_info=error,
+    )
 
 
 def _normalize_operation(operation: str) -> str:

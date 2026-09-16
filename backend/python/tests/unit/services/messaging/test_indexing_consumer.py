@@ -122,6 +122,35 @@ class TestStopWorkerThread:
         assert len(consumer._active_futures) == 0
 
 
+class TestWorkerLoopDiesWithoutStopRequest:
+    @staticmethod
+    def _start(consumer) -> None:
+        consumer.running = True
+        consumer._IndexingKafkaConsumer__start_worker_thread()
+        assert consumer.worker_loop_ready.wait(timeout=5.0)
+
+    def test_escaping_exception_stops_the_consumer(self, consumer) -> None:
+        self._start(consumer)
+        error = SystemExit("boom")
+
+        def die() -> None:
+            raise error
+
+        consumer.worker_loop.call_soon_threadsafe(die)
+        consumer.worker_executor.shutdown(wait=True)
+
+        assert consumer.running is False
+        assert consumer.worker_loop_error is error
+
+    def test_requested_stop_is_not_a_failure(self, consumer) -> None:
+        self._start(consumer)
+        consumer.running = False  # stop() clears this before stopping the loop
+
+        consumer._IndexingKafkaConsumer__stop_worker_thread()
+
+        assert consumer.worker_loop_error is None
+
+
 # ===================================================================
 # _wait_for_active_futures - timeout and error
 # ===================================================================
