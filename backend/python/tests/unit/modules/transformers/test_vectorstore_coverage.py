@@ -591,36 +591,52 @@ class TestGetEmbeddingModelInstanceNullGuard:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_local_when_ai_models_is_none(self):
-        """config_service returns None → falls back to local embedding, no crash."""
+        """config_service returns None → get_default_embedding_model is invoked,
+        the VectorStore publishes dense_embeddings and embedding_size, and returns False
+        (non-multimodal)."""
         vs = _make_vectorstore()
         vs.config_service.get_config = AsyncMock(return_value=None)
 
         fake_embeddings = AsyncMock()
         fake_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 384)
 
+        mock_default = MagicMock(return_value=fake_embeddings)
         with patch(
             "app.modules.transformers.vectorstore.get_default_embedding_model",
-            return_value=fake_embeddings,
+            mock_default,
         ):
             result = await vs.get_embedding_model_instance()
 
+        # The fallback must have been invoked exactly once
+        mock_default.assert_called_once()
+        # The VectorStore must publish the initialized model state
+        assert vs.dense_embeddings is fake_embeddings
+        assert vs.embedding_size == 384
         assert result is False  # is_multimodal defaults to False for local model
 
     @pytest.mark.asyncio
     async def test_falls_back_to_local_when_embedding_key_missing(self):
-        """config_service returns dict without 'embedding' key → fallback, no crash."""
+        """config_service returns dict without 'embedding' key → get_default_embedding_model
+        is invoked, the VectorStore publishes dense_embeddings and embedding_size, and
+        returns False (non-multimodal)."""
         vs = _make_vectorstore()
         vs.config_service.get_config = AsyncMock(return_value={"llm": []})
 
         fake_embeddings = AsyncMock()
-        fake_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 384)
+        fake_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 512)
 
+        mock_default = MagicMock(return_value=fake_embeddings)
         with patch(
             "app.modules.transformers.vectorstore.get_default_embedding_model",
-            return_value=fake_embeddings,
+            mock_default,
         ):
             result = await vs.get_embedding_model_instance()
 
+        # The fallback must have been invoked exactly once
+        mock_default.assert_called_once()
+        # The VectorStore must publish the initialized model state
+        assert vs.dense_embeddings is fake_embeddings
+        assert vs.embedding_size == 512
         assert result is False
 
     @pytest.mark.asyncio
