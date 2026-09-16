@@ -67,7 +67,6 @@ from app.connectors.core.registry.filters import (
     OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
-    require_single_value,
 )
 from app.connectors.sources.github.common.apps import GithubApp
 from app.connectors.sources.github_teams.connector import AUTHORIZE_URL, TOKEN_URL, GitHubTeamsConnector
@@ -144,13 +143,13 @@ class GitHubPersonalProjectsSync(ProjectsSync):
             by_id: dict[int, GhObject] = {}
             for full_name in repo_in:
                 if "/" not in full_name:
-                    raise ValueError(f"Selected repository is malformed (expected owner/repo): {full_name}")
+                    self.logger.error("Skipping malformed repo filter value (expected owner/repo): %s", full_name)
+                    continue
                 owner, name = full_name.split("/", 1)
                 res = await c.runtime.ds_call(c.data_source.get_repo, owner, name)
                 if not res.success or not res.data:
-                    raise RuntimeError(
-                        f"Selected repository {full_name} not found or inaccessible: {res.error}"
-                    )
+                    self.logger.error("Repository not found or inaccessible: %s (%s)", full_name, res.error)
+                    continue
                 by_id[int(res.data.id)] = res.data
             return list(by_id.values())
 
@@ -294,7 +293,6 @@ class GithubConnector(GitHubTeamsConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "github", self.connector_id, self.logger
             )
-            require_single_value(self.sync_filters, SyncFilterKey.REPO_IDS, "Repository")
             # Force a fresh ConnectorGroup upsert each run so re-runs after the
             # creator email is rotated pick up the new identity instead of
             # reusing a stale cached permission.

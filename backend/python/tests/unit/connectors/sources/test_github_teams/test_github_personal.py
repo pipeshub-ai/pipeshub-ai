@@ -26,13 +26,6 @@ from tests.unit.connectors.sources.test_github_teams.conftest import (
     ok_response,
 )
 
-
-@pytest.fixture(autouse=True)
-def _single_repo_guard_passes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """These run_sync tests mock load_connector_filters with empty collections;
-    the one-repo rule itself is covered in tests/unit/connectors/core/test_filters.py."""
-    monkeypatch.setattr(personal_mod, "require_single_value", lambda *_a, **_k: "org/repo")
-
 pytestmark = pytest.mark.anyio
 
 
@@ -155,7 +148,7 @@ class TestResolveReposWithFilters:
 
         assert result == [kept]
 
-    async def test_malformed_filter_value_fails_the_run(self) -> None:
+    async def test_malformed_filter_value_skipped(self) -> None:
         c = make_mock_connector()
         repo_filter = SimpleNamespace(
             is_empty=lambda: False, value=["no-slash-here"],
@@ -163,8 +156,10 @@ class TestResolveReposWithFilters:
         )
         c.sync_filters = {SyncFilterKey.REPO_IDS: repo_filter}
 
-        with pytest.raises(ValueError, match="malformed"):
-            await GitHubPersonalProjectsSync(c)._resolve_repos_with_filters()
+        sync = GitHubPersonalProjectsSync(c)
+        result = await sync._resolve_repos_with_filters()
+
+        assert result == []
 
     async def test_list_user_repos_failure_returns_empty(self) -> None:
         c = make_mock_connector()
@@ -176,19 +171,28 @@ class TestResolveReposWithFilters:
 
         assert result == []
 
-    async def test_inaccessible_selected_repo_fails_the_run(self) -> None:
-        """One repo per instance: if it cannot be fetched there is nothing
-        to sync, and silently syncing nothing would look like success."""
+    async def test_inaccessible_repo_in_filter_is_skipped(self) -> None:
         c = make_mock_connector()
         c.sync_filters = {
             SyncFilterKey.REPO_IDS: SimpleNamespace(
-                is_empty=lambda: False, value=["me/gone"], operator_value="in",
+                is_empty=lambda: False, value=["me/gone", "me/kept"], operator_value="in",
             )
         }
-        c.runtime.ds_call.return_value = failed_response("404")
+        kept = make_repo(repo_id=2, owner_login="me", name="kept")
 
-        with pytest.raises(RuntimeError, match="me/gone"):
-            await GitHubPersonalProjectsSync(c)._resolve_repos_with_filters()
+        def dispatch(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.get_repo:
+                _owner, name = args
+                if name == "gone":
+                    return failed_response("404")
+                return ok_response(kept)
+            raise AssertionError("unexpected ds_call")
+
+        c.runtime.ds_call.side_effect = dispatch
+
+        result = await GitHubPersonalProjectsSync(c)._resolve_repos_with_filters()
+
+        assert [r.id for r in result] == [2]
 
 
 class TestPersonalConnectorLifecycle:

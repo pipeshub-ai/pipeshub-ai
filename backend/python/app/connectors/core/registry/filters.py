@@ -1015,7 +1015,6 @@ def sync_filter_selection_problems(
 
     Called on the enable toggle (a connector can be enabled straight after
     authentication without ever saving filters) and on the filter save routes.
-    Must agree with ``require_single_value``, the run-time backstop.
     """
     problems: list[str] = []
     for field in schema_fields:
@@ -1044,32 +1043,6 @@ def sync_filter_selection_problems(
                     f"configuration uses an unsupported '{operator}' rule."
                 )
     return problems
-
-
-def require_single_value(
-    filters: "FilterCollection | None",
-    key: str | Enum,
-    display_name: str,
-) -> str:
-    """Return the one value a SELECT sync filter must hold, or raise ValueError.
-
-    Runs at the top of ``run_sync`` so configs the save routes never saw
-    (legacy multi-value, ``not_in`` or empty selections written before the
-    field became single-select) fail loudly instead of syncing the wrong scope.
-    """
-    f = filters.get(key) if filters else None
-    values = _selected_ids(f.as_list()) if f and not f.is_empty() else []
-    if len(values) != 1:
-        raise ValueError(
-            f"{display_name}: exactly one must be selected for this connector "
-            f"instance (found {len(values)}). Open the connector settings and pick one."
-        )
-    if f.operator_value != FilterOperator.IN:
-        raise ValueError(
-            f"{display_name}: operator '{f.operator_value}' is not supported; "
-            "select the single repository to sync."
-        )
-    return values[0]
 
 
 async def load_connector_filters(

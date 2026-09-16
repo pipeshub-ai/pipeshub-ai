@@ -25,7 +25,6 @@ from app.connectors.core.registry.filters import (
     StringOperator,
     SelectOperator,
     SyncFilterKey,
-    require_single_value,
     sync_filter_selection_problems,
     TYPE_OPERATORS,
     get_operator_enum_class,
@@ -1173,41 +1172,3 @@ class TestSyncFilterSelectionProblems:
             "Select a repository before enabling this connector. "
             "Each connector instance syncs exactly one repository."
         ]
-
-
-class TestRequireSingleValue:
-    def _collection(self, value: list[str], operator: str = "in") -> FilterCollection:
-        return FilterCollection.from_dict({
-            "repo_ids": {"type": "select", "operator": operator, "value": value},
-        })
-
-    def test_returns_the_single_value(self) -> None:
-        assert require_single_value(self._collection(["o/r"]), SyncFilterKey.REPO_IDS, "Repository") == "o/r"
-
-    @pytest.mark.parametrize("filters", [None, FilterCollection(), "empty"])
-    def test_missing_selection_raises(self, filters: FilterCollection | str | None) -> None:
-        if filters == "empty":
-            filters = FilterCollection.from_dict({
-                "repo_ids": {"type": "select", "operator": "in", "value": []},
-            })
-        with pytest.raises(ValueError, match="found 0"):
-            require_single_value(filters, SyncFilterKey.REPO_IDS, "Repository")
-
-    def test_blank_entries_are_ignored(self) -> None:
-        assert require_single_value(self._collection([" ", "o/r"]), SyncFilterKey.REPO_IDS, "Repository") == "o/r"
-        with pytest.raises(ValueError, match="found 0"):
-            require_single_value(self._collection([" "]), SyncFilterKey.REPO_IDS, "Repository")
-
-    def test_legacy_multi_repo_config_raises(self) -> None:
-        legacy = FilterCollection.from_dict({
-            "repo_ids": {"type": "multiselect", "operator": "in", "value": ["a/b", "c/d"]},
-        })
-        with pytest.raises(ValueError, match="found 2"):
-            require_single_value(legacy, SyncFilterKey.REPO_IDS, "Repository")
-
-    def test_legacy_not_in_config_raises(self) -> None:
-        legacy = FilterCollection.from_dict({
-            "repo_ids": {"type": "multiselect", "operator": "not_in", "value": ["a/b"]},
-        })
-        with pytest.raises(ValueError, match="not_in"):
-            require_single_value(legacy, SyncFilterKey.REPO_IDS, "Repository")

@@ -29,7 +29,6 @@ from app.connectors.core.registry.filters import (
     OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
-    require_single_value,
 )
 from gitlab.v4.objects import Project
 from app.connectors.sources.gitlab.connector import GitLabConnector
@@ -303,7 +302,6 @@ class GitLabPersonalConnector(GitLabConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "gitlabpersonal", self.connector_id, self.logger
             )
-            require_single_value(self.sync_filters, SyncFilterKey.PROJECT_IDS, "Repository")
             self._gitlab_included_group_paths = None
             # Force a fresh ConnectorGroup upsert each run so re-runs after the
             # creator email is rotated pick up the new identity instead of

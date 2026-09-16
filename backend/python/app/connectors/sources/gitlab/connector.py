@@ -60,7 +60,6 @@ from app.connectors.core.registry.filters import (
     OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
-    require_single_value,
 )
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.sources.gitlab.common.apps import GitLabApp
@@ -364,7 +363,6 @@ class GitLabConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "gitlab", self.connector_id, self.logger
             )
-            require_single_value(self.sync_filters, SyncFilterKey.PROJECT_IDS, "Repository")
             self._gitlab_included_group_paths = None
             self.logger.info("Starting sync of GitLab users")
             await self.users.sync_users()
