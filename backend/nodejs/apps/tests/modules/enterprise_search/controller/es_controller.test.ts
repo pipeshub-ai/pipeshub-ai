@@ -726,6 +726,7 @@ describe('Enterprise Search Controller', () => {
       const markStub = searchUtils.markConversationFailed as sinon.SinonStub
       expect(markStub.calledOnce).to.be.true
       expect(markStub.firstCall.args[1]).to.equal(upstreamMessage)
+      expect(markStub.firstCall.args[3]).to.equal('accessible_records_not_found')
     })
 
     it('should handle AI service stream start failure', async () => {

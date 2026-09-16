@@ -259,6 +259,12 @@ describe('Enterprise Search Utils', () => {
       const result = buildAIFailureResponseMessage()
       expect(result.updatedAt).to.be.instanceOf(Date)
     })
+
+    it('should persist the provided error text', () => {
+      const result = buildAIFailureResponseMessage('LLM rate limited')
+      expect(result.messageType).to.equal('error')
+      expect(result.content).to.equal('LLM rate limited')
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -1248,10 +1254,12 @@ describe('Enterprise Search Utils', () => {
       expect(conversation.conversationErrors).to.have.length(2)
     })
 
-    it('should default errorType to unknown', () => {
+    it('should default errorType to unknown_error', () => {
       const conversation: any = { _id: 'conv-1', messages: [] }
       addErrorToConversation(conversation, 'Error')
-      expect(conversation.conversationErrors[0].errorType).to.equal('unknown')
+      expect(conversation.conversationErrors[0].errorType).to.equal('unknown_error')
+      expect(conversation.conversationErrors[0].metadata.get('type')).to.equal('RUN_ERROR')
+      expect(conversation.conversationErrors[0].metadata.get('code')).to.equal('unknown_error')
     })
 
     it('should include optional fields when provided', () => {
@@ -1262,7 +1270,9 @@ describe('Enterprise Search Utils', () => {
       const error = conversation.conversationErrors[0]
       expect(error.messageId).to.equal(messageId)
       expect(error.stack).to.equal('stack trace')
-      expect(error.metadata).to.equal(metadata)
+      expect(error.metadata.get('key')).to.equal('value')
+      expect(error.metadata.get('type')).to.equal('RUN_ERROR')
+      expect(error.metadata.get('code')).to.equal('type')
     })
   })
 
@@ -1558,6 +1568,8 @@ describe('Enterprise Search Utils', () => {
       expect(mockConversation.conversationErrors).to.have.length(1)
       expect(mockConversation.conversationErrors[0].errorType).to.equal('stream_error')
       expect(mockConversation.conversationErrors[0].stack).to.equal('stack trace')
+      expect(mockConversation.conversationErrors[0].metadata.get('type')).to.equal('RUN_ERROR')
+      expect(mockConversation.conversationErrors[0].metadata.get('code')).to.equal('stream_error')
     })
 
     it('should throw if save fails', async () => {
@@ -1684,6 +1696,7 @@ describe('Enterprise Search Utils', () => {
       expect(allocateSeqStub.calledOnce).to.be.true
       expect(insertManyStub.calledOnce).to.be.true
       expect(insertManyStub.firstCall.args[0][0].messageType).to.equal('error')
+      expect(insertManyStub.firstCall.args[0][0].content).to.equal('Agent failed')
     })
 
     it('should add error to conversationErrors', async () => {
@@ -2452,6 +2465,11 @@ describe('Enterprise Search Utils - coverage', () => {
       expect(result.messageType).to.equal('error')
       expect(result.content).to.include('Error')
     })
+
+    it('should use explicit content when provided', () => {
+      const result = buildAIFailureResponseMessage('toolset misconfigured')
+      expect(result.content).to.equal('toolset misconfigured')
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -3055,7 +3073,7 @@ describe('Enterprise Search Utils - coverage', () => {
     it('should use default errorType when not provided', () => {
       const conv: any = {}
       addErrorToConversation(conv, 'Error msg')
-      expect(conv.conversationErrors[0].errorType).to.equal('unknown')
+      expect(conv.conversationErrors[0].errorType).to.equal('unknown_error')
     })
 
     it('should use provided errorType', () => {
@@ -3081,7 +3099,9 @@ describe('Enterprise Search Utils - coverage', () => {
       const conv: any = {}
       const meta = new Map([['key', 'value']])
       addErrorToConversation(conv, 'Error', 'test', undefined, undefined, meta)
-      expect(conv.conversationErrors[0].metadata).to.equal(meta)
+      expect(conv.conversationErrors[0].metadata.get('key')).to.equal('value')
+      expect(conv.conversationErrors[0].metadata.get('type')).to.equal('RUN_ERROR')
+      expect(conv.conversationErrors[0].metadata.get('code')).to.equal('test')
     })
 
     it('should set timestamp', () => {
