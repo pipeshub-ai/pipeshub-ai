@@ -1,12 +1,13 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { Box, Flex, Text, TextArea } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
-import { formatFileSize } from '@/app/components/file-preview/utils';
 import type { ProjectDetail } from '@/chat/project-types';
+import { FilesCard } from './files-card';
+import { ToolsMcpCard } from './tools-mcp-card';
 
 interface CollapsibleCardProps {
   icon: string;
@@ -46,9 +47,7 @@ function CollapsibleCard({ icon, title, action, children, defaultExpanded = true
           </Text>
         </Flex>
         <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
-          {isExpanded && action && (
-            <span onClick={(e) => e.stopPropagation()}>{action}</span>
-          )}
+          {isExpanded && action && <span onClick={(e) => e.stopPropagation()}>{action}</span>}
           <MaterialIcon
             name="expand_more"
             size={18}
@@ -61,9 +60,7 @@ function CollapsibleCard({ icon, title, action, children, defaultExpanded = true
           />
         </Flex>
       </Flex>
-      {isExpanded && (
-        <Box style={{ padding: '0 var(--space-3) var(--space-3)' }}>{children}</Box>
-      )}
+      {isExpanded && <Box style={{ padding: '0 var(--space-3) var(--space-3)' }}>{children}</Box>}
     </Box>
   );
 }
@@ -81,18 +78,18 @@ export interface ProjectSettingsPanelProps {
   onCancelEditInstructions: () => void;
   onSaveInstructions: () => void;
 
-  isUploading: boolean;
-  onUploadFiles: (files: FileList | null) => void;
-  onRemoveFile: (recordId: string) => void;
+  onKbCreated: (kbId: string) => void;
+  onToolsChange: (tools: string[]) => void;
 
   onOpenShare: () => void;
 }
 
 /**
- * Right-side settings panel for the redesigned project workspace — three
- * collapsible cards (Instructions, Files, Members). State and mutation
- * handlers are owned by the parent workspace component; this is presentation
- * only.
+ * Right-side settings panel for the redesigned project workspace —
+ * collapsible cards (Instructions, Files, Tools & MCP, Members). State and
+ * mutation handlers are owned by the parent workspace component; this is
+ * presentation only, except for the Files card, which owns its own KB
+ * fetch/upload/delete lifecycle (see `FilesCard`).
  */
 export function ProjectSettingsPanel({
   project,
@@ -105,13 +102,11 @@ export function ProjectSettingsPanel({
   onStartEditInstructions,
   onCancelEditInstructions,
   onSaveInstructions,
-  isUploading,
-  onUploadFiles,
-  onRemoveFile,
+  onKbCreated,
+  onToolsChange,
   onOpenShare,
 }: ProjectSettingsPanelProps) {
   const { t } = useTranslation();
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
     <Flex direction="column" gap="3" style={{ width: '100%' }}>
@@ -171,91 +166,19 @@ export function ProjectSettingsPanel({
         )}
       </CollapsibleCard>
 
-      {/* Files */}
-      <CollapsibleCard
-        icon="attach_file"
-        title={t('chat.projects.workspace.filesTitle')}
-        action={
-          canEdit ? (
-            <>
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                hidden
-                onChange={(e) => onUploadFiles(e.target.files)}
-              />
-              <LoadingButton
-                size="1"
-                variant="ghost"
-                color="gray"
-                onClick={() => fileInputRef.current?.click()}
-                loading={isUploading}
-                loadingLabel={t('chat.projects.workspace.uploading')}
-              >
-                {t('chat.projects.workspace.uploadFiles')}
-              </LoadingButton>
-            </>
-          ) : undefined
-        }
-      >
-        {project.files.length === 0 ? (
-          <Text size="2" style={{ color: 'var(--slate-10)' }}>
-            {t('chat.projects.workspace.noFiles')}
-          </Text>
-        ) : (
-          <Flex direction="column" gap="1">
-            {project.files.map((file) => (
-              <Flex
-                key={file.recordId}
-                align="center"
-                justify="between"
-                style={{
-                  padding: 'var(--space-2)',
-                  borderRadius: 'var(--radius-2)',
-                  background: 'var(--olive-1)',
-                }}
-              >
-                <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-                  <MaterialIcon name="description" size={14} color="var(--slate-11)" />
-                  <Text
-                    size="1"
-                    style={{
-                      color: 'var(--slate-12)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {file.recordName || file.recordId}
-                  </Text>
-                  {typeof file.sizeBytes === 'number' && (
-                    <Text size="1" style={{ color: 'var(--slate-10)', flexShrink: 0 }}>
-                      {formatFileSize(file.sizeBytes)}
-                    </Text>
-                  )}
-                </Flex>
-                {canEdit && (
-                  <button
-                    type="button"
-                    aria-label={t('chat.projects.workspace.removeFile')}
-                    onClick={() => onRemoveFile(file.recordId)}
-                    style={{
-                      appearance: 'none',
-                      border: 'none',
-                      background: 'transparent',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <MaterialIcon name="close" size={14} color="var(--slate-10)" />
-                  </button>
-                )}
-              </Flex>
-            ))}
-          </Flex>
-        )}
+      {/* Files (backed by the project's hidden linked Collection) */}
+      <CollapsibleCard icon="attach_file" title={t('chat.projects.workspace.filesTitle')}>
+        <FilesCard
+          projectId={project._id}
+          linkedKnowledgeBaseId={project.linkedKnowledgeBaseId}
+          canEdit={canEdit}
+          onKbCreated={onKbCreated}
+        />
+      </CollapsibleCard>
+
+      {/* Tools & MCP */}
+      <CollapsibleCard icon="build" title={t('chat.projects.workspace.toolsTitle', { defaultValue: 'Tools & MCP' })}>
+        <ToolsMcpCard selectedTools={project.tools ?? []} canEdit={canEdit} onChange={onToolsChange} />
       </CollapsibleCard>
 
       {/* Members */}

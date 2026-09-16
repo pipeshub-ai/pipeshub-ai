@@ -157,6 +157,10 @@ class ChatQuery(BaseModel):
     # later `POST /chat/cancel {runId}` (`chatbot.py` — one endpoint for
     # both assistant and agent runs) can target it.
     runId: str | None = None
+    # Set by Node for a project-scoped chat (see `applyProjectScope`,
+    # project-context.ts). Threaded into `filters["strictScope"]` below —
+    # see `ChatQuery.strictScope` in chatbot.py for the full rationale.
+    strictScope: bool = False
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
@@ -3690,6 +3694,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # "keys present but empty → return []" semantics to propagate further.
                 if not filters.get("kb") and agent_id != "agentIdPlaceholder":
                     filters["kb"] = [NO_KB_SELECTED_FILTER]
+
+                # A project-scoped chat sets this so an empty effective
+                # apps/kb selection stays empty at retrieval time instead of
+                # `get_accessible_virtual_record_ids` falling back to
+                # "search everything the user can access".
+                if chat_query.strictScope:
+                    filters["strictScope"] = True
 
                 agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
 

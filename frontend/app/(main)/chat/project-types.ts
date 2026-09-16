@@ -25,18 +25,6 @@ export interface ProjectMember {
   addedAt: string;
 }
 
-export interface ProjectFileRef {
-  recordId: string;
-  recordName?: string;
-  mimeType?: string;
-  extension?: string;
-  virtualRecordId?: string;
-  source?: 'upload' | 'paste-text';
-  sizeBytes?: number;
-  uploadedBy: string;
-  uploadedAt: string;
-}
-
 /** One row from `GET /api/v1/projects` — server-enriched with the caller's role and conversation count. */
 export interface ProjectSummary {
   _id: string;
@@ -49,6 +37,10 @@ export interface ProjectSummary {
   instructions?: string;
   knowledgeScope?: ProjectKnowledgeScope;
   appliedFilters?: AppliedFilters;
+  /** Tool fullNames (toolset + MCP) available to this project in agent mode. */
+  tools: string[];
+  /** The project's hidden Collection for uploaded files — null until the first upload creates it (see `ProjectApi.ensureKnowledgeBase`). */
+  linkedKnowledgeBaseId?: string | null;
   visibility: ProjectVisibility;
   chatSharing: ProjectChatSharing;
   isPinned: boolean;
@@ -60,9 +52,8 @@ export interface ProjectSummary {
   conversationCount: number;
 }
 
-/** `GET /api/v1/projects/:projectId` — full document incl. files/members, plus computed `role`. */
+/** `GET /api/v1/projects/:projectId` — full document incl. members, plus computed `role`. Files live in the linked hidden Collection, fetched separately via the Knowledge Hub API. */
 export interface ProjectDetail extends Omit<ProjectSummary, 'conversationCount'> {
-  files: ProjectFileRef[];
   members: ProjectMember[];
 }
 
@@ -74,6 +65,7 @@ export interface CreateProjectInput {
   instructions?: string;
   knowledgeScope?: ProjectKnowledgeScope;
   appliedFilters?: AppliedFilters;
+  tools?: string[];
 }
 
 export interface UpdateProjectInput {
@@ -84,6 +76,7 @@ export interface UpdateProjectInput {
   instructions?: string;
   knowledgeScope?: ProjectKnowledgeScope;
   appliedFilters?: AppliedFilters;
+  tools?: string[];
   /** Owner-only. */
   visibility?: ProjectVisibility;
   /** Owner-only. */

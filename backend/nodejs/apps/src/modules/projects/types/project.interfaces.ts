@@ -1,8 +1,5 @@
 import { Document, Types } from 'mongoose';
-import {
-  IAppliedFilterNode,
-  IChatAttachmentRef,
-} from '../../enterprise_search/types/conversation.interfaces';
+import { IAppliedFilterNode } from '../../enterprise_search/types/conversation.interfaces';
 
 export type ProjectMemberRole = 'viewer' | 'editor';
 export type ProjectPrincipalType = 'user' | 'team';
@@ -14,18 +11,11 @@ export type ProjectRole = 'owner' | 'editor' | 'viewer' | 'none';
 
 export interface IProjectMember {
   principalType: ProjectPrincipalType;
-  /** userId (principalType 'user') — team principals are deferred (see plan "Deferred" section). */
+  /** userId (principalType 'user') or teamId (principalType 'team'). */
   principalId: Types.ObjectId;
   role: ProjectMemberRole;
   addedBy: Types.ObjectId;
   addedAt: Date;
-}
-
-/** One project-attached file. Reuses the chat-attachment ref shape (graph record + blob) — no parallel file store. */
-export interface IProjectFileRef extends IChatAttachmentRef {
-  sizeBytes?: number;
-  uploadedBy: Types.ObjectId;
-  uploadedAt: Date;
 }
 
 /** Raw id-array shape — identical to the `filters` object already sent to the AI backend (see es_validators `filtersSchema`). */
@@ -52,7 +42,10 @@ export interface IProject {
   instructions?: string;
   knowledgeScope?: IProjectKnowledgeScope;
   appliedFilters?: IProjectAppliedFilters;
-  files: IProjectFileRef[];
+  /** Tool fullNames (toolset + MCP tools, same format as the composer's `agentStreamTools`) available to this project in agent mode. */
+  tools: string[];
+  /** Hidden Collection (KB) holding this project's uploaded files — see `ProjectKnowledgeBaseService.ensureLinkedKb`. Created lazily on first upload. */
+  linkedKnowledgeBaseId?: string | null;
   visibility: ProjectVisibility;
   chatSharing: ProjectChatSharing;
   members: IProjectMember[];
@@ -75,20 +68,16 @@ export interface ProjectAccess {
   project: IProjectDocument;
 }
 
-/** Assembled once per AI call site and merged into the outgoing `aiPayload` by `applyProjectContext`. */
+/** Assembled once per AI call site and merged into the outgoing `aiPayload` by `applyProjectScope`. */
 export interface ProjectContext {
   projectId: string;
   instructions?: string;
   knowledgeScope?: IProjectKnowledgeScope;
-  attachments?: IChatAttachmentRef[];
+  /** Tool fullNames the project scope permits in agent mode. */
+  tools: string[];
+  /** The project's own hidden Collection, if one has been created — always added to the effective `filters.kb`. */
+  linkedKnowledgeBaseId?: string | null;
 }
-
-/** Bounds enforced on project file uploads (mirrors the plan's storage caps). */
-export const PROJECT_FILE_LIMITS = {
-  MAX_FILES: 20,
-  MAX_FILE_SIZE_BYTES: 5 * 1024 * 1024,
-  MAX_TOTAL_SIZE_BYTES: 25 * 1024 * 1024,
-} as const;
 
 /** Sentinel accepted by `?projectId=` on conversation-list endpoints to mean "no project". */
 export const PROJECT_ID_UNASSIGNED = 'unassigned';

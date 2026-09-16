@@ -98,6 +98,13 @@ class ChatQuery(BaseModel):
     # that predate this field or don't need cancellation (the agent loop
     # generates one itself — see `stream_bridge.py`/`bridge.py`).
     runId: str | None = None
+    # Set by Node for a project-scoped chat (see `applyProjectScope`,
+    # project-context.ts). When true and the effective `filters` carry no
+    # apps/kb, `get_accessible_virtual_record_ids` returns no records instead
+    # of falling back to "search everything the user can access" — an empty
+    # project scope must stay empty, never widen. Threaded into `filters`
+    # below rather than passed as a separate retrieval parameter.
+    strictScope: bool = False
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
@@ -1070,11 +1077,18 @@ async def _generate_chat_stream_via_agent_loop(
             )
             policy = resolve_agent_policy(caps)
 
+    # strictScope rides along inside `filters` (not a separate top-level key)
+    # so every downstream consumer that already forwards `filters` straight
+    # into `get_accessible_virtual_record_ids` picks it up for free.
+    effective_filters: dict[str, Any] = dict(query_info.filters or {})
+    if query_info.strictScope:
+        effective_filters["strictScope"] = True
+
     query_dict = {
         "query": query_info.query,
         "limit": query_info.limit,
         "previous_conversations": query_info.previousConversations,
-        "filters": query_info.filters,
+        "filters": effective_filters,
         "retrievalMode": query_info.retrievalMode,
         "quickMode": query_info.quickMode,
         "chatMode": query_info.chatMode,

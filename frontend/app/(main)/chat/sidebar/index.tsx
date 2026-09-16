@@ -17,7 +17,7 @@ import { ChatSections } from './chat-sections';
 import { MoreChatsSidebar } from './more-chats-sidebar';
 import { AgentsSidebar } from './agents-sidebar';
 import { AgentScopedChatSidebar } from './agent-scoped-chat-sidebar';
-import { ProjectScopedChatSidebar } from './project-scoped-chat-sidebar';
+import { ProjectConversationsSidebar } from './project-conversations-sidebar';
 
 /**
  * Chat sidebar — uses SidebarBase shell with header, footer, and custom content.
@@ -112,7 +112,7 @@ function ChatSidebarRoot() {
     return <AgentScopedChatSidebar agentId={agentId} />;
   }
   if (projectId) {
-    return <ProjectScopedChatSidebar projectId={projectId} />;
+    return <ProjectConversationsSidebar projectId={projectId} />;
   }
   return <ChatSidebarInner />;
 }

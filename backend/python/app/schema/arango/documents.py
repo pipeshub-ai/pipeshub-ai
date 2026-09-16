@@ -177,6 +177,9 @@ app_schema = {
             "orgId": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
             "hideConnector": {"type": ["boolean", "null"]},
+            # Excludes this KB from list/browse/unscoped-search surfaces even
+            # though it is a normal KB app; explicit filters.kb still resolves it.
+            "isHidden": {"type": ["boolean", "null"]},
         },
         "required": [
             "name",

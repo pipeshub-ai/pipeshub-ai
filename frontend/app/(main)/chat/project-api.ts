@@ -3,9 +3,9 @@ import type {
   CreateProjectInput,
   ListProjectsParams,
   ProjectDetail,
-  ProjectFileRef,
   ProjectMember,
   ProjectMemberRole,
+  ProjectPrincipalType,
   ProjectsListResult,
   UpdateProjectInput,
 } from './project-types';
@@ -121,22 +121,12 @@ export const ProjectApi = {
     return data;
   },
 
-  async uploadFiles(projectId: string, files: File[]): Promise<ProjectFileRef[]> {
-    const fd = new FormData();
-    files.forEach((f) => fd.append('files', f, f.name));
-    const { data } = await apiClient.post<{ files: ProjectFileRef[] }>(
-      `${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}/files`,
-      fd,
-      { headers: { 'Content-Type': undefined } },
+  /** Lazily creates (idempotent) the project's hidden linked Collection and returns its id — call before the first upload. */
+  async ensureKnowledgeBase(projectId: string): Promise<string> {
+    const { data } = await apiClient.post<{ kbId: string }>(
+      `${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}/knowledge-base`,
     );
-    return data.files ?? [];
-  },
-
-  async removeFile(projectId: string, recordId: string): Promise<ProjectFileRef[]> {
-    const { data } = await apiClient.delete<{ files: ProjectFileRef[] }>(
-      `${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}/files/${encodeURIComponent(recordId)}`,
-    );
-    return data.files ?? [];
+    return data.kbId;
   },
 
   async listMembers(projectId: string): Promise<ProjectMember[]> {
@@ -148,7 +138,11 @@ export const ProjectApi = {
 
   async upsertMembers(
     projectId: string,
-    members: Array<{ principalId: string; role: ProjectMemberRole }>,
+    members: Array<{
+      principalId: string;
+      principalType?: ProjectPrincipalType;
+      role: ProjectMemberRole;
+    }>,
   ): Promise<ProjectMember[]> {
     const { data } = await apiClient.put<{ members: ProjectMember[] }>(
       `${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}/members`,
@@ -157,9 +151,14 @@ export const ProjectApi = {
     return data.members ?? [];
   },
 
-  async removeMember(projectId: string, memberUserId: string): Promise<ProjectMember[]> {
+  async removeMember(
+    projectId: string,
+    memberPrincipalId: string,
+    principalType: ProjectPrincipalType = 'user',
+  ): Promise<ProjectMember[]> {
     const { data } = await apiClient.delete<{ members: ProjectMember[] }>(
-      `${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}/members/${encodeURIComponent(memberUserId)}`,
+      `${PROJECTS_BASE_URL}/${encodeURIComponent(projectId)}/members/${encodeURIComponent(memberPrincipalId)}`,
+      { params: { principalType } },
     );
     return data.members ?? [];
   },

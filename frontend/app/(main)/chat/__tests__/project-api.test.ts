@@ -111,12 +111,12 @@ describe('ProjectApi.listConversations', () => {
   });
 });
 
-describe('ProjectApi.removeFile / listMembers / upsertMembers / removeMember', () => {
-  it('removeFile() deletes by projectId + recordId and defaults to [] on missing files', async () => {
-    mockedDelete.mockResolvedValueOnce({ data: {} });
-    const result = await ProjectApi.removeFile('p1', 'r1');
-    expect(mockedDelete).toHaveBeenCalledWith('/api/v1/projects/p1/files/r1');
-    expect(result).toEqual([]);
+describe('ProjectApi.ensureKnowledgeBase / listMembers / upsertMembers / removeMember', () => {
+  it('ensureKnowledgeBase() POSTs to the knowledge-base sub-route and returns the kbId', async () => {
+    mockedPost.mockResolvedValueOnce({ data: { kbId: 'kb1' } });
+    const result = await ProjectApi.ensureKnowledgeBase('p1');
+    expect(mockedPost).toHaveBeenCalledWith('/api/v1/projects/p1/knowledge-base');
+    expect(result).toEqual('kb1');
   });
 
   it('listMembers() defaults to [] on missing members', async () => {
@@ -133,10 +133,20 @@ describe('ProjectApi.removeFile / listMembers / upsertMembers / removeMember', (
     expect(result).toEqual(members);
   });
 
-  it('removeMember() deletes by projectId + memberUserId', async () => {
+  it('removeMember() deletes by projectId + memberUserId, defaulting principalType to user', async () => {
     mockedDelete.mockResolvedValueOnce({ data: { members: [] } });
     await ProjectApi.removeMember('p1', 'u1');
-    expect(mockedDelete).toHaveBeenCalledWith('/api/v1/projects/p1/members/u1');
+    expect(mockedDelete).toHaveBeenCalledWith('/api/v1/projects/p1/members/u1', {
+      params: { principalType: 'user' },
+    });
+  });
+
+  it('removeMember() forwards an explicit team principalType', async () => {
+    mockedDelete.mockResolvedValueOnce({ data: { members: [] } });
+    await ProjectApi.removeMember('p1', 't1', 'team');
+    expect(mockedDelete).toHaveBeenCalledWith('/api/v1/projects/p1/members/t1', {
+      params: { principalType: 'team' },
+    });
   });
 });
 

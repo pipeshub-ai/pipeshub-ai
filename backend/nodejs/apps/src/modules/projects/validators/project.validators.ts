@@ -6,6 +6,7 @@ import {
   PROJECT_MEMBER_ROLE_VALUES,
   PROJECT_MEMBERS_BATCH_MAX,
   PROJECT_NAME_MAX_LENGTH,
+  PROJECT_PRINCIPAL_TYPE_VALUES,
   PROJECT_VISIBILITY_VALUES,
 } from '../constants/constants';
 
@@ -30,6 +31,12 @@ const knowledgeScopeSchema = z
     kb: z.array(appOrKbIdSchema).optional(),
   })
   .optional();
+
+/** Max tool fullNames a project can persist — mirrors PROJECT_MEMBERS_BATCH_MAX's role as a sanity bound, not a real product limit. */
+const PROJECT_TOOLS_MAX = 200;
+/** Tool fullName, same format the composer sends as `agentStreamTools` (toolset + MCP tools). */
+const toolFullNameSchema = z.string().min(1).max(200);
+const toolsSchema = z.array(toolFullNameSchema).max(PROJECT_TOOLS_MAX).optional();
 
 const appliedFilterNodeSchema = z.object({
   id: z.string(),
@@ -57,6 +64,7 @@ const projectBodyFieldsSchema = {
   instructions: z.string().max(PROJECT_INSTRUCTIONS_MAX_LENGTH).optional(),
   knowledgeScope: knowledgeScopeSchema,
   appliedFilters: appliedFiltersSchema,
+  tools: toolsSchema,
 };
 
 export const createProjectSchema = z.object({
@@ -99,20 +107,14 @@ export const listProjectConversationsQuerySchema = z.object({
   }),
 });
 
-export const removeProjectFileParamsSchema = z.object({
-  params: z.object({
-    projectId: objectId('project ID'),
-    recordId: z.string().min(1, { message: 'recordId is required' }),
-  }),
-});
-
 export const upsertProjectMembersSchema = z.object({
   params: z.object({ projectId: objectId('project ID') }),
   body: z.object({
     members: z
       .array(
         z.object({
-          principalId: objectId('user ID'),
+          principalId: objectId('principal ID'),
+          principalType: z.enum(PROJECT_PRINCIPAL_TYPE_VALUES).optional(),
           role: z.enum(PROJECT_MEMBER_ROLE_VALUES),
         }),
       )
@@ -126,6 +128,9 @@ export const upsertProjectMembersSchema = z.object({
 export const removeProjectMemberParamsSchema = z.object({
   params: z.object({
     projectId: objectId('project ID'),
-    memberUserId: objectId('member user ID'),
+    memberUserId: objectId('member ID'),
+  }),
+  query: z.object({
+    principalType: z.enum(PROJECT_PRINCIPAL_TYPE_VALUES).optional(),
   }),
 });

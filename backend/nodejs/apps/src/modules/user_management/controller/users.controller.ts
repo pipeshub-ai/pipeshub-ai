@@ -72,6 +72,7 @@ import {
 } from '../../oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 import { ProjectService } from '../../projects/services/project.service';
+import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
 
 export const MAX_BULK_INVITE = 1000;
 
@@ -1359,10 +1360,19 @@ export class UserController {
       );
 
       await this.softDeleteOAuthAppsForUser(orgId, userId, req.user);
-      await ProjectService.removeUserFromAllProjects(
+      const projectsWithLinkedKb = await ProjectService.removeUserFromAllProjects(
         orgId.toString(),
         userId.toString(),
       );
+      for (const project of projectsWithLinkedKb) {
+        await ProjectKnowledgeBaseService.revokePrincipalPermission(
+          this.config,
+          req.headers as Record<string, string>,
+          project,
+          userId.toString(),
+          'user',
+        );
+      }
 
       user.isDeleted = true;
       user.hasLoggedIn = false;

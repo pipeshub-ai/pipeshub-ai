@@ -119,7 +119,7 @@ import { getSlackBotStore } from '../../configuration_manager/controller/cm_cont
 import { Org } from '../../user_management/schema/org.schema';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import {
-  applyProjectContext,
+  applyProjectScope,
   loadProjectForSession,
   resolveProjectLink,
   type ResolvedProjectLink,
@@ -952,7 +952,7 @@ export const streamChat =
         assignToolsToPayload(aiPayload, req.body.tools);
         assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
       }
-      applyProjectContext(aiPayload, projectLink.project);
+      applyProjectScope(aiPayload, projectLink.project);
       if (projectLink.projectId) {
         void ProjectService.touchActivity(projectLink.projectId);
       }
@@ -1635,7 +1635,7 @@ export const createConversation =
         reasoningEffort: req.body.reasoningEffort || null,
         chatMode: req.body.chatMode || 'quick',
       };
-      applyProjectContext(aiPayload, projectLink.project);
+      applyProjectScope(aiPayload, projectLink.project);
       if (projectLink.projectId) {
         void ProjectService.touchActivity(projectLink.projectId);
       }
@@ -1997,7 +1997,7 @@ export const addMessage =
           (conversation.userId as unknown as Types.ObjectId).toString(),
           conversation.projectId,
         );
-        applyProjectContext(aiPayload, followUpProject);
+        applyProjectScope(aiPayload, followUpProject);
         if (conversation.projectId) {
           void ProjectService.touchActivity(conversation.projectId.toString());
         }
@@ -2382,7 +2382,7 @@ export const addMessageStream =
         (confirmedConversation.userId as unknown as Types.ObjectId).toString(),
         confirmedConversation.projectId,
       );
-      applyProjectContext(aiPayload, followUpProject);
+      applyProjectScope(aiPayload, followUpProject);
       if (confirmedConversation.projectId) {
         void ProjectService.touchActivity(confirmedConversation.projectId.toString());
       }
@@ -4153,7 +4153,7 @@ async function regenerateAnswersInternal(
       (existingConversation.userId as unknown as Types.ObjectId).toString(),
       existingConversation.projectId,
     );
-    applyProjectContext(aiPayload, regenProject);
+    applyProjectScope(aiPayload, regenProject);
     if (existingConversation.projectId) {
       void ProjectService.touchActivity(existingConversation.projectId.toString());
     }
@@ -6584,12 +6584,15 @@ export const deleteAgent =
         // so a header alone would never reach Python (see agui.ts docstring).
         ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
       };
-      applyProjectContext(aiPayload, projectLink.project);
+      assignToolsToPayload(aiPayload, req.body.tools);
+      // Must run after assignToolsToPayload — a project's own tool scope
+      // always wins over whatever the request carried (see
+      // applyProjectScope's doc comment in project-context.ts).
+      applyProjectScope(aiPayload, projectLink.project);
       if (projectLink.projectId) {
         void ProjectService.touchActivity(projectLink.projectId);
       }
 
-      assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
       assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
 
@@ -7193,7 +7196,7 @@ export const createAgentConversation =
         attachments: req.body.attachments || [],
       };
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
-      applyProjectContext(aiPayload, projectLink.project);
+      applyProjectScope(aiPayload, projectLink.project);
       if (projectLink.projectId) {
         void ProjectService.touchActivity(projectLink.projectId);
       }
@@ -7524,7 +7527,7 @@ export const createAgentConversation =
           (conversation.userId as unknown as Types.ObjectId).toString(),
           conversation.projectId,
         );
-        applyProjectContext(aiPayload, followUpProject);
+        applyProjectScope(aiPayload, followUpProject);
         if (conversation.projectId) {
           void ProjectService.touchActivity(conversation.projectId.toString());
         }
@@ -7928,7 +7931,7 @@ export const addMessageStreamToAgentConversation =
         (confirmedConversation.userId as unknown as Types.ObjectId).toString(),
         confirmedConversation.projectId,
       );
-      applyProjectContext(aiPayload, followUpProject);
+      applyProjectScope(aiPayload, followUpProject);
       if (confirmedConversation.projectId) {
         void ProjectService.touchActivity(confirmedConversation.projectId.toString());
       }

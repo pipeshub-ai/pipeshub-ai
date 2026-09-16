@@ -10,12 +10,10 @@ import { ChatSession } from '../../enterprise_search/schema/chat.session.schema'
 import {
   IProject,
   IProjectDocument,
-  IProjectFileRef,
   IProjectMember,
   ProjectAccess,
   ProjectContext,
   ProjectRole,
-  PROJECT_FILE_LIMITS,
 } from '../types/project.interfaces';
 
 /** The subset of project fields `computeRole` needs — satisfied by both a hydrated document and a `.lean()` result. */
@@ -42,6 +40,7 @@ export interface CreateProjectInput {
   instructions?: string;
   knowledgeScope?: { apps?: string[]; kb?: string[] };
   appliedFilters?: IProjectDocument['appliedFilters'];
+  tools?: string[];
 }
 
 export type UpdateProjectInput = Partial<CreateProjectInput> & {
@@ -70,19 +69,31 @@ function hasAtLeastRole(role: ProjectRole, required: ProjectRole): boolean {
 
 /**
  * Owns all project CRUD, access control, membership, and the derived
- * "context" (instructions/knowledgeScope/files) that `applyProjectContext`
- * (enterprise_search/utils/project-context.ts) merges into an AI payload.
+ * "context" (instructions/knowledgeScope/tools/linkedKnowledgeBaseId) that
+ * `applyProjectScope` (enterprise_search/utils/project-context.ts) merges
+ * into an AI payload. Mongo-only — the linked hidden Collection's lifecycle
+ * and graph permission sync live in `ProjectKnowledgeBaseService`.
  *
  * Access control never distinguishes "exists but you can't see it" from
  * "doesn't exist" across an org boundary — both raise NotFoundError — so a
  * cross-org projectId guess or leaked id cannot be used to enumerate names.
  */
 export class ProjectService {
-  /** Computes the caller's role without throwing — used by list/read paths that need to filter, not reject. */
+  /**
+   * Computes the caller's role without throwing — used by list/read paths
+   * that need to filter, not reject. `callerTeamIds` (resolved once per
+   * request via `resolveCallerTeamIds` — see `team-membership.ts`) lets a
+   * `team` member row grant access the same way a matching `user` row
+   * does; omit it (defaults to `[]`) where team membership hasn't been
+   * resolved, which only under-grants access, never over-grants it.
+   * When both a user row and one or more matching team rows exist, the
+   * highest-ranked role among all matches wins.
+   */
   static computeRole(
     project: ProjectAccessFields,
     userId: string,
     orgId: string,
+    callerTeamIds: string[] = [],
   ): ProjectRole {
     if (project.orgId.toString() !== orgId) {
       return 'none';
@@ -90,12 +101,20 @@ export class ProjectService {
     if (project.userId.toString() === userId) {
       return 'owner';
     }
-    const member = project.members.find(
-      (m: IProjectMember) =>
-        m.principalType === 'user' && m.principalId.toString() === userId,
-    );
-    if (member) {
-      return member.role;
+    const teamIdSet = new Set(callerTeamIds);
+    let bestRole: ProjectRole = 'none';
+    for (const member of project.members as IProjectMember[]) {
+      const matches =
+        (member.principalType === 'user' &&
+          member.principalId.toString() === userId) ||
+        (member.principalType === 'team' &&
+          teamIdSet.has(member.principalId.toString()));
+      if (matches && ROLE_RANK[member.role] > ROLE_RANK[bestRole]) {
+        bestRole = member.role;
+      }
+    }
+    if (bestRole !== 'none') {
+      return bestRole;
     }
     if (project.visibility === 'org') {
       return 'viewer';
@@ -109,6 +128,7 @@ export class ProjectService {
     userId: string,
     projectId: string,
     required: ProjectRole = 'viewer',
+    callerTeamIds: string[] = [],
   ): Promise<ProjectAccess> {
     if (!mongoose.Types.ObjectId.isValid(projectId)) {
       throw new BadRequestError('Invalid project ID format');
@@ -120,7 +140,7 @@ export class ProjectService {
     if (!project) {
       throw new NotFoundError('Project not found');
     }
-    const role = this.computeRole(project, userId, orgId);
+    const role = this.computeRole(project, userId, orgId, callerTeamIds);
     if (role === 'none' || !hasAtLeastRole(role, required)) {
       throw new NotFoundError('Project not found');
     }
@@ -145,7 +165,8 @@ export class ProjectService {
       instructions: input.instructions,
       knowledgeScope: input.knowledgeScope,
       appliedFilters: input.appliedFilters,
-      files: [],
+      tools: input.tools ?? [],
+      linkedKnowledgeBaseId: null,
       members: [],
       lastActivityAt: Date.now(),
     });
@@ -156,9 +177,13 @@ export class ProjectService {
     orgId: string,
     userId: string,
     opts: ListProjectsOptions,
+    callerTeamIds: string[] = [],
   ): Promise<{ projects: ProjectListItem[]; totalCount: number }> {
     const orgObjId = new Types.ObjectId(orgId);
     const userObjId = new Types.ObjectId(userId);
+    const teamObjIds = callerTeamIds
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
 
     const scopeOr: FilterQuery<IProjectDocument>[] = [];
     if (opts.scope === 'mine' || opts.scope === 'all') {
@@ -169,6 +194,12 @@ export class ProjectService {
         'members.principalType': 'user',
         'members.principalId': userObjId,
       });
+      if (teamObjIds.length > 0) {
+        scopeOr.push({
+          'members.principalType': 'team',
+          'members.principalId': { $in: teamObjIds },
+        });
+      }
     }
     if (opts.scope === 'all') {
       scopeOr.push({ visibility: 'org' });
@@ -217,7 +248,7 @@ export class ProjectService {
     const enriched: ProjectListItem[] = projects.map((p) => ({
       ...(p as unknown as IProject),
       _id: p._id as Types.ObjectId,
-      role: this.computeRole(p, userId, orgId),
+      role: this.computeRole(p, userId, orgId, callerTeamIds),
       conversationCount:
         countByProject.get((p._id as Types.ObjectId).toString()) || 0,
     }));
@@ -230,12 +261,14 @@ export class ProjectService {
     userId: string,
     projectId: string,
     patch: UpdateProjectInput,
+    callerTeamIds: string[] = [],
   ): Promise<IProjectDocument> {
     const { role, project } = await this.assertAccess(
       orgId,
       userId,
       projectId,
       'editor',
+      callerTeamIds,
     );
 
     if (
@@ -263,6 +296,7 @@ export class ProjectService {
       project.knowledgeScope = patch.knowledgeScope;
     if (patch.appliedFilters !== undefined)
       project.appliedFilters = patch.appliedFilters;
+    if (patch.tools !== undefined) project.tools = patch.tools;
     if (patch.visibility !== undefined) project.visibility = patch.visibility;
     if (patch.chatSharing !== undefined)
       project.chatSharing = patch.chatSharing;
@@ -275,12 +309,14 @@ export class ProjectService {
     userId: string,
     projectId: string,
     isPinned: boolean,
+    callerTeamIds: string[] = [],
   ): Promise<IProjectDocument> {
     const { project } = await this.assertAccess(
       orgId,
       userId,
       projectId,
       'editor',
+      callerTeamIds,
     );
     project.isPinned = isPinned;
     return project.save();
@@ -291,12 +327,14 @@ export class ProjectService {
     userId: string,
     projectId: string,
     isArchived: boolean,
+    callerTeamIds: string[] = [],
   ): Promise<IProjectDocument> {
     const { project } = await this.assertAccess(
       orgId,
       userId,
       projectId,
       'editor',
+      callerTeamIds,
     );
     project.isArchived = isArchived;
     project.archivedBy = isArchived ? new Types.ObjectId(userId) : undefined;
@@ -359,86 +397,29 @@ export class ProjectService {
     }
   }
 
-  /** Assembled once per AI call site by `applyProjectContext`. Returns undefined fields rather than throwing on an empty project. */
+  /** Assembled once per AI call site by `applyProjectScope`. Returns undefined fields rather than throwing on an empty project. */
   static buildContext(project: IProjectDocument): ProjectContext {
     return {
       projectId: (project._id as Types.ObjectId).toString(),
       instructions: project.instructions?.trim() || undefined,
       knowledgeScope: project.knowledgeScope,
-      attachments: project.files.map((f: IProjectFileRef) => ({
-        recordId: f.recordId,
-        recordName: f.recordName,
-        mimeType: f.mimeType,
-        extension: f.extension,
-        virtualRecordId: f.virtualRecordId,
-        source: f.source,
-      })),
+      tools: project.tools ?? [],
+      linkedKnowledgeBaseId: project.linkedKnowledgeBaseId ?? null,
     };
-  }
-
-  static async addFile(
-    orgId: string,
-    userId: string,
-    projectId: string,
-    file: Omit<IProjectFileRef, 'uploadedBy' | 'uploadedAt'>,
-  ): Promise<IProjectDocument> {
-    const { project } = await this.assertAccess(
-      orgId,
-      userId,
-      projectId,
-      'editor',
-    );
-
-    if (project.files.some((f) => f.recordId === file.recordId)) {
-      return project;
-    }
-    if (project.files.length >= PROJECT_FILE_LIMITS.MAX_FILES) {
-      throw new BadRequestError(
-        `A project can have at most ${PROJECT_FILE_LIMITS.MAX_FILES} files`,
-      );
-    }
-    const totalBytes =
-      project.files.reduce((sum, f) => sum + (f.sizeBytes || 0), 0) +
-      (file.sizeBytes || 0);
-    if (totalBytes > PROJECT_FILE_LIMITS.MAX_TOTAL_SIZE_BYTES) {
-      throw new BadRequestError('Project file storage limit exceeded');
-    }
-
-    const newFile: IProjectFileRef = {
-      ...file,
-      uploadedBy: new Types.ObjectId(userId),
-      uploadedAt: new Date(),
-    };
-    project.files.push(newFile);
-    return project.save();
-  }
-
-  static async removeFile(
-    orgId: string,
-    userId: string,
-    projectId: string,
-    recordId: string,
-  ): Promise<IProjectDocument> {
-    const { project } = await this.assertAccess(
-      orgId,
-      userId,
-      projectId,
-      'editor',
-    );
-    project.files = project.files.filter((f) => f.recordId !== recordId);
-    return project.save();
   }
 
   static async listMembers(
     orgId: string,
     userId: string,
     projectId: string,
+    callerTeamIds: string[] = [],
   ): Promise<IProjectMember[]> {
     const { project } = await this.assertAccess(
       orgId,
       userId,
       projectId,
       'viewer',
+      callerTeamIds,
     );
     return project.members;
   }
@@ -447,7 +428,11 @@ export class ProjectService {
     orgId: string,
     userId: string,
     projectId: string,
-    members: Array<{ principalId: string; role: 'viewer' | 'editor' }>,
+    members: Array<{
+      principalId: string;
+      principalType?: 'user' | 'team';
+      role: 'viewer' | 'editor';
+    }>,
   ): Promise<IProjectDocument> {
     const { role, project } = await this.assertAccess(
       orgId,
@@ -460,18 +445,26 @@ export class ProjectService {
     }
 
     const existingByPrincipal = new Map(
-      project.members.map((m) => [m.principalId.toString(), m]),
+      project.members.map((m) => [
+        `${m.principalType}:${m.principalId.toString()}`,
+        m,
+      ]),
     );
     for (const incoming of members) {
-      if (incoming.principalId === project.userId.toString()) {
+      const principalType = incoming.principalType ?? 'user';
+      if (
+        principalType === 'user' &&
+        incoming.principalId === project.userId.toString()
+      ) {
         continue; // owner is implicit, never a member row
       }
-      const existing = existingByPrincipal.get(incoming.principalId);
+      const key = `${principalType}:${incoming.principalId}`;
+      const existing = existingByPrincipal.get(key);
       if (existing) {
         existing.role = incoming.role;
       } else {
         project.members.push({
-          principalType: 'user',
+          principalType,
           principalId: new Types.ObjectId(incoming.principalId),
           role: incoming.role,
           addedBy: new Types.ObjectId(userId),
@@ -486,7 +479,8 @@ export class ProjectService {
     orgId: string,
     userId: string,
     projectId: string,
-    memberUserId: string,
+    memberPrincipalId: string,
+    principalType: 'user' | 'team' = 'user',
   ): Promise<IProjectDocument> {
     const { role, project } = await this.assertAccess(
       orgId,
@@ -498,27 +492,48 @@ export class ProjectService {
       throw new ForbiddenError('Only the project owner can manage members');
     }
     project.members = project.members.filter(
-      (m) => m.principalId.toString() !== memberUserId,
+      (m) =>
+        !(
+          m.principalType === principalType &&
+          m.principalId.toString() === memberPrincipalId
+        ),
     );
     return project.save();
   }
 
-  /** Org-wide cleanup hook for the user-offboarding path — removes a departed user from every project's member list. Throws on failure so the caller's deletion flow aborts and can be retried. */
+  /**
+   * Org-wide cleanup hook for the user-offboarding path — removes a
+   * departed user from every project's member list. Throws on failure so
+   * the caller's deletion flow aborts and can be retried (both this pull
+   * and the caller's follow-up KB permission revoke are idempotent, so a
+   * retry after a partial failure is safe). Returns the projects that had
+   * this user as a member *and* a linked KB, so the caller can revoke the
+   * corresponding graph permission — the pull below only touches Mongo.
+   */
   static async removeUserFromAllProjects(
     orgId: string,
     userId: string,
-  ): Promise<void> {
+  ): Promise<IProjectDocument[]> {
+    const orgObjId = new Types.ObjectId(orgId);
+    const userObjId = new Types.ObjectId(userId);
+    const affected = await Project.find({
+      orgId: orgObjId,
+      isDeleted: false,
+      members: { $elemMatch: { principalType: 'user', principalId: userObjId } },
+      linkedKnowledgeBaseId: { $ne: null },
+    });
     await Project.updateMany(
-      { orgId: new Types.ObjectId(orgId) },
+      { orgId: orgObjId },
       {
         $pull: {
           members: {
             principalType: 'user',
-            principalId: new Types.ObjectId(userId),
+            principalId: userObjId,
           },
         },
       },
     );
+    return affected;
   }
 
   /**

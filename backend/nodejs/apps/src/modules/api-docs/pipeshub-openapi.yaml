@@ -7514,54 +7514,6 @@ components:
           items:
             $ref: '#/components/schemas/AppliedFilterNode'
 
-    ProjectFileRef:
-      type: object
-      additionalProperties: false
-      description: |
-        One file attached to a project. Reuses the chat-attachment ref
-        shape (graph record + blob store) — a project file is uploaded
-        through the same
-        `POST /projects/{projectId}/files` → Python
-        `POST /chat/attachments/upload` pipeline as chat attachments, so
-        it lands in the graph and blob store identically. Merged into
-        `attachments[]` on every conversation started inside the project.
-        Flattened (not `allOf: [ChatAttachmentRef, ...]`) since `ChatAttachmentRef`
-        itself is `additionalProperties: false` — composing two closed
-        schemas would reject every real instance.
-      required:
-        - recordId
-      properties:
-        recordId:
-          type: string
-          minLength: 1
-          description: Attachment record id returned from the upload endpoint.
-        recordName:
-          type: string
-          minLength: 1
-          description: Original display name of the file when known.
-        mimeType:
-          type: string
-          minLength: 1
-          description: MIME type of the uploaded file.
-        extension:
-          type: string
-          minLength: 1
-          description: File extension (e.g. `pdf`).
-        virtualRecordId:
-          type: string
-          minLength: 1
-          description: Optional synthetic record id used by the graph layer.
-        sizeBytes:
-          type: integer
-          minimum: 0
-          description: Size of the uploaded file in bytes, used to enforce the project's total-storage cap.
-        uploadedBy:
-          type: string
-          format: objectId
-        uploadedAt:
-          type: string
-          format: date-time
-
     ProjectMember:
       type: object
       additionalProperties: false
@@ -7574,20 +7526,20 @@ components:
       properties:
         principalType:
           type: string
-          enum: [user]
-          description: Only `user` principals are supported; team principals are deferred.
+          enum: [user, team]
+          description: Whether `principalId` names a user or a team. Both grant the same `role`, mirroring Collection sharing.
         principalId:
           type: string
           format: objectId
-          description: User id of the member. The project owner is implicit and never appears in this list.
+          description: User or team id of the member. The project owner is implicit and never appears in this list.
         role:
           type: string
           enum: [viewer, editor]
           description: |
             `viewer` can read the project and its `project`-visible
             conversations. `editor` can additionally update project
-            metadata, instructions, scope, and files. Only the owner can
-            manage members or change `visibility`/`chatSharing`.
+            metadata, instructions, scope, tools, and files. Only the owner
+            can manage members or change `visibility`/`chatSharing`.
         addedBy:
           type: string
           format: objectId
@@ -7599,7 +7551,8 @@ components:
       type: object
       description: |
         A workspace that groups related assistant and agent conversations
-        under a shared name, instructions, knowledge scope, and files. See
+        under a shared name, instructions, knowledge scope, tool
+        selection, and its own hidden Collection of uploaded files. See
         the `Projects` tag description for the sharing model.
       properties:
         _id:
@@ -7633,11 +7586,22 @@ components:
           $ref: '#/components/schemas/ProjectKnowledgeScope'
         appliedFilters:
           $ref: '#/components/schemas/ProjectAppliedFilters'
-        files:
+        tools:
           type: array
           items:
-            $ref: '#/components/schemas/ProjectFileRef'
-          description: Capped at 20 files, 5 MB each, 25 MB total.
+            type: string
+          description: |
+            Tool fullNames (toolset + MCP tools, same format as the
+            composer's `agentStreamTools`) this project's agent-mode chats
+            may use. Empty means no tools beyond the project's own files.
+        linkedKnowledgeBaseId:
+          type: string
+          nullable: true
+          readOnly: true
+          description: |
+            Id of the hidden Collection holding this project's uploaded
+            files, created lazily on first upload via
+            `POST /projects/{projectId}/knowledge-base`. `null` until then.
         visibility:
           type: string
           enum: [private, org]
@@ -7645,7 +7609,9 @@ components:
           description: |
             `org` makes the project (and, per `chatSharing`, its
             `project`-visible conversations) readable by every member of the
-            organization, without adding them to `members[]`.
+            organization, without adding them to `members[]`. Also grants
+            the organization's synthetic all-members team `READER` access
+            on the linked hidden Collection.
         chatSharing:
           type: string
           enum: [private, members]
@@ -7737,6 +7703,11 @@ components:
           $ref: '#/components/schemas/ProjectKnowledgeScope'
         appliedFilters:
           $ref: '#/components/schemas/ProjectAppliedFilters'
+        tools:
+          type: array
+          items:
+            type: string
+          maxItems: 200
 
     UpdateProjectRequest:
       type: object
@@ -7769,6 +7740,11 @@ components:
           $ref: '#/components/schemas/ProjectKnowledgeScope'
         appliedFilters:
           $ref: '#/components/schemas/ProjectAppliedFilters'
+        tools:
+          type: array
+          items:
+            type: string
+          maxItems: 200
         visibility:
           type: string
           enum: [private, org]
@@ -28633,22 +28609,22 @@ paths:
         '404':
           description: Project not found or not visible to the caller.
 
-  /projects/{projectId}/files:
+  /projects/{projectId}/knowledge-base:
     post:
       tags:
         - Projects
-      summary: Upload files to a project
+      summary: Ensure (create-if-absent) the project's hidden file Collection
       description: |
-        Requires editor access. Proxies each upload through the same Python
-        `POST /chat/attachments/upload` pipeline used by chat attachments
-        (see `POST /conversations/attachments/upload`), so project files
-        land in the graph and blob store identically, then records the
-        returned refs on the project document.
-
-        **Limits:** up to 10 files per request (multipart field name
-        `files`), 5 MB per file, 20 files and 25 MB total per project.
-        Unsupported MIME types are rejected before any upload is attempted.
-      operationId: uploadProjectFiles
+        Requires editor access. Lazily creates the project's own hidden
+        Knowledge Base (`isHidden: true` in Python `POST /api/v1/kb`) the
+        first time a caller needs to upload a file, and returns its id
+        either way. Race-safe: concurrent callers converge on one KB —
+        the losing request's KB is deleted. The hidden KB is excluded from
+        the Collections sidebar, Knowledge Hub, and unscoped search, but is
+        always included in this project's own chat scope
+        (`filters.kb`) and file uploads go through the normal
+        `POST /knowledgeBase/{kbId}/upload` SSE pipeline afterward.
+      operationId: ensureProjectKnowledgeBase
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
@@ -28660,83 +28636,19 @@ paths:
           schema:
             type: string
             format: objectId
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required:
-                - files
-              properties:
-                files:
-                  type: array
-                  items:
+      responses:
+        '200':
+          description: The project's linked Collection id (existing or newly created)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - knowledgeBaseId
+                properties:
+                  knowledgeBaseId:
                     type: string
-                    format: binary
-      responses:
-        '200':
-          description: Files uploaded and attached to the project
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                properties:
-                  files:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ProjectFileRef'
-        '400':
-          description: |
-            No files provided, an unsupported MIME type, or the upload would
-            exceed the project's file-count or total-size cap.
-        '401':
-          description: Unauthorized
-        '404':
-          description: Project not found or not visible to the caller.
-
-  /projects/{projectId}/files/{recordId}:
-    delete:
-      tags:
-        - Projects
-      summary: Remove a file from a project
-      description: |
-        Requires editor access. Removes the ref from the project immediately;
-        the upstream graph record delete (Python
-        `DELETE /chat/attachments/{recordId}`) is best-effort — failures are
-        logged, not surfaced, since the ref is already gone from the project
-        either way.
-      operationId: deleteProjectFile
-      x-pipeshub-sdk: true
-      security:
-        - bearerAuth: []
-        - oauth2: [project:write]
-      parameters:
-        - name: projectId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: objectId
-        - name: recordId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: File removed
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                properties:
-                  files:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ProjectFileRef'
         '401':
           description: Unauthorized
         '404':

@@ -44,6 +44,7 @@ export default defineConfig({
       'app/(main)/chat/__tests__/project-api.test.ts',
       'app/(main)/chat/__tests__/build-chat-url.test.ts',
       'app/(main)/chat/__tests__/project-store.test.ts',
+      'app/(main)/projects/hooks/__tests__/use-kb-stream-upload.test.ts',
       'app/(main)/workspace/skills/personal/__tests__/api.test.ts',
       'app/(main)/workspace/mcp-servers/__tests__/oauth-dcr-requirement.test.ts',
       'app/(main)/workspace/ai-models/__tests__/resolve-model-config-save-error.test.ts',

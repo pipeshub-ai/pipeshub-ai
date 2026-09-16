@@ -2,7 +2,6 @@ import { Types } from 'mongoose';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors';
 import { IProjectDocument } from '../../projects/types/project.interfaces';
 import { ProjectService } from '../../projects/services/project.service';
-import { IChatAttachmentRef } from '../types/conversation.interfaces';
 
 /** Sentinel accepted by `?projectId=` query params to mean "no project". */
 export const PROJECT_ID_UNASSIGNED = 'unassigned';
@@ -50,32 +49,52 @@ export async function resolveProjectLink(
   return { projectId, projectVisibility, project };
 }
 
-/** True when a `filters` object (either shape) carries at least one app/kb id. */
-function hasNonEmptyFilters(filters: unknown): boolean {
-  if (!filters || typeof filters !== 'object') return false;
-  const { apps, kb } = filters as { apps?: unknown[]; kb?: unknown[] };
-  return (
-    (Array.isArray(apps) && apps.length > 0) ||
-    (Array.isArray(kb) && kb.length > 0)
-  );
+/** Reads a string-id array off an unknown `filters`/`tools` payload value. Anything else (missing, non-array, non-string entries) reads as "not provided". */
+function readIdArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((v): v is string => typeof v === 'string');
 }
 
 /**
- * Merges a project's instructions / knowledge scope / files into an
- * outgoing AI payload, in place. Request-supplied `filters` and
- * `attachments` always take precedence — the project only fills gaps the
- * caller left empty:
- *  - `projectInstructions` is set whenever the project has instructions
+ * Narrows one request-supplied list to a project's allowed set: an empty/
+ * absent request list means "the caller didn't narrow this turn" and falls
+ * back to the *whole* project set (the composer's default, fully-selected
+ * state); a non-empty request list is intersected with the project set so
+ * the caller can only deselect, never add beyond what the project allows.
+ */
+function narrowToProjectScope(requested: string[] | undefined, projectSet: string[]): string[] {
+  if (!requested || requested.length === 0) return projectSet;
+  const allowed = new Set(projectSet);
+  return requested.filter((id) => allowed.has(id));
+}
+
+/**
+ * Enforces a project's *explicit* scope on an outgoing AI payload, in
+ * place — a project chat may only reach the connectors/toolsets/KBs/MCPs
+ * the project itself lists, and only ever *narrows* what the per-turn
+ * request already carried, never adds to it (see the class doc's
+ * "Narrowing only" rule). Call this *after* `assignToolsToPayload` at each
+ * call site so `aiPayload.tools` already reflects the request when this
+ * runs — this function is the one that gets the final say on both
+ * `filters` and `tools` for a project-scoped turn:
+ *  - `projectInstructions` — set whenever the project has instructions
  *    (additive; never touches `filters`/agent identity — see prompt_builder.py).
- *  - `filters` falls back to the project's `knowledgeScope` only when the
- *    request itself carried no apps/kb filter.
- *  - `attachments` are the union of request attachments and project files,
- *    de-duplicated by `recordId` (request wins on conflict).
+ *  - `filters.apps`/`filters.kb` — `requested ∩ project.knowledgeScope`,
+ *    falling back to the *whole* project set when the request carried none
+ *    for that dimension. `filters.kb` additionally always includes the
+ *    project's own hidden linked Collection id, once it exists.
+ *  - `strictScope: true` — tells `get_accessible_virtual_record_ids`
+ *    (Python) to return *no* records for an empty effective scope instead
+ *    of falling back to "search everything the user can access" (see
+ *    `ChatQuery.strictScope` in chatbot.py/agent.py).
+ *  - `tools` — `requested ∩ project.tools`, same empty-means-whole-set
+ *    fallback. Agent mode only; `chatbot.py`'s `ChatQuery` has no `tools`
+ *    field so plain chat mode silently ignores it.
  *
  * No-ops when `project` is undefined, so call sites can call this
  * unconditionally after resolving (or not) a project link.
  */
-export function applyProjectContext(
+export function applyProjectScope(
   aiPayload: Record<string, unknown>,
   project: IProjectDocument | undefined,
 ): void {
@@ -86,24 +105,34 @@ export function applyProjectContext(
     aiPayload.projectInstructions = context.instructions;
   }
 
-  if (!hasNonEmptyFilters(aiPayload.filters) && context.knowledgeScope) {
-    aiPayload.filters = context.knowledgeScope;
+  const requestedFilters =
+    aiPayload.filters && typeof aiPayload.filters === 'object'
+      ? { ...(aiPayload.filters as Record<string, unknown>) }
+      : {};
+  delete requestedFilters.apps;
+  delete requestedFilters.kb;
+
+  const effectiveApps = narrowToProjectScope(
+    readIdArray((aiPayload.filters as Record<string, unknown> | undefined)?.apps),
+    context.knowledgeScope?.apps ?? [],
+  );
+  const effectiveKb = narrowToProjectScope(
+    readIdArray((aiPayload.filters as Record<string, unknown> | undefined)?.kb),
+    context.knowledgeScope?.kb ?? [],
+  );
+  const kbIds = new Set(effectiveKb);
+  if (context.linkedKnowledgeBaseId) {
+    kbIds.add(context.linkedKnowledgeBaseId);
   }
 
-  const projectAttachments = context.attachments ?? [];
-  if (projectAttachments.length > 0) {
-    const existing =
-      (aiPayload.attachments as IChatAttachmentRef[] | undefined) ?? [];
-    const seen = new Set(existing.map((a) => a.recordId));
-    const merged = [...existing];
-    for (const attachment of projectAttachments) {
-      if (!seen.has(attachment.recordId)) {
-        merged.push(attachment);
-        seen.add(attachment.recordId);
-      }
-    }
-    aiPayload.attachments = merged;
-  }
+  aiPayload.filters = {
+    ...requestedFilters,
+    ...(effectiveApps.length > 0 ? { apps: effectiveApps } : {}),
+    ...(kbIds.size > 0 ? { kb: Array.from(kbIds) } : {}),
+  };
+  aiPayload.strictScope = true;
+
+  aiPayload.tools = narrowToProjectScope(readIdArray(aiPayload.tools), context.tools ?? []);
 }
 
 /**

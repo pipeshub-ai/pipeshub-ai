@@ -4,7 +4,7 @@ import sinon from 'sinon'
 import mongoose from 'mongoose'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import {
-  applyProjectContext,
+  applyProjectScope,
   loadProjectForSession,
   resolveProjectLink,
   PROJECT_ID_UNASSIGNED,
@@ -22,8 +22,9 @@ function makeProject(overrides: Record<string, any> = {}): any {
     userId: new mongoose.Types.ObjectId(USER_ID),
     instructions: undefined,
     knowledgeScope: undefined,
+    tools: [],
+    linkedKnowledgeBaseId: null,
     chatSharing: 'private',
-    files: [],
     ...overrides,
   }
 }
@@ -38,86 +39,130 @@ describe('project-context', () => {
   })
 
   // -----------------------------------------------------------------------
-  // applyProjectContext
+  // applyProjectScope
   // -----------------------------------------------------------------------
-  describe('applyProjectContext', () => {
+  describe('applyProjectScope', () => {
     it('no-ops when project is undefined', () => {
       const payload: Record<string, unknown> = { filters: { apps: ['a'] } }
-      applyProjectContext(payload, undefined)
+      applyProjectScope(payload, undefined)
       expect(payload).to.deep.equal({ filters: { apps: ['a'] } })
     })
 
     it('sets projectInstructions when the project has instructions', () => {
       const payload: Record<string, unknown> = {}
-      applyProjectContext(payload, makeProject({ instructions: '  Be concise.  ' }))
+      applyProjectScope(payload, makeProject({ instructions: '  Be concise.  ' }))
       expect(payload.projectInstructions).to.equal('Be concise.')
     })
 
     it('does not set projectInstructions for a blank/whitespace-only instructions field', () => {
       const payload: Record<string, unknown> = {}
-      applyProjectContext(payload, makeProject({ instructions: '   ' }))
+      applyProjectScope(payload, makeProject({ instructions: '   ' }))
       expect(payload.projectInstructions).to.be.undefined
     })
 
-    it('falls back to project knowledgeScope as filters when the request carried none', () => {
+    it('defaults filters.apps/kb to the whole project knowledgeScope when the request carried none', () => {
       const payload: Record<string, unknown> = {}
-      applyProjectContext(
+      applyProjectScope(
         payload,
-        makeProject({ knowledgeScope: { apps: ['app-1'], kb: [] } }),
+        makeProject({ knowledgeScope: { apps: ['app-1'], kb: ['kb-1'] } }),
       )
-      expect(payload.filters).to.deep.equal({ apps: ['app-1'], kb: [] })
+      expect(payload.filters).to.deep.equal({ apps: ['app-1'], kb: ['kb-1'] })
     })
 
-    it('request-supplied non-empty filters take precedence over the project scope', () => {
-      const payload: Record<string, unknown> = {
-        filters: { apps: ['request-app'] },
-      }
-      applyProjectContext(
+    it('intersects a non-empty request filter with the project scope (narrow only)', () => {
+      const payload: Record<string, unknown> = { filters: { apps: ['app-1', 'outside-app'] } }
+      applyProjectScope(
         payload,
-        makeProject({ knowledgeScope: { apps: ['project-app'] } }),
+        makeProject({ knowledgeScope: { apps: ['app-1', 'app-2'] } }),
       )
-      expect(payload.filters).to.deep.equal({ apps: ['request-app'] })
+      expect(payload.filters).to.deep.equal({ apps: ['app-1'] })
     })
 
-    it('treats an empty apps/kb filters object on the request as "no filter" and still falls back', () => {
-      const payload: Record<string, unknown> = { filters: { apps: [], kb: [] } }
-      applyProjectContext(
+    it('drops apps entirely when the request narrows to ids outside the project scope', () => {
+      const payload: Record<string, unknown> = { filters: { apps: ['outside-app'] } }
+      applyProjectScope(
         payload,
-        makeProject({ knowledgeScope: { apps: ['project-app'] } }),
+        makeProject({ knowledgeScope: { apps: ['app-1'] } }),
       )
-      expect(payload.filters).to.deep.equal({ apps: ['project-app'] })
+      expect(payload.filters).to.deep.equal({})
     })
 
-    it('merges project files into attachments, de-duplicated by recordId, request wins on conflict', () => {
-      const payload: Record<string, unknown> = {
-        attachments: [
-          { recordId: 'shared-1', recordName: 'request-version.pdf' },
-        ],
-      }
-      applyProjectContext(
+    it('adds the linked hidden Collection id into filters.kb alongside any explicitly scoped kb ids', () => {
+      const payload: Record<string, unknown> = {}
+      applyProjectScope(
         payload,
         makeProject({
-          files: [
-            { recordId: 'shared-1', recordName: 'project-version.pdf' },
-            { recordId: 'project-only', recordName: 'other.pdf' },
-          ],
+          knowledgeScope: { kb: ['kb-1'] },
+          linkedKnowledgeBaseId: 'hidden-kb-1',
         }),
       )
-      const attachments = payload.attachments as Array<{
-        recordId: string
-        recordName: string
-      }>
-      expect(attachments).to.have.lengthOf(2)
-      expect(attachments.find((a) => a.recordId === 'shared-1')?.recordName).to.equal(
-        'request-version.pdf',
-      )
-      expect(attachments.find((a) => a.recordId === 'project-only')).to.exist
+      expect(payload.filters).to.deep.equal({ kb: ['kb-1', 'hidden-kb-1'] })
     })
 
-    it('leaves attachments untouched when the project has no files', () => {
-      const payload: Record<string, unknown> = { attachments: [{ recordId: 'a' }] }
-      applyProjectContext(payload, makeProject({ files: [] }))
-      expect(payload.attachments).to.deep.equal([{ recordId: 'a' }])
+    it('always includes the linked hidden Collection id even when the request narrowed kb to a different subset', () => {
+      const payload: Record<string, unknown> = { filters: { kb: ['kb-1'] } }
+      applyProjectScope(
+        payload,
+        makeProject({
+          knowledgeScope: { kb: ['kb-1', 'kb-2'] },
+          linkedKnowledgeBaseId: 'hidden-kb-1',
+        }),
+      )
+      expect(payload.filters).to.deep.equal({ kb: ['kb-1', 'hidden-kb-1'] })
+    })
+
+    it('de-duplicates the linked hidden Collection id when it is already in knowledgeScope.kb', () => {
+      const payload: Record<string, unknown> = {}
+      applyProjectScope(
+        payload,
+        makeProject({
+          knowledgeScope: { kb: ['hidden-kb-1'] },
+          linkedKnowledgeBaseId: 'hidden-kb-1',
+        }),
+      )
+      expect(payload.filters).to.deep.equal({ kb: ['hidden-kb-1'] })
+    })
+
+    it('preserves non-apps/kb filter keys the request carried (e.g. metadata filters)', () => {
+      const payload: Record<string, unknown> = { filters: { departments: ['eng'] } }
+      applyProjectScope(payload, makeProject({ knowledgeScope: { apps: ['app-1'] } }))
+      expect(payload.filters).to.deep.equal({ departments: ['eng'], apps: ['app-1'] })
+    })
+
+    it('produces empty filters (never "search everything") when the project has no scope at all', () => {
+      const payload: Record<string, unknown> = { filters: { apps: ['request-app'] } }
+      applyProjectScope(payload, makeProject())
+      expect(payload.filters).to.deep.equal({})
+    })
+
+    it('always sets strictScope: true so an empty scope stays empty at retrieval time', () => {
+      const payload: Record<string, unknown> = {}
+      applyProjectScope(payload, makeProject())
+      expect(payload.strictScope).to.equal(true)
+    })
+
+    it('defaults tools to the whole project tool list when the request carried none', () => {
+      const payload: Record<string, unknown> = {}
+      applyProjectScope(payload, makeProject({ tools: ['project-tool'] }))
+      expect(payload.tools).to.deep.equal(['project-tool'])
+    })
+
+    it('intersects a non-empty request tool list with the project tool list (narrow only)', () => {
+      const payload: Record<string, unknown> = { tools: ['project-tool', 'outside-tool'] }
+      applyProjectScope(payload, makeProject({ tools: ['project-tool', 'other-project-tool'] }))
+      expect(payload.tools).to.deep.equal(['project-tool'])
+    })
+
+    it('treats an explicit empty tools array the same as "not narrowed" (falls back to the whole project set)', () => {
+      const payload: Record<string, unknown> = { tools: [] }
+      applyProjectScope(payload, makeProject({ tools: ['project-tool'] }))
+      expect(payload.tools).to.deep.equal(['project-tool'])
+    })
+
+    it('sets tools to [] when the project has none configured', () => {
+      const payload: Record<string, unknown> = {}
+      applyProjectScope(payload, makeProject({ tools: [] }))
+      expect(payload.tools).to.deep.equal([])
     })
   })
 

@@ -5,13 +5,14 @@
  *  - `/projects` renders the project list (grid of cards) and the "Projects"
  *    nav item is visible in the chat sidebar.
  *  - `/projects?projectId=…` renders the redesigned two-column workspace
- *    (header, composer, recent chats, and the Instructions/Files/Members
- *    settings panel) with project details.
+ *    (header, centered composer, and the Instructions/Files/Tools & MCP/
+ *    Members settings panel) with project details. Recent conversations
+ *    render in the left sidebar (`ProjectConversationsSidebar`), not here.
  *  - Sending a message from the workspace composer hands off to `/chat` via
  *    the pending-chat buffer, starting a project-scoped conversation
  *    (`projectId` on the stream request) and, once the conversation is
  *    created, keeps `?projectId=` in the URL alongside `conversationId` so
- *    `ProjectScopedChatSidebar` stays active.
+ *    `ProjectConversationsSidebar` stays active.
  *
  * All backend calls are intercepted with page.route(); the SSE body uses the
  * shared AG-UI frame builder (see agui-sse-builder.ts) since `chat/api.ts`
@@ -82,7 +83,8 @@ function makeProjectDetail() {
   return {
     ...summary,
     instructions: 'Always cite the launch doc when answering.',
-    files: [],
+    tools: [],
+    linkedKnowledgeBaseId: null,
     members: [],
   };
 }
@@ -273,6 +275,16 @@ test.describe('Projects — nav + list + workspace (mocked backend)', () => {
     await page.waitForSelector('textarea', { timeout: 15_000 });
     const textarea = page.locator('textarea').last();
     await expect(textarea).toBeVisible();
+  });
+
+  test('left sidebar shows this project\'s conversations, not the all-projects list', async ({
+    page,
+  }) => {
+    await page.goto(`/projects/?projectId=${PROJECT_ID}`);
+    await page.waitForSelector('textarea', { timeout: 15_000 });
+    // ProjectConversationsSidebar ("New chat" + empty-state copy), not
+    // ProjectsSidebar's "All projects" list header.
+    await expect(page.getByText('No chats yet in this project')).toBeVisible({ timeout: 10_000 });
   });
 
   test('`/chat/?projectId=…` with no conversationId redirects back to the workspace', async ({

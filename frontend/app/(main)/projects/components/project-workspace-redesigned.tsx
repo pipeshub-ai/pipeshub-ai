@@ -16,13 +16,12 @@ import { createProjectShareAdapter } from '@/chat/share-adapter';
 import { useChatStore, ASSISTANT_CTX } from '@/chat/store';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { buildChatHref } from '@/chat/build-chat-url';
+import { chatContentColumnStyle } from '@/chat/constants';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { toast } from '@/lib/store/toast-store';
 import { DeleteProjectDialog } from '@/chat/sidebar/dialogs';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { ProjectSettingsPanel } from './settings-panel';
-
-const MAX_RECENT_CHATS_SHOWN = 5;
 
 interface ProjectWorkspaceRedesignedProps {
   projectId: string;
@@ -30,9 +29,11 @@ interface ProjectWorkspaceRedesignedProps {
 
 /**
  * `/projects?projectId=…` — Claude-style two-column workspace. Left column
- * has the project header, composer (starts a new project-scoped chat via the
- * pending-chat hand-off to `/chat`), and recent chats. Right column has
- * collapsible Instructions/Files/Members cards.
+ * is a centered composer (`chatContentColumnStyle`, matching `/chat`'s
+ * new-chat hero) that hands off to `/chat` via the pending-chat buffer.
+ * Recent conversations live in the left app sidebar
+ * (`ProjectConversationsSidebar`), not in this body. Right column has
+ * collapsible Instructions/Files/Tools & MCP/Members cards.
  */
 export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesignedProps) {
   const router = useRouter();
@@ -47,17 +48,11 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
-
-  const [recentChats, setRecentChats] = useState<
-    Array<{ _id: string; title?: string; sessionType: 'chat' | 'agent'; agentKey?: string }>
-  >([]);
   const [conversationTotal, setConversationTotal] = useState(0);
 
   const [instructionsDraft, setInstructionsDraft] = useState('');
   const [isEditingInstructions, setIsEditingInstructions] = useState(false);
   const [isSavingInstructions, setIsSavingInstructions] = useState(false);
-
-  const [isUploading, setIsUploading] = useState(false);
 
   const [isMutating, setIsMutating] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -68,13 +63,16 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     setIsLoading(true);
     setLoadError(false);
     try {
+      // The conversation list itself now renders in the sidebar
+      // (`ProjectConversationsSidebar`) — only the total count is needed
+      // here, to keep the projects-list "N chats" badge accurate after a
+      // pin/archive optimistic update.
       const [detail, conv] = await Promise.all([
         ProjectApi.get(projectId),
-        ProjectApi.listConversations(projectId, { page: 1, limit: MAX_RECENT_CHATS_SHOWN }),
+        ProjectApi.listConversations(projectId, { page: 1, limit: 1 }),
       ]);
       setProject(detail);
       setInstructionsDraft(detail.instructions ?? '');
-      setRecentChats(conv.conversations);
       setConversationTotal(conv.pagination.totalCount);
     } catch {
       setLoadError(true);
@@ -117,6 +115,26 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       setIsSavingInstructions(false);
     }
   }, [project, projectId, instructionsDraft, t]);
+
+  const handleKbCreated = useCallback((kbId: string) => {
+    setProject((prev) => (prev ? { ...prev, linkedKnowledgeBaseId: kbId } : prev));
+  }, []);
+
+  const handleToolsChange = useCallback(
+    async (tools: string[]) => {
+      if (!project) return;
+      const previous = project.tools;
+      setProject({ ...project, tools });
+      try {
+        const updated = await ProjectApi.update(projectId, { tools });
+        setProject(updated);
+      } catch {
+        setProject((prev) => (prev ? { ...prev, tools: previous } : prev));
+        toast.error(t('chat.projects.workspace.failedToLoad'));
+      }
+    },
+    [project, projectId, t],
+  );
 
   const handleTogglePin = useCallback(async () => {
     if (!project || isMutating) return;
@@ -164,36 +182,6 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     }
   }, [projectId, removeProjectFromList, router, t]);
 
-  const handleUploadFiles = useCallback(
-    async (files: FileList | null) => {
-      if (!files || files.length === 0 || !project) return;
-      setIsUploading(true);
-      try {
-        await ProjectApi.uploadFiles(projectId, Array.from(files));
-        const refreshed = await ProjectApi.get(projectId);
-        setProject(refreshed);
-      } catch {
-        toast.error(t('chat.projects.workspace.uploadFiles'));
-      } finally {
-        setIsUploading(false);
-      }
-    },
-    [project, projectId, t],
-  );
-
-  const handleRemoveFile = useCallback(
-    async (recordId: string) => {
-      if (!project) return;
-      try {
-        const files = await ProjectApi.removeFile(projectId, recordId);
-        setProject({ ...project, files });
-      } catch {
-        toast.error(t('chat.projects.workspace.removeFile'));
-      }
-    },
-    [project, projectId, t],
-  );
-
   const handleShareSuccess = useCallback(async () => {
     try {
       const refreshed = await ProjectApi.get(projectId);
@@ -228,16 +216,6 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   const handleDeleteFile = useCallback((recordId: string) => {
     ChatApi.deleteAttachment(recordId, {}).catch(() => {});
   }, []);
-
-  const openMostRecentChat = useCallback(() => {
-    if (recentChats.length === 0) return;
-    const c = recentChats[0];
-    const href =
-      c.sessionType === 'agent' && c.agentKey
-        ? `/chat/?agentId=${encodeURIComponent(c.agentKey)}&conversationId=${encodeURIComponent(c._id)}`
-        : buildChatHref({ projectId, conversationId: c._id });
-    router.push(href);
-  }, [recentChats, projectId, router]);
 
   if (isLoading) {
     return (
@@ -394,72 +372,16 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
           padding: isMobile ? 'var(--space-4)' : 'var(--space-6)',
         }}
       >
-        {/* Left column — composer + recent chats */}
-        <Flex direction="column" gap="4" style={{ flex: '1 1 60%', minWidth: 0 }}>
-          <ChatInput variant="full" onSend={handleSend} onUploadFile={handleUploadFile} onDeleteFile={handleDeleteFile} />
-
-          {recentChats.length > 0 ? (
-            <Flex direction="column" gap="2">
-              <Flex align="center" justify="between">
-                <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                  {t('chat.projects.workspace.recentChatsTitle')}
-                </Text>
-                <button
-                  type="button"
-                  onClick={openMostRecentChat}
-                  style={{
-                    appearance: 'none',
-                    border: 'none',
-                    background: 'transparent',
-                    color: 'var(--accent-11)',
-                    fontSize: 13,
-                    cursor: 'pointer',
-                    padding: 0,
-                  }}
-                >
-                  {t('chat.projects.workspace.seeAllChats')}
-                </button>
-              </Flex>
-              <Flex direction="column" gap="1">
-                {recentChats.map((c) => (
-                  <Flex
-                    key={c._id}
-                    align="center"
-                    gap="2"
-                    style={{
-                      padding: 'var(--space-2) var(--space-3)',
-                      borderRadius: 'var(--radius-2)',
-                      cursor: 'pointer',
-                    }}
-                    onClick={() =>
-                      router.push(
-                        c.sessionType === 'agent' && c.agentKey
-                          ? `/chat/?agentId=${encodeURIComponent(c.agentKey)}&conversationId=${encodeURIComponent(c._id)}`
-                          : buildChatHref({ projectId, conversationId: c._id }),
-                      )
-                    }
-                  >
-                    <MaterialIcon name="chat_bubble_outline" size={16} color="var(--slate-11)" />
-                    <Text
-                      size="2"
-                      style={{
-                        color: 'var(--slate-12)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {c.title || t('chat.generatingTitle')}
-                    </Text>
-                  </Flex>
-                ))}
-              </Flex>
-            </Flex>
-          ) : (
-            <Text size="2" style={{ color: 'var(--slate-10)', textAlign: 'center', marginTop: 'var(--space-4)' }}>
-              {t('chat.projects.startChatInProject')}
-            </Text>
-          )}
+        {/* Left column — vertically centered composer, same width column as /chat's new-chat hero */}
+        <Flex direction="column" align="center" justify="center" style={{ flex: '1 1 60%', minWidth: 0 }}>
+          <Box style={{ ...chatContentColumnStyle(isMobile), width: '100%' }}>
+            <ChatInput
+              variant="full"
+              onSend={handleSend}
+              onUploadFile={handleUploadFile}
+              onDeleteFile={handleDeleteFile}
+            />
+          </Box>
         </Flex>
 
         {/* Right column — settings panel */}
@@ -478,9 +400,8 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
               setIsEditingInstructions(false);
             }}
             onSaveInstructions={() => void handleSaveInstructions()}
-            isUploading={isUploading}
-            onUploadFiles={(files) => void handleUploadFiles(files)}
-            onRemoveFile={(recordId) => void handleRemoveFile(recordId)}
+            onKbCreated={handleKbCreated}
+            onToolsChange={(tools) => void handleToolsChange(tools)}
             onOpenShare={() => setShareOpen(true)}
           />
         </Box>

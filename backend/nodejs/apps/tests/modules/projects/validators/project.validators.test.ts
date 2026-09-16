@@ -7,7 +7,6 @@ import {
   projectIdParamsSchema,
   listProjectsQuerySchema,
   listProjectConversationsQuerySchema,
-  removeProjectFileParamsSchema,
   upsertProjectMembersSchema,
   removeProjectMemberParamsSchema,
 } from '../../../../src/modules/projects/validators/project.validators'
@@ -79,6 +78,23 @@ describe('projects/validators/project.validators', () => {
     it('rejects a malformed knowledgeScope entry (non-string id)', () => {
       const result = createProjectSchema.safeParse({
         body: { name: 'X', knowledgeScope: { apps: [123] } },
+      })
+      expect(result.success).to.equal(false)
+    })
+
+    it('accepts an explicit tools list of fullNames', () => {
+      const result = createProjectSchema.safeParse({
+        body: { name: 'X', tools: ['gmail.send_email', 'kb.search'] },
+      })
+      expect(result.success).to.equal(true)
+      if (result.success) {
+        expect(result.data.body.tools).to.deep.equal(['gmail.send_email', 'kb.search'])
+      }
+    })
+
+    it('rejects a non-string entry in tools', () => {
+      const result = createProjectSchema.safeParse({
+        body: { name: 'X', tools: [123] },
       })
       expect(result.success).to.equal(false)
     })
@@ -229,22 +245,6 @@ describe('projects/validators/project.validators', () => {
     })
   })
 
-  describe('removeProjectFileParamsSchema', () => {
-    it('accepts a valid projectId + recordId', () => {
-      const result = removeProjectFileParamsSchema.safeParse({
-        params: { projectId: VALID_OID, recordId: 'record-1' },
-      })
-      expect(result.success).to.equal(true)
-    })
-
-    it('rejects an empty recordId', () => {
-      const result = removeProjectFileParamsSchema.safeParse({
-        params: { projectId: VALID_OID, recordId: '' },
-      })
-      expect(result.success).to.equal(false)
-    })
-  })
-
   describe('upsertProjectMembersSchema', () => {
     it('accepts a valid members array', () => {
       const result = upsertProjectMembersSchema.safeParse({
@@ -278,6 +278,33 @@ describe('projects/validators/project.validators', () => {
       expect(result.success).to.equal(false)
     })
 
+    it('accepts an explicit principalType of "team"', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { members: [{ principalId: VALID_OID, principalType: 'team', role: 'editor' }] },
+      })
+      expect(result.success).to.equal(true)
+    })
+
+    it('rejects an invalid principalType', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { members: [{ principalId: VALID_OID, principalType: 'group', role: 'editor' }] },
+      })
+      expect(result.success).to.equal(false)
+    })
+
+    it('defaults principalType to undefined (service-level default is "user") when omitted', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { members: [{ principalId: VALID_OID, role: 'viewer' }] },
+      })
+      expect(result.success).to.equal(true)
+      if (result.success) {
+        expect(result.data.body.members[0]?.principalType).to.equal(undefined)
+      }
+    })
+
     it('rejects a members array exceeding the batch limit', () => {
       const overLimit = Array.from({ length: 51 }, (_, i) => ({
         principalId: new mongoose.Types.ObjectId().toString(),
@@ -304,16 +331,37 @@ describe('projects/validators/project.validators', () => {
   })
 
   describe('removeProjectMemberParamsSchema', () => {
-    it('accepts valid projectId + memberUserId', () => {
+    it('accepts valid projectId + memberUserId with no principalType query param', () => {
       const result = removeProjectMemberParamsSchema.safeParse({
         params: { projectId: VALID_OID, memberUserId: VALID_OID },
+        query: {},
       })
       expect(result.success).to.equal(true)
+    })
+
+    it('accepts an explicit principalType=team query param', () => {
+      const result = removeProjectMemberParamsSchema.safeParse({
+        params: { projectId: VALID_OID, memberUserId: VALID_OID },
+        query: { principalType: 'team' },
+      })
+      expect(result.success).to.equal(true)
+      if (result.success) {
+        expect(result.data.query.principalType).to.equal('team')
+      }
+    })
+
+    it('rejects an invalid principalType query param', () => {
+      const result = removeProjectMemberParamsSchema.safeParse({
+        params: { projectId: VALID_OID, memberUserId: VALID_OID },
+        query: { principalType: 'group' },
+      })
+      expect(result.success).to.equal(false)
     })
 
     it('rejects a malformed memberUserId', () => {
       const result = removeProjectMemberParamsSchema.safeParse({
         params: { projectId: VALID_OID, memberUserId: 'bad' },
+        query: {},
       })
       expect(result.success).to.equal(false)
     })

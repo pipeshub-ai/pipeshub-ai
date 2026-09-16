@@ -14,25 +14,11 @@ import {
 
 /**
  * A project workspace: groups chat/agent conversations under shared
- * instructions, a knowledge scope, and a bounded set of reference files.
- * Files reuse the existing chat-attachment ref shape (graph record + blob) —
- * see IProjectFileRef — so there is no parallel file-storage model.
+ * instructions, a knowledge scope, a selected tool set, and its own hidden
+ * Collection (`linkedKnowledgeBaseId`) for uploaded files. The hidden
+ * Collection is created and owned by `ProjectKnowledgeBaseService`, not
+ * this schema — Mongo only stores the pointer.
  */
-const projectFileRefSchema = new Schema(
-  {
-    recordId: { type: String, required: true },
-    recordName: { type: String },
-    mimeType: { type: String },
-    extension: { type: String },
-    virtualRecordId: { type: String },
-    source: { type: String, enum: ['upload', 'paste-text'] },
-    sizeBytes: { type: Number },
-    uploadedBy: { type: Schema.Types.ObjectId, required: true },
-    uploadedAt: { type: Date, default: Date.now },
-  },
-  { _id: false },
-);
-
 const projectMemberSchema = new Schema(
   {
     principalType: {
@@ -86,7 +72,8 @@ const projectSchema = new Schema<IProjectDocument>(
       apps: [appliedFilterNodeSchema],
       kb: [appliedFilterNodeSchema],
     },
-    files: { type: [projectFileRefSchema], default: [] },
+    tools: { type: [String], default: [] },
+    linkedKnowledgeBaseId: { type: String, default: null },
     visibility: {
       type: String,
       enum: PROJECT_VISIBILITY_VALUES,

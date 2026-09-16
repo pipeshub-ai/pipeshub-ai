@@ -498,7 +498,7 @@ function ChatContent() {
   }, [agentId, router, t]);
 
   // Keep the store's `activeProjectId` (read by ProjectsSection /
-  // ProjectScopedChatSidebar to highlight the open project) in sync with the URL.
+  // ProjectConversationsSidebar to highlight the open project) in sync with the URL.
   useEffect(() => {
     useChatStore.getState().setActiveProjectId(projectId);
   }, [projectId]);

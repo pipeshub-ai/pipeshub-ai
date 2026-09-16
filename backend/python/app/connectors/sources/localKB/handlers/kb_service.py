@@ -228,9 +228,15 @@ class KnowledgeBaseService:
         self,
         user_id: str,
         org_id: str,
-        name: str
+        name: str,
+        is_hidden: bool = False,
     ) -> Optional[Dict]:
-        """Create a new knowledge base"""
+        """Create a new knowledge base.
+
+        is_hidden excludes the KB from list/browse/unscoped-search surfaces
+        (e.g. a project's linked file collection) while it remains fully
+        resolvable when explicitly referenced by id (filters.kb, direct get).
+        """
         try:
             self.logger.info(f"🚀 Creating KB '{name}' for user {user_id} in org {org_id}")
 
@@ -296,6 +302,7 @@ class KnowledgeBaseService:
                 "isAuthenticated": True,
                 "vectorMembershipBackfilled": True,
                 "hideConnector": True,  # Excluded from main connector management UI
+                "isHidden": is_hidden,
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             }

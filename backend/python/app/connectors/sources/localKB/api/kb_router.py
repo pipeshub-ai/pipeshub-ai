@@ -103,12 +103,15 @@ async def create_knowledge_base(
                 detail="Knowledge base name is required (use 'name' or 'kbName' field)"
             )
 
+        is_hidden = bool(body.get("isHidden", False))
+
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         result = await kb_service.create_knowledge_base(
             user_id=user_id,
             org_id=org_id,
             name=name.strip(),
+            is_hidden=is_hidden,
         )
 
         if not result or result.get("success") is False:

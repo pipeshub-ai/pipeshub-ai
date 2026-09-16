@@ -57,12 +57,19 @@ interface ChatSectionElementProps {
    * (rename/archive are not supported for agent chats).
    */
   agentId?: string;
+  /**
+   * Set by `ProjectConversationsSidebar` so the row's href keeps `projectId`
+   * in the URL — otherwise navigating away from the project's own sidebar
+   * list would drop back to the main chat sidebar mid-click. Ignored when
+   * `agentId` is set (see `buildChatHref`).
+   */
+  projectId?: string;
 }
 
 /**
  * A single conversation item in the chat sidebar.
  */
-export function ChatSectionElement({ conversation, isActive, onClick, agentId }: ChatSectionElementProps) {
+export function ChatSectionElement({ conversation, isActive, onClick, agentId, projectId }: ChatSectionElementProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
@@ -281,7 +288,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
     );
   }
 
-  const conversationHref = buildChatHref({ agentId, conversationId: conversation.id });
+  const conversationHref = buildChatHref({ agentId, projectId, conversationId: conversation.id });
 
   return (
     <>
