@@ -183,7 +183,6 @@ export function createSamlRouter(container: Container) {
         recordEvent('login', {
           orgId: session.orgId?.toString(),
           userId: user._id?.toString(),
-          email: user.email,
           first_login: !user.hasLoggedIn,
           auth_method: 'saml',
         });
