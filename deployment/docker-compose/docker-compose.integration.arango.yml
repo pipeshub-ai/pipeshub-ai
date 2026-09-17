@@ -173,6 +173,11 @@ services:
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
+      # A directory both the test process and the connector can see, so the
+      # Local FS connector can be tested without an external service. The host
+      # side is written by the test; the container side is what the connector
+      # is pointed at.
+      - ${LOCALFS_TEST_HOST_DIR:-./localfs-test-data}:/data/localfs-test
       # Persist the HuggingFace model cache so models pulled at runtime survive
       # container recreation instead of being re-downloaded on every restart.
       - pipeshub_hf_cache:/root/.cache/huggingface
