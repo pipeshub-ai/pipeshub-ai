@@ -3380,7 +3380,7 @@ describe('UserController', () => {
         fullName: 'Alice Chen',
         password: 'Str0ng-pass!',
       };
-      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
       const userSave = sinon.stub(Users.prototype, 'save').resolves();
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       sinon.stub(bcrypt, 'hash').rejects(new Error('hash failed'));
