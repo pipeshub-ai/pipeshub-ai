@@ -653,13 +653,28 @@ export class UserController {
       await this.eventService.stop();
       await newUser.save();
       if (hashedPassword !== undefined) {
-        await new UserCredentials({
-          userId: newUser._id,
-          orgId: newUser.orgId,
-          isDeleted: false,
-          hashedPassword,
-          ipAddress: req.ip,
-        }).save();
+        // The credential is the last write. If it fails, the demo account
+        // exists but cannot sign in, and its address is taken so recreating it
+        // is refused as a duplicate — so undo the user and its group
+        // membership and surface the failure, leaving nothing half-created.
+        try {
+          await new UserCredentials({
+            userId: newUser._id,
+            orgId: newUser.orgId,
+            isDeleted: false,
+            hashedPassword,
+            ipAddress: req.ip,
+          }).save();
+        } catch (credentialError) {
+          await Promise.all([
+            Users.deleteOne({ _id: newUser._id }).catch(() => undefined),
+            UserGroups.updateOne(
+              { orgId: newUser.orgId, type: 'everyone' },
+              { $pull: { users: newUser._id } },
+            ).catch(() => undefined),
+          ]);
+          throw credentialError;
+        }
         this.logger.info('Demo account created with a starting password', {
           orgId: newUser.orgId.toString(),
           createdBy: req.user?.userId,

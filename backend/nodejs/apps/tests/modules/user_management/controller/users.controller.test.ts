@@ -3393,6 +3393,27 @@ describe('UserController', () => {
       expect(userSave.called).to.be.false;
     });
 
+    it('undoes the user and group membership when the credential save fails', async () => {
+      // The credential is the last write; if it fails the account exists but
+      // cannot sign in, and its address is taken so recreating it is refused.
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(UserGroups, 'updateOne').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential save failed'));
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('credential save failed');
+      expect(userDelete.calledOnce).to.be.true;
+      expect(res.status.called).to.be.false;
+    });
+
     it('should reject a weak starting password before creating anything', async () => {
       req.body = {
         email: 'alice@acme-demo.example',
