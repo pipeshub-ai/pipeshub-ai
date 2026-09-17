@@ -2506,7 +2506,53 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get records by parent failed: {str(e)}")
-            return []
+            raise
+
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: str,
+        transaction: str | None = None,
+    ) -> list[Record]:
+        """Return this connector's records of ``record_type``."""
+        try:
+            self.logger.debug(
+                "Retrieving records of type %s for connector %s",
+                record_type, connector_id,
+            )
+            query = """
+            MATCH (record:Record)
+            WHERE record.connectorId = $connector_id
+              AND record.recordType = $record_type
+            RETURN record
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "connector_id": connector_id,
+                    "record_type": record_type,
+                },
+                txn_id=transaction,
+            )
+            records = [
+                Record.from_arango_base_record(
+                    self._neo4j_to_arango_node(
+                        dict(r["record"]), CollectionNames.RECORDS.value
+                    )
+                )
+                for r in results
+            ]
+            self.logger.debug(
+                "Retrieved %d record(s) of type %s for connector %s",
+                len(records), record_type, connector_id,
+            )
+            return records
+        except Exception as e:
+            self.logger.error(
+                "Get records by record type failed for connector %s type %s: %s",
+                connector_id, record_type, e,
+            )
+            raise
 
     async def get_records_by_record_group(
         self,
@@ -5095,6 +5141,27 @@ class Neo4jProvider(IGraphDBProvider):
                 k: v for k, v in filters.items()
                 if k not in ["kb", "apps"] and v
             }
+
+            # Reclassify KB app IDs that arrived in the apps filter.
+            # MCP and some API clients send all source IDs (connectors + KB
+            # collections) in a single `apps` array; the backend must route
+            # KB IDs to the KB query path so Scenario 4 does not silently
+            # drop them.  Only IDs the user can actually access are moved.
+            if connector_ids_filter and kb_app_ids_set:
+                kb_in_apps = [
+                    cid for cid in connector_ids_filter
+                    if cid in kb_app_ids_set
+                ]
+                if kb_in_apps:
+                    self.logger.debug(
+                        f"Reclassifying {len(kb_in_apps)} KB app ID(s) "
+                        f"from apps to kb filter: {kb_in_apps}"
+                    )
+                    connector_ids_filter = [
+                        cid for cid in connector_ids_filter
+                        if cid not in kb_app_ids_set
+                    ]
+                    kb_ids = list(dict.fromkeys((kb_ids or []) + kb_in_apps))
 
             has_kb_filter = kb_ids is not None and len(kb_ids) > 0
             has_app_filter = connector_ids_filter is not None and len(connector_ids_filter) > 0
@@ -11034,12 +11101,17 @@ class Neo4jProvider(IGraphDBProvider):
             return []
         try:
             label = collection_to_label(CollectionNames.RECORDS.value)
+            queued_stamp = (
+                ", n.queuedAtTimestamp = $now"
+                if new_status == ProgressStatus.QUEUED.value
+                else ""
+            )
             # MATCH + SET in one statement; a read-then-write would let the
             # indexing service advance a record in between and get clobbered.
             query = f"""
             MATCH (n:{label})
             WHERE n.id IN $keys AND n.indexingStatus = $expected
-            SET n.indexingStatus = $new_status
+            SET n.indexingStatus = $new_status{queued_stamp}
             RETURN n.id AS id
             """
             results = await self.client.execute_query(
@@ -11048,6 +11120,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "keys": unique_ids,
                     "expected": expected,
                     "new_status": new_status,
+                    "now": get_epoch_timestamp_in_ms(),
                 },
                 txn_id=transaction,
             )

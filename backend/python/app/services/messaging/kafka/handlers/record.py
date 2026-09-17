@@ -17,7 +17,11 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service import (
+    DefaultEndpoints,
+    TokenScopes,
+    config_node_constants,
+)
 from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
@@ -47,6 +51,7 @@ from app.services.vector_db.strategy_resolver import reset_strategy_cache
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class RecordEventHandler(BaseEventService):
@@ -73,6 +78,12 @@ class RecordEventHandler(BaseEventService):
         ProgressStatus.AUTO_INDEX_OFF.value,
         ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
         ProgressStatus.FAILED.value,
+    })
+    # A live handler owns this record. The stale-IN_PROGRESS scan republishes
+    # if that handler actually died; rewriting FAILED here races the worker
+    # and is what the idle-drain backstop was doing to healthy PDFs.
+    _IN_FLIGHT_STATUSES = frozenset({
+        ProgressStatus.IN_PROGRESS.value,
     })
 
     async def on_message_abandoned(
@@ -128,10 +139,10 @@ class RecordEventHandler(BaseEventService):
                 return
 
             current_status = record.get("indexingStatus")
-            if current_status in self._SETTLED_STATUSES:
+            if current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES:
                 self.logger.info(
                     "Discarded message for record %s after %d attempt(s); "
-                    "leaving settled status %s untouched: %s",
+                    "leaving status %s untouched: %s",
                     record_id,
                     attempts,
                     current_status,
@@ -1005,7 +1016,7 @@ class RecordEventHandler(BaseEventService):
                 try:
                     jwt_payload  = {
                         "orgId": payload["orgId"],
-                        "scopes": ["connector:signedUrl"],
+                        "scopes": [TokenScopes.CONNECTOR_SIGNED_URL.value],
                     }
                     token = await generate_jwt(self.config_service, jwt_payload)
                     self.logger.debug(f"Generated JWT token for message {message_id}")
@@ -1195,6 +1206,7 @@ class RecordEventHandler(BaseEventService):
                                 updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
                             if current.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value:
                                 updates["indexingStatus"] = ProgressStatus.QUEUED.value
+                                updates["queuedAtTimestamp"] = get_epoch_timestamp_in_ms()
                                 if current.get("extractionStatus") != ProgressStatus.COMPLETED.value:
                                     updates["extractionStatus"] = ProgressStatus.NOT_STARTED.value
                         if updates:

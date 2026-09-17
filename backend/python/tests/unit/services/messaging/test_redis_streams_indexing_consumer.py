@@ -2205,34 +2205,25 @@ class TestDrainPending:
 
     @pytest.mark.asyncio
     async def test_drain_phase2_recovers_own_pel(self, consumer):
-        """Phase 2: XREADGROUP id="0" recovers messages already owned by this consumer.
+        """Phase 2 recovers this consumer's unheld PEL entries via XRANGE.
 
-        This covers a retry within the lifetime of the current consumer instance.
+        Must not XREADGROUP id=0: that increments times_delivered on every
+        idle re-read and trips the crash-loop backstop on healthy work.
         """
-        # The test fixture configures two topics; Phase 2 runs once per topic.
-        first_topic = consumer.config.topics[0]
+        fields = _valid_fields()
 
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
-        # Phase 2 call sequence (in order):
-        #   1. topic[0]: returns one message
-        #   2. topic[0]: drained, return None
-        #   3. topic[1]: empty, return None
-        consumer.redis.xreadgroup = AsyncMock(
-            side_effect=[
-                [(first_topic, [("9-0", _valid_fields())])],
-                None,
-                None,
-            ]
-        )
-        # Phase 2 only runs when the pending list holds something this
-        # consumer is not already tracking -- the XREADGROUP below bumps
-        # times_delivered on everything it returns, so it must not run
-        # speculatively.
-        consumer.redis.xpending_range = AsyncMock(
-            return_value=[{"message_id": "9-0"}]
-        )
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
+
+        async def pending_range(stream, *args, **kwargs):
+            if stream == consumer.config.topics[0]:
+                return [{"message_id": "9-0"}]
+            return []
+
+        consumer.redis.xpending_range = AsyncMock(side_effect=pending_range)
+        consumer.redis.xrange = AsyncMock(return_value=[("9-0", fields)])
 
         with patch.object(
             consumer, "_start_processing_task", new_callable=AsyncMock
@@ -2240,33 +2231,29 @@ class TestDrainPending:
             await consumer._drain_pending()
 
         mock_process.assert_awaited_once()
-        first_call = consumer.redis.xreadgroup.call_args_list[0]
-        # Phase 2 must use id "0", not ">"
-        assert first_call.kwargs["streams"][first_topic] == "0"
-        assert first_call.kwargs["consumername"] == consumer.consumer_name
+        consumer.redis.xreadgroup.assert_not_awaited()
+        consumer.redis.xrange.assert_awaited()
+        assert consumer.redis.xrange.await_args.kwargs["min"] == "9-0"
+        assert consumer.redis.xrange.await_args.kwargs["max"] == "9-0"
 
     @pytest.mark.asyncio
-    async def test_drain_phase2_advances_cursor(self, consumer):
-        """Phase 2 must advance its PEL read cursor instead of re-reading id "0".
-
-        Regression: re-reading from "0" on every iteration re-delivered the
-        same un-ACKed entries forever — a tight infinite recovery loop.
-        """
-        first_topic = consumer.config.topics[0]
-        second_topic = consumer.config.topics[1]
+    async def test_drain_phase2_recovers_each_unheld_entry_once(self, consumer):
+        """Phase 2 pages XPENDING and loads each unheld id via XRANGE."""
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
-        # Non-empty so the Phase-2 gate lets the recovery read run: it is
-        # skipped when nothing in the pending list is unaccounted for.
-        consumer.redis.xpending_range = AsyncMock(
-            return_value=[{"message_id": "5-0"}]
-        )
-        consumer.redis.xreadgroup = AsyncMock(
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
+
+        async def pending_range(stream, *args, **kwargs):
+            if stream == consumer.config.topics[0]:
+                return [{"message_id": "5-0"}, {"message_id": "9-0"}]
+            return []
+
+        consumer.redis.xpending_range = AsyncMock(side_effect=pending_range)
+        consumer.redis.xrange = AsyncMock(
             side_effect=[
-                [(first_topic, [("5-0", _valid_fields()), ("9-0", _valid_fields())])],
-                [(first_topic, [])],
-                [(second_topic, [])],
+                [("5-0", _valid_fields())],
+                [("9-0", _valid_fields())],
             ]
         )
 
@@ -2275,11 +2262,40 @@ class TestDrainPending:
         ) as mock_process:
             await consumer._drain_pending()
 
-        # The second Phase-2 read for topic[0] must continue past the last
-        # recovered id ("9-0"), not restart from "0".
-        second_call = consumer.redis.xreadgroup.call_args_list[1]
-        assert second_call.kwargs["streams"][first_topic] == "9-0"
+        consumer.redis.xreadgroup.assert_not_awaited()
         assert mock_process.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_drain_phase2_reclaims_ownership_before_dispatch(self, consumer):
+        """Phase 2 uses read-only XPENDING + XRANGE, so the entry's idle
+        timer is never reset by the scan.  Before dispatching, the consumer
+        must XCLAIM JUSTID min_idle_time=0 to close the window where a peer
+        could XAUTOCLAIM the entry."""
+        consumer.running = True
+        consumer.redis = AsyncMock()
+        consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
+        consumer.redis.xclaim = AsyncMock(return_value=[])
+
+        async def pending_range(stream, *args, **kwargs):
+            if stream == consumer.config.topics[0]:
+                return [{"message_id": "9-0"}]
+            return []
+
+        consumer.redis.xpending_range = AsyncMock(side_effect=pending_range)
+        consumer.redis.xrange = AsyncMock(return_value=[("9-0", _valid_fields())])
+
+        with patch.object(
+            consumer, "_start_processing_task", new_callable=AsyncMock
+        ):
+            await consumer._drain_pending()
+
+        # XCLAIM JUSTID must have been called for the recovered entry.
+        consumer.redis.xclaim.assert_awaited()
+        call_kwargs = consumer.redis.xclaim.await_args.kwargs
+        assert call_kwargs["message_ids"] == ["9-0"]
+        assert call_kwargs["justid"] is True
+        assert call_kwargs["min_idle_time"] == 0
 
 
 # ===================================================================
@@ -2522,6 +2538,37 @@ class TestExceedsMaxRetries:
         )
 
     @pytest.mark.asyncio
+    async def test_backstop_does_not_abandon_while_a_sibling_delivery_is_in_flight(
+        self, consumer
+    ):
+        """times_delivered can hit the backstop from own-PEL re-reads of a
+        duplicate entry while another delivery of the same record is live.
+        Abandoning that entry marks FAILED under the running handler."""
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 11}]
+        )
+        consumer.redis.xack = AsyncMock()
+        sink = MagicMock()
+        sink.on_message_abandoned = AsyncMock()
+        consumer.disposition_sink = sink
+        consumer._in_flight_record_ids.add("r1")
+        parsed = StreamMessage(eventType="newRecord", payload={"recordId": "r1"})
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 3
+            mock_env.redis_max_deliveries = 10
+            result = await consumer._should_dead_letter(
+                "topic-a", "1-0", parsed_message=parsed
+            )
+
+        assert result is False
+        sink.on_message_abandoned.assert_not_awaited()
+        consumer.redis.xack.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_drain_phase1_skips_poison_message(self, consumer):
         """Phase 1 should skip dispatch when _should_dead_letter returns True."""
         consumer.running = True
@@ -2544,23 +2591,15 @@ class TestExceedsMaxRetries:
     @pytest.mark.asyncio
     async def test_drain_phase2_skips_poison_message(self, consumer):
         """Phase 2 should skip dispatch when _should_dead_letter returns True."""
-        first_topic = consumer.config.topics[0]
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
-        consumer.redis.xreadgroup = AsyncMock(
-            side_effect=[
-                [(first_topic, [("9-0", _valid_fields())])],
-                None,
-                None,
-            ]
-        )
-        # Phase 2 only runs when the pending list holds something this
-        # consumer is not already tracking -- the XREADGROUP below bumps
-        # times_delivered on everything it returns, so it must not run
-        # speculatively.
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
         consumer.redis.xpending_range = AsyncMock(
             return_value=[{"message_id": "9-0"}]
+        )
+        consumer.redis.xrange = AsyncMock(
+            return_value=[("9-0", _valid_fields())]
         )
 
         with patch.object(
@@ -2572,6 +2611,7 @@ class TestExceedsMaxRetries:
                 await consumer._drain_pending()
 
         mock_process.assert_not_called()
+        consumer.redis.xreadgroup.assert_not_awaited()
 
 
 # ===================================================================

@@ -4,26 +4,89 @@
 
 **Translations:** [Français](docs/i18n/fr/CONTRIBUTING.md) · [Deutsch](docs/i18n/de/CONTRIBUTING.md) · [简体中文](docs/i18n/zh-CN/CONTRIBUTING.md) · [日本語](docs/i18n/ja/CONTRIBUTING.md) · [Русский](docs/i18n/ru/CONTRIBUTING.md) · [עברית](docs/i18n/he/CONTRIBUTING.md) · [한국어](docs/i18n/ko/CONTRIBUTING.md) · [Español](docs/i18n/es/CONTRIBUTING.md) · [Português](docs/i18n/pt/CONTRIBUTING.md) · [Türkçe](docs/i18n/tr/CONTRIBUTING.md) · [Tiếng Việt](docs/i18n/vi/CONTRIBUTING.md) · [Italiano](docs/i18n/it/CONTRIBUTING.md)
 
+This English file is current. The translations may lag; use this page for labeled issues and local setup until they catch up.
+
 </div>
 
 Welcome to our open source project! We're excited that you're interested in contributing. This document provides guidelines and instructions to help you get started as a contributor.
 
-## 💻 Developer Contribution Build
+Questions: [Discord](https://discord.com/invite/K5RskzJBm2), [GitHub Discussions](https://github.com/pipeshub-ai/pipeshub-ai/discussions), or open an issue. Pick a labeled issue below, or open a pull request with your change.
 
 ## Table of Contents
+- [Finding something to work on](#finding-something-to-work-on)
+- [Documentation](#documentation)
+- [New connectors](#new-connectors)
 - [Setting Up the Development Environment](#setting-up-the-development-environment)
 - [Project Architecture](#project-architecture)
 - [Contribution Workflow](#contribution-workflow)
 - [Code Style Guidelines](#code-style-guidelines)
 - [Testing](#testing)
-- [Documentation](#documentation)
 - [Community Guidelines](#community-guidelines)
+
+## Finding something to work on
+
+Labeled issues are a good place to start, but other useful changes are welcome too.
+
+1. [`first-timers-only`](https://github.com/pipeshub-ai/pipeshub-ai/labels/first-timers-only) — small and scoped; a good first open-source PR.
+2. [`good first issue`](https://github.com/pipeshub-ai/pipeshub-ai/labels/good%20first%20issue) — one evening, one area.
+3. [`help wanted`](https://github.com/pipeshub-ai/pipeshub-ai/labels/help%20wanted) — a few days of independent work.
+
+Comment on the issue so others know you are on it. If you already have a fix, open a pull request and link the issue, or describe the problem in the PR.
+
+## Documentation
+
+Documentation lives in two places:
+
+- This repository: `README.md`, `docs/`, this file, and OpenAPI at `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml`. Update the OpenAPI file when you change HTTP routes.
+- [`pipeshub-ai/documentation`](https://github.com/pipeshub-ai/documentation), which is what [docs.pipeshub.com](https://docs.pipeshub.com) publishes.
+
+To change a page:
+
+1. Fork the repo that holds the file.
+2. Edit it. Match versions, paths, and install commands to this repository on `main`.
+3. Open a pull request.
+
+Markdown-only work does not need Docker or a local stack. If you add or change a product feature, update the page that describes it in the same PR when you can.
+
+## New connectors
+
+A new connector is a large piece of work. The [connector playbook](CONNECTOR_INTEGRATION_PLAYBOOK.md) is the starting point; Discord is a good place to talk through scope first.
 
 ## Setting Up the Development Environment
 
-### System Dependencies
+Skip this section if you are only editing documentation.
+
+You need a clone of this repository on your machine. Fork it on GitHub, then:
+
+```bash
+git clone https://github.com/<your-username>/pipeshub-ai.git
+cd pipeshub-ai
+```
+
+The product is two kinds of process:
+
+- **Application services** — the Node.js API, the Python FastAPI services, and the Next.js UI. These are the programs in this repository.
+- **Stores** — the databases those programs talk to: Redis (config and events), Qdrant (search vectors), Neo4j (the knowledge graph), and MongoDB (sessions and metadata). They are not PipesHub code; they run as their own containers.
+
+Two ways to run it locally:
+
+1. **Everything in Docker** — one installer starts the stores and the application services as containers. Use this to try a full instance without starting each process yourself.
+2. **Application services from source** — you still start the stores in Docker, then you run the API, Python services, and UI yourself from the files in this checkout (`npm run dev`, `python -m app.embedding_main`, and so on). Your edits load without rebuilding a Docker image. Use this when you are changing that code.
+
+### Run everything in Docker
+
+The installer starts the stores and the application services together:
+
+```bash
+./install.sh --build
+```
+
+The rest of this section is for running application services from source.
+
+### System packages
 
 #### Linux
+
 ```bash
 sudo apt update
 sudo apt install python3.12-venv
@@ -31,106 +94,62 @@ sudo apt-get install libreoffice
 sudo apt install libmariadb-dev
 ```
 
-#### Mac
+#### macOS
+
+Install [Homebrew](https://brew.sh) if `brew` is missing, then:
+
 ```bash
-# Install Homebrew if not already installed
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-
-# Install required packages
 brew install python@3.12
 brew install libreoffice
-brew install mariadb-connector-c # Add to path
+brew install mariadb-connector-c
 ```
 
 #### Windows
+
+Install Python 3.12, or use WSL2 and follow the Linux steps.
+
+### Application tools
+
+1. **Docker** — Redis, Qdrant, Neo4j, and MongoDB (the default stores below)
+2. **Node.js 22** — API in `backend/nodejs/apps`, frontend in `frontend`. There is no root `package.json`.
+3. **Python 3.12** — FastAPI services in `backend/python`
+
+### Environment files
+
+Copy `backend/env.template` into both backend trees. Defaults are `DATA_STORE=neo4j`, `MESSAGE_BROKER=redis`, and `KV_STORE_TYPE=redis`.
+
 ```bash
-- Install Python 3.12
-- Consider using WSL2 for a Linux-like environment
+cp backend/env.template backend/nodejs/apps/.env
+cp backend/env.template backend/python/.env
 ```
 
-### Application Dependencies
-```bash
-1. **Docker** - Install Docker for your platform
-2. **Node.js** - Install Node.js(v22.15.0)
-3. **Python 3.12** - Install as shown above
-4. **Optional debugging tools:**
-   - MongoDB Compass or Studio 3T
-   - etcd-manager
-```
+Passwords and the Qdrant API key in those files must match the containers in the next step.
 
-### Starting Required Docker Containers
+### Default stores
 
-**Redis:**
+Start Redis, Qdrant, Neo4j, and MongoDB. Passwords and keys must match the `.env` files above.
+
+**Redis** (config KV and Redis Streams as the event bus):
+
 ```bash
 docker run -d --name redis --restart always -p 6379:6379 redis:7.4-bookworm
 ```
 
-**Qdrant:** (API Key must match with .env)
+**Qdrant** (vectors). The API key must match `QDRANT_API_KEY` in `.env`:
+
 ```bash
 docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.15
 ```
 
-**ETCD Server:**
-
-
-Bash:
-```bash
-docker run -d --name etcd-server --restart always -p 2379:2379 -p 2380:2380 quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd \
-  --name etcd0 \
-  --data-dir /etcd-data \
-  --listen-client-urls http://0.0.0.0:2379 \
-  --advertise-client-urls http://0.0.0.0:2379 \
-  --listen-peer-urls http://0.0.0.0:2380
-```
-
-Powershell:
-```powershell
-docker run -d --name etcd-server --restart always `
-  -p 2379:2379 -p 2380:2380 `
-  quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd `
-  --name etcd0 `
-  --data-dir /etcd-data `
-  --listen-client-urls http://0.0.0.0:2379 `
-  --advertise-client-urls http://0.0.0.0:2379 `
-  --listen-peer-urls http://0.0.0.0:2380
-```
-
-PipesHub supports two graph databases, selected with `DATA_STORE`. **Neo4j is the default** — it is what `install.sh`, the Helm chart and `backend/env.template` ship with, so unless you are specifically working on ArangoDB support, set up Neo4j. ArangoDB remains fully supported for existing installations.
-
-**Neo4j (default):** either run the container
+**Neo4j** (graph). The password must match `NEO4J_PASSWORD` in `.env`. Neo4j Desktop is fine instead of the container; Bolt stays on `localhost:7687`.
 
 ```bash
 docker run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/your_password neo4j:5.26.0
+  -e NEO4J_AUTH=neo4j/your_neo4j_password neo4j:5.26.0
 ```
 
-or use Neo4j Desktop if you prefer a local GUI.
+**MongoDB** (sessions and metadata). Username and password must match `MONGO_URI` in `.env`:
 
-1. If using Desktop: install [Neo4j Desktop](https://neo4j.com/download/), create a **local DBMS**, set its password, and **Start** it.
-2. Leave the default Bolt listener on **localhost:7687** (or note the host/port shown in Desktop if you changed them).
-3. In `backend/.env` (the template you copy into `backend/nodejs/apps/.env` and `backend/python/.env`), set at least:
-   ```bash
-   DATA_STORE=neo4j
-   NEO4J_URI=bolt://localhost:7687
-   NEO4J_USERNAME=neo4j
-   NEO4J_PASSWORD=<same password as your DBMS>
-   NEO4J_DATABASE=neo4j
-   ```
-   The Python services read `DATA_STORE` and write `dataStoreType` into the KV store (etcd/Redis) on startup; the Node.js API uses that for health checks and treats `NEO4J_*` as the live Neo4j connection.
-4. Start the **connectors** Python service (`python -m app.connectors_main`) before or with the rest of the stack so deployment metadata stays consistent. If you already bootstrapped against ArangoDB on the same etcd data, reset etcd or the deployment key in KV store before switching graph backends to avoid mismatched state.
-
-To run the whole stack in Docker rather than service by service, use `./install.sh --build` from the repository root. (`deployment/docker-compose/docker-compose.build.neo4j.yml` still exists but is a legacy standalone build file: it hardcodes `DATA_STORE=neo4j` with no ArangoDB or etcd profiles, builds `pipeshub-ai:latest`, pins port 3000, does not generate a `.env`, and is not what `--build` drives.)
-
-**ArangoDB (alternative to Neo4j):** (Password must match with .env)
-```bash
-docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4
-```
-Set `DATA_STORE=arangodb` in `backend/.env`, and do not run the Neo4j container alongside it. If you already bootstrapped against one backend on the same etcd data, reset the deployment key in the KV store before switching.
-
-**MongoDB:** (Password must match with .env MONGO URI)
-
-Bash:
 ```bash
 docker run -d --name mongodb --restart always -p 27017:27017 \
   -e MONGO_INITDB_ROOT_USERNAME=admin \
@@ -138,161 +157,83 @@ docker run -d --name mongodb --restart always -p 27017:27017 \
   mongo:8.0.17
 ```
 
-Powershell:
-```powershell
-docker run -d --name mongodb --restart always -p 27017:27017 `
-  -e MONGO_INITDB_ROOT_USERNAME=admin `
-  -e MONGO_INITDB_ROOT_PASSWORD=password `
-  mongo:8.0.17
-```
+### Optional stores
 
-**Zookeeper:**
+Do not start these unless you change the env defaults:
 
-Bash:
-```bash
-docker run -d --name zookeeper --restart always -p 2181:2181 \
-  -e ZOOKEEPER_CLIENT_PORT=2181 \
-  -e ZOOKEEPER_TICK_TIME=2000 \
-  confluentinc/cp-zookeeper:7.9.0
-```
+- ArangoDB instead of Neo4j: `DATA_STORE=arangodb`. Do not run it next to Neo4j.
+- Kafka instead of Redis Streams: `MESSAGE_BROKER=kafka` (ZooKeeper and Kafka).
+- etcd instead of Redis KV: `KV_STORE_TYPE=etcd`.
 
-Powershell:
-```powershell
-docker run -d --name zookeeper --restart always -p 2181:2181 `
-  -e ZOOKEEPER_CLIENT_PORT=2181 `
-  -e ZOOKEEPER_TICK_TIME=2000 `
-  confluentinc/cp-zookeeper:7.9.0
-```
+If you switch graph or KV backend on existing data, reset `dataStoreType` in the KV store first. Python writes that key from `DATA_STORE` on startup; the Node API reads it for health checks, so a leftover value from the previous backend will disagree with `.env`.
 
+### Node.js API (port 3000)
 
-**Apache Kafka:**
-
-Bash:
-```bash
-docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 \
-  -e KAFKA_BROKER_ID=1 \
-  -e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 \
-  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
-  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT \
-  -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT \
-  -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
-  confluentinc/cp-kafka:7.9.0
-```
-
-Powershell:
-```powershell
-docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 `
-  -e KAFKA_BROKER_ID=1 `
-  -e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 `
-  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 `
-  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT `
-  -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT `
-  -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 `
-  confluentinc/cp-kafka:7.9.0
-```
-
-### JavaScript package directories
-
-This repository does not have a root `package.json`. Run npm commands only from one of these directories:
-
-- `backend/nodejs/apps` for the Node.js backend
-- `frontend` for the Next.js frontend
-
-### Starting Node.js Backend Service
 ```bash
 cd backend/nodejs/apps
-cp ../../env.template .env  # Create .env file from template
 npm install
 npm run dev
 ```
 
-PowerShell:
-```powershell
-cd backend/nodejs/apps
-Copy-Item ../../env.template .env  # Create .env file from template
-npm install
-npm run dev
-```
+### Python services
 
-### Starting Python Backend Services
+Create the virtualenv once. Then start each process in its own terminal, with the venv activated. Start **embedding** before indexing and query when you use the local HuggingFace model.
+
 ```bash
 cd backend/python
-cp ../env.template .env
-# Create and activate virtual environment
 python3.12 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install uv
+source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install uv
-
-# Install dependencies
 uv pip install -e .
-
-# Install additional language models
 python -c "import nltk; nltk.download('punkt')"
 
-# Run each service in a separate terminal: First, cd backend/python and activate the existing virtual environment
-# Start the embedding server before indexing and query when using default local embeddings (HuggingFace / SentenceTransformers).
 python -m app.embedding_main
 python -m app.connectors_main
 python -m app.indexing_main
 python -m app.query_main
 python -m app.docling_main
-
-# Only when running with USE_PARSING_SERVICE=true
-python -m app.parsing_main
-python -m app.extraction_main
 ```
 
-### Setting Up Frontend
+Parsing (`app.parsing_main`, 8092) and extraction (`app.extraction_main`, 8093) only when `USE_PARSING_SERVICE=true`. That variable is not in `backend/env.template`; set it in `backend/python/.env`.
+
+### Frontend (port 3001)
+
+Next.js uses port 3000 if `PORT` is unset, which collides with the API.
+
 ```bash
 cd frontend
-cp env.template .env  # Modify port if Node.js backend uses a different one
+cp env.template .env
 npm install
 PORT=3001 npm run dev
 ```
 
-PowerShell:
-```powershell
-cd frontend
-Copy-Item env.template .env  # Modify port if Node.js backend uses a different one
-npm install
-$env:PORT = '3001'
-npm run dev
-```
+Open `http://localhost:3001`. On Windows PowerShell, use `Copy-Item` instead of `cp` and `$env:PORT = '3001'`.
 
-Then open your browser to the displayed URL (typically `http://localhost:3001` when using `PORT=3001`; Next.js defaults to port 3000 if `PORT` is unset).
+### Health check
 
-### Verifying Setup and Debugging
-
-If you encounter generic connection errors or the UI fails to load, it is likely that one of the many background microservices failed to start correctly. 
-
-You can use the built-in health check script to instantly verify the status of the entire stack:
 ```bash
 ./scripts/check_system_health.sh
 ```
-This script will ping the Node.js API, Next.js UI, and all core Python microservices on their respective local ports, explicitly highlighting any offline components to save you time digging through terminal logs. 
 
-*(Note: The Parsing and Extraction services are only checked if you run the script with `USE_PARSING_SERVICE=true`).*
+This pings the API (3000), the UI (3001), and the Python services. Parsing and extraction are checked only if `USE_PARSING_SERVICE=true` in the shell (`export USE_PARSING_SERVICE=true` before the script).
 
 ## Project Architecture
 
-Our project consists of three main components:
+Three application layers, plus stores:
 
-1. **Frontend**: Next.js application for the user interface
-2. **Node.js Backend**: Handles API requests, authentication, and business logic
-3. **Python Services**: Seven microservices for:
-   - **Embedding** (port 8002): Serves local HuggingFace / SentenceTransformer models via an OpenAI-compatible API (`app.embedding_main`). Indexing and query call this service for default dense embeddings.
-   - **Connectors** (port 8088): Handles data source connections
-   - **Indexing** (port 8091): Manages document indexing and processing
-   - **Query** (port 8000): Processes search and retrieval requests
-   - **Docling** (port 8081): Advanced PDF/document parsing for complex formats
-   - **Parsing** (port 8092): Turns file bytes into a structured block container
-   - **Extraction** (port 8093): Derives semantic metadata from those blocks
+1. **Frontend** — Next.js UI (`frontend/`). Local `npm run dev` on port **3001**.
+2. **Node.js API** — Express (`backend/nodejs/apps`). Local `npm run dev` on port **3000**. Auth, orgs, knowledge base, object storage, API gateway.
+3. **Python FastAPI services** (`backend/python/`):
+   - **Embedding** (8002, `app.embedding_main`) — local HuggingFace / SentenceTransformers via an OpenAI-compatible API. Indexing and query call this for default dense embeddings. Cloud embedding providers do not need this process.
+   - **Connectors** (8088, `app.connectors_main`) — OAuth, token refresh, and data-source integrations.
+   - **Indexing** (8091, `app.indexing_main`) — parse, chunk, embed; writes vectors and graph nodes.
+   - **Query** (8000, `app.query_main`) — search, RAG, agents.
+   - **Docling** (8081, `app.docling_main`) — PDF and other complex documents.
+   - **Parsing** (8092) and **Extraction** (8093) — optional; only with `USE_PARSING_SERVICE=true`.
 
-   Parsing and Extraction are optional: start them only when running with `USE_PARSING_SERVICE=true`, which is also when `check_system_health.sh` checks them.
+**Stores (defaults in `backend/env.template`):** Redis (config KV and Redis Streams as the event bus), Qdrant (vectors), Neo4j (graph), MongoDB (sessions and metadata). ArangoDB can replace Neo4j. Kafka can replace Redis Streams on a larger deployment. etcd can replace Redis as the KV store.
 
-When running services locally with `make`, start **embedding** before **indexing** and **query** if you rely on the built-in local embedding model (`BAAI/bge-large-en-v1.5`). Cloud/API embedding providers (OpenAI, Cohere, etc.) do not require the embedding server.
+In Docker (`./install.sh --build`), Node serves the API and the built UI together on port **3000**.
 
 ## Contribution Workflow
 
@@ -302,7 +243,7 @@ When running services locally with `make`, start **embedding** before **indexing
    ```bash
    git checkout -b feature/your-feature-name
    ```
-4. **Make your changes** following our code style guidelines
+4. **Make your changes** following our code style guidelines. Documentation edits do not need a local stack.
 5. **Test your changes** thoroughly
 6. **Commit your changes** with meaningful commit messages:
    ```bash
@@ -330,6 +271,23 @@ When running services locally with `make`, start **embedding** before **indexing
 - Ensure all tests pass before submitting a PR
 - Include integration tests where appropriate
 - Document manual testing steps for complex features
+
+### Checking everything at once
+
+```bash
+scripts/verify.sh          # every suite that runs without Docker or network
+scripts/verify.sh --list   # what would run, and why anything is skipped
+```
+
+This covers the Python, Node, frontend, Electron and shell suites and prints a
+single summary. A suite that cannot run on your machine is reported as skipped
+with the reason, never as a pass.
+
+It does not run `integration-tests/`, which needs the whole stack and shared
+cloud storage and takes hours — that runs in CI. It does run
+`backend/python/tests/integration`, which despite the directory name is mostly
+in-process; the suites there that genuinely need a service skip themselves when
+it is absent.
 
 ### Running Node.js Unit Tests
 
@@ -549,12 +507,6 @@ The following are generated during test runs and are gitignored:
 - `test-results/` — Test artifacts (screenshots, traces)
 - `playwright-report/` — HTML report
 
-## Documentation
-
-- Update documentation for any new features or changes
-- Document APIs with appropriate comments and examples
-- Keep README and other guides up to date
-
 ## Community Guidelines
 
 - Be respectful and inclusive in all interactions
@@ -564,4 +516,4 @@ The following are generated during test runs and are gitignored:
 
 ---
 
-Thank you for contributing to our project! If you have any questions or need help, please open an issue or reach out to the maintainers.
+Thank you for contributing to our project! If you have any questions or need help, please open an issue, ask in [Discord](https://discord.com/invite/K5RskzJBm2), or reach out to the maintainers.

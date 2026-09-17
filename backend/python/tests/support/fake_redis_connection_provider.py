@@ -57,6 +57,7 @@ class FakeRedisConnectionProvider(IRedisConnectionProvider):
         self.get_client_calls = 0
         self.create_client_calls = 0
         self.load_script_calls: list[str] = []
+        self.publish_calls: list[tuple[str, str]] = []
         self.closed = False
 
     def _new_client(self) -> FakeClusterRedis:
@@ -76,6 +77,10 @@ class FakeRedisConnectionProvider(IRedisConnectionProvider):
         client = self._new_client()
         self.pubsub_clients.append(client)
         return client
+
+    async def publish(self, channel: str, message: str) -> int:
+        self.publish_calls.append((channel, message))
+        return int(await self.get_client().execute_command("PUBLISH", channel, message))
 
     async def scan_keys(self, pattern: str, count: int = 100) -> AsyncIterator[str]:
         client = self.get_client()

@@ -347,7 +347,13 @@ class MessagingEnvConfig:
         broker is expected to carry, or records legitimately waiting their turn
         will be published a second time.
         """
-        return _env_seconds("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", 0.0)
+        # On by default (was 0 = off). A record stranded QUEUED/NOT_STARTED
+        # with no event behind it is otherwise never indexed: the stale scan
+        # only covers IN_PROGRESS, and the inactive-connector sweep only covers
+        # dead connectors. An hour is well above any backlog a healthy broker
+        # carries, and a false positive only costs a duplicate event the
+        # handler already de-duplicates (COMPLETED short-circuit + record lease).
+        return _env_seconds("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", 3600.0)
 
     @property
     def vector_membership_backfill_interval_seconds(self) -> float:

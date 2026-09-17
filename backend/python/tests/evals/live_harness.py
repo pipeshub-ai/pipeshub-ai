@@ -77,6 +77,7 @@ class CaseResult:
     passed: bool
     failures: list[str]
     trace: TraceResult
+    skipped: bool = False
 
 
 @dataclass
@@ -87,19 +88,43 @@ class EvalReport:
     results: list[CaseResult]
 
     @property
+    def skipped(self) -> int:
+        return sum(1 for r in self.results if r.skipped)
+
+    @property
+    def ran(self) -> int:
+        """Cases that actually executed. Zero means nothing was measured."""
+        return self.total - self.skipped
+
+    @property
     def pass_rate(self) -> float:
-        return self.passed / self.total if self.total else 0.0
+        """Share of *executed* cases that passed.
+
+        Deliberately not measured against ``total``: a run where every case was
+        skipped would otherwise report a perfect score for having done nothing.
+        """
+        return self.passed / self.ran if self.ran else 0.0
 
     def render(self) -> str:
-        lines = [
-            f"=== Golden Eval Report: {self.model_name} ===",
-            f"Pass rate: {self.passed}/{self.total} ({self.pass_rate:.0%})",
-        ]
+        lines = [f"=== Golden Eval Report: {self.model_name} ==="]
+        if self.ran:
+            lines.append(f"Pass rate: {self.passed}/{self.ran} ({self.pass_rate:.0%})")
+        else:
+            lines.append("Pass rate: n/a — no cases ran")
+        if self.skipped:
+            lines.append(f"Skipped:   {self.skipped}/{self.total}")
         for r in self.results:
-            icon = "✓" if r.passed else "✗"
+            icon = "-" if r.skipped else ("✓" if r.passed else "✗")
             lines.append(f"  {icon} [{r.case_id}]")
             for f_ in r.failures:
-                lines.append(f"      FAIL: {f_}")
+                label = "SKIP" if r.skipped else "FAIL"
+                lines.append(f"      {label}: {f_}")
+        if not self.ran:
+            lines.append("")
+            lines.append(
+                "No cases executed. Pass run_agent= to measure anything; this "
+                "report is not evidence that the agent behaves correctly."
+            )
         return "\n".join(lines)
 
 
@@ -218,7 +243,9 @@ async def run_golden_evals(
     """Run the golden cases and return an ``EvalReport``.
 
     ``run_agent`` is a coroutine factory ``(case, model) -> TraceResult``.
-    When omitted, the harness returns a stub report (all cases skipped).
+    When omitted every case is marked skipped, the report's ``ran`` count is
+    zero and its pass rate is not defined — a run that measured nothing must
+    not look like a run that passed.
 
     Typical usage:
 
@@ -241,9 +268,12 @@ async def run_golden_evals(
 
     for case in _cases:
         if run_agent is None:
+            # Not passed. A skipped case that reports as passing turns "nothing
+            # ran" into a green result, which is worse than a failure because
+            # nobody investigates it.
             results.append(CaseResult(
-                case_id=case.id, passed=True, failures=["(skipped — no run_agent)"],
-                trace=TraceResult(),
+                case_id=case.id, passed=False, failures=["no run_agent supplied"],
+                trace=TraceResult(), skipped=True,
             ))
             continue
 

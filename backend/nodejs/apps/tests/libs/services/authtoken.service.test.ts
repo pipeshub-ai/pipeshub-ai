@@ -5,6 +5,12 @@ import jwt from 'jsonwebtoken';
 import { AuthTokenService } from '../../../src/libs/services/authtoken.service';
 import { UnauthorizedError } from '../../../src/libs/errors/http.errors';
 import { Logger } from '../../../src/libs/services/logger.service';
+import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum';
+import { deriveUserActionSecret } from '../../../src/libs/utils/jwtKeys';
+import {
+  fetchConfigJwtGenerator,
+  refreshTokenJwtGenerator,
+} from '../../../src/libs/utils/createJwt';
 
 describe('AuthTokenService', () => {
   let service: AuthTokenService;
@@ -201,6 +207,87 @@ describe('AuthTokenService', () => {
       }
     });
   });
+  // User-held tokens are signed with a key derived from the scoped secret so
+  // services holding only the raw secret cannot accept them.
+  describe('user-action key separation', () => {
+    const userActionSecret = deriveUserActionSecret(scopedJwtSecret);
+
+    const expectRejected = async (token: string, scope: string, message: string) => {
+      try {
+        await service.verifyScopedToken(token, scope);
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(message);
+      }
+    };
+
+    it('should accept a derived-key token for a user-action scope', async () => {
+      const token = refreshTokenJwtGenerator('user1', 'org1', scopedJwtSecret);
+      const decoded = await service.verifyScopedToken(token, TokenScopes.TOKEN_REFRESH);
+      expect(decoded.userId).to.equal('user1');
+    });
+
+    it('should accept a legacy raw-key token for a user-action scope', async () => {
+      const token = service.generateScopedToken({
+        userId: 'user1',
+        scopes: [TokenScopes.TOKEN_REFRESH],
+      });
+      const decoded = await service.verifyScopedToken(token, TokenScopes.TOKEN_REFRESH);
+      expect(decoded.userId).to.equal('user1');
+    });
+
+    it('should reject a derived-key token for a service scope', async () => {
+      const token = jwt.sign(
+        { userId: 'user1', orgId: 'org1', scopes: [TokenScopes.FETCH_CONFIG] },
+        userActionSecret,
+        { expiresIn: '1h' },
+      );
+      await expectRejected(token, TokenScopes.FETCH_CONFIG, 'Invalid token');
+    });
+
+    it('should accept a raw-key token for a service scope', async () => {
+      const token = fetchConfigJwtGenerator('user1', 'org1', scopedJwtSecret);
+      const decoded = await service.verifyScopedToken(token, TokenScopes.FETCH_CONFIG);
+      expect(decoded.orgId).to.equal('org1');
+    });
+
+    it('should still reject a derived-key token carrying the wrong scope', async () => {
+      const token = refreshTokenJwtGenerator('user1', 'org1', scopedJwtSecret);
+      await expectRejected(token, TokenScopes.PASSWORD_RESET, 'Invalid scope');
+    });
+
+    it('should reject an expired derived-key token and log why', async () => {
+      const token = jwt.sign(
+        { userId: 'user1', scopes: [TokenScopes.TOKEN_REFRESH] },
+        userActionSecret,
+        { expiresIn: '-1s' },
+      );
+      const logError = sinon.stub(Logger.getInstance(), 'error');
+      try {
+        await expectRejected(token, TokenScopes.TOKEN_REFRESH, 'Invalid token');
+        expect(logError.calledOnce).to.be.true;
+        expect(logError.firstCall.args[1].error).to.be.instanceOf(jwt.TokenExpiredError);
+      } finally {
+        logError.restore();
+      }
+    });
+
+    it('should log the expiry, not the signature mismatch, for an expired legacy token', async () => {
+      const token = service.generateScopedToken(
+        { userId: 'user1', scopes: [TokenScopes.TOKEN_REFRESH] },
+        '-1s',
+      );
+      const logError = sinon.stub(Logger.getInstance(), 'error');
+      try {
+        await expectRejected(token, TokenScopes.TOKEN_REFRESH, 'Invalid token');
+        expect(logError.firstCall.args[1].error).to.be.instanceOf(jwt.TokenExpiredError);
+      } finally {
+        logError.restore();
+      }
+    });
+  });
+
   // Verification keys are derived once in the constructor instead of letting
   // jsonwebtoken re-parse the secret on every call. Signing still passes the
   // raw string, so every test above already proves the HS256 round trip

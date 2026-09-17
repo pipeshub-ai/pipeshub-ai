@@ -643,6 +643,18 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
         )
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--update-mcp-golden",
+        action="store_true",
+        default=False,
+        help=(
+            "Rewrite response-validation/mcp/golden/mcp_surface_<pin>.json from the live "
+            "/mcp server before comparing. Use after bumping @pipeshub-ai/mcp."
+        ),
+    )
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
     """Initialize report collection for the HTML integration report."""

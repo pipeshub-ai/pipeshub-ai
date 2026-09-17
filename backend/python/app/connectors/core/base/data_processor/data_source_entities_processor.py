@@ -757,6 +757,23 @@ class DataSourceEntitiesProcessor:
                 f"Created {len(edges_to_create)} entity relation edges for message {message.id}"
             )
 
+    @staticmethod
+    def _stamp_queued_at(record: Record) -> None:
+        """Mark a record put in line for indexing, before its event is published.
+
+        The stranded-record sweep ages rows on this, not on updated_at, which
+        connectors may fill with source-system time: a Jira issue last edited a
+        year ago otherwise looks stranded the moment it is synced. Stamped before
+        the publish, so a failed one still leaves an ageable marker; never on a
+        write that publishes nothing, which would keep postponing the recovery of
+        a record whose event was lost.
+        """
+        if record.indexing_status in (
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.QUEUED.value,
+        ):
+            record.queued_at = get_epoch_timestamp_in_ms()
+
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         self.logger.debug("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
@@ -891,7 +908,7 @@ class DataSourceEntitiesProcessor:
                         "to restore graph edges",
                         record.record_name,
                     )
-                    await self._process_record(record, [], tx_store)
+                    await self._process_record(record, [], tx_store, publishes_event=False)
                 elif record.shared_with_me_record_group_ids:
                     # The record already has BELONGS_TO edges (e.g. to the owner's "My Drive"), but
                     # the shared-with-me edge for *this* user may still be missing because
@@ -955,7 +972,14 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
             raise
 
-    async def _process_record(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> Record | None:
+    async def _process_record(
+        self,
+        record: Record,
+        permissions: list[Permission],
+        tx_store: TransactionStore,
+        *,
+        publishes_event: bool = True,
+    ) -> Record | None:
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
@@ -975,6 +999,20 @@ class DataSourceEntitiesProcessor:
 
         if existing_record is None:
             self.logger.debug("New record: %s", record)
+            # A brand-new record must be stored NOT_STARTED, not the model's
+            # QUEUED default. `_mark_queued_after_publish` is a CAS from
+            # NOT_STARTED that runs only for records whose event was acked --
+            # that is the whole guard against "marked QUEUED for an event that
+            # never published". Persisting QUEUED here made that CAS a no-op,
+            # so a failed publish left the record QUEUED with no event behind
+            # it and nothing to ever pick it up (observed: 10 connector records
+            # stuck QUEUED for hours after a Redis outage). Only the default is
+            # remapped; a status a connector set deliberately (AUTO_INDEX_OFF,
+            # COMPLETED for KB folders, ...) is kept.
+            if record.indexing_status == ProgressStatus.QUEUED.value:
+                record.indexing_status = ProgressStatus.NOT_STARTED.value
+            if publishes_event:
+                self._stamp_queued_at(record)
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
@@ -1041,6 +1079,8 @@ class DataSourceEntitiesProcessor:
                 record.is_placeholder = False
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
+                if publishes_event:
+                    self._stamp_queued_at(record)
                 await self._handle_updated_record(record, existing_record, tx_store)
 
         # Link record to group AFTER saving (when record.id is available for edges)
@@ -1256,7 +1296,9 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
-            processed_record = await self._process_record(record, [], tx_store)
+            processed_record = await self._process_record(
+                record, [], tx_store, publishes_event=False
+            )
             if processed_record:
                 if existing_record is not None:
                     self._preserve_indexing_state(processed_record, existing_record)
@@ -1355,6 +1397,7 @@ class DataSourceEntitiesProcessor:
                     if content_changed:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
                             new_record.indexing_status = ProgressStatus.QUEUED.value
+                        self._stamp_queued_at(new_record)
                         records_to_reindex.append(new_record)
                     else:
                         # Carry the VRID across explicitly: the upsert below reuses
@@ -1401,7 +1444,10 @@ class DataSourceEntitiesProcessor:
 
             new_batch = _publishable(new_records_to_publish)
             if new_batch:
-                await self.messaging_producer.send_messages(
+                # `acked` is used, not discarded (it was): the CAS below is what
+                # turns NOT_STARTED into QUEUED, and only for records whose event
+                # actually landed -- see on_new_records.
+                acked = await self.messaging_producer.send_messages(
                     "record-events",
                     [
                         (
@@ -1414,6 +1460,9 @@ class DataSourceEntitiesProcessor:
                         )
                         for record in new_batch
                     ],
+                )
+                await self._mark_queued_after_publish(
+                    [r.id for r, ok in zip(new_batch, acked) if ok]
                 )
 
             reindex_batch = _publishable(records_to_reindex)
@@ -2239,6 +2288,19 @@ class DataSourceEntitiesProcessor:
                 record_type=record_type,
             )
 
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: RecordType | str,
+    ) -> list[Record]:
+        """Return this connector's records of ``record_type``."""
+        type_value = (record_type.value if isinstance(record_type, RecordType) else record_type)
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_records_by_record_type(
+                connector_id=connector_id,
+                record_type=type_value,
+            )
+
     async def get_placeholder_records(
         self,
         connector_id: str,
@@ -3000,7 +3062,7 @@ class DataSourceEntitiesProcessor:
     async def get_records_by_status(
         self,
         connector_id: str,
-        status_filters: list[str],
+        status_filters: list[str] | None,
         limit: int | None = None,
         offset: int = 0,
         record_group_id: str | None = None,

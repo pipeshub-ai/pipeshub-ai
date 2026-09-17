@@ -121,6 +121,8 @@ interface ChatResponseProps {
   persistedAskUserQuestion?: AskUserQuestionPayload;
   /** Persisted feedback value from the backend — initialises the like/dislike button state */
   feedbackInfo?: { value?: 'like' | 'dislike' };
+  /** Set when this response was cut short by a user-initiated Stop (see `IMessage.status`, Node). */
+  status?: 'stopped';
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -147,6 +149,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   createdAt,
   persistedAskUserQuestion,
   feedbackInfo,
+  status,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
@@ -169,7 +172,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     question, answer, citationMaps, citationCallbacks, confidence,
     isStreaming, modelInfo, collections, appliedFilters, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
-    streamingCitationMaps, streamingParts, persistedParts, createdAt, persistedAskUserQuestion,
+    streamingCitationMaps, streamingParts, persistedParts, createdAt, persistedAskUserQuestion, status,
   };
   const crReasons: string[] = [];
   for (const [k, v] of Object.entries(currentCRVals)) {
@@ -589,6 +592,24 @@ export const ChatResponse = React.memo(function ChatResponse({
                 citationCallbacks={wrappedCallbacks}
                 isStreaming={isStreaming}
               />
+            )}
+
+            {/* Subtle marker for a response cut short by Stop. Only shown once
+                settled (never while still streaming/regenerating) — regenerate
+                remains available via MessageActions below, same as any other
+                completed response. */}
+            {!isStreaming && status === 'stopped' && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+              <Flex
+                align="center"
+                gap="1"
+                data-testid="chat-stopped-marker"
+                style={{ marginTop: 'var(--space-2)' }}
+              >
+                <MaterialIcon name="stop_circle" size={14} color="var(--slate-9)" />
+                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                  {t('chat.stoppedMarker', { defaultValue: 'Stopped' })}
+                </Text>
+              </Flex>
             )}
 
             {/* "Currently doing X…" status for SIMPLE (non-multi-step)

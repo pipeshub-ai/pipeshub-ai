@@ -179,7 +179,11 @@ class RetrievalService:
                 config_node_constants.AI_MODELS.value,
                 use_cache=use_cache
             )
-            llm_configs = ai_models["llm"]
+            llm_configs = (ai_models or {}).get("llm") or []
+            if not llm_configs:
+                # The normal state until an admin configures a model, not an error.
+                self.logger.info("No LLM configured")
+                return self.llm
 
             # For now, we'll use the first available provider that matches our supported types
             # We will add logic to choose a specific provider based on our needs
@@ -400,7 +404,7 @@ class RetrievalService:
             accessible_virtual_id_to_record_id, user = await asyncio.gather(*init_tasks)
 
             if not accessible_virtual_id_to_record_id:
-                self.logger.error(f"No accessible documents found for user {user_id} and org {org_id}")
+                self.logger.warning(f"No accessible documents found for user {user_id} and org {org_id}")
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             self.logger.debug(f"Accessible virtual record ids count: {len(accessible_virtual_id_to_record_id)}")

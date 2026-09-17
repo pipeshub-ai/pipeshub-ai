@@ -731,20 +731,16 @@ class PostgreSQLDataSource:
             limit: Max rows; defaults to ``DEFAULT_TABLE_ROW_FETCH_LIMIT``
 
         Returns:
-            List of row dicts, or empty list on failure.
+            List of row dicts.
+
+        Raises:
+            The driver's exception. Its only caller streams the rows to the
+            user, where swallowing the failure would serve a successful
+            download of an empty table.
         """
         row_limit = limit if limit is not None else DEFAULT_TABLE_ROW_FETCH_LIMIT
         query = f'SELECT * FROM "{schema_name}"."{table_name}" LIMIT {row_limit}'
-        try:
-            return await self._client.execute_query(query)
-        except Exception as e:
-            logger.warning(
-                "🔧 [PostgreSQLDataSource] fetch_table_rows failed for %s.%s: %s",
-                schema_name,
-                table_name,
-                e,
-            )
-            return []
+        return await self._client.execute_query(query)
 
     async def get_table_stats(self, schemas: Optional[List[str]] = None) -> PostgreSQLResponse:
         """Get table statistics for change detection.

@@ -45,6 +45,7 @@ def _make_tx_store():
     tx.get_app_users = AsyncMock(return_value=[])
     tx.get_record_by_external_id = AsyncMock(return_value=None)
     tx.get_records_by_parent = AsyncMock(return_value=[])
+    tx.get_records_by_record_type = AsyncMock(return_value=[])
     tx.get_records_by_status = AsyncMock(return_value=[])
     tx.get_app_by_id = AsyncMock(return_value=None)
     tx.get_user_by_email = AsyncMock(return_value=None)
@@ -238,6 +239,18 @@ class TestDelegateMethods:
             connector_id="conn-1",
             parent_external_record_id="parent-ext-1",
             record_type="FILE",
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_records_by_record_type(self):
+        proc, tx = _make_processor()
+        sentinel = [MagicMock(spec=Record)]
+        tx.get_records_by_record_type.return_value = sentinel
+        result = await proc.get_records_by_record_type("conn-1", RecordType.DATABASE)
+        assert result is sentinel
+        tx.get_records_by_record_type.assert_awaited_once_with(
+            connector_id="conn-1",
+            record_type=RecordType.DATABASE.value,
         )
 
     @pytest.mark.asyncio

@@ -20,9 +20,11 @@ import {
   jwtGeneratorForMailAuth,
 } from '../../../src/libs/utils/createJwt'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
+import { deriveUserActionSecret } from '../../../src/libs/utils/jwtKeys'
 
 describe('createJwt', () => {
   const secret = 'test-secret-key-12345'
+  const userActionSecret = deriveUserActionSecret(secret)
 
   afterEach(() => {
     sinon.restore()
@@ -70,7 +72,7 @@ describe('createJwt', () => {
         'org-456',
         secret,
       )
-      const decoded = jwt.verify(passwordResetToken, secret) as any
+      const decoded = jwt.verify(passwordResetToken, userActionSecret) as any
       expect(decoded.userEmail).to.equal('user@example.com')
       expect(decoded.userId).to.equal('user-123')
       expect(decoded.orgId).to.equal('org-456')
@@ -84,7 +86,7 @@ describe('createJwt', () => {
         'org-456',
         secret,
       )
-      const decoded = jwt.verify(passwordResetToken, secret) as any
+      const decoded = jwt.verify(passwordResetToken, userActionSecret) as any
       expect(decoded.exp - decoded.iat).to.equal(20 * 60)
     })
 
@@ -131,7 +133,7 @@ describe('createJwt', () => {
         'org-new',
         secret,
       )
-      const decoded = jwt.verify(passwordResetToken, secret) as any
+      const decoded = jwt.verify(passwordResetToken, userActionSecret) as any
       expect(decoded.exp - decoded.iat).to.equal(48 * 3600)
     })
 
@@ -142,7 +144,7 @@ describe('createJwt', () => {
         'org-new',
         secret,
       )
-      const decoded = jwt.verify(passwordResetToken, secret) as any
+      const decoded = jwt.verify(passwordResetToken, userActionSecret) as any
       expect(decoded.scopes).to.deep.equal([TokenScopes.PASSWORD_RESET])
     })
 
@@ -161,7 +163,7 @@ describe('createJwt', () => {
   describe('refreshTokenJwtGenerator', () => {
     it('should generate a token with userId, orgId, and TOKEN_REFRESH scope', () => {
       const token = refreshTokenJwtGenerator('user-1', 'org-1', secret)
-      const decoded = jwt.verify(token, secret) as any
+      const decoded = jwt.verify(token, userActionSecret) as any
       expect(decoded.userId).to.equal('user-1')
       expect(decoded.orgId).to.equal('org-1')
       expect(decoded.scopes).to.deep.equal([TokenScopes.TOKEN_REFRESH])
@@ -170,7 +172,7 @@ describe('createJwt', () => {
     it('should default expiry to 720h (30 days) when env var is not set', () => {
       delete process.env.REFRESH_TOKEN_EXPIRY
       const token = refreshTokenJwtGenerator('user-1', 'org-1', secret)
-      const decoded = jwt.verify(token, secret) as any
+      const decoded = jwt.verify(token, userActionSecret) as any
       expect(decoded.exp - decoded.iat).to.equal(30 * 24 * 3600)
     })
 
@@ -179,7 +181,7 @@ describe('createJwt', () => {
       process.env.REFRESH_TOKEN_EXPIRY = '1h'
       try {
         const token = refreshTokenJwtGenerator('user-1', 'org-1', secret)
-        const decoded = jwt.verify(token, secret) as any
+        const decoded = jwt.verify(token, userActionSecret) as any
         expect(decoded.exp - decoded.iat).to.equal(3600)
       } finally {
         if (originalVal !== undefined) {
@@ -384,7 +386,7 @@ describe('createJwt', () => {
         'org-1',
         secret,
       )
-      const decoded = jwt.verify(validateEmailToken, secret) as any
+      const decoded = jwt.verify(validateEmailToken, userActionSecret) as any
       expect(decoded.userEmail).to.equal('old@example.com')
       expect(decoded.newEmail).to.equal('new@example.com')
       expect(decoded.userId).to.equal('user-1')
@@ -400,7 +402,7 @@ describe('createJwt', () => {
         'org-1',
         secret,
       )
-      const decoded = jwt.verify(validateEmailToken, secret) as any
+      const decoded = jwt.verify(validateEmailToken, userActionSecret) as any
       expect(decoded.exp - decoded.iat).to.equal(20 * 60)
     })
 
@@ -436,7 +438,7 @@ describe('createJwt', () => {
         secret,
         'admin-org-1',
       )
-      const decoded = jwt.verify(orgVerificationToken, secret) as any
+      const decoded = jwt.verify(orgVerificationToken, userActionSecret) as any
       expect(decoded.orgId).to.equal('org-1')
       expect(decoded.contactEmail).to.equal('contact@example.com')
       expect(decoded.scopes).to.deep.equal([TokenScopes.ORG_EMAIL_VERIFY])
@@ -449,7 +451,7 @@ describe('createJwt', () => {
         secret,
         'admin-org-1',
       )
-      const decoded = jwt.verify(orgVerificationToken, secret) as any
+      const decoded = jwt.verify(orgVerificationToken, userActionSecret) as any
       expect(decoded.exp - decoded.iat).to.equal(24 * 3600)
     })
 
@@ -496,27 +498,27 @@ describe('createJwt', () => {
   describe('jwtGeneratorForEmailVerified', () => {
     it('should generate a token with EMAIL_VERIFIED scope', () => {
       const token = jwtGeneratorForEmailVerified('user@example.com', secret)
-      const decoded = jwt.verify(token, secret) as any
+      const decoded = jwt.verify(token, userActionSecret) as any
       expect(decoded.email).to.equal('user@example.com')
       expect(decoded.scopes).to.deep.equal([TokenScopes.EMAIL_VERIFIED])
     })
 
     it('should include hashProof when provided', () => {
       const token = jwtGeneratorForEmailVerified('user@example.com', secret, ['hash1', 'hash2'])
-      const decoded = jwt.verify(token, secret) as any
+      const decoded = jwt.verify(token, userActionSecret) as any
       expect(decoded.hashProof).to.deep.equal(['hash1', 'hash2'])
     })
 
     it('should default hashProof to empty array', () => {
       const token = jwtGeneratorForEmailVerified('user@example.com', secret)
-      const decoded = jwt.verify(token, secret) as any
+      const decoded = jwt.verify(token, userActionSecret) as any
       expect(decoded.hashProof).to.deep.equal([])
     })
 
     it('should default expiry to 30d when EMAIL_VERIFIED_TOKEN_EXPIRY env var is not set', () => {
       delete process.env.EMAIL_VERIFIED_TOKEN_EXPIRY
       const token = jwtGeneratorForEmailVerified('user@example.com', secret)
-      const decoded = jwt.verify(token, secret) as any
+      const decoded = jwt.verify(token, userActionSecret) as any
       expect(decoded.exp - decoded.iat).to.equal(30 * 24 * 3600)
     })
 
@@ -525,7 +527,7 @@ describe('createJwt', () => {
       process.env.EMAIL_VERIFIED_TOKEN_EXPIRY = '1h'
       try {
         const token = jwtGeneratorForEmailVerified('user@example.com', secret)
-        const decoded = jwt.verify(token, secret) as any
+        const decoded = jwt.verify(token, userActionSecret) as any
         expect(decoded.exp - decoded.iat).to.equal(3600)
       } finally {
         if (originalVal !== undefined) {
@@ -574,6 +576,33 @@ describe('createJwt', () => {
       expect(() => jwt.verify(token, 'wrong-secret')).to.throw(
         jwt.JsonWebTokenError,
       )
+    })
+  })
+
+  // The Python services hold only the raw scoped secret, so a user-held token
+  // that verifies with it could be replayed against them.
+  describe('user-held tokens do not verify with the raw scoped secret', () => {
+    const userHeldTokens: Record<string, () => string> = {
+      'forgot-password reset': () =>
+        jwtGeneratorForForgotPasswordLink('u@x.com', 'u1', 'o1', secret).passwordResetToken,
+      'new-account reset': () =>
+        jwtGeneratorForNewAccountPassword('u@x.com', 'u1', 'o1', secret).passwordResetToken,
+      refresh: () => refreshTokenJwtGenerator('u1', 'o1', secret),
+      'validate-email': () =>
+        jwtGeneratorForValidateEmailLink('u@x.com', 'n@x.com', 'u1', 'o1', secret)
+          .validateEmailToken,
+      'org email verify': () =>
+        jwtGeneratorForOrgEmailVerification('o1', 'c@x.com', secret, 'admin-o1')
+          .orgVerificationToken,
+      'email verified': () => jwtGeneratorForEmailVerified('u@x.com', secret),
+    }
+
+    Object.entries(userHeldTokens).forEach(([name, mint]) => {
+      it(`should reject the ${name} token under the raw secret`, () => {
+        const token = mint()
+        expect(() => jwt.verify(token, secret)).to.throw(jwt.JsonWebTokenError, 'invalid signature')
+        expect(() => jwt.verify(token, userActionSecret)).to.not.throw()
+      })
     })
   })
 })

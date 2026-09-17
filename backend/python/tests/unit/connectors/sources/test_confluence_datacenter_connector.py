@@ -215,8 +215,10 @@ class TestGetFreshDatasource:
         connector = _make_connector()
         connector.external_client = None
 
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
+        assert "not connected" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_api_token_returns_existing_datasource(self):

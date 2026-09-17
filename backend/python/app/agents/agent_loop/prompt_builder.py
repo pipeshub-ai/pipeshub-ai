@@ -246,6 +246,25 @@ def _build_answer_confidence_section() -> str:
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME as _FETCH_FULL_RECORD_TOOL_NAME
 
 
+# When no knowledge source is attached, `tool_loader` withholds the
+# retrieval/knowledgehub/knowledgegraph toolsets entirely
+# (`tool_loader._KNOWLEDGE_TOOLSETS`). That is the right call — every one of
+# those tools would otherwise fail with "No knowledge sources configured".
+# But nothing in the prompt said so, so the model substituted the nearest
+# always-pinned tool (`artifacts__list_artifacts`), found nothing in it, and
+# reported that as an authoritative negative: "I searched ... and found none.
+# NOTHING FOUND", at high confidence. The user cannot tell "not in the corpus"
+# apart from "this agent has no corpus". State the absence instead of leaving
+# it to be inferred from a tool that is missing.
+_NO_KNOWLEDGE_SOURCES = (
+    "**No knowledge source is attached to this agent.** You cannot search this "
+    "organization's indexed documents, tickets or files: no such tool is granted "
+    "this turn, and listing artifacts or conversation state is not a substitute "
+    "for one. Say that this agent has no knowledge source attached, rather than "
+    "reporting an empty result as though a search had been run."
+)
+
+
 def _build_finding_information(
     surfaces: "ToolSurfaces",
     catalog: "SourceCatalog",
@@ -269,8 +288,14 @@ def _build_finding_information(
         surfaces.has_web_search,
         surfaces.has_service_tools,
     ])
+    # Only when no retrieval tool is actually granted — the notice must never
+    # contradict a tool the model can see in its own tool list.
+    no_knowledge = not surfaces.has_knowledge and surfaces.retrieval is None
+
     if surface_count == 0 and not surfaces.can_fetch_full_record:
-        return ""
+        if not no_knowledge:
+            return ""
+        return "\n## Finding Information\n\n" + _NO_KNOWLEDGE_SOURCES
 
     precedence: list[str] = []
     if has_attachments:
@@ -297,6 +322,8 @@ def _build_finding_information(
         precedence.append("Web search — public information.")
 
     parts: list[str] = []
+    if no_knowledge:
+        parts.append(_NO_KNOWLEDGE_SOURCES)
     if precedence:
         numbered = "\n".join(f"{i + 1}. {p}" for i, p in enumerate(precedence))
         parts.append(

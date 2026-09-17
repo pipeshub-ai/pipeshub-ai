@@ -553,13 +553,19 @@ class MSGraphClient:
             self.logger.error(f"Unexpected error listing folder children for {folder_id}: {ex}")
             return []
 
-    async def get_signed_url(self, drive_id: str, item_id: str) -> Optional[str]:
+    async def get_signed_url(
+        self, drive_id: str, item_id: str, raise_on_error: bool = False
+    ) -> Optional[str]:
         """
         Creates a signed URL (sharing link) for a file or folder, valid for the specified duration.
 
         Args:
             drive_id (str): The ID of the drive.
             item_id (str): The ID of the file or folder.
+            raise_on_error (bool): Propagate the Graph error instead of returning None.
+                Sync treats the URL as optional and must not fail a whole crawl over one
+                item; the streaming path needs the ODataError so an expired token isn't
+                reported to the user as a deleted file.
 
         Returns:
             str: The signed URL or None if not available.
@@ -574,6 +580,8 @@ class MSGraphClient:
 
         except Exception as ex:
             self.logger.error(f"Error creating signed URL for item {item_id} in drive {drive_id}: {ex}")
+            if raise_on_error:
+                raise
             return None
 
     async def search_query(
@@ -681,5 +689,10 @@ class MSGraphClient:
                                 f"Error: {ex.error.message}"
                             )
 
-            self.logger.error(f"Error searching entities {entity_types}: {ex}")
+            error_msg = type(ex).__name__
+            try:
+                error_msg = str(ex)
+            except Exception:
+                pass
+            self.logger.error(f"Error searching entities {entity_types}: {error_msg}")
             raise

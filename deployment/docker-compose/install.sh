@@ -15,6 +15,7 @@
 #   ./install.sh --print-env-only  # write .env and print compose command, don't launch
 #   ./install.sh --reconfigure   # overwrite an existing .env (re-run wizard)
 #   ./install.sh --upgrade       # pull/rebuild images and recreate containers
+#   ./install.sh --rotate-signing-secrets  # replace JWT/cookie signing secrets (logs everyone out)
 #   ./install.sh --stop          # stop the running stack (data preserved)
 #   ./install.sh --uninstall     # stop the stack and remove all data volumes
 #   ./install.sh --help
@@ -95,6 +96,7 @@ FLAG_STOP=false
 FLAG_UNINSTALL=false
 FLAG_BUILD=false
 FLAG_NO_PULL=false
+FLAG_ROTATE_SIGNING_SECRETS=false
 CLI_VERSION=""
 
 # ── CLI argument parsing ──────────────────────────────────────────────────────
@@ -113,6 +115,12 @@ Options:
       --print-env-only Write .env and print the compose command; do not launch
       --reconfigure    Overwrite an existing .env (re-run the wizard)
       --upgrade        Pull or rebuild images and recreate containers (data preserved)
+      --rotate-signing-secrets
+                       Replace JWT, scoped JWT, and cookie signing secrets.
+                       Every session, refresh token, password-reset link, and
+                       in-flight service token stops working. Requires an
+                       existing .env. Combine with --upgrade to rotate during
+                       an image refresh. Pass --yes to skip the confirm prompt.
       --stop           Stop the running stack (data preserved)
       --uninstall      Stop and remove ALL data volumes (irreversible)
   -h, --help           Show this help
@@ -140,6 +148,7 @@ while [[ $# -gt 0 ]]; do
     --print-env-only)    FLAG_PRINT_ENV_ONLY=true ;;
     --reconfigure)       FLAG_RECONFIGURE=true ;;
     --upgrade)           FLAG_UPGRADE=true ;;
+    --rotate-signing-secrets) FLAG_ROTATE_SIGNING_SECRETS=true ;;
     --stop)              FLAG_STOP=true ;;
     --uninstall)         FLAG_UNINSTALL=true ;;
     -h|--help)           usage; exit 0 ;;
@@ -147,6 +156,13 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+if $FLAG_ROTATE_SIGNING_SECRETS && $FLAG_STOP; then
+  die "--rotate-signing-secrets cannot be combined with --stop."
+fi
+if $FLAG_ROTATE_SIGNING_SECRETS && $FLAG_UNINSTALL; then
+  die "--rotate-signing-secrets cannot be combined with --uninstall."
+fi
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -723,9 +739,10 @@ elif [[ -n "$_OTHER_DIRS" ]]; then
 fi
 
 # ==============================================================================
-# 3. RESOURCE CHECKS (skip for --upgrade; resources are already allocated)
+# 3. RESOURCE CHECKS (skip for --upgrade / --rotate-signing-secrets; resources
+# are already allocated)
 # ==============================================================================
-if ! $FLAG_UPGRADE; then
+if ! $FLAG_UPGRADE && ! $FLAG_ROTATE_SIGNING_SECRETS; then
 
   # System RAM — 16 GB-class machine recommended (15000 MB floor; see below)
   TOTAL_RAM_MB=0
@@ -829,7 +846,11 @@ header "Configuration"
 ENV_EXISTS=false
 [[ -f "$ENV_FILE" ]] && ENV_EXISTS=true
 
-# --upgrade always reuses the existing .env
+# --upgrade always reuses the existing .env. --rotate-signing-secrets does too
+# unless --reconfigure was also passed (wizard still runs, then we rotate).
+if $FLAG_ROTATE_SIGNING_SECRETS && ! $ENV_EXISTS; then
+  die ".env not found. Signing-secret rotation requires an existing install."
+fi
 if $FLAG_UPGRADE; then
   $ENV_EXISTS || die ".env not found. Run ./install.sh (without --upgrade) to set up first."
   info "Upgrade mode — reusing existing .env."
@@ -1078,6 +1099,9 @@ if ! ${SKIP_WIZARD:-false}; then
   # Preserve any secrets that already exist in .env so that --reconfigure does
   # not rotate credentials for already-initialised database volumes.
   SECRET_KEY="$(get_existing_val SECRET_KEY "$(gen_secret 32)")"
+  # Kept across --reconfigure so a previous --rotate-signing-secrets id is not
+  # dropped. A new rotate run overwrites it after the wizard writes .env.
+  ROTATE_SIGNING_SECRETS="$(get_existing_val ROTATE_SIGNING_SECRETS "")"
   MONGO_USERNAME="$(get_existing_val MONGO_USERNAME "admin")"
   MONGO_PASSWORD="$(get_existing_val MONGO_PASSWORD "$(gen_secret 16)")"
   REDIS_PASSWORD="$(get_existing_val REDIS_PASSWORD "$(gen_secret 16)")"
@@ -1182,6 +1206,9 @@ COMPOSE_PROFILES=${COMPOSE_PROFILES}
 NODE_ENV=production
 LOG_LEVEL=info
 SECRET_KEY=${SECRET_KEY}
+# One-shot id for ./install.sh --rotate-signing-secrets. Changing it rotates
+# JWT/cookie signing secrets on next app start (logs everyone out).
+ROTATE_SIGNING_SECRETS=${ROTATE_SIGNING_SECRETS}
 
 # Public URL — HTTPS domain for cloud/external deployments (leave blank for localhost)
 # Required for OAuth callbacks, webhook integrations, and browser security.
@@ -1446,6 +1473,27 @@ if [[ -n "${FRONTEND_PUBLIC_URL:-}" ]]; then
 fi
 printf "\n"
 
+# ==============================================================================
+# 14b. SIGNING-SECRET ROTATION (--rotate-signing-secrets)
+# Writes a new one-shot id into .env. The app replaces jwtSecret / scopedJwtSecret
+# / cookieSecret only when this id differs from the value stored in the KV store.
+# ==============================================================================
+if $FLAG_ROTATE_SIGNING_SECRETS; then
+  header "Rotate signing secrets"
+  warn "This replaces JWT, scoped JWT, and cookie signing secrets."
+  warn "Every signed-in user will be logged out. Refresh tokens, password-reset"
+  warn "links, and in-flight service-to-service tokens will stop working."
+  if ! $FLAG_YES; then
+    printf "\n  ${BOLD}Type ROTATE to confirm:${RESET} "
+    read -r _rotate_confirm
+    [[ "${_rotate_confirm}" == "ROTATE" ]] || { info "Aborted — signing secrets were not changed."; exit 0; }
+  fi
+  ROTATE_SIGNING_SECRETS="$(gen_secret 16)"
+  persist_env_var ROTATE_SIGNING_SECRETS "$ROTATE_SIGNING_SECRETS"
+  set -a; . "$ENV_FILE"; set +a
+  success "Wrote a new ROTATE_SIGNING_SECRETS id. The app will rotate secrets on next start."
+fi
+
 # --print-env-only: show the compose command and exit
 if $FLAG_PRINT_ENV_ONLY; then
   _build_flag=""
@@ -1455,11 +1503,16 @@ if $FLAG_PRINT_ENV_ONLY; then
   printf "\n  ${BOLD}COMPOSE_PROFILES=%s \\\\\n    docker compose -f %s -p %s up -d%s${RESET}\n\n" \
     "${COMPOSE_PROFILES:-}" "$COMPOSE_FILE" "$PROJECT_NAME" "$_build_flag"
   success "Done (--print-env-only mode; not launching)."
+  if $FLAG_ROTATE_SIGNING_SECRETS; then
+    warn "ROTATE_SIGNING_SECRETS is set. Recreate the app container so secrets rotate:"
+    warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} --env-file ${ENV_FILE} up -d --force-recreate --no-deps pipeshub-ai"
+  fi
   exit 0
 fi
 
-# Confirm before launching (skip for --upgrade which already confirmed intent)
-if ! $FLAG_YES && ! $FLAG_UPGRADE; then
+# Confirm before launching (skip for --upgrade / --rotate-signing-secrets which
+# already confirmed intent)
+if ! $FLAG_YES && ! $FLAG_UPGRADE && ! $FLAG_ROTATE_SIGNING_SECRETS; then
   printf "  ${BOLD}Launch PipesHub with the above configuration? [Y/n]: ${RESET}"
   read -r _launch_reply
   case "${_launch_reply:-Y}" in
@@ -1580,7 +1633,13 @@ apply_mongo_rseq_tunable() {
 # ==============================================================================
 # 15. LAUNCH
 # ==============================================================================
-header "$( $FLAG_UPGRADE && echo 'Upgrading PipesHub' || echo 'Launching PipesHub' )"
+header "$(
+  if $FLAG_ROTATE_SIGNING_SECRETS && $FLAG_UPGRADE; then echo 'Upgrading PipesHub and rotating signing secrets'
+  elif $FLAG_ROTATE_SIGNING_SECRETS; then echo 'Rotating signing secrets'
+  elif $FLAG_UPGRADE; then echo 'Upgrading PipesHub'
+  else echo 'Launching PipesHub'
+  fi
+)"
 
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-}"
 
@@ -1649,6 +1708,11 @@ should_pull_image() { # args: use_build flag_no_pull env_no_pull -> "true"|"fals
 }
 
 _DO_PULL="$(should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}")"
+# Rotation without --upgrade must not refresh images; the operator asked only
+# to replace signing secrets.
+if $FLAG_ROTATE_SIGNING_SECRETS && ! $FLAG_UPGRADE; then
+  _DO_PULL=false
+fi
 # Pinning a specific tag (--version / PIPESHUB_VERSION) still benefits from the
 # pull: it fetches exactly that immutable tag rather than a moving :latest, so
 # reproducibility is preserved while a stale local copy is corrected.
@@ -1691,11 +1755,28 @@ else
       fi
     fi
   else
-    info "Skipping image refresh; using locally cached images (--no-pull)."
+    if $FLAG_ROTATE_SIGNING_SECRETS && ! $FLAG_UPGRADE; then
+      info "Skipping image refresh; rotating signing secrets only."
+    else
+      info "Skipping image refresh; using locally cached images (--no-pull)."
+    fi
   fi
   info "Starting containers..."
   if ! compose_up_with_mongo_heal "up"; then
     die "Fix the error above and re-run install.sh."
+  fi
+fi
+
+# Node loads signing secrets at process start. Force-recreate the app container
+# so a running stack cannot keep the old JWT/cookie keys in memory.
+if $FLAG_ROTATE_SIGNING_SECRETS; then
+  info "Recreating the app container so it applies the new signing secrets..."
+  if ! docker compose "${_PROGRESS[@]}" \
+      -f "$COMPOSE_FILE" \
+      -p "$PROJECT_NAME" \
+      --env-file "$ENV_FILE" \
+      up -d --force-recreate --no-deps pipeshub-ai; then
+    die "Failed to recreate pipeshub-ai after writing ROTATE_SIGNING_SECRETS. Signing secrets may not have rotated."
   fi
 fi
 
@@ -1995,6 +2076,8 @@ printf "  ${DIM}# Stop (data preserved)${RESET}\n"
 printf "  ./install.sh --stop\n\n"
 printf "  ${DIM}# Upgrade to latest images (or rebuild from source if IMAGE_SOURCE=local)${RESET}\n"
 printf "  ./install.sh --upgrade\n\n"
+printf "  ${DIM}# Rotate JWT/cookie signing secrets (logs everyone out)${RESET}\n"
+printf "  ./install.sh --rotate-signing-secrets\n\n"
 printf "  ${DIM}# Reconfigure (re-run wizard)${RESET}\n"
 printf "  ./install.sh --reconfigure\n\n"
 printf "  ${DIM}# Uninstall and remove all data (irreversible)${RESET}\n"

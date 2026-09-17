@@ -616,9 +616,10 @@
     "diagramRenderFailed": "आरेख रेंडर नहीं हो सका",
     "showDiagramSource": "स्रोत दिखाएं",
     "hideDiagramSource": "स्रोत छुपाएं",
+    "stoppedMarker": "रोका गया",
     "toasts": {
-      "stopStreamTitle": "जल्द आ रहा है",
-      "stopStreamDescription": "जनरेशन रोकना समर्थित नहीं है",
+      "stopStreamTitle": "रोका जा रहा है…",
+      "stopStreamDescription": "प्रतिक्रिया शीघ्र ही रुक जाएगी। अब तक जनरेट किया गया आंशिक उत्तर सुरक्षित रहेगा।",
       "editComingSoonTitle": "जल्द आ रहा है",
       "editComingSoonDescription": "हम एडिट के लिए सपोर्ट तैयार कर रहे हैं",
       "deprecatedTools": "इस एजेंट के कुछ टूल अब उपलब्ध नहीं हैं। उन्हें हटाने के लिए Agent Builder खोलें।",

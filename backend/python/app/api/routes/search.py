@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import deny_service_tokens, require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.edition_config import resolve_llm_for_search
@@ -117,7 +117,7 @@ async def search(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.get("/health")
+@router.get("/health", dependencies=[Depends(deny_service_tokens)])
 async def health_check() -> dict[str, str]:
     """Health check endpoint"""
     return {"status": "healthy"}

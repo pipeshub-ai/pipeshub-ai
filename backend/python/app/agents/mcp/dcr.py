@@ -86,7 +86,8 @@ async def assert_discovery_target_allowed(url: str) -> None:
     sufficient; there is no redirect hop that could land on a different, unchecked host.
     """
     try:
-        await asyncio.to_thread(validate_public_http_url, url)
+        # Admin-configured MCP servers can legitimately sit on Tailscale/CGNAT (100.64/10).
+        await asyncio.to_thread(validate_public_http_url, url, block_non_global=False)
     except UrlFetchError as e:
         raise DiscoveryBlockedError(str(e)) from e
 

@@ -446,6 +446,16 @@ class GraphTransactionStore(TransactionStore):
             connector_id, parent_external_record_id, record_type, transaction=self.txn
         )
 
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: str,
+    ) -> list[Record]:
+        """Return this connector's records of ``record_type``."""
+        return await self.graph_provider.get_records_by_record_type(
+            connector_id, record_type, transaction=self.txn
+        )
+
     async def get_record_path(self, record_id: str) -> Optional[str]:
         """Get full hierarchical path for a record by traversing parent-child edges."""
         return await self.graph_provider.get_record_path(record_id, transaction=self.txn)

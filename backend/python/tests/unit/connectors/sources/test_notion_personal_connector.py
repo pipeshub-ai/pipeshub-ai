@@ -23,6 +23,7 @@ def _make_connector() -> NotionPersonalConnector:
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
+    data_entities_processor.get_records_by_record_type = AsyncMock(return_value=[])
 
     data_store_provider = MagicMock()
     mock_tx = MagicMock()
@@ -247,12 +248,15 @@ class TestNotionPersonalPermissions:
         connector._sweep_placeholder_records = AsyncMock(
             side_effect=lambda: calls.append("sweep")
         )
+        connector._retire_leftover_database_records = AsyncMock(
+            side_effect=lambda: calls.append("retire")
+        )
 
         with patch(_FILTERS, new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
             await connector.run_sync()
 
         assert calls == [
-            "ensure_group", "sync_users", "sync_data_source", "sync_page", "sweep",
+            "ensure_group", "sync_users", "sync_data_source", "sync_page", "sweep", "retire",
         ]
 
     @pytest.mark.asyncio

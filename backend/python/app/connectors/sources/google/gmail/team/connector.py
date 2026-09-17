@@ -28,6 +28,13 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -1759,10 +1766,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             return await self._create_user_gmail_client(user_email)
 
         if not self.gmail_data_source:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Gmail client not initialized"
-            )
+            raise connector_not_ready(self.display_name)
         return self.gmail_data_source
 
     def _gmail_data_source_for_service(self, gmail_service: object) -> GoogleGmailDataSource:
@@ -2524,27 +2528,26 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                         except HttpError as http_error:
                             self.logger.error(f"HTTP error during Drive download: {str(http_error)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail=f"Error during Drive download: {str(http_error)}",
-                            )
+                            raise map_source_status(
+                                http_error.resp.status, connector=self.display_name
+                            ) from http_error
                         except Exception as chunk_error:
                             self.logger.error(f"Error downloading chunk: {str(chunk_error)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail="Error during Drive download",
-                            )
+                            raise to_stream_error(
+                                chunk_error, connector=self.display_name
+                            ) from chunk_error
 
                     self.logger.info(
                         f"Drive file stream completed: {chunk_count} chunks, {total_bytes} total bytes"
                     )
 
+                except HTTPException:
+                    raise
                 except Exception as stream_error:
                     self.logger.error(f"Error in file stream: {str(stream_error)}", exc_info=True)
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Error streaming file from Drive"
-                    )
+                    raise to_stream_error(
+                        stream_error, connector=self.display_name
+                    ) from stream_error
                 finally:
                     self.logger.debug(f"Closing buffer for Drive file {drive_file_id}")
                     buffer.close()
@@ -2560,10 +2563,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             raise
         except Exception as drive_error:
             self.logger.error(f"Failed to stream Drive file {drive_file_id}: {str(drive_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream file from Drive: {str(drive_error)}"
-            )
+            raise to_stream_error(drive_error, connector=self.display_name) from drive_error
 
     async def _convert_to_pdf(self, file_path: str, temp_dir: str) -> str:
         """
@@ -2651,7 +2651,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         try:
             gmail_data_source = gmail_data_source or self.gmail_data_source
             if not gmail_data_source:
-                raise RuntimeError("Gmail data source is not initialized")
+                raise connector_not_ready(self.display_name)
             # 1. Fetch message. execute() is a synchronous HTTP call, so run it off
             # the event loop to avoid blocking other work.
             request = (
@@ -2692,24 +2692,16 @@ class GoogleGmailTeamConnector(BaseConnector):
                 fallback_filename=f"record_{record.id}"
             )
 
+        except HTTPException:
+            raise
         except HttpError as http_error:
-            if hasattr(http_error, 'resp') and http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                self.logger.error(f"Message not found with ID {message_id}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail="Message not found"
-                )
-            self.logger.error(f"Failed to fetch mail content: {str(http_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Failed to fetch mail content"
-            )
+            self.logger.error(f"Failed to fetch mail content for {message_id}: {str(http_error)}")
+            raise map_source_status(
+                http_error.resp.status, connector=self.display_name
+            ) from http_error
         except Exception as mail_error:
             self.logger.error(f"Failed to fetch mail content: {str(mail_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Failed to fetch mail content"
-            )
+            raise to_stream_error(mail_error, connector=self.display_name) from mail_error
 
     async def _stream_attachment_record(
         self,
@@ -2739,7 +2731,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         """
         gmail_data_source = gmail_data_source or self.gmail_data_source
         if not gmail_data_source:
-            raise RuntimeError("Gmail data source is not initialized")
+            raise connector_not_ready(self.display_name)
         # Check if file_id is a Drive file ID (no tilde, typically longer alphanumeric)
         # Drive file IDs don't contain tildes, while our stable IDs use messageId~partId format
         is_drive_file = "~" not in file_id
@@ -2770,53 +2762,47 @@ class GoogleGmailTeamConnector(BaseConnector):
         # Check if file_id is a combined ID (messageId~partId format)
         actual_attachment_id = file_id
         if "~" in file_id:
-            try:
-                file_message_id, part_id = file_id.split("~", 1)
+            file_message_id, part_id = file_id.split("~", 1)
 
-                # Use the message_id from parent record, but validate it matches
-                if file_message_id != message_id:
-                    self.logger.warning(
-                        f"Message ID mismatch: file_id has {file_message_id}, parent has {message_id}. Using parent message_id."
-                    )
-
-                # Fetch the message to get the actual attachment ID
-                try:
-                    request = (
-                        gmail_service.users()
-                        .messages()
-                        .get(userId="me", id=message_id, format="full")
-                    )
-                    message = await gmail_data_source.execute(request.execute)
-                except HttpError as access_error:
-                    if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                        self.logger.error(f"Message not found with ID {message_id}")
-                        raise HTTPException(
-                            status_code=HttpStatusCode.NOT_FOUND.value,
-                            detail="Message not found"
-                        )
-                    raise access_error
-
-                if not message or "payload" not in message:
-                    raise Exception(f"Message or payload not found for message ID {message_id}")
-
-                # Search for the part with matching partId
-                parts = message["payload"].get("parts", [])
-                for part in parts:
-                    if part.get("partId") == part_id:
-                        actual_attachment_id = part.get("body", {}).get("attachmentId")
-                        if not actual_attachment_id:
-                            raise Exception("Attachment ID not found in part body")
-                        self.logger.info(f"Found attachment ID: {actual_attachment_id}")
-                        break
-                else:
-                    raise Exception("Part ID not found in message")
-
-            except Exception as e:
-                self.logger.error(f"Error extracting attachment ID: {str(e)}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_REQUEST.value,
-                    detail=f"Invalid attachment ID format: {str(e)}"
+            # Use the message_id from parent record, but validate it matches
+            if file_message_id != message_id:
+                self.logger.warning(
+                    f"Message ID mismatch: file_id has {file_message_id}, parent has {message_id}. Using parent message_id."
                 )
+
+            # Fetch the message to get the actual attachment ID
+            try:
+                request = (
+                    gmail_service.users()
+                    .messages()
+                    .get(userId="me", id=message_id, format="full")
+                )
+                message = await gmail_data_source.execute(request.execute)
+            except HttpError as access_error:
+                self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
+                raise map_source_status(
+                    access_error.resp.status, connector=self.display_name
+                ) from access_error
+
+            if not message or "payload" not in message:
+                self.logger.error(f"Message or payload not found for message ID {message_id}")
+                raise not_found_at_source(self.display_name)
+
+            # Search for the part with matching partId
+            parts = message["payload"].get("parts", [])
+            for part in parts:
+                if part.get("partId") == part_id:
+                    actual_attachment_id = part.get("body", {}).get("attachmentId")
+                    if not actual_attachment_id:
+                        raise not_downloadable(
+                            "This attachment has no downloadable content in Gmail.",
+                            connector=self.display_name,
+                        )
+                    self.logger.info(f"Found attachment ID: {actual_attachment_id}")
+                    break
+            else:
+                self.logger.error(f"Part {part_id} not found in message {message_id}")
+                raise not_found_at_source(self.display_name)
 
         # Try to get the attachment from Gmail
         try:
@@ -2857,27 +2843,23 @@ class GoogleGmailTeamConnector(BaseConnector):
             )
 
         except HttpError as gmail_error:
-            self.logger.info(
-                f"Failed to get attachment from Gmail: {str(gmail_error)}, trying Drive..."
+            # Only `messageId~partId` ids reach here — a Drive id returned above.
+            # Drive cannot resolve one, and its non-PDF path hands back a lazy
+            # StreamingResponse that "succeeds" here and fails only once the
+            # router pulls a chunk, turning Gmail's 401/429 into a Drive 404.
+            self.logger.error(
+                f"Failed to get Gmail attachment {file_id}: {str(gmail_error)}"
             )
-
-            # Try Drive as fallback
-            try:
-                return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo, user_email)
-            except Exception as drive_error:
-                self.logger.error(
-                    f"Failed to get file from both Gmail and Drive. Gmail error: {str(gmail_error)}, Drive error: {str(drive_error)}"
-                )
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="Failed to download file from both Gmail and Drive",
-                )
+            raise map_source_status(
+                gmail_error.resp.status, connector=self.display_name
+            ) from gmail_error
+        except HTTPException:
+            raise
         except Exception as attachment_error:
             self.logger.error(f"Error streaming attachment: {str(attachment_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error streaming attachment: {str(attachment_error)}"
-            )
+            raise to_stream_error(
+                attachment_error, connector=self.display_name
+            ) from attachment_error
 
     async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> StreamingResponse:
         """
@@ -2952,10 +2934,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Error streaming record: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error streaming record: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync for Google Gmail workspace."""

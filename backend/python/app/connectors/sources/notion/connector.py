@@ -26,6 +26,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     ProgressStatus,
+    RecordRelations,
 )
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import (
@@ -98,6 +99,12 @@ from app.sources.external.notion.notion import NotionDataSource
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_found_at_source,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 
 # Notion OAuth URLs
 # Note: Notion OAuth doesn't use traditional scopes. Permissions are configured
@@ -137,6 +144,14 @@ class _RecordGone:
 
 
 RECORD_GONE = _RecordGone()
+
+
+class _DatabaseGone(Exception):
+    """Notion returned a definitive 404/trash for a database container."""
+
+
+class _DatabaseUnavailable(RuntimeError):
+    """Notion could not answer for a database right now (429, 5xx, unusable payload)."""
 
 
 class UnconvertibleImageError(Exception):
@@ -460,6 +475,11 @@ class NotionConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"Placeholder sweep failed: {e}", exc_info=True)
 
+            try:
+                await self._retire_leftover_database_records()
+            except Exception as e:
+                self.logger.error(f"Leftover database pass failed: {e}", exc_info=True)
+
             self.logger.info("✅ Notion sync completed successfully")
 
         except Exception as e:
@@ -477,7 +497,6 @@ class NotionConnector(BaseConnector):
     _PLACEHOLDER_OBJECT_TYPES = {
         RecordType.WEBPAGE: "page",
         RecordType.DATASOURCE: "data_source",
-        RecordType.DATABASE: "database",
     }
 
     async def _fetch_placeholder_object(self, stub: Record) -> Tuple[str, Optional[Dict[str, Any]]]:
@@ -498,7 +517,7 @@ class NotionConnector(BaseConnector):
         elif object_type == "data_source":
             response = await datasource.retrieve_data_source_by_id(stub.external_record_id)
         else:
-            response = await datasource.retrieve_database(stub.external_record_id)
+            return "unknown", None
 
         if self._is_definitive_not_found(response):
             return "gone", None
@@ -555,6 +574,146 @@ class NotionConnector(BaseConnector):
             )
         return len(children)
 
+    async def _rehome_children(
+        self,
+        children: List[Record],
+        *,
+        new_parent_external_id: Optional[str],
+        new_parent_type: Optional[RecordType],
+    ) -> None:
+        """Point children at a new parent (field + PARENT_CHILD edge), or detach them.
+
+        Browse lists roots by ``externalParentId IS NULL`` and expands children by
+        edges. Updating the field without the edge (or the edge without nulling the
+        field) hides the child. If the new parent is not in the graph yet, detach
+        so they stay visible at the workspace root.
+        """
+        parent_record = None
+        if new_parent_external_id:
+            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, new_parent_external_id
+            )
+            if parent_record is None:
+                new_parent_external_id = None
+                new_parent_type = None
+
+        nodes = []
+        for child in children:
+            child.parent_external_record_id = new_parent_external_id
+            child.parent_record_type = new_parent_type
+            nodes.append(child.to_arango_base_record())
+
+        async with self.data_store_provider.transaction() as tx_store:
+            if nodes:
+                updated = await tx_store.batch_update_nodes(
+                    nodes, CollectionNames.RECORDS.value
+                )
+                if updated is not True:
+                    raise RuntimeError(
+                        f"re-home of {len(children)} child record(s) did not fully apply "
+                        f"(batch_update_nodes returned {updated!r})"
+                    )
+            for child in children:
+                await tx_store.delete_parent_child_edge_to_record(child.id)
+                if parent_record is not None:
+                    await tx_store.create_record_relation(
+                        parent_record.id,
+                        child.id,
+                        RecordRelations.PARENT_CHILD.value,
+                    )
+
+    async def _retire_database_container_record(self, record: Record) -> None:
+        """Re-home children of a leftover DATABASE container, then delete it.
+
+        Only a definitive 404/trash is treated as gone. A 429/5xx raises so the
+        caller leaves the container for the next run.
+        """
+        if not record.id:
+            return
+        if not record.external_record_id:
+            await self.data_entities_processor.on_record_deleted(record.id)
+            return
+
+        children = await self.data_entities_processor.get_records_by_parent(
+            self.connector_id, record.external_record_id
+        )
+
+        try:
+            payload = await self._retrieve_database_payload(record.external_record_id)
+        except _DatabaseGone:
+            if children:
+                await self._rehome_children(
+                    children, new_parent_external_id=None, new_parent_type=None
+                )
+            await self.data_entities_processor.on_record_deleted(record.id)
+            self.logger.info(
+                "Retired unreachable Notion database container %s and detached %d child record(s)",
+                record.external_record_id, len(children),
+            )
+            return
+
+        data_source_id = self._first_data_source_id(payload)
+        hop_id, hop_type = await self._parent_ref_from_database_payload(
+            payload, {record.external_record_id}
+        )
+
+        datasource_children = [
+            child for child in children if child.record_type == RecordType.DATASOURCE
+        ]
+        other_children = [
+            child for child in children if child.record_type != RecordType.DATASOURCE
+        ]
+        if datasource_children:
+            await self._rehome_children(
+                datasource_children,
+                new_parent_external_id=hop_id,
+                new_parent_type=hop_type,
+            )
+        if other_children:
+            await self._rehome_children(
+                other_children,
+                new_parent_external_id=data_source_id or hop_id,
+                new_parent_type=(
+                    RecordType.DATASOURCE if data_source_id else hop_type
+                ),
+            )
+
+        await self.data_entities_processor.on_record_deleted(record.id)
+        self.logger.info(
+            "Retired leftover Notion database container %s and re-homed %d child record(s)",
+            record.external_record_id, len(children),
+        )
+
+    async def _retire_leftover_database_records(self) -> None:
+        """Drop DATABASE containers the old sweep already promoted to real records."""
+        try:
+            leftovers = await self.data_entities_processor.get_records_by_record_type(
+                self.connector_id, RecordType.DATABASE
+            )
+        except Exception as e:
+            self.logger.error(
+                "Could not load leftover Notion database containers: %s", e, exc_info=True
+            )
+            return
+
+        if not leftovers:
+            return
+
+        retired = 0
+        for record in leftovers:
+            try:
+                await self._retire_database_container_record(record)
+                retired += 1
+            except Exception as e:
+                self.logger.warning(
+                    "Leaving Notion database container %s for the next sync: %s",
+                    record.external_record_id, e,
+                )
+        self.logger.info(
+            "Leftover database pass: retired %d of %d container(s)",
+            retired, len(leftovers),
+        )
+
     async def _sweep_placeholder_records(self) -> None:
         """Reconcile parent stubs left behind when a child synced but its parent did not.
 
@@ -604,6 +763,18 @@ class NotionConnector(BaseConnector):
                     untouched += 1
                     continue
 
+                if stub.record_type == RecordType.DATABASE:
+                    try:
+                        await self._retire_database_container_record(stub)
+                        detached += 1
+                    except Exception as e:
+                        self.logger.error(
+                            "Placeholder sweep: failed to retire database container %s: %s",
+                            stub.external_record_id, e, exc_info=True,
+                        )
+                        untouched += 1
+                    continue
+
                 verdict, payload = result
                 try:
                     if verdict == "in_scope":
@@ -627,6 +798,15 @@ class NotionConnector(BaseConnector):
                         )
                     else:
                         untouched += 1
+                except _DatabaseGone:
+                    moved = await self._detach_placeholder_children(stub)
+                    await self.data_entities_processor.on_record_deleted(stub.id)
+                    detached += 1
+                    self.logger.info(
+                        "Placeholder sweep: %s parent database is gone; removed the "
+                        "stub and moved %d child record(s) to the workspace root",
+                        stub.external_record_id, moved,
+                    )
                 except Exception as e:
                     self.logger.error(
                         "Placeholder sweep: failed to reconcile %s: %s",
@@ -710,7 +890,7 @@ class NotionConnector(BaseConnector):
         """
         try:
             if not self.data_source:
-                return None
+                raise connector_not_ready(self.display_name)
 
             external_id = record.external_record_id
             if external_id.startswith("ca_") or external_id.startswith("comment_attachment_"):
@@ -718,9 +898,11 @@ class NotionConnector(BaseConnector):
             else:
                 return await self._get_block_file_url(record)
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to get signed URL for {record.external_record_id}: {e}", exc_info=True)
-            raise e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_comment_attachment_url(self, record: Record) -> Optional[str]:
         """
@@ -757,8 +939,18 @@ class NotionConnector(BaseConnector):
         # Fetch comment data from Notion API
         datasource = await self._get_fresh_datasource()
         response = await datasource.retrieve_comment(comment_id)
-        if not response.success or not response.data:
+        # The stored signed_url expires in ~1h, so falling back to it turns a
+        # revoked token into an opaque 403 from Notion's file host.
+        if not response.success:
             self.logger.warning(f"Failed to fetch comment {comment_id} for attachment")
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.error,
+            )
+        if not response.data:
             return record.signed_url
 
         comment_data = response.data.json() if hasattr(response.data, 'json') else {}
@@ -803,7 +995,17 @@ class NotionConnector(BaseConnector):
 
         datasource = await self._get_fresh_datasource()
         response = await datasource.retrieve_block(block_id)
-        if not response.success or not response.data:
+        # The stored signed_url expires in ~1h, so falling back to it turns a
+        # revoked token into an opaque 403 from Notion's file host.
+        if not response.success:
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.error,
+            )
+        if not response.data:
             return record.signed_url
 
         block_data = response.data.json() if hasattr(response.data, 'json') else {}
@@ -837,28 +1039,29 @@ class NotionConnector(BaseConnector):
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
 
             if not self.data_source:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Notion data source not initialized"
-                )
+                raise connector_not_ready(self.display_name)
 
             # Handle file records
             if record.record_type == RecordType.FILE:
                 signed_url = await self.get_signed_url(record)
 
                 if not signed_url:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="File URL not available"
-                    )
+                    raise not_found_at_source(self.display_name)
 
                 # Stream file from signed URL
                 async def generate_file_stream() -> AsyncGenerator[bytes, None]:
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        async with client.stream("GET", signed_url) as response:
-                            response.raise_for_status()
-                            async for chunk in response.aiter_bytes():
-                                yield chunk
+                    try:
+                        async with httpx.AsyncClient(timeout=30.0) as client:
+                            async with client.stream("GET", signed_url) as response:
+                                response.raise_for_status()
+                                async for chunk in response.aiter_bytes():
+                                    yield chunk
+                    except Exception as e:
+                        self.logger.error(
+                            f"❌ Failed to stream file for record {record.id}: {e}",
+                            exc_info=True,
+                        )
+                        raise to_stream_error(e, connector=self.display_name) from e
 
                 # Determine content type from record
                 media_type = record.mime_type if record.mime_type else "application/octet-stream"
@@ -896,6 +1099,11 @@ class NotionConnector(BaseConnector):
                     headers={
                         "Content-Disposition": f'inline; filename="{record.external_record_id}_data_source.json"'
                     }
+                )
+            elif record.record_type == RecordType.DATABASE:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Notion database containers are not indexed",
                 )
             elif record.record_type == RecordType.WEBPAGE:
                 parser = NotionBlockParser(self.logger, self.config_service)
@@ -949,9 +1157,7 @@ class NotionConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500, detail=f"Failed to stream record: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def reindex_records(self, records: List[Record]) -> None:
         """
@@ -1035,6 +1241,10 @@ class NotionConnector(BaseConnector):
         if not record.external_record_id or record.record_type == RecordType.FILE:
             return None
 
+        if record.record_type == RecordType.DATABASE:
+            await self._retire_database_container_record(record)
+            return RECORD_GONE
+
         datasource = await self._get_fresh_datasource()
         if record.record_type == RecordType.WEBPAGE:
             response = await datasource.retrieve_page(record.external_record_id)
@@ -1042,9 +1252,6 @@ class NotionConnector(BaseConnector):
         elif record.record_type == RecordType.DATASOURCE:
             response = await datasource.retrieve_data_source_by_id(record.external_record_id)
             object_type = "data_source"
-        elif record.record_type == RecordType.DATABASE:
-            response = await datasource.retrieve_database(record.external_record_id)
-            object_type = "database"
         else:
             return None
 
@@ -1511,6 +1718,12 @@ class NotionConnector(BaseConnector):
                                         database_parent_record_type,
                                     ) = await self._get_database_parent_ref(database_id)
                                     # None is valid when database parent is workspace
+                                except _DatabaseGone:
+                                    self.logger.info(
+                                        "Skipping data source %s: parent database %s is gone",
+                                        obj_id, database_id,
+                                    )
+                                    continue
                                 except Exception as e:
                                     self.logger.error(
                                         f"Error fetching database parent for data source {obj_id}: {e}. "
@@ -1695,7 +1908,14 @@ class NotionConnector(BaseConnector):
 
         if not metadata_response.success:
             self.logger.error(f"Failed to fetch data source metadata: {metadata_response.error}")
-            return BlocksContainer(blocks=[], block_groups=[])
+            # An empty container here streams a 200 with no content at all.
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector=self.display_name,
+                status=metadata_response.status_code,
+                message=metadata_response.error,
+            )
 
         metadata = metadata_response.data.json() if metadata_response.data else {}
 
@@ -2129,42 +2349,49 @@ class NotionConnector(BaseConnector):
                     start_cursor=cursor,
                     page_size=page_size
                 )
-
-                if not response.success:
-                    self.logger.error(
-                        "recursive_flatten: retrieve_block_children failed block_id=%s error=%r",
-                        block_id,
-                        response.error if response else None,
-                    )
-                    break
-
                 # Convert response.data to dictionary (response.data is a Response object with .json() method)
-                data = response.data.json() if response.data else {}
-
-                if not isinstance(data, dict):
-                    self.logger.warning(
-                        f"Expected dictionary but got {type(data)} for block {block_id}: {data}"
-                    )
-                    break
-
-                results = data.get("results", [])
-                if not results:
-                    break
-
-                all_blocks.extend(results)
-
-                # Check for more pages
-                has_more = data.get("has_more", False)
-                cursor = data.get("next_cursor")
-
-                if not has_more or not cursor:
-                    break
-
+                data = response.data.json() if response.success and response.data else {}
             except Exception as e:
                 self.logger.error(
                     f"Error fetching block children for {block_id}: {e}",
                     exc_info=True
                 )
+                # Returning the blocks gathered so far would stream a silently
+                # truncated page with a 200. This is a streaming-only path, so
+                # there is no sync caller relying on partial results.
+                raise to_stream_error(e, connector=self.display_name) from e
+
+            if not response.success:
+                self.logger.error(
+                    "recursive_flatten: retrieve_block_children failed block_id=%s error=%r",
+                    block_id,
+                    response.error,
+                )
+                raise_for_stream_fetch(
+                    success=False,
+                    has_payload=False,
+                    connector=self.display_name,
+                    status=response.status_code,
+                    message=response.error,
+                )
+
+            if not isinstance(data, dict):
+                self.logger.warning(
+                    f"Expected dictionary but got {type(data)} for block {block_id}: {data}"
+                )
+                break
+
+            results = data.get("results", [])
+            if not results:
+                break
+
+            all_blocks.extend(results)
+
+            # Check for more pages
+            has_more = data.get("has_more", False)
+            cursor = data.get("next_cursor")
+
+            if not has_more or not cursor:
                 break
 
         return all_blocks
@@ -2545,7 +2772,7 @@ class NotionConnector(BaseConnector):
 
     async def _batch_get_or_create_child_records(
         self,
-        children_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]]
+        children_to_resolve: Dict[str, tuple]
     ) -> Dict[str, ChildRecord]:
         """
         Batch get or create child records for multiple external IDs.
@@ -2591,7 +2818,9 @@ class NotionConnector(BaseConnector):
             records_to_create: List[Tuple[Record, List]] = []
 
             for ext_id in missing_ids:
-                name, record_type, parent_ext_id = children_to_resolve[ext_id]
+                spec = children_to_resolve[ext_id]
+                name, record_type, parent_ext_id = spec[0], spec[1], spec[2]
+                explicit_parent_type = spec[3] if len(spec) > 3 else None
 
                 if record_type == RecordType.FILE:
                     minimal_record = FileRecord(
@@ -2618,12 +2847,10 @@ class NotionConnector(BaseConnector):
                 else:
                     # Determine parent_record_type based on record_type
                     # For datasources, parent is a webpage (WEBPAGE)
-                    parent_record_type = None
-                    if parent_ext_id:
+                    parent_record_type = explicit_parent_type
+                    if parent_ext_id and parent_record_type is None:
                         if record_type == RecordType.DATASOURCE:
-                            # Datasources have pages as parents
                             parent_record_type = RecordType.WEBPAGE
-                        # For other record types, parent_record_type can be determined when the parent is synced
 
                     minimal_record = WebpageRecord(
                         org_id=self.data_entities_processor.org_id,
@@ -2688,28 +2915,22 @@ class NotionConnector(BaseConnector):
                 self.logger.debug(f"Database {database_id} has no data_sources")
                 return []
 
-            # Extract the database's parent ID
-            database_parent = database_data.get("parent", {})
-            database_parent_id = None
+            # A transient failure falls through to the outer handler: no stubs beats stubs
+            # created without their parent.
+            try:
+                database_parent_id, database_parent_type = (
+                    await self._parent_ref_from_database_payload(
+                        database_data, {database_id}
+                    )
+                )
+            except _DatabaseGone as e:
+                self.logger.info(
+                    "Parent of database %s is gone; its data sources get no parent: %s",
+                    database_id, e,
+                )
+                database_parent_id, database_parent_type = None, None
 
-            parent_type = database_parent.get("type")
-            if parent_type == "page_id":
-                database_parent_id = database_parent.get("page_id")
-            elif parent_type == "database_id":
-                database_parent_id = database_parent.get("database_id")
-            elif parent_type == "block_id":
-                # Recursively resolve block_id to find the actual page/database/datasource parent
-                block_id = database_parent.get("block_id")
-                if block_id:
-                    resolved_parent_id, _ = await self._resolve_block_parent_recursive(block_id)
-                    database_parent_id = resolved_parent_id
-            elif parent_type == "data_source_id":
-                database_parent_id = database_parent.get("data_source_id")
-            # If parent_type is None or workspace, database_parent_id remains None
-
-            # Batch resolve all data_sources to ChildRecords
-            # Collect data_sources to resolve
-            data_sources_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]] = {}
+            data_sources_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str], Optional[RecordType]]] = {}
             for data_source in data_sources:
                 data_source_id = data_source.get("id")
                 data_source_name = data_source.get("name", "Untitled Data Source")
@@ -2717,12 +2938,11 @@ class NotionConnector(BaseConnector):
                 if not data_source_id:
                     continue
 
-                # Use DATASOURCE as the record type for data sources
-                # Pass the database's parent ID in the tuple
                 data_sources_to_resolve[data_source_id] = (
                     data_source_name,
                     RecordType.DATASOURCE,
-                    database_parent_id  # Use database's parent ID instead of None
+                    database_parent_id,
+                    database_parent_type,
                 )
 
             # Batch resolve/create all data_sources using the same logic as other child records
@@ -3512,10 +3732,10 @@ class NotionConnector(BaseConnector):
         visited: Optional[set] = None
     ) -> Tuple[Optional[str], Optional[RecordType]]:
         """
-        Recursively resolve a block_id parent until we find a page_id, database_id, or data_source_id.
+        Recursively resolve a block_id parent until we find a page or data source.
 
-        This handles the case where a page/database/datasource has a block_id as parent,
-        and we need to traverse up the block hierarchy to find the actual page/database/datasource parent.
+        This handles the case where a page/datasource has a block_id as parent,
+        and we need to traverse up the block hierarchy to find the actual page/datasource parent.
 
         Args:
             block_id: Notion block ID to resolve
@@ -3524,8 +3744,8 @@ class NotionConnector(BaseConnector):
 
         Returns:
             Tuple of (parent_id, parent_record_type) where:
-            - parent_id: The resolved parent ID (page_id, database_id, or data_source_id)
-            - parent_record_type: The RecordType enum (WEBPAGE, DATABASE, or DATASOURCE)
+            - parent_id: The resolved parent ID (page_id or data_source_id)
+            - parent_record_type: WEBPAGE or DATASOURCE
             Returns (None, None) if no parent found, error occurred, or max depth reached
         """
         if visited is None:
@@ -3561,7 +3781,10 @@ class NotionConnector(BaseConnector):
             if parent_type == "page_id":
                 return parent.get("page_id"), RecordType.WEBPAGE
             elif parent_type == "database_id":
-                return parent.get("database_id"), RecordType.DATABASE
+                database_id = parent.get("database_id")
+                if database_id:
+                    return await self._resolve_database_id_as_record_parent(database_id)
+                return None, None
             elif parent_type == "data_source_id":
                 return parent.get("data_source_id"), RecordType.DATASOURCE
             elif parent_type == "block_id":
@@ -3579,6 +3802,8 @@ class NotionConnector(BaseConnector):
                 # No parent or workspace parent
                 return None, None
 
+        except _DatabaseUnavailable:
+            raise
         except Exception as e:
             self.logger.warning(
                 f"Error resolving block parent for {block_id}: {e}",
@@ -3586,48 +3811,50 @@ class NotionConnector(BaseConnector):
             )
             return None, None
 
-    async def _get_database_parent_ref(
-        self, database_id: str
-    ) -> Tuple[Optional[str], Optional[RecordType]]:
-        """
-        Fetch a database and return its parent as an (id, record_type) pair.
+    @staticmethod
+    def _first_data_source_id(payload: Dict[str, Any]) -> Optional[str]:
+        for source in payload.get("data_sources") or []:
+            if isinstance(source, dict) and source.get("id"):
+                return source["id"]
+        return None
 
-        The type travels with the id because a database's parent is not always a page: it
-        can be another database or a data source. Callers used to assume WEBPAGE, which
-        minted parent stubs of the wrong type keyed by a database id.
-
-        Args:
-            database_id: Notion database ID
-
-        Returns:
-            (parent_id, parent_record_type), or (None, None) when the parent is the
-            workspace / absent.
-
-        Raises:
-            RuntimeError: If the database cannot be retrieved (API failure). Callers must not
-                treat this as "no parent" — that would clear PARENT_CHILD edges.
-        """
+    async def _retrieve_database_payload(self, database_id: str) -> Dict[str, Any]:
         datasource = await self._get_fresh_datasource()
         response = await datasource.retrieve_database(database_id)
 
+        if self._is_definitive_not_found(response):
+            raise _DatabaseGone(f"database {database_id} not found")
+
         if not response or not response.success or not response.data:
             error_msg = response.error if response else "No response"
-            raise RuntimeError(
+            raise _DatabaseUnavailable(
                 f"Failed to retrieve database {database_id} for parent lookup: {error_msg}"
             )
 
         database_data = response.data.json()
         if not isinstance(database_data, dict):
-            raise RuntimeError(
+            raise _DatabaseUnavailable(
                 f"Invalid database payload for {database_id}: expected object"
             )
+        if database_data.get("archived") or database_data.get("in_trash"):
+            raise _DatabaseGone(f"database {database_id} is archived")
+        return database_data
 
+    async def _parent_ref_from_database_payload(
+        self,
+        database_data: Dict[str, Any],
+        visited: set,
+    ) -> Tuple[Optional[str], Optional[RecordType]]:
+        """Hop over a database container to a page, data source, or workspace."""
         database_parent = database_data.get("parent", {}) or {}
         parent_type = database_parent.get("type")
         if parent_type == "page_id":
             return database_parent.get("page_id"), RecordType.WEBPAGE
         if parent_type == "database_id":
-            return database_parent.get("database_id"), RecordType.DATABASE
+            parent_db_id = database_parent.get("database_id")
+            if parent_db_id:
+                return await self._get_database_parent_ref(parent_db_id, visited)
+            return None, None
         if parent_type == "block_id":
             block_id = database_parent.get("block_id")
             if block_id:
@@ -3635,9 +3862,44 @@ class NotionConnector(BaseConnector):
             return None, None
         if parent_type == "data_source_id":
             return database_parent.get("data_source_id"), RecordType.DATASOURCE
-
-        # parent_type is None or workspace
         return None, None
+
+    async def _get_database_parent_ref(
+        self,
+        database_id: str,
+        visited: Optional[set] = None,
+    ) -> Tuple[Optional[str], Optional[RecordType]]:
+        """
+        Fetch a database and return its parent as an (id, record_type) pair.
+
+        Databases are containers, not records. If the parent is another database
+        (wikis), hop again until a page, data source, or workspace.
+
+        Raises:
+            RuntimeError: If the database cannot be retrieved (API failure). Callers must not
+                treat this as "no parent" — that would clear PARENT_CHILD edges.
+        """
+        if visited is None:
+            visited = set()
+        if database_id in visited:
+            return None, None
+        visited.add(database_id)
+        database_data = await self._retrieve_database_payload(database_id)
+        return await self._parent_ref_from_database_payload(database_data, visited)
+
+    async def _resolve_database_id_as_record_parent(
+        self, database_id: str
+    ) -> Tuple[Optional[str], Optional[RecordType]]:
+        """Map a leftover database_id parent to the record we actually store.
+
+        Row-like objects belong to the database's data source. If the container
+        has no data sources, hop to the database's own parent instead.
+        """
+        payload = await self._retrieve_database_payload(database_id)
+        data_source_id = self._first_data_source_id(payload)
+        if data_source_id:
+            return data_source_id, RecordType.DATASOURCE
+        return await self._parent_ref_from_database_payload(payload, {database_id})
 
     async def _transform_to_webpage_record(
         self,
@@ -3647,27 +3909,25 @@ class NotionConnector(BaseConnector):
         database_parent_record_type: Optional[RecordType] = None,
     ) -> Optional[WebpageRecord]:
         """
-        Unified transform for pages, databases, and data_sources to WebpageRecord.
+        Unified transform for pages and data_sources to WebpageRecord.
 
         Args:
-            obj_data: Raw data from Notion API (page, database, or data_source)
-            object_type: "page", "database", or "data_source"
+            obj_data: Raw data from Notion API (page or data_source)
+            object_type: "page" or "data_source"
             database_parent_id: Optional parent ID for data sources (when parent is a database)
 
         Returns:
-            For database/data_source: (WebpageRecord)
-            For page: (WebpageRecord)
+            WebpageRecord, or None when the object is not a page/data source
+
+        Raises:
+            _DatabaseUnavailable: a database parent could not be resolved right now
         """
         try:
             obj_id = obj_data.get("id")
 
-            # Extract title based on type
             if object_type == "database":
-                # Database: title is directly in the response
-                title_parts = obj_data.get("title", [])
-                title = "".join([t.get("plain_text", "") for t in title_parts]) or "Untitled Database"
-                record_type = RecordType.DATABASE
-            elif object_type == "data_source":
+                return None
+            if object_type == "data_source":
                 # Data Source: title is directly in the response (same as database)
                 title_parts = obj_data.get("title", [])
                 title = "".join([t.get("plain_text", "") for t in title_parts]) or "Untitled Data Source"
@@ -3689,17 +3949,17 @@ class NotionConnector(BaseConnector):
             parent_record_type = None
 
             if object_type == "data_source":
-                # Data Source: use the database's parent ID if provided
                 if database_parent_id:
                     parent_id = database_parent_id
-                    # The kind travels with the id: a database's parent can be a page,
-                    # another database, or a data source. Assuming WEBPAGE here minted
-                    # parent stubs of the wrong type keyed by a database id.
                     parent_record_type = database_parent_record_type or RecordType.WEBPAGE
-                # When database_parent_id is None (e.g., database parent is workspace),
-                # parent_id and parent_record_type remain None - datasource connects only to record group
+                else:
+                    raw_parent = obj_data.get("parent") or {}
+                    if raw_parent.get("type") == "data_source_id" and raw_parent.get(
+                        "data_source_id"
+                    ):
+                        parent_id = raw_parent["data_source_id"]
+                        parent_record_type = RecordType.DATASOURCE
             else:
-                # Page/Database: standard parent structure
                 parent = obj_data.get("parent", {})
                 parent_type = parent.get("type")
 
@@ -3707,8 +3967,17 @@ class NotionConnector(BaseConnector):
                     parent_id = parent.get("page_id")
                     parent_record_type = RecordType.WEBPAGE
                 elif parent_type == "database_id":
-                    parent_id = parent.get("database_id")
-                    parent_record_type = RecordType.DATABASE
+                    database_id = parent.get("database_id")
+                    if database_id:
+                        try:
+                            parent_id, parent_record_type = (
+                                await self._resolve_database_id_as_record_parent(database_id)
+                            )
+                        except _DatabaseGone:
+                            self.logger.info(
+                                "Database parent %s of %s is gone; syncing it without a parent",
+                                database_id, obj_id,
+                            )
                 elif parent_type == "block_id":
                     # Recursively resolve block_id to find the actual page/database/datasource parent
                     block_id = parent.get("block_id")
@@ -3751,6 +4020,9 @@ class NotionConnector(BaseConnector):
                 source_updated_at=source_updated_at,
             )
 
+        except _DatabaseUnavailable:
+            # Saving without the parent would clear its PARENT_CHILD edge; let the caller retry.
+            raise
         except Exception as e:
             self.logger.error(f"Failed to transform {object_type}: {e}", exc_info=True)
             return None
@@ -4330,14 +4602,14 @@ class NotionConnector(BaseConnector):
         configured token differs from what the client is currently using.
         """
         if not self.notion_client:
-            raise Exception("Notion client not initialized. Call init() first.")
+            raise connector_not_ready(self.display_name)
 
         config = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config"
         )
 
         if not config:
-            raise Exception("Notion configuration not found")
+            raise connector_not_ready(self.display_name)
 
         auth = config.get("auth", {}) or {}
         auth_type = auth.get("authType", "API_TOKEN")
@@ -4348,7 +4620,7 @@ class NotionConnector(BaseConnector):
             fresh_token = auth.get("apiToken", "")
 
         if not fresh_token:
-            raise Exception("No access token available")
+            raise connector_not_ready(self.display_name)
 
         internal_client = self.notion_client.get_client()
         current_token = getattr(internal_client, "access_token", None) or ""

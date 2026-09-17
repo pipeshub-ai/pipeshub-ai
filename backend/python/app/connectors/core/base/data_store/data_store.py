@@ -109,6 +109,15 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: str,
+    ) -> list[Record]:
+        """Return this connector's records of ``record_type``."""
+        pass
+
+    @abstractmethod
     async def get_record_path(self, record_id: str) -> Optional[str]:
         """
         Get full hierarchical path for a record by traversing parent-child edges.

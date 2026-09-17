@@ -91,6 +91,24 @@ class TestKnowledgeToolsetGate:
 
         assert not any("search_internal_knowledge" in name for name in registry.names())
 
+    async def test_skipping_a_knowledge_toolset_is_logged_at_info(self) -> None:
+        """The skip is the condition behind "the agent answered as if it had
+        searched and found nothing". At `debug` it was invisible in a running
+        system; `info` makes it greppable without turning on debug logging
+        everywhere."""
+        context = _make_context(has_knowledge=False, conversation_id="conv-1")
+        state_logger = MagicMock()
+        context.tool_state["logger"] = state_logger
+        registry_patch, factory_patch = _patch_retrieval_toolset_registry()
+        with registry_patch, factory_patch:
+            await PipesHubToolLoader().load(context)
+
+        messages = [call.args[0] % call.args[1:] for call in state_logger.info.call_args_list]
+        assert any(
+            "retrieval" in m and "no knowledge sources attached" in m and "conv-1" in m
+            for m in messages
+        ), messages
+
 
 class TestBuildDynamicToolsWebSearchGate:
     """`web_search`/`agent` set `state["web_search_config"]`; `internal_search`
