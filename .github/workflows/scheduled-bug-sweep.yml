@@ -238,15 +238,20 @@ jobs:
       - name: Check the report exists
         id: report
         run: |
-          if [ -s sweep-findings.json ] && python3 -c 'import json,sys; json.load(open("sweep-findings.json"))' 2>/dev/null; then
+          # Valid means an object whose `findings` is a list (or absent), not
+          # merely parseable JSON: {"findings":"bad"} parses but is not a report
+          # this can route, and letting it through would print a length taken
+          # from the wrong type and hand junk to the router.
+          count=$(python3 -c 'import json,sys; r=json.load(open("sweep-findings.json")); f=r.get("findings",[]) if isinstance(r,dict) else None; sys.exit(1) if not isinstance(f,list) else print(len(f))' 2>/dev/null || true)
+          if [ -s sweep-findings.json ] && [ -n "$count" ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Findings in report: $(python3 -c 'import json; print(len(json.load(open("sweep-findings.json")).get("findings") or []))')"
+            echo "Findings in report: $count"
           else
             # A run that produced nothing to route is not a run with no
             # findings — that is a valid file with an empty list. This one
             # did not do its job, and a green result would hide that.
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::error::sweep-findings.json was not produced or is not valid JSON"
+            echo "::error::sweep-findings.json is missing or not a valid report (object with a findings list)"
             exit 1
           fi
 
