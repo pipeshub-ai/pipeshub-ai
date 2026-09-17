@@ -55,6 +55,12 @@ function resetStore() {
     conversations: [],
     agentConversations: [],
     pendingConversations: {},
+    projectScope: null,
+    projectKnowledgeScope: null,
+    projectStreamTools: null,
+    universalAgentToolCatalogFullNames: [],
+    universalAgentStreamTools: null,
+    agentKnowledgeDefaults: { apps: [], kb: [] },
     settings: {
       ...initialSettings,
       selectedModels: {},
@@ -220,5 +226,118 @@ describe('buildStreamChatRequestForSlot — projectId forwarding', () => {
     const slotId = useChatStore.getState().createSlot(null);
     const request = buildStreamChatRequestForSlot(slotId, 'hello');
     expect(request).not.toHaveProperty('projectId');
+  });
+});
+
+function makeScope(overrides: Partial<import('../store').ProjectChatScope> = {}): import('../store').ProjectChatScope {
+  return {
+    projectId: 'p1',
+    connectors: [{ id: 'app-1', label: 'Slack', connectorKind: 'SLACK' }],
+    knowledgeCollectionRows: [{ id: 'kb-1', name: 'Specs', sourceType: 'KB' }],
+    knowledgeDefaults: { apps: ['app-1'], kb: ['kb-1'] },
+    toolGroups: [{ label: 'Slack', fullNames: ['i1:slack.send'], toolsetSlug: 'slack', instanceId: 'i1' }],
+    mcpGroups: [],
+    toolCatalogFullNames: ['i1:slack.send'],
+    ...overrides,
+  };
+}
+
+describe('setProjectScope', () => {
+  it('seeds the collection name/meta caches so pills resolve labels', () => {
+    useChatStore.getState().setProjectScope(makeScope());
+    const s = useChatStore.getState();
+    expect(s.collectionNamesCache['app-1']).toBe('Slack');
+    expect(s.collectionMetaCache['app-1']).toEqual({ name: 'Slack', nodeType: 'app', connector: 'SLACK' });
+    expect(s.collectionMetaCache['kb-1']).toEqual({ name: 'Specs', nodeType: 'recordGroup', connector: 'KB' });
+  });
+
+  it('starts a different project with no per-turn narrowing', () => {
+    useChatStore.getState().setProjectScope(makeScope());
+    useChatStore.getState().setProjectKnowledgeScope({ apps: [], kb: ['kb-1'] });
+    useChatStore.getState().setProjectStreamTools([]);
+    useChatStore.getState().setProjectScope(makeScope({ projectId: 'p2' }));
+    expect(useChatStore.getState().projectKnowledgeScope).toBeNull();
+    expect(useChatStore.getState().projectStreamTools).toBeNull();
+  });
+
+  it('keeps per-turn narrowing on a same-project re-hydrate, pruning ids that left the allow-list', () => {
+    useChatStore.getState().setProjectScope(
+      makeScope({
+        knowledgeDefaults: { apps: ['app-1', 'app-2'], kb: ['kb-1'] },
+        toolCatalogFullNames: ['i1:slack.send', 'i1:slack.read'],
+      })
+    );
+    useChatStore.getState().setProjectKnowledgeScope({ apps: ['app-2'], kb: ['kb-1'] });
+    useChatStore.getState().setProjectStreamTools(['i1:slack.read']);
+    // Settings saved: app-2 and slack.read removed from the project.
+    useChatStore.getState().setProjectScope(makeScope());
+    expect(useChatStore.getState().projectKnowledgeScope).toEqual({ apps: [], kb: ['kb-1'] });
+    expect(useChatStore.getState().projectStreamTools).toEqual([]);
+  });
+
+  it('clears everything when passed null', () => {
+    useChatStore.getState().setProjectScope(makeScope());
+    useChatStore.getState().setProjectKnowledgeScope({ apps: [], kb: [] });
+    useChatStore.getState().setProjectScope(null);
+    const s = useChatStore.getState();
+    expect(s.projectScope).toBeNull();
+    expect(s.projectKnowledgeScope).toBeNull();
+    expect(s.projectStreamTools).toBeNull();
+  });
+});
+
+describe('buildStreamChatRequestForSlot — project scope', () => {
+  afterEach(() => useChatStore.getState().setProjectScope(null));
+
+  it('sends the whole project knowledge scope as filters when nothing is narrowed', () => {
+    useChatStore.getState().setProjectScope(makeScope());
+    useChatStore.getState().setFilters({ apps: ['org-wide-app'], kb: [] });
+    const slotId = useChatStore.getState().createSlot(null);
+    const request = buildStreamChatRequestForSlot(slotId, 'hello');
+    expect(request?.filters).toEqual({ apps: ['app-1'], kb: ['kb-1'] });
+    expect(request?.appliedFilters?.apps[0]).toMatchObject({ id: 'app-1', name: 'Slack', nodeType: 'app' });
+  });
+
+  it('sends the per-turn narrowed project scope when set', () => {
+    useChatStore.getState().setProjectScope(makeScope());
+    useChatStore.getState().setProjectKnowledgeScope({ apps: [], kb: ['kb-1'] });
+    const slotId = useChatStore.getState().createSlot(null);
+    const request = buildStreamChatRequestForSlot(slotId, 'hello');
+    expect(request?.filters).toEqual({ apps: [], kb: ['kb-1'] });
+  });
+
+  it('in agent mode omits agentStreamTools when nothing is narrowed (server falls back to the whole project set)', () => {
+    useChatStore.getState().setProjectScope(makeScope());
+    useChatStore.setState({
+      settings: { ...useChatStore.getState().settings, queryMode: 'agent' },
+      universalAgentToolCatalogFullNames: ['x:other.tool'],
+      universalAgentStreamTools: ['x:other.tool'],
+    });
+    const slotId = useChatStore.getState().createSlot(null);
+    const request = buildStreamChatRequestForSlot(slotId, 'hello');
+    expect(request).not.toHaveProperty('agentStreamTools');
+  });
+
+  it('in agent mode sends the narrowed project tools as bare fullNames, ignoring the org-wide selection', () => {
+    useChatStore.getState().setProjectScope(
+      makeScope({ toolCatalogFullNames: ['i1:slack.send', 'i1:slack.read'] })
+    );
+    useChatStore.getState().setProjectStreamTools(['i1:slack.read']);
+    useChatStore.setState({
+      settings: { ...useChatStore.getState().settings, queryMode: 'agent' },
+      universalAgentStreamTools: ['x:other.tool'],
+    });
+    const slotId = useChatStore.getState().createSlot(null);
+    const request = buildStreamChatRequestForSlot(slotId, 'hello');
+    expect(request?.agentStreamTools).toEqual(['slack.read']);
+  });
+
+  it('ignores project scope for an agent-scoped slot', () => {
+    useChatStore.getState().setProjectScope(makeScope());
+    useChatStore.setState({ agentKnowledgeDefaults: { apps: ['agent-app'], kb: [] } });
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.getState().updateSlot(slotId, { threadAgentId: 'a1' });
+    const request = buildStreamChatRequestForSlot(slotId, 'hello');
+    expect(request?.filters).toEqual({ apps: ['agent-app'], kb: [] });
   });
 });

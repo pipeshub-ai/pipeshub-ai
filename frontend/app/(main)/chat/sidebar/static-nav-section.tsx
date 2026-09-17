@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Flex } from '@radix-ui/themes';
+import { Badge, Flex } from '@radix-ui/themes';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { KBD_BADGE_PADDING, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
@@ -144,7 +144,22 @@ export function StaticNavSection() {
       {!isMobile && projectsEnabled && (
         <SidebarItem
           icon={<MaterialIcon name={PROJECTS_NAV_ITEM.icon} size={ICON_SIZE_DEFAULT} />}
-          label={t(PROJECTS_NAV_ITEM.labelKey)}
+          label={
+            <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
+              <span
+                style={{
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {t(PROJECTS_NAV_ITEM.labelKey)}
+              </span>
+              <Badge size="1" color="amber" variant="soft" style={{ flexShrink: 0 }}>
+                {t('nav.beta', { defaultValue: 'Beta' })}
+              </Badge>
+            </Flex>
+          }
           href={PROJECTS_NAV_ITEM.route}
         />
       )}

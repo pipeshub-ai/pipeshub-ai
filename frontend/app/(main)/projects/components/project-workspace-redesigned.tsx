@@ -9,18 +9,20 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ShareSidebar } from '@/app/components/share';
 import { ChatInput } from '@/chat/components/chat-input';
 import { ChatApi } from '@/chat/api';
-import type { AttachmentRef } from '@/chat/types';
+import type { AttachmentRef, AppliedFilters } from '@/chat/types';
 import { ProjectApi } from '@/chat/project-api';
-import type { ProjectDetail } from '@/chat/project-types';
+import type { ProjectDetail, ProjectKnowledgeScope } from '@/chat/project-types';
 import { createProjectShareAdapter } from '@/chat/share-adapter';
 import { useChatStore, ASSISTANT_CTX } from '@/chat/store';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { chatContentColumnStyle } from '@/chat/constants';
+import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { toast } from '@/lib/store/toast-store';
 import { DeleteProjectDialog } from '@/chat/sidebar/dialogs';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 import { ProjectSettingsPanel } from './settings-panel';
 
 interface ProjectWorkspaceRedesignedProps {
@@ -33,7 +35,7 @@ interface ProjectWorkspaceRedesignedProps {
  * new-chat hero) that hands off to `/chat` via the pending-chat buffer.
  * Recent conversations live in the left app sidebar
  * (`ProjectConversationsSidebar`), not in this body. Right column has
- * collapsible Instructions/Files/Tools & MCP/Members cards.
+ * collapsible Instructions/Files/Connectors/Tools & MCP/Members cards.
  */
 export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesignedProps) {
   const router = useRouter();
@@ -45,7 +47,21 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   const removeProjectFromList = useChatStore((s) => s.removeProjectFromList);
   const upsertProjectInList = useChatStore((s) => s.upsertProjectInList);
 
-  const [project, setProject] = useState<ProjectDetail | null>(null);
+  const [project, setProjectRaw] = useState<ProjectDetail | null>(null);
+
+  /** Setter that preserves the computed `role` when the API response omits it. */
+  const setProject = useCallback(
+    (next: ProjectDetail | null | ((prev: ProjectDetail | null) => ProjectDetail | null)) => {
+      setProjectRaw((prev) => {
+        const val = typeof next === 'function' ? next(prev) : next;
+        if (val && !val.role && prev?.role) {
+          return { ...val, role: prev.role };
+        }
+        return val;
+      });
+    },
+    [],
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [conversationTotal, setConversationTotal] = useState(0);
@@ -86,6 +102,10 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     load();
   }, [load]);
 
+  // Every settings edit below calls `setProject(...)`, so the composer's
+  // allow-list follows the right-hand cards live.
+  useProjectScopeHydration(project);
+
   // Preload org models so the composer's model pill isn't empty on a fresh
   // session that never visited /chat first.
   useEffect(() => {
@@ -119,6 +139,25 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   const handleKbCreated = useCallback((kbId: string) => {
     setProject((prev) => (prev ? { ...prev, linkedKnowledgeBaseId: kbId } : prev));
   }, []);
+
+  const handleConnectorsChange = useCallback(
+    async (patch: { knowledgeScope: ProjectKnowledgeScope; appliedFilters: AppliedFilters }) => {
+      if (!project) return;
+      const previousScope = project.knowledgeScope;
+      const previousFilters = project.appliedFilters;
+      setProject({ ...project, knowledgeScope: patch.knowledgeScope, appliedFilters: patch.appliedFilters });
+      try {
+        const updated = await ProjectApi.update(projectId, patch);
+        setProject(updated);
+      } catch {
+        setProject((prev) =>
+          prev ? { ...prev, knowledgeScope: previousScope, appliedFilters: previousFilters } : prev,
+        );
+        toast.error(t('chat.projects.workspace.updateConnectorsFailed'));
+      }
+    },
+    [project, projectId, t],
+  );
 
   const handleToolsChange = useCallback(
     async (tools: string[]) => {
@@ -249,6 +288,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
         }}
       >
         <Flex align="center" gap="3" style={{ minWidth: 0 }}>
+          <SidebarExpandButton placement="inline" />
           <button
             type="button"
             aria-label={t('projects.backToAllProjects')}
@@ -401,6 +441,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
             }}
             onSaveInstructions={() => void handleSaveInstructions()}
             onKbCreated={handleKbCreated}
+            onConnectorsChange={(patch) => void handleConnectorsChange(patch)}
             onToolsChange={(tools) => void handleToolsChange(tools)}
             onOpenShare={() => setShareOpen(true)}
           />

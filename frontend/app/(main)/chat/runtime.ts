@@ -35,6 +35,7 @@ import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
+import { bareToolFullName } from './tool-groups';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
 const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
@@ -186,25 +187,27 @@ export function buildStreamChatRequestForSlot(
 
   const isUniversalAgentMode =
     !effectiveAgentId && currentState.settings.queryMode === 'agent';
+  // Project context is hydrated from the URL/workspace (`useProjectScopeHydration`), the same
+  // way `agentId` is read from the URL above. The server re-applies the allow-list regardless.
+  const projectScope = effectiveAgentId ? null : currentState.projectScope;
 
   const toolsSel = effectiveAgentId
     ? currentState.agentStreamTools
     : isUniversalAgentMode
-      ? currentState.universalAgentStreamTools
+      ? projectScope
+        ? currentState.projectStreamTools
+        : currentState.universalAgentStreamTools
       : null;
 
   const toolCatalog = effectiveAgentId
     ? currentState.agentToolCatalogFullNames
-    : currentState.universalAgentToolCatalogFullNames;
-
-  const stripInstancePrefix = (key: string) => {
-    const colon = key.indexOf(':');
-    return colon >= 0 ? key.slice(colon + 1) : key;
-  };
+    : projectScope
+      ? projectScope.toolCatalogFullNames
+      : currentState.universalAgentToolCatalogFullNames;
 
   const streamTools =
     effectiveAgentId || isUniversalAgentMode
-      ? [...new Set((toolsSel === null ? [...toolCatalog] : [...toolsSel]).map(stripInstancePrefix))]
+      ? [...new Set((toolsSel === null ? [...toolCatalog] : [...toolsSel]).map(bareToolFullName))]
       : [];
 
   const modelCtxKey = ctxKeyFromAgent(effectiveAgentId ?? null);
@@ -233,16 +236,25 @@ export function buildStreamChatRequestForSlot(
   const resolvedAgentKnowledge =
     isAgent && knowledgeScope === null ? knowledgeDefaults : knowledgeScope;
 
-  const resolvedFilters = isAgent
+  const isWebSearch = currentState.settings.queryMode === 'web-search';
+  const resolvedScopedKnowledge = isAgent
+    ? resolvedAgentKnowledge
+    : projectScope && !isWebSearch
+      ? (currentState.projectKnowledgeScope ?? projectScope.knowledgeDefaults)
+      : null;
+
+  const resolvedFilters = resolvedScopedKnowledge
     ? {
-        apps: (resolvedAgentKnowledge?.apps ?? []).filter(
+        apps: resolvedScopedKnowledge.apps.filter(
           (id): id is string => typeof id === 'string' && id.trim().length > 0
         ),
-        kb: (resolvedAgentKnowledge?.kb ?? []).filter(
+        kb: resolvedScopedKnowledge.kb.filter(
           (id): id is string => typeof id === 'string' && id.trim().length > 0
         ),
       }
-    : buildAssistantApiFilters(assistantFilters);
+    : isAgent
+      ? { apps: [], kb: [] }
+      : buildAssistantApiFilters(assistantFilters);
 
   const metaCache = currentState.collectionMetaCache;
   const buildAppliedFilterNodes = (ids: string[]): AppliedFilterNode[] =>

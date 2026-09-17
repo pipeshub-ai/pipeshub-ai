@@ -75,16 +75,16 @@ describe('project-context', () => {
         payload,
         makeProject({ knowledgeScope: { apps: ['app-1', 'app-2'] } }),
       )
-      expect(payload.filters).to.deep.equal({ apps: ['app-1'] })
+      expect(payload.filters).to.deep.equal({ apps: ['app-1'], kb: [] })
     })
 
-    it('drops apps entirely when the request narrows to ids outside the project scope', () => {
+    it('sends apps: [] when the request narrows to ids outside the project scope', () => {
       const payload: Record<string, unknown> = { filters: { apps: ['outside-app'] } }
       applyProjectScope(
         payload,
         makeProject({ knowledgeScope: { apps: ['app-1'] } }),
       )
-      expect(payload.filters).to.deep.equal({})
+      expect(payload.filters).to.deep.equal({ apps: [], kb: [] })
     })
 
     it('adds the linked hidden Collection id into filters.kb alongside any explicitly scoped kb ids', () => {
@@ -96,7 +96,7 @@ describe('project-context', () => {
           linkedKnowledgeBaseId: 'hidden-kb-1',
         }),
       )
-      expect(payload.filters).to.deep.equal({ kb: ['kb-1', 'hidden-kb-1'] })
+      expect(payload.filters).to.deep.equal({ apps: [], kb: ['kb-1', 'hidden-kb-1'] })
     })
 
     it('always includes the linked hidden Collection id even when the request narrowed kb to a different subset', () => {
@@ -108,7 +108,7 @@ describe('project-context', () => {
           linkedKnowledgeBaseId: 'hidden-kb-1',
         }),
       )
-      expect(payload.filters).to.deep.equal({ kb: ['kb-1', 'hidden-kb-1'] })
+      expect(payload.filters).to.deep.equal({ apps: [], kb: ['kb-1', 'hidden-kb-1'] })
     })
 
     it('de-duplicates the linked hidden Collection id when it is already in knowledgeScope.kb', () => {
@@ -120,25 +120,68 @@ describe('project-context', () => {
           linkedKnowledgeBaseId: 'hidden-kb-1',
         }),
       )
-      expect(payload.filters).to.deep.equal({ kb: ['hidden-kb-1'] })
+      expect(payload.filters).to.deep.equal({ apps: [], kb: ['hidden-kb-1'] })
     })
 
     it('preserves non-apps/kb filter keys the request carried (e.g. metadata filters)', () => {
       const payload: Record<string, unknown> = { filters: { departments: ['eng'] } }
       applyProjectScope(payload, makeProject({ knowledgeScope: { apps: ['app-1'] } }))
-      expect(payload.filters).to.deep.equal({ departments: ['eng'], apps: ['app-1'] })
+      expect(payload.filters).to.deep.equal({ departments: ['eng'], apps: ['app-1'], kb: [] })
     })
 
-    it('produces empty filters (never "search everything") when the project has no scope at all', () => {
+    it('produces empty apps/kb (never "search everything") when the project has no scope at all', () => {
       const payload: Record<string, unknown> = { filters: { apps: ['request-app'] } }
       applyProjectScope(payload, makeProject())
-      expect(payload.filters).to.deep.equal({})
+      expect(payload.filters).to.deep.equal({ apps: [], kb: [] })
     })
 
     it('always sets strictScope: true so an empty scope stays empty at retrieval time', () => {
       const payload: Record<string, unknown> = {}
       applyProjectScope(payload, makeProject())
       expect(payload.strictScope).to.equal(true)
+    })
+
+    it('includes the linked KB even when no connectors are selected (files-only project)', () => {
+      const payload: Record<string, unknown> = {}
+      applyProjectScope(
+        payload,
+        makeProject({ linkedKnowledgeBaseId: 'hidden-kb-1' }),
+      )
+      expect(payload.filters).to.deep.equal({ apps: [], kb: ['hidden-kb-1'] })
+      expect(payload.strictScope).to.equal(true)
+    })
+
+    it('includes the linked KB after a file re-upload (no connectors, no explicit kb scope)', () => {
+      const payload: Record<string, unknown> = { filters: { apps: [], kb: [] } }
+      applyProjectScope(
+        payload,
+        makeProject({ linkedKnowledgeBaseId: 'hidden-kb-1' }),
+      )
+      expect(payload.filters).to.deep.equal({ apps: [], kb: ['hidden-kb-1'] })
+    })
+
+    it('includes the linked KB alongside a selected connector', () => {
+      const payload: Record<string, unknown> = {}
+      applyProjectScope(
+        payload,
+        makeProject({
+          knowledgeScope: { apps: ['rag-wiki'] },
+          linkedKnowledgeBaseId: 'hidden-kb-1',
+        }),
+      )
+      expect(payload.filters).to.deep.equal({ apps: ['rag-wiki'], kb: ['hidden-kb-1'] })
+    })
+
+    it('never drops the linked KB even when the request narrows kb to an empty set', () => {
+      const payload: Record<string, unknown> = { filters: { kb: ['unrelated-kb'] } }
+      applyProjectScope(
+        payload,
+        makeProject({
+          knowledgeScope: { kb: [] },
+          linkedKnowledgeBaseId: 'hidden-kb-1',
+        }),
+      )
+      expect((payload.filters as any).kb).to.deep.equal(['hidden-kb-1'])
     })
 
     it('defaults tools to the whole project tool list when the request carried none', () => {
@@ -163,6 +206,25 @@ describe('project-context', () => {
       const payload: Record<string, unknown> = {}
       applyProjectScope(payload, makeProject({ tools: [] }))
       expect(payload.tools).to.deep.equal([])
+    })
+
+    // The composer sends bare fullNames; older projects persisted `instanceId:fullName`.
+    it('matches a bare request tool against a legacy instance-prefixed project tool', () => {
+      const payload: Record<string, unknown> = { tools: ['slack.send_message'] }
+      applyProjectScope(payload, makeProject({ tools: ['inst-1:slack.send_message', 'inst-2:jira.create_issue'] }))
+      expect(payload.tools).to.deep.equal(['slack.send_message'])
+    })
+
+    it('emits bare fullNames (deduped) when falling back to a legacy prefixed project tool list', () => {
+      const payload: Record<string, unknown> = {}
+      applyProjectScope(payload, makeProject({ tools: ['inst-1:slack.send_message', 'inst-2:slack.send_message'] }))
+      expect(payload.tools).to.deep.equal(['slack.send_message'])
+    })
+
+    it('strips an instance prefix off request tools before intersecting', () => {
+      const payload: Record<string, unknown> = { tools: ['inst-9:slack.send_message', 'inst-9:outside.tool'] }
+      applyProjectScope(payload, makeProject({ tools: ['slack.send_message'] }))
+      expect(payload.tools).to.deep.equal(['slack.send_message'])
     })
   })
 

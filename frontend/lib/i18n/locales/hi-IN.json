@@ -214,6 +214,7 @@
     "all": "सभी",
     "agents": "एजेंट",
     "projects": "प्रोजेक्ट्स",
+    "beta": "बीटा",
     "searchChats": "चैट खोजें",
     "inbox": "इनबॉक्स",
     "notifications": "सूचनाएँ"
@@ -542,6 +543,13 @@
       "resetDefaults": "डिफ़ॉल्ट पर रीसेट करें",
       "knowledgeScopeClearedWarning": "इस रन के लिए कोई ज्ञान स्रोत शामिल नहीं हैं, इसलिए एजेंट आपके कनेक्टर या संग्रह में उत्तर खोजेगा नहीं।"
     },
+    "projectResources": {
+      "noConnectors": "इस प्रोजेक्ट के लिए कोई कनेक्टर सक्षम नहीं है।",
+      "noCollections": "इस प्रोजेक्ट के लिए कोई संग्रह सक्षम नहीं है।",
+      "noActions": "इस प्रोजेक्ट के लिए कोई क्रिया (टूलसेट) सक्षम नहीं है।",
+      "noMcpServers": "इस प्रोजेक्ट के लिए कोई MCP सर्वर सक्षम नहीं है।",
+      "resetDefaults": "प्रोजेक्ट डिफ़ॉल्ट पर रीसेट करें"
+    },
     "aiModelsTooltip": "AI मॉडल",
     "attachmentTooltip": "फ़ाइलें संलग्न करें",
     "micTooltip": "वॉइस इनपुट",
@@ -836,6 +844,11 @@
         "uploading": "अपलोड हो रहा है…",
         "noFiles": "अभी तक कोई फ़ाइल नहीं",
         "removeFile": "फ़ाइल हटाएँ",
+        "connectorsTitle": "कनेक्टर",
+        "connectorsSubtitle": "इस प्रोजेक्ट की चैट केवल इन कनेक्टरों में खोजती है।",
+        "noConnectorsAvailable": "जोड़ने के लिए अभी तक कोई कनेक्टर नहीं है।",
+        "failedToLoadConnectors": "कनेक्टर लोड करने में विफल",
+        "updateConnectorsFailed": "कनेक्टर अपडेट करने में विफल",
         "toolsTitle": "टूल्स और MCP",
         "noToolsAvailable": "जोड़ने के लिए अभी तक कोई प्रमाणित एक्शन या MCP सर्वर नहीं है।",
         "knowledgeBaseUnavailable": "इस प्रोजेक्ट का फ़ाइल संग्रहण तैयार नहीं किया जा सका",
@@ -851,7 +864,9 @@
         "updateToolsFailed": "टूल अपडेट करने में विफल",
         "updatePinFailed": "पिन स्थिति अपडेट करने में विफल",
         "updateArchiveFailed": "संग्रह स्थिति अपडेट करने में विफल",
-        "shareRefreshFailed": "साझाकरण विवरण रीफ़्रेश करने में विफल"
+        "shareRefreshFailed": "साझाकरण विवरण रीफ़्रेश करने में विफल",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
       },
       "moveDialog": {
         "title": "प्रोजेक्ट में ले जाएँ",

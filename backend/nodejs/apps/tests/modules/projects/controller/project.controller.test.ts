@@ -112,7 +112,8 @@ describe('project.controller', () => {
 
       expect(next.called).to.be.false
       expect(res.status.calledWith(201)).to.be.true
-      expect(res.json.calledWith({ project })).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(body.project).to.deep.include({ ...project.toObject(), role: 'owner' })
     })
 
     it('forwards service errors to next', async () => {
@@ -217,10 +218,11 @@ describe('project.controller', () => {
   })
 
   describe('updateProject', () => {
-    it('applies the patch and returns the updated project', async () => {
+    it('applies the patch and returns the updated project with role', async () => {
       stubNoTeamMemberships()
       const updated = makeProjectDoc({ name: 'Renamed' })
       sinon.stub(ProjectService, 'update').resolves(updated)
+      sinon.stub(ProjectService, 'computeRole').returns('editor')
 
       const req = createMockRequest({ params: { projectId: PROJECT_ID }, body: { name: 'Renamed' } })
       const res = createMockResponse()
@@ -229,7 +231,8 @@ describe('project.controller', () => {
       await updateProject(createMockAppConfig())(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.calledWith({ project: updated })).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(body.project).to.deep.include({ ...updated.toObject(), role: 'editor' })
     })
 
     it('grants the org team KB permission when visibility changes to org', async () => {
@@ -347,10 +350,11 @@ describe('project.controller', () => {
   })
 
   describe('archive / unarchive / pin / unpin', () => {
-    it('archiveProject calls setArchived(true)', async () => {
+    it('archiveProject calls setArchived(true) and includes role', async () => {
       stubNoTeamMemberships()
       const project = makeProjectDoc({ isArchived: true })
       const stub = sinon.stub(ProjectService, 'setArchived').resolves(project)
+      sinon.stub(ProjectService, 'computeRole').returns('owner')
 
       const req = createMockRequest({ params: { projectId: PROJECT_ID } })
       const res = createMockResponse()
@@ -359,7 +363,8 @@ describe('project.controller', () => {
       await archiveProject(createMockAppConfig())(req, res, next)
 
       expect(stub.calledWith(VALID_OID2, VALID_OID, PROJECT_ID, true)).to.be.true
-      expect(res.json.calledWith({ project })).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(body.project).to.deep.include({ ...project.toObject(), role: 'owner' })
     })
 
     it('unarchiveProject calls setArchived(false)', async () => {

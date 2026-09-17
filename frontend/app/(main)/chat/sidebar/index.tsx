@@ -84,14 +84,10 @@ function ChatSidebarRoot() {
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
   // A thread can't be scoped to both an agent and a project — agentId wins.
   const rawProjectId = searchParams.get('projectId');
-  // The project-scoped sidebar only applies once inside an actual conversation
-  // (`conversationId` present). The pre-conversation workspace now lives at
-  // `/projects?projectId=…`; `/chat/?projectId=…` with no conversationId
-  // redirects there (see chat/page.tsx), so this stays the main sidebar for
-  // that brief transition instead of flashing the project chat list.
-  const conversationId = searchParams.get('conversationId');
+  // `/chat/?projectId=…` is both the new-chat resting state and the
+  // in-conversation state. Show the project sidebar in either case.
   const projectId =
-    !agentId && projectsEnabled && rawProjectId?.trim() && conversationId?.trim()
+    !agentId && projectsEnabled && rawProjectId?.trim()
       ? rawProjectId
       : null;
   const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);

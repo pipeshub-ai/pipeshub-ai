@@ -213,6 +213,7 @@
     "all": "Todos",
     "agents": "Agentes",
     "projects": "Proyectos",
+    "beta": "Beta",
     "searchChats": "Buscar chats",
     "inbox": "Bandeja de entrada",
     "notifications": "Notificaciones"
@@ -541,6 +542,13 @@
       "resetDefaults": "Restablecer valores predeterminados",
       "knowledgeScopeClearedWarning": "No hay fuentes de conocimiento incluidas en esta ejecución, por lo que el agente no buscará en sus conectores ni en sus colecciones para responder."
     },
+    "projectResources": {
+      "noConnectors": "No hay conectores habilitados para este proyecto.",
+      "noCollections": "No hay colecciones habilitadas para este proyecto.",
+      "noActions": "No hay acciones (conjuntos de herramientas) habilitadas para este proyecto.",
+      "noMcpServers": "No hay servidores MCP habilitados para este proyecto.",
+      "resetDefaults": "Restablecer a los valores del proyecto"
+    },
     "aiModelsTooltip": "Modelos de IA",
     "attachmentTooltip": "Adjuntar archivos",
     "micTooltip": "Entrada de voz",
@@ -835,6 +843,11 @@
         "uploading": "Subiendo…",
         "noFiles": "Aún no hay archivos",
         "removeFile": "Eliminar archivo",
+        "connectorsTitle": "Conectores",
+        "connectorsSubtitle": "Los chats de este proyecto buscan solo en estos conectores.",
+        "noConnectorsAvailable": "Aún no hay conectores para añadir.",
+        "failedToLoadConnectors": "No se pudieron cargar los conectores",
+        "updateConnectorsFailed": "No se pudieron actualizar los conectores",
         "toolsTitle": "Herramientas y MCP",
         "noToolsAvailable": "Aún no hay acciones autenticadas ni servidores MCP para añadir.",
         "knowledgeBaseUnavailable": "No se pudo preparar el almacenamiento de archivos de este proyecto",
@@ -850,7 +863,9 @@
         "updateToolsFailed": "No se pudieron actualizar las herramientas",
         "updatePinFailed": "No se pudo actualizar el estado de fijado",
         "updateArchiveFailed": "No se pudo actualizar el estado de archivado",
-        "shareRefreshFailed": "No se pudieron actualizar los detalles de uso compartido"
+        "shareRefreshFailed": "No se pudieron actualizar los detalles de uso compartido",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
       },
       "moveDialog": {
         "title": "Mover a proyecto",

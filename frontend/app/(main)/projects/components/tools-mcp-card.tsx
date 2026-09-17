@@ -5,57 +5,30 @@ import { Checkbox, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
-import { ToolsetsApi, MAX_TOOLSETS_LIST_LIMIT } from '@/app/(main)/toolsets/api';
-import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
-import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
-import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
+import { fetchToolCatalog } from '@/chat/hooks/use-project-scope-hydration';
+import { bareToolFullName, type CatalogToolGroupRow } from '@/chat/tool-groups';
 import { useFeatureFlagsStore, selectMcpEnabled } from '@/lib/store/feature-flags-store';
 
 interface ToolGroupRow {
   key: string;
   label: string;
+  /** Bare `fullName`s — the wire format `applyProjectScope` intersects against. */
   fullNames: string[];
   icon: React.ReactNode;
 }
 
-/**
- * Internal keys use `${instanceId}:${rawFullName}` — same discriminator
- * scheme `UniversalAgentResourcesPanel` uses, so a project's `tools` list is
- * wire-compatible with what the composer sends as `agentStreamTools`.
- */
-function buildToolsetGroups(toolsets: BuilderSidebarToolset[]): ToolGroupRow[] {
-  const groups: ToolGroupRow[] = [];
-  toolsets.forEach((ts, i) => {
-    const rawFullNames = (ts.tools || [])
-      .map((tool) => (typeof tool.fullName === 'string' ? tool.fullName.trim() : ''))
-      .filter(Boolean);
-    if (rawFullNames.length === 0) return;
-    const instanceId = (typeof ts.instanceId === 'string' && ts.instanceId.trim()) || `local-${i}`;
-    groups.push({
-      key: `toolset:${instanceId}`,
-      label: (ts.instanceName || ts.displayName || ts.name || 'Tools').trim(),
-      fullNames: rawFullNames.map((fn) => `${instanceId}:${fn}`),
-      icon: <ConnectorIcon type={resolveConnectorType(ts.toolsetType || ts.name || '')} size={16} />,
-    });
-  });
-  return groups;
-}
-
-function buildMcpGroups(instances: McpMyServerEntry[]): ToolGroupRow[] {
-  const groups: ToolGroupRow[] = [];
-  for (const entry of instances) {
-    const rawFullNames = (entry.tools || [])
-      .map((tool) => (typeof tool.namespacedName === 'string' ? tool.namespacedName.trim() : ''))
-      .filter(Boolean);
-    if (rawFullNames.length === 0) continue;
-    groups.push({
-      key: `mcp:${entry._id}`,
-      label: (entry.name || 'MCP Server').trim(),
-      fullNames: rawFullNames.map((fn) => `${entry._id}:${fn}`),
-      icon: <MaterialIcon name="hub" size={16} color="var(--gray-11)" />,
-    });
-  }
-  return groups;
+function toCardRows(groups: CatalogToolGroupRow[], kind: 'toolset' | 'mcp'): ToolGroupRow[] {
+  return groups.map((g) => ({
+    key: `${kind}:${g.instanceId}`,
+    label: g.label,
+    fullNames: Array.from(new Set(g.fullNames.map(bareToolFullName))),
+    icon:
+      kind === 'mcp' ? (
+        <MaterialIcon name="hub" size={16} color="var(--gray-11)" />
+      ) : (
+        <ConnectorIcon type={resolveConnectorType(g.toolsetSlug || g.label)} size={16} />
+      ),
+  }));
 }
 
 interface ToolsMcpCardProps {
@@ -65,12 +38,10 @@ interface ToolsMcpCardProps {
 }
 
 /**
- * Project Tools & MCP picker — flat, single-page fetch of the org's
- * authenticated toolsets (`GET /api/v1/toolsets/my-toolsets`) and MCP
- * servers (`GET /api/v1/mcp/my-mcp-servers`), the same catalog
- * `UniversalAgentResourcesPanel` uses for plain (non-agent) chat. A
- * simpler flat picker than that panel's paginated/searchable tabs —
- * appropriate scope for a settings card, not a composer's live scope switcher.
+ * Project Tools & MCP picker over the same catalog the composer uses
+ * (`fetchToolCatalog`). Persists bare `fullName`s: the server compares
+ * `project.tools` against the bare names on the wire, so a stored
+ * `instanceId:` prefix would never match.
  */
 export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardProps) {
   const { t } = useTranslation();
@@ -85,15 +56,9 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
       setIsLoading(true);
       setLoadError(false);
       try {
-        const [toolsetsRes, mcpRes] = await Promise.all([
-          ToolsetsApi.getAllMyToolsets({ limitPerPage: MAX_TOOLSETS_LIST_LIMIT, authStatus: 'authenticated' }),
-          mcpEnabled
-            ? McpServersApi.getMyMcpServers(true)
-            : Promise.resolve({ instances: [] as McpMyServerEntry[] }),
-        ]);
+        const catalog = await fetchToolCatalog(mcpEnabled);
         if (cancelled) return;
-        const authenticatedMcp = (mcpRes.instances || []).filter((entry) => entry.isAuthenticated);
-        setGroups([...buildToolsetGroups(toolsetsRes.toolsets), ...buildMcpGroups(authenticatedMcp)]);
+        setGroups([...toCardRows(catalog.toolGroups, 'toolset'), ...toCardRows(catalog.mcpGroups, 'mcp')]);
       } catch {
         if (!cancelled) setLoadError(true);
       } finally {
@@ -106,7 +71,8 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
     };
   }, [mcpEnabled]);
 
-  const selectedSet = useMemo(() => new Set(selectedTools), [selectedTools]);
+  // Tolerate legacy `instanceId:`-prefixed entries already persisted on a project.
+  const selectedSet = useMemo(() => new Set(selectedTools.map(bareToolFullName)), [selectedTools]);
 
   const groupCheckState = useCallback(
     (fullNames: string[]): boolean | 'indeterminate' => {
@@ -120,11 +86,11 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
 
   const toggleGroup = useCallback(
     (fullNames: string[], enabled: boolean) => {
-      const next = new Set(selectedTools);
+      const next = new Set(selectedSet);
       fullNames.forEach((fn) => (enabled ? next.add(fn) : next.delete(fn)));
       onChange(Array.from(next));
     },
-    [selectedTools, onChange],
+    [selectedSet, onChange],
   );
 
   if (isLoading) {

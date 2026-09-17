@@ -214,6 +214,7 @@
     "all": "Alle",
     "agents": "Agenten",
     "projects": "Projekte",
+    "beta": "Beta",
     "searchChats": "Chats suchen",
     "inbox": "Posteingang",
     "notifications": "Benachrichtigungen"
@@ -542,6 +543,13 @@
       "resetDefaults": "Auf Standard zurücksetzen",
       "knowledgeScopeClearedWarning": "Für diesen Durchlauf sind keine Wissensquellen ausgewählt — der Agent durchsucht Ihre Konnektoren und Sammlungen nicht nach Antworten."
     },
+    "projectResources": {
+      "noConnectors": "Für dieses Projekt sind keine Konnektoren aktiviert.",
+      "noCollections": "Für dieses Projekt sind keine Sammlungen aktiviert.",
+      "noActions": "Für dieses Projekt sind keine Aktionen (Toolsets) aktiviert.",
+      "noMcpServers": "Für dieses Projekt sind keine MCP-Server aktiviert.",
+      "resetDefaults": "Auf Projektstandard zurücksetzen"
+    },
     "aiModelsTooltip": "KI-Modelle",
     "attachmentTooltip": "Dateien anhängen",
     "micTooltip": "Spracheingabe",
@@ -836,6 +844,11 @@
         "uploading": "Wird hochgeladen…",
         "noFiles": "Noch keine Dateien",
         "removeFile": "Datei entfernen",
+        "connectorsTitle": "Konnektoren",
+        "connectorsSubtitle": "Chats in diesem Projekt durchsuchen nur diese Konnektoren.",
+        "noConnectorsAvailable": "Noch keine Konnektoren zum Hinzufügen.",
+        "failedToLoadConnectors": "Konnektoren konnten nicht geladen werden",
+        "updateConnectorsFailed": "Konnektoren konnten nicht aktualisiert werden",
         "toolsTitle": "Tools & MCP",
         "noToolsAvailable": "Noch keine authentifizierten Aktionen oder MCP-Server verfügbar.",
         "knowledgeBaseUnavailable": "Der Dateispeicher dieses Projekts konnte nicht vorbereitet werden",
@@ -851,7 +864,9 @@
         "updateToolsFailed": "Tools konnten nicht aktualisiert werden",
         "updatePinFailed": "Pin-Status konnte nicht aktualisiert werden",
         "updateArchiveFailed": "Archivierungsstatus konnte nicht aktualisiert werden",
-        "shareRefreshFailed": "Freigabedetails konnten nicht aktualisiert werden"
+        "shareRefreshFailed": "Freigabedetails konnten nicht aktualisiert werden",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
       },
       "moveDialog": {
         "title": "In Projekt verschieben",

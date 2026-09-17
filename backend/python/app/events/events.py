@@ -35,6 +35,7 @@ from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.events.dedup import DedupDecision, select_duplicate
 from app.services.base_client import ServiceUnavailableError
+from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingEvent,
@@ -957,6 +958,12 @@ class EventProcessor:
                 dedup_decision = await self._check_duplicate_by_md5(file_content, doc)
                 if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")
+                    await notify_record_indexed(
+                        connector_name=doc.get("connectorName"),
+                        connector_id=doc.get("connectorId"),
+                        external_record_group_id=doc.get("externalGroupId"),
+                        org_id=doc.get("orgId"),
+                    )
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return

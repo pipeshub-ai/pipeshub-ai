@@ -5,7 +5,9 @@ import { Box, Flex, Text, TextArea } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
-import type { ProjectDetail } from '@/chat/project-types';
+import type { AppliedFilters } from '@/chat/types';
+import type { ProjectDetail, ProjectKnowledgeScope } from '@/chat/project-types';
+import { ConnectorsCard } from './connectors-card';
 import { FilesCard } from './files-card';
 import { ToolsMcpCard } from './tools-mcp-card';
 
@@ -21,7 +23,7 @@ interface CollapsibleCardProps {
  * Right-panel card shell — collapsible section with a header row
  * (icon + title + optional action) and expandable body.
  */
-function CollapsibleCard({ icon, title, action, children, defaultExpanded = true }: CollapsibleCardProps) {
+function CollapsibleCard({ icon, title, action, children, defaultExpanded = false }: CollapsibleCardProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
   return (
@@ -79,6 +81,10 @@ export interface ProjectSettingsPanelProps {
   onSaveInstructions: () => void;
 
   onKbCreated: (kbId: string) => void;
+  onConnectorsChange: (patch: {
+    knowledgeScope: ProjectKnowledgeScope;
+    appliedFilters: AppliedFilters;
+  }) => void;
   onToolsChange: (tools: string[]) => void;
 
   onOpenShare: () => void;
@@ -86,7 +92,7 @@ export interface ProjectSettingsPanelProps {
 
 /**
  * Right-side settings panel for the redesigned project workspace —
- * collapsible cards (Instructions, Files, Tools & MCP, Members). State and
+ * collapsible cards (Instructions, Files, Connectors, Tools & MCP, Members). State and
  * mutation handlers are owned by the parent workspace component; this is
  * presentation only, except for the Files card, which owns its own KB
  * fetch/upload/delete lifecycle (see `FilesCard`).
@@ -103,6 +109,7 @@ export function ProjectSettingsPanel({
   onCancelEditInstructions,
   onSaveInstructions,
   onKbCreated,
+  onConnectorsChange,
   onToolsChange,
   onOpenShare,
 }: ProjectSettingsPanelProps) {
@@ -173,6 +180,21 @@ export function ProjectSettingsPanel({
           linkedKnowledgeBaseId={project.linkedKnowledgeBaseId}
           canEdit={canEdit}
           onKbCreated={onKbCreated}
+        />
+      </CollapsibleCard>
+
+      {/* Connectors (knowledgeScope.apps — indexed sources, not action toolsets) */}
+      <CollapsibleCard
+        icon="hub"
+        title={t('chat.projects.workspace.connectorsTitle', { defaultValue: 'Connectors' })}
+      >
+        <ConnectorsCard
+          selectedAppIds={project.knowledgeScope?.apps ?? []}
+          knowledgeScopeKb={project.knowledgeScope?.kb ?? []}
+          appliedFiltersKb={project.appliedFilters?.kb ?? []}
+          previousAppliedApps={project.appliedFilters?.apps ?? []}
+          canEdit={canEdit}
+          onChange={onConnectorsChange}
         />
       </CollapsibleCard>
 

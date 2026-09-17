@@ -80,13 +80,8 @@ export function CreateProjectDialog({ open, onOpenChange, onCreated }: CreatePro
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
-      {open && (
-        <Box
-          style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(28, 32, 36, 0.5)', zIndex: 999 }}
-        />
-      )}
       <Dialog.Content
-        style={{ maxWidth: '28rem', width: '100%', padding: 'var(--space-5)', zIndex: 1000 }}
+        style={{ maxWidth: '28rem', width: '100%', padding: 'var(--space-5)' }}
         onInteractOutside={(e) => e.preventDefault()}
       >
         <VisuallyHidden>

@@ -30,8 +30,9 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { Flex, Box, Text, Avatar, Tooltip, IconButton } from '@radix-ui/themes';
+import { Flex, Box, Text, Avatar, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { FilePreviewInlinePanel, FilePreviewFullscreen } from '@/app/components/file-preview';
 import { ShareSidebar, ShareHeaderGroup } from '@/app/components/share';
@@ -53,6 +54,9 @@ import {
 } from './constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
+import { ProjectApi } from '@/chat/project-api';
+import type { ProjectDetail } from '@/chat/project-types';
+import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -185,7 +189,6 @@ function ChatContent() {
 
   // Nav sidebar collapse state — used to show the expand button when collapsed
   const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed);
-  const setNavCollapsed = useSidebarWidthStore((s) => s.setNavCollapsed);
 
   // Slot-scoped state for rendering decisions.
   // CRITICAL: select individual PRIMITIVE fields — never select the full
@@ -865,20 +868,33 @@ function ChatContent() {
     });
   };
 
-  // ── Redirect bare project URLs to the project workspace ────────────
-  // `/chat/?projectId=…` with no conversationId is no longer a resting
-  // state — the pre-conversation workspace (composer, instructions, files,
-  // members) lives at `/projects?projectId=…` now. This must run BEFORE the
-  // pending-chat-consumption effect below (source order = execution order
-  // for effects declared in the same component): when the project workspace
-  // composer sends a message, it stashes it via `usePendingChatStore` and
-  // pushes here — that pending buffer is the signal to skip the redirect and
-  // let the next effect auto-send it instead.
+  // ── Project new-chat resting state ──────────────────────────────────
+  // `/chat/?projectId=…` with no conversationId is the project's new-chat
+  // view. The composer lives in `ChatInputWrapper` (same as normal chat)
+  // and sends in-place — no navigation, no page transition. The project
+  // settings workspace (Instructions, Files, Tools, Members) is at
+  // `/projects?projectId=…` and linked from the sidebar.
+  //
+  // The loaded detail also drives the composer's allow-list (connectors,
+  // collections, tools) via `useProjectScopeHydration`. `projectsVersion`
+  // bumps whenever project settings are saved anywhere in the app, so the
+  // composer picks up changes without a reload.
+  const projectsVersion = useChatStore((s) => s.projectsVersion);
+  const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
   useEffect(() => {
-    if (projectId && !conversationId && !usePendingChatStore.getState().pending) {
-      router.replace(`/projects/?projectId=${encodeURIComponent(projectId)}`);
-    }
-  }, [projectId, conversationId, router]);
+    if (!projectId) { setProjectDetail(null); return; }
+    let cancelled = false;
+    ProjectApi.get(projectId).then((p) => {
+      if (!cancelled) setProjectDetail(p);
+    }).catch(() => {
+      if (!cancelled) setProjectDetail(null);
+      toast.error(t('chat.projects.workspace.failedToLoad'));
+    });
+    return () => { cancelled = true; };
+  }, [projectId, projectsVersion, t]);
+  useProjectScopeHydration(projectDetail);
+  const projectName = projectDetail?.name ?? null;
+  const projectColor = projectDetail?.color ?? null;
 
   // ── Consume pending chat context from widget ──────────────────────
   const pendingConsumedRef = useRef(false);
@@ -1220,32 +1236,9 @@ function ChatContent() {
   // ── Chat column body (shared between split-pane and full-width modes) ──────
   const chatColumnBody = (
     <>
-      {/* Sidebar expand button — desktop only, shown when nav is collapsed.
-          Positioned at top-left of the chat column (position:relative parent)
-          so it never overlaps the agent header or share buttons on the right. */}
-      {!isMobile && isNavCollapsed && (
-        <Box
-          style={{
-            position: 'absolute',
-            top: 10,
-            left: 12,
-            zIndex: 25,
-          }}
-        >
-          <Tooltip content="Expand sidebar" side="right">
-            <IconButton
-              variant="ghost"
-              color="gray"
-              size="2"
-              aria-label="Expand sidebar"
-              onClick={() => setNavCollapsed(false)}
-              style={{ margin: 0 }}
-            >
-              <MaterialIcon name="menu" size={20} color="var(--gray-11)" />
-            </IconButton>
-          </Tooltip>
-        </Box>
-      )}
+      {/* Top-left of the chat column (position:relative parent) so it never
+          overlaps the agent header or share buttons on the right. */}
+      <SidebarExpandButton />
 
       {historyAndShareAgentId && (
         <AgentChatHeader
@@ -1363,31 +1356,59 @@ function ChatContent() {
           >
             <Box style={{ ...chatContentColumnStyle(isMobile) }}>
               <Flex direction="column" align="center" style={{ width: '100%' }}>
-                <Box style={{ marginBottom: 'var(--space-4)' }}>
-                  <LottieLoader
-                    autoplay
-                    loop
-                    style={{ width: isMobile ? 64 : 80, height: isMobile ? 64 : 80 }}
-                  />
-                </Box>
-                <Box
-                  style={{
-                    textAlign: 'center',
-                    marginBottom: isMobile ? 'var(--space-5)' : 'var(--space-6)',
-                    fontFamily: 'Manrope, sans-serif',
-                  }}
-                >
-                  <Text
-                    size="4"
-                    weight="medium"
-                    style={{ color: 'var(--slate-12)', display: 'block', marginBottom: 'var(--space-1)' }}
-                  >
-                    {t('chat.heyUser', { name: greetingName || t('chat.heyUserDefaultName') })}
-                  </Text>
-                  <Text size="4" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                    {t('chat.greeting')}
-                  </Text>
-                </Box>
+                {projectId ? (
+                  <>
+                    <Flex
+                      align="center"
+                      gap="2"
+                      style={{ marginBottom: 'var(--space-4)', cursor: 'pointer' }}
+                      onClick={() => router.push(`/projects/?projectId=${encodeURIComponent(projectId)}`)}
+                    >
+                      <MaterialIcon
+                        name="folder"
+                        size={28}
+                        color={projectColor || 'var(--accent-9)'}
+                      />
+                      <Text size="5" weight="bold" style={{ color: 'var(--slate-12)' }}>
+                        {projectName ?? '…'}
+                      </Text>
+                      <MaterialIcon name="settings" size={16} color="var(--slate-9)" />
+                    </Flex>
+                    <Box style={{ textAlign: 'center', marginBottom: isMobile ? 'var(--space-5)' : 'var(--space-6)', fontFamily: 'Manrope, sans-serif' }}>
+                      <Text size="3" style={{ color: 'var(--slate-10)' }}>
+                        {t('chat.projects.newChatInProject')}
+                      </Text>
+                    </Box>
+                  </>
+                ) : (
+                  <>
+                    <Box style={{ marginBottom: 'var(--space-4)' }}>
+                      <LottieLoader
+                        autoplay
+                        loop
+                        style={{ width: isMobile ? 64 : 80, height: isMobile ? 64 : 80 }}
+                      />
+                    </Box>
+                    <Box
+                      style={{
+                        textAlign: 'center',
+                        marginBottom: isMobile ? 'var(--space-5)' : 'var(--space-6)',
+                        fontFamily: 'Manrope, sans-serif',
+                      }}
+                    >
+                      <Text
+                        size="4"
+                        weight="medium"
+                        style={{ color: 'var(--slate-12)', display: 'block', marginBottom: 'var(--space-1)' }}
+                      >
+                        {t('chat.heyUser', { name: greetingName || t('chat.heyUserDefaultName') })}
+                      </Text>
+                      <Text size="4" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                        {t('chat.greeting')}
+                      </Text>
+                    </Box>
+                  </>
+                )}
                 {isInputCentered && showChatInput && (
                   <Box style={{ width: '100%' }}>
                     <ChatInputWrapper />

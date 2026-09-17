@@ -5,7 +5,7 @@
  *  - `/projects` renders the project list (grid of cards) and the "Projects"
  *    nav item is visible in the chat sidebar.
  *  - `/projects?projectId=…` renders the redesigned two-column workspace
- *    (header, centered composer, and the Instructions/Files/Tools & MCP/
+ *    (header, centered composer, and the Instructions/Files/Connectors/Tools & MCP/
  *    Members settings panel) with project details. Recent conversations
  *    render in the left sidebar (`ProjectConversationsSidebar`), not here.
  *  - Sending a message from the workspace composer hands off to `/chat` via
@@ -249,6 +249,8 @@ test.describe('Projects — nav + list + workspace (mocked backend)', () => {
   test('"Projects" nav item is visible and navigates to /projects', async ({ page }) => {
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
+    await expect(page.getByText('Projects', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('Beta', { exact: true }).first()).toBeVisible();
     await page.getByText('Projects', { exact: true }).first().click();
     await expect(page).toHaveURL(/\/projects\/?$/, { timeout: 10_000 });
   });

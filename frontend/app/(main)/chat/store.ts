@@ -85,6 +85,28 @@ function lsSetReasoningEffort(
   }
 }
 
+/** Row shape for the Actions / MCP tabs of the scoped resources panel (agent or project). */
+export interface ScopedToolGroupRow {
+  label: string;
+  fullNames: string[];
+  toolDescriptions?: Record<string, string>;
+  toolsetSlug: string;
+  instanceId?: string;
+  iconPath?: string;
+}
+
+/** Composer allow-list derived from a project's settings (see `useProjectScopeHydration`). */
+export interface ProjectChatScope {
+  projectId: string;
+  connectors: Array<{ id: string; label: string; connectorKind: string }>;
+  knowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
+  knowledgeDefaults: { apps: string[]; kb: string[] };
+  toolGroups: ScopedToolGroupRow[];
+  mcpGroups: ScopedToolGroupRow[];
+  /** Every selectable tool key (`instanceId:fullName`), across toolsets and MCP. */
+  toolCatalogFullNames: string[];
+}
+
 /**
  * File preview state for citation preview in chat.
  */
@@ -380,6 +402,18 @@ interface ChatState {
   /** Tool display names marked deprecated on the last GET /agents/:id for the URL agent context. */
   agentDeprecatedToolNames: string[];
 
+  // ── Project-scoped chat (`/chat?projectId=` or the /projects workspace composer) ──
+  /**
+   * Allow-list the composer may narrow within. `null` outside project context. Mirrors the
+   * agent* fields above so `AgentScopedResourcesPanel` can render either source. The linked
+   * hidden project KB is not listed — the server always includes it.
+   */
+  projectScope: ProjectChatScope | null;
+  /** Per-turn narrowing of `projectScope.knowledgeDefaults`; `null` = whole project scope. */
+  projectKnowledgeScope: { apps: string[]; kb: string[] } | null;
+  /** Per-turn narrowing of `projectScope.toolCatalogFullNames`; `null` = all project tools. */
+  projectStreamTools: string[] | null;
+
   // ── Universal agent mode (main chat, queryMode === 'agent', no agentId) ──
   /**
    * Selected tool `fullName`s for universal agent streams. `null` = all tools; `[]` = none; explicit
@@ -560,6 +594,13 @@ interface ChatState {
     hasWebSearch?: boolean;
   } | null) => void;
   setAgentKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
+  /**
+   * Replace the project allow-list (or clear with null). Resets per-turn narrowing and seeds
+   * the collection name/meta caches so pills and `appliedFilters` resolve labels.
+   */
+  setProjectScope: (scope: ProjectChatScope | null) => void;
+  setProjectKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
+  setProjectStreamTools: (tools: string[] | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
   setAgentContextCreatedBy: (mongoUserId: string | null) => void;
   setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
@@ -724,6 +765,10 @@ const initialState = {
   agentContextCreatedBy: null as string | null,
   agentContextAccess: null as AgentSidebarRowMenuAccess | null,
   agentDeprecatedToolNames: [] as string[],
+
+  projectScope: null as ProjectChatScope | null,
+  projectKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
+  projectStreamTools: null as string[] | null,
 
   universalAgentStreamTools: null as string[] | null,
   universalAgentToolCatalogFullNames: [] as string[],
@@ -1120,6 +1165,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
     ),
 
   setAgentKnowledgeScope: (scope) => set({ agentKnowledgeScope: scope }),
+
+  setProjectScope: (scope) =>
+    set((state) => {
+      if (!scope) {
+        return { projectScope: null, projectKnowledgeScope: null, projectStreamTools: null };
+      }
+      const names: Record<string, string> = {};
+      const meta: Record<string, { name: string; nodeType: string; connector: string }> = {};
+      for (const c of scope.connectors) {
+        names[c.id] = c.label;
+        meta[c.id] = { name: c.label, nodeType: 'app', connector: c.connectorKind };
+      }
+      for (const r of scope.knowledgeCollectionRows) {
+        names[r.id] = r.name;
+        meta[r.id] = { name: r.name, nodeType: 'recordGroup', connector: r.sourceType ?? 'KB' };
+      }
+      // Same project re-hydrated (settings saved, catalog arrived): keep the user's per-turn
+      // narrowing, minus anything no longer in the allow-list. A different project starts clean.
+      const sameProject = state.projectScope?.projectId === scope.projectId;
+      let projectKnowledgeScope: { apps: string[]; kb: string[] } | null = null;
+      let projectStreamTools: string[] | null = null;
+      if (sameProject && state.projectKnowledgeScope) {
+        const apps = new Set(scope.knowledgeDefaults.apps);
+        const kb = new Set(scope.knowledgeDefaults.kb);
+        projectKnowledgeScope = {
+          apps: state.projectKnowledgeScope.apps.filter((id) => apps.has(id)),
+          kb: state.projectKnowledgeScope.kb.filter((id) => kb.has(id)),
+        };
+      }
+      if (sameProject && state.projectStreamTools) {
+        const catalog = new Set(scope.toolCatalogFullNames);
+        projectStreamTools = state.projectStreamTools.filter((fn) => catalog.has(fn));
+      }
+      return {
+        projectScope: scope,
+        projectKnowledgeScope,
+        projectStreamTools,
+        collectionNamesCache: { ...state.collectionNamesCache, ...names },
+        collectionMetaCache: { ...state.collectionMetaCache, ...meta },
+      };
+    }),
+
+  setProjectKnowledgeScope: (scope) => set({ projectKnowledgeScope: scope }),
+
+  setProjectStreamTools: (tools) => set({ projectStreamTools: tools }),
 
   setAgentContextDisplayName: (name) => set({ agentContextDisplayName: name }),
 
@@ -1590,6 +1680,9 @@ if (typeof window !== 'undefined') {
     'agentContextDisplayName',
     'agentContextCreatedBy',
     'agentContextAccess',
+    'projectScope',
+    'projectKnowledgeScope',
+    'projectStreamTools',
     'universalAgentStreamTools',
     'universalAgentToolCatalogFullNames',
     'universalAgentToolGroups',

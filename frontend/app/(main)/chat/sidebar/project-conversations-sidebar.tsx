@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -77,6 +77,7 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
   projectId,
 }: ProjectConversationsSidebarProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const currentConversationId = searchParams?.get('conversationId') ?? null;
   const { t } = useTranslation();
@@ -123,15 +124,31 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
     if (isMobile) closeMobile();
   };
 
+  // On the workspace itself "Back to project" would link to the current page
+  // (a no-op click); step out to the all-projects list instead.
+  const isOnWorkspace = pathname === '/projects' || pathname === '/projects/';
+  const backHref = isOnWorkspace
+    ? '/projects/'
+    : `/projects/?projectId=${encodeURIComponent(projectId)}`;
+  const backLabel = isOnWorkspace
+    ? t('chat.projects.backToProjects')
+    : t('chat.projects.backToProject');
+
   /**
-   * Starting a new project chat now goes through the project workspace
-   * (`/projects?projectId=…`) rather than opening a bare composer on `/chat`
-   * — the workspace composer is where new project-scoped chats are started.
+   * Starting a new project chat stays on `/chat/?projectId=…` — same page,
+   * no navigation flash. Clearing the active slot resets the composer to
+   * the new-chat state. If already on the matching URL, `replaceState`
+   * avoids a no-op push that would add a duplicate history entry.
    */
   const handleNewProjectChat = () => {
     if (isMobile) closeMobile();
     useChatStore.getState().clearActiveSlot();
-    router.push(`/projects/?projectId=${encodeURIComponent(projectId)}`);
+    const href = `/chat/?projectId=${encodeURIComponent(projectId)}`;
+    if (pathname === '/chat' || pathname === '/chat/') {
+      window.history.replaceState(null, '', href);
+    } else {
+      router.push(href);
+    }
   };
 
   const handleSelectConversation = () => {
@@ -160,8 +177,8 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
       <Flex direction="column" gap="3" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
         <SidebarItem
           icon={<MaterialIcon name="chevron_left" size={ICON_SIZE_DEFAULT} />}
-          label={t('chat.projects.backToProject')}
-          href={`/projects/?projectId=${encodeURIComponent(projectId)}`}
+          label={backLabel}
+          href={backHref}
           onClick={handleBackToProject}
         />
 

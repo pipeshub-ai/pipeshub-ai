@@ -127,12 +127,25 @@ export function applyProjectScope(
 
   aiPayload.filters = {
     ...requestedFilters,
-    ...(effectiveApps.length > 0 ? { apps: effectiveApps } : {}),
-    ...(kbIds.size > 0 ? { kb: Array.from(kbIds) } : {}),
+    apps: effectiveApps,
+    kb: Array.from(kbIds),
   };
   aiPayload.strictScope = true;
 
-  aiPayload.tools = narrowToProjectScope(readIdArray(aiPayload.tools), context.tools ?? []);
+  aiPayload.tools = narrowToProjectScope(
+    readIdArray(aiPayload.tools)?.map(bareToolFullName),
+    Array.from(new Set((context.tools ?? []).map(bareToolFullName))),
+  );
+}
+
+/**
+ * The composer keys tools as `${instanceId}:${fullName}` for per-instance selection but
+ * ships the bare `fullName`, which is also what Python matches on. Older projects persisted
+ * the prefixed key; normalising both sides keeps them comparable.
+ */
+export function bareToolFullName(key: string): string {
+  const colon = key.indexOf(':');
+  return colon >= 0 ? key.slice(colon + 1) : key;
 }
 
 /**

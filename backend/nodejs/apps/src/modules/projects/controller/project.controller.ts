@@ -14,8 +14,16 @@ import {
   UpdateProjectInput,
 } from '../services/project.service';
 import { ProjectKnowledgeBaseService } from '../services/project-kb.service';
-import { IProject } from '../types/project.interfaces';
+import { IProject, IProjectDocument, ProjectRole } from '../types/project.interfaces';
 import { resolveCallerTeamIds } from '../utils/team-membership';
+
+/** Enrich a Mongoose project document with the caller's computed role for JSON responses. */
+function projectWithRole(
+  project: IProjectDocument,
+  role: ProjectRole,
+): IProject & { role: ProjectRole } {
+  return { ...(project.toObject() as unknown as IProject), role };
+}
 
 type ProjectRouteHandler = (
   req: AuthenticatedUserRequest,
@@ -36,7 +44,7 @@ export const createProject = async (
       userId,
       req.body as CreateProjectInput,
     );
-    res.status(201).json({ project });
+    res.status(201).json({ project: projectWithRole(project, 'owner') });
   } catch (error) {
     next(error);
   }
@@ -94,9 +102,7 @@ export const getProjectById =
         'viewer',
         callerTeamIds,
       );
-      res.status(200).json({
-        project: { ...(project.toObject() as unknown as IProject), role },
-      });
+      res.status(200).json({ project: projectWithRole(project, role) });
     } catch (error) {
       next(error);
     }
@@ -116,6 +122,12 @@ export const updateProject =
         userId,
         projectId,
         patch,
+        callerTeamIds,
+      );
+      const role = ProjectService.computeRole(
+        project,
+        userId,
+        orgId,
         callerTeamIds,
       );
       // Idempotent either way, so a plain resync (rather than diffing
@@ -138,7 +150,7 @@ export const updateProject =
           );
         }
       }
-      res.status(200).json({ project });
+      res.status(200).json({ project: projectWithRole(project, role) });
     } catch (error) {
       next(error);
     }
@@ -195,7 +207,8 @@ export const archiveProject =
         true,
         callerTeamIds,
       );
-      res.status(200).json({ project });
+      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      res.status(200).json({ project: projectWithRole(project, role) });
     } catch (error) {
       next(error);
     }
@@ -216,7 +229,8 @@ export const unarchiveProject =
         false,
         callerTeamIds,
       );
-      res.status(200).json({ project });
+      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      res.status(200).json({ project: projectWithRole(project, role) });
     } catch (error) {
       next(error);
     }
@@ -237,7 +251,8 @@ export const pinProject =
         true,
         callerTeamIds,
       );
-      res.status(200).json({ project });
+      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      res.status(200).json({ project: projectWithRole(project, role) });
     } catch (error) {
       next(error);
     }
@@ -258,7 +273,8 @@ export const unpinProject =
         false,
         callerTeamIds,
       );
-      res.status(200).json({ project });
+      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      res.status(200).json({ project: projectWithRole(project, role) });
     } catch (error) {
       next(error);
     }

@@ -227,6 +227,7 @@
     "all": "전체",
     "agents": "에이전트",
     "projects": "프로젝트",
+    "beta": "베타",
     "searchChats": "채팅 검색",
     "inbox": "받은 편지함",
     "notifications": "알림"
@@ -559,6 +560,13 @@
       "resetDefaults": "기본값으로 재설정",
       "knowledgeScopeClearedWarning": "이번 실행에는 포함된 지식 소스가 없으므로 에이전트가 답변을 위해 커넥터나 컬렉션을 검색하지 않습니다."
     },
+    "projectResources": {
+      "noConnectors": "이 프로젝트에 활성화된 커넥터가 없습니다.",
+      "noCollections": "이 프로젝트에 활성화된 컬렉션이 없습니다.",
+      "noActions": "이 프로젝트에 활성화된 액션(도구 세트)이 없습니다.",
+      "noMcpServers": "이 프로젝트에 활성화된 MCP 서버가 없습니다.",
+      "resetDefaults": "프로젝트 기본값으로 재설정"
+    },
     "aiModelsTooltip": "AI 모델",
     "attachmentTooltip": "파일 첨부",
     "micTooltip": "음성 입력",
@@ -853,6 +861,11 @@
         "uploading": "업로드 중…",
         "noFiles": "아직 파일이 없습니다",
         "removeFile": "파일 제거",
+        "connectorsTitle": "커넥터",
+        "connectorsSubtitle": "이 프로젝트의 채팅은 선택한 커넥터만 검색합니다.",
+        "noConnectorsAvailable": "추가할 커넥터가 아직 없습니다.",
+        "failedToLoadConnectors": "커넥터를 불러오지 못했습니다",
+        "updateConnectorsFailed": "커넥터를 업데이트하지 못했습니다",
         "toolsTitle": "도구 및 MCP",
         "noToolsAvailable": "추가할 수 있는 인증된 작업이나 MCP 서버가 아직 없습니다.",
         "knowledgeBaseUnavailable": "이 프로젝트의 파일 저장소를 준비하지 못했습니다",
@@ -868,7 +881,9 @@
         "updateToolsFailed": "도구를 업데이트하지 못했습니다",
         "updatePinFailed": "고정 상태를 업데이트하지 못했습니다",
         "updateArchiveFailed": "보관 상태를 업데이트하지 못했습니다",
-        "shareRefreshFailed": "공유 세부정보를 새로고침하지 못했습니다"
+        "shareRefreshFailed": "공유 세부정보를 새로고침하지 못했습니다",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
       },
       "moveDialog": {
         "title": "프로젝트로 이동",

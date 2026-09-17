@@ -1,6 +1,6 @@
 'use client';
 
-import { Box, Dialog, Flex, Text, VisuallyHidden } from '@radix-ui/themes';
+import { Dialog, Flex, Text, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 
@@ -26,12 +26,7 @@ export function DeleteProjectDialog({
 
   return (
     <Dialog.Root open={open} onOpenChange={(v) => !isDeleting && onOpenChange(v)}>
-      {open && (
-        <Box
-          style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(28, 32, 36, 0.5)', zIndex: 999 }}
-        />
-      )}
-      <Dialog.Content style={{ maxWidth: '26rem', width: '100%', padding: 'var(--space-5)', zIndex: 1000 }}>
+      <Dialog.Content style={{ maxWidth: '26rem', width: '100%', padding: 'var(--space-5)' }}>
         <VisuallyHidden>
           <Dialog.Title>{t('chat.projects.deleteDialog.title')}</Dialog.Title>
         </VisuallyHidden>

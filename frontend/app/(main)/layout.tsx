@@ -38,6 +38,7 @@ import { FullNameDialog } from './components/full-name-dialog'
 import { ServerUrlGuard } from '@/app/components/electron/server-url-setup'
 import { NotificationProvider } from './notifications/websocket-manager'
 import { NotificationsPanel } from './notifications/panel'
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button'
 
 // Extra pixels beyond sidebarWidth needed to accommodate the "More Chats"
 // secondary panel that SidebarBase adds when open (it widens the cluster).
@@ -136,7 +137,6 @@ function AppLayout({
   const isMobile = useIsMobile()
   const sidebarWidth = useSidebarWidthStore((s) => s.sidebarWidth)
   const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed)
-  const setNavCollapsed = useSidebarWidthStore((s) => s.setNavCollapsed)
 
   // ── Full-name guard ────────────────────────────────────────────────────────
   const profile = useUserStore((s) => s.profile)
@@ -216,6 +216,11 @@ function AppLayout({
             maxWidth: (!isMobile && isNavCollapsed)
               ? 0
               : `${sidebarWidth + SIDEBAR_SECONDARY_PANEL_EXTRA_PX}px`,
+            // SidebarBase keeps its fixed width inside the animating slot; without
+            // clipping it paints over pages with a transparent background (e.g.
+            // /projects). The expanded max-width already covers the "More Chats"
+            // cluster, so nothing legitimate is clipped.
+            overflow: 'hidden',
             flexShrink: 0,
             transition: 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
             position: 'relative',
@@ -238,8 +243,11 @@ function AppLayout({
           data-main-content
           style={{ flex: 1, overflow: 'hidden', zIndex: 0, position: 'relative' }}
         >
-          {/* Mobile hamburger — fixed top-left, only visible on mobile.
-              On desktop the icon rail always shows a toggle, so no floating button needed. */}
+          {/* Desktop fallback to restore a collapsed sidebar on routes whose page
+              does not render its own SidebarExpandButton — otherwise the user
+              is stranded with no nav until a reload. */}
+          <SidebarExpandButton placement="shell" />
+          {/* Mobile hamburger — fixed top-left, only visible on mobile. */}
           {isMobile && (
             <Box
               key="app-mobile-menu-anchor"

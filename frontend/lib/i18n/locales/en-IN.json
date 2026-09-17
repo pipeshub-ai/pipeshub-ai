@@ -214,6 +214,7 @@
     "all": "All",
     "agents": "Agents",
     "projects": "Projects",
+    "beta": "Beta",
     "searchChats": "Search Chats",
     "inbox": "Inbox",
     "notifications": "Notifications"
@@ -542,6 +543,13 @@
       "resetDefaults": "Reset to defaults",
       "knowledgeScopeClearedWarning": "No knowledge sources are included for this run, so the agent will not search your connectors or collections for answers."
     },
+    "projectResources": {
+      "noConnectors": "No connectors enabled for this project.",
+      "noCollections": "No collections enabled for this project.",
+      "noActions": "No actions (toolsets) enabled for this project.",
+      "noMcpServers": "No MCP servers enabled for this project.",
+      "resetDefaults": "Reset to project defaults"
+    },
     "aiModelsTooltip": "AI Models",
     "attachmentTooltip": "Attach files",
     "micTooltip": "Voice input",
@@ -836,6 +844,11 @@
         "uploading": "Uploading…",
         "noFiles": "No files yet",
         "removeFile": "Remove file",
+        "connectorsTitle": "Connectors",
+        "connectorsSubtitle": "Chats in this project search only these connectors.",
+        "noConnectorsAvailable": "No connectors to add yet.",
+        "failedToLoadConnectors": "Failed to load connectors",
+        "updateConnectorsFailed": "Failed to update connectors",
         "toolsTitle": "Tools & MCP",
         "noToolsAvailable": "No authenticated actions or MCP servers to add yet.",
         "knowledgeBaseUnavailable": "Could not prepare this project’s file storage",
@@ -851,7 +864,9 @@
         "updateToolsFailed": "Failed to update tools",
         "updatePinFailed": "Failed to update pin status",
         "updateArchiveFailed": "Failed to update archive status",
-        "shareRefreshFailed": "Failed to refresh sharing details"
+        "shareRefreshFailed": "Failed to refresh sharing details",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
       },
       "moveDialog": {
         "title": "Move to project",

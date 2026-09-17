@@ -145,7 +145,7 @@ export function ProjectsSidebar() {
       icon={<MaterialIcon name="folder" size={ICON_SIZE_DEFAULT} color={project.color || 'var(--slate-11)'} />}
       label={project.name}
       isActive={currentProjectId === project._id}
-      href={`/projects/?projectId=${encodeURIComponent(project._id)}`}
+      href={`/chat/?projectId=${encodeURIComponent(project._id)}`}
       onClick={openProject}
     />
   );
@@ -251,7 +251,7 @@ export function ProjectsSidebar() {
         onCreated={(project) => {
           upsertProjectInList({ ...project, conversationCount: 0 });
           if (isMobile) closeMobileSidebar();
-          router.push(`/projects/?projectId=${encodeURIComponent(project._id)}`);
+          router.push(`/chat/?projectId=${encodeURIComponent(project._id)}`);
         }}
       />
     </SidebarBase>

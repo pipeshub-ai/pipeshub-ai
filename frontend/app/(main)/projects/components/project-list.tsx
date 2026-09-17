@@ -12,6 +12,7 @@ import type { ProjectSummary } from '@/chat/project-types';
 import { useChatStore } from '@/chat/store';
 import { CreateProjectDialog } from '@/chat/sidebar/dialogs';
 import { formatRelativeTime } from '@/lib/utils/formatters';
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 
 const PROJECT_LIST_PAGE_SIZE = 30;
 
@@ -163,7 +164,7 @@ export function ProjectList() {
   };
 
   const openProject = (projectId: string) => {
-    router.push(`/projects/?projectId=${encodeURIComponent(projectId)}`);
+    router.push(`/chat/?projectId=${encodeURIComponent(projectId)}`);
   };
 
   const sorted = [...projects].sort((a, b) => {
@@ -174,9 +175,12 @@ export function ProjectList() {
   return (
     <Flex direction="column" gap="5" style={{ width: '100%', maxWidth: 1100, margin: '0 auto', padding: 'var(--space-6)' }}>
       <Flex align="center" justify="between" wrap="wrap" gap="3">
-        <Text size="6" weight="bold" style={{ color: 'var(--slate-12)' }}>
-          {t('projects.pageTitle')}
-        </Text>
+        <Flex align="center" gap="3" style={{ minWidth: 0 }}>
+          <SidebarExpandButton placement="inline" />
+          <Text size="6" weight="bold" style={{ color: 'var(--slate-12)' }}>
+            {t('projects.pageTitle')}
+          </Text>
+        </Flex>
         <LoadingButton color="jade" onClick={() => setCreateOpen(true)}>
           <Flex align="center" gap="2">
             <MaterialIcon name="add" size={16} />

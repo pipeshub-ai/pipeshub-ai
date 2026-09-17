@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Flex, Text } from '@radix-ui/themes';
+import { Dialog, Flex, Text, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
@@ -45,12 +45,13 @@ export function FilesCard({ projectId, linkedKnowledgeBaseId, canEdit, onKbCreat
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [pendingRemove, setPendingRemove] = useState<{ id: string; name: string } | null>(null);
 
   const load = useCallback(async (kbId: string) => {
     setIsLoading(true);
     setLoadError(false);
     try {
-      const res = await KnowledgeHubApi.getNodeChildren('kb', kbId, {
+      const res = await KnowledgeHubApi.getNodeChildren('app', kbId, {
         onlyContainers: false,
         limit: FILES_LIST_LIMIT,
       });
@@ -94,9 +95,11 @@ export function FilesCard({ projectId, linkedKnowledgeBaseId, canEdit, onKbCreat
     [uploadFiles, getKbId, load],
   );
 
-  const handleRemove = useCallback(
-    async (recordId: string) => {
-      if (!linkedKnowledgeBaseId) return;
+  const confirmRemove = useCallback(
+    async () => {
+      if (!linkedKnowledgeBaseId || !pendingRemove) return;
+      const { id: recordId } = pendingRemove;
+      setPendingRemove(null);
       setDeletingId(recordId);
       try {
         await KnowledgeBaseApi.deleteRecord(recordId);
@@ -107,7 +110,7 @@ export function FilesCard({ projectId, linkedKnowledgeBaseId, canEdit, onKbCreat
         setDeletingId(null);
       }
     },
-    [linkedKnowledgeBaseId, t],
+    [linkedKnowledgeBaseId, pendingRemove, t],
   );
 
   return (
@@ -139,7 +142,7 @@ export function FilesCard({ projectId, linkedKnowledgeBaseId, canEdit, onKbCreat
 
       {loadError ? (
         <Text size="2" style={{ color: '#ef4444' }}>
-          {t('chat.projects.workspace.failedToLoad')}
+          {t('chat.projects.workspace.failedToLoadFiles', { defaultValue: 'Failed to load files' })}
         </Text>
       ) : isLoading ? (
         <Text size="2" style={{ color: 'var(--slate-10)' }}>
@@ -194,7 +197,7 @@ export function FilesCard({ projectId, linkedKnowledgeBaseId, canEdit, onKbCreat
                   type="button"
                   aria-label={t('chat.projects.workspace.removeFile')}
                   disabled={deletingId === item.id}
-                  onClick={() => void handleRemove(item.id)}
+                  onClick={() => setPendingRemove({ id: item.id, name: item.name })}
                   style={{
                     appearance: 'none',
                     border: 'none',
@@ -212,6 +215,50 @@ export function FilesCard({ projectId, linkedKnowledgeBaseId, canEdit, onKbCreat
           ))}
         </Flex>
       )}
+
+      {/* Remove-file confirmation dialog */}
+      <Dialog.Root
+        open={pendingRemove !== null}
+        onOpenChange={(v) => { if (!v) setPendingRemove(null); }}
+      >
+        <Dialog.Content style={{ maxWidth: '26rem', width: '100%', padding: 'var(--space-5)' }}>
+          <VisuallyHidden>
+            <Dialog.Title>
+              {t('chat.projects.workspace.removeFileConfirmTitle', { defaultValue: 'Remove file' })}
+            </Dialog.Title>
+          </VisuallyHidden>
+          <Flex direction="column" gap="4">
+            <Text size="4" weight="bold" style={{ color: 'var(--olive-12)' }}>
+              {t('chat.projects.workspace.removeFileConfirmTitle', { defaultValue: 'Remove file' })}
+            </Text>
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
+              {t('chat.projects.workspace.removeFileConfirmDescription', {
+                defaultValue: 'Are you sure you want to remove "{{fileName}}" from this project? This cannot be undone.',
+                fileName: pendingRemove?.name ?? '',
+              })}
+            </Text>
+            <Flex gap="2" justify="end">
+              <LoadingButton
+                type="button"
+                variant="soft"
+                color="gray"
+                size="2"
+                onClick={() => setPendingRemove(null)}
+              >
+                {t('action.cancel')}
+              </LoadingButton>
+              <LoadingButton
+                type="button"
+                color="red"
+                size="2"
+                onClick={() => void confirmRemove()}
+              >
+                {t('action.delete')}
+              </LoadingButton>
+            </Flex>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
     </Flex>
   );
 }

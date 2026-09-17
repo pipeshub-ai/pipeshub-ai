@@ -227,6 +227,7 @@
     "all": "全部",
     "agents": "智能体",
     "projects": "项目",
+    "beta": "测试版",
     "searchChats": "搜索聊天",
     "inbox": "收件箱",
     "notifications": "通知"
@@ -559,6 +560,13 @@
       "resetDefaults": "重置为默认值",
       "knowledgeScopeClearedWarning": "本次运行未包含任何知识来源，因此智能体不会搜索您的连接器或收藏集来查找答案。"
     },
+    "projectResources": {
+      "noConnectors": "此项目未启用任何连接器。",
+      "noCollections": "此项目未启用任何集合。",
+      "noActions": "此项目未启用任何操作（工具集）。",
+      "noMcpServers": "此项目未启用任何 MCP 服务器。",
+      "resetDefaults": "重置为项目默认值"
+    },
     "aiModelsTooltip": "AI 模型",
     "attachmentTooltip": "附加文件",
     "micTooltip": "语音输入",
@@ -853,6 +861,11 @@
         "uploading": "上传中…",
         "noFiles": "暂无文件",
         "removeFile": "移除文件",
+        "connectorsTitle": "连接器",
+        "connectorsSubtitle": "此项目中的对话仅搜索这些连接器。",
+        "noConnectorsAvailable": "暂无可添加的连接器。",
+        "failedToLoadConnectors": "加载连接器失败",
+        "updateConnectorsFailed": "更新连接器失败",
         "toolsTitle": "工具和 MCP",
         "noToolsAvailable": "暂无可添加的已认证操作或 MCP 服务器。",
         "knowledgeBaseUnavailable": "无法准备此项目的文件存储",
@@ -868,7 +881,9 @@
         "updateToolsFailed": "更新工具失败",
         "updatePinFailed": "更新置顶状态失败",
         "updateArchiveFailed": "更新归档状态失败",
-        "shareRefreshFailed": "刷新共享详情失败"
+        "shareRefreshFailed": "刷新共享详情失败",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
       },
       "moveDialog": {
         "title": "移至项目",

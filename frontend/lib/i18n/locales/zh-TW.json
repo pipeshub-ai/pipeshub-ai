@@ -227,6 +227,7 @@
     "all": "全部",
     "agents": "代理程式",
     "projects": "專案",
+    "beta": "測試版",
     "searchChats": "搜尋對話",
     "inbox": "收件匣",
     "notifications": "通知"
@@ -559,6 +560,13 @@
       "resetDefaults": "重設為預設值",
       "knowledgeScopeClearedWarning": "本次執行未包含任何知識來源，因此代理將不會搜尋您的連接器或集合來尋找答案。"
     },
+    "projectResources": {
+      "noConnectors": "此專案未啟用任何連接器。",
+      "noCollections": "此專案未啟用任何集合。",
+      "noActions": "此專案未啟用任何操作（工具集）。",
+      "noMcpServers": "此專案未啟用任何 MCP 伺服器。",
+      "resetDefaults": "重設為專案預設值"
+    },
     "aiModelsTooltip": "AI 模型",
     "attachmentTooltip": "附加檔案",
     "micTooltip": "語音輸入",
@@ -853,6 +861,11 @@
         "uploading": "上傳中…",
         "noFiles": "尚無檔案",
         "removeFile": "移除檔案",
+        "connectorsTitle": "連接器",
+        "connectorsSubtitle": "此專案中的對話僅搜尋這些連接器。",
+        "noConnectorsAvailable": "尚無可新增的連接器。",
+        "failedToLoadConnectors": "載入連接器失敗",
+        "updateConnectorsFailed": "更新連接器失敗",
         "toolsTitle": "工具與 MCP",
         "noToolsAvailable": "尚無可新增的已驗證操作或 MCP 伺服器。",
         "knowledgeBaseUnavailable": "無法準備此專案的檔案儲存空間",
@@ -868,7 +881,9 @@
         "updateToolsFailed": "無法更新工具",
         "updatePinFailed": "無法更新釘選狀態",
         "updateArchiveFailed": "無法更新封存狀態",
-        "shareRefreshFailed": "無法重新整理共用詳細資料"
+        "shareRefreshFailed": "無法重新整理共用詳細資料",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
       },
       "moveDialog": {
         "title": "移至專案",

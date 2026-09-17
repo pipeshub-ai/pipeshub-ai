@@ -1548,6 +1548,41 @@ class TestOnEventDuplicate:
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
+    async def test_duplicate_skip_invalidates_accessible_records_cache(self):
+        """When dedup skips indexing, the accessible-records cache must still
+        be invalidated so the newly attached record is searchable immediately.
+
+        Without this, a KB file re-uploaded with identical content (matched by
+        MD5 to an existing record) would be marked COMPLETED but invisible to
+        search until the cache TTL expires.
+        """
+        ep, _, _, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "FILE",
+            "connectorName": "KB",
+            "connectorId": "hidden-kb-1",
+            "orgId": "org-1",
+        }
+
+        with patch.object(
+            ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+            return_value=DedupDecision(virtual_record_id=None, skip_indexing=True),
+        ), patch(
+            "app.events.events.notify_record_indexed", new_callable=AsyncMock,
+        ) as mock_notify:
+            event_data = _make_event_payload(
+                connector_name="KB",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        mock_notify.assert_awaited_once()
+        call_kwargs = mock_notify.call_args[1]
+        assert call_kwargs["connector_name"] == "KB"
+        assert call_kwargs["connector_id"] == "hidden-kb-1"
+        assert call_kwargs["org_id"] == "org-1"
+
+    @pytest.mark.asyncio
     async def test_check_duplicate_in_progress_handling(self):
         """Duplicate record in IN_PROGRESS status gets QUEUED (lines 208-214)."""
         ep, _, _, gp = _make_event_processor()
