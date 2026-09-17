@@ -552,7 +552,7 @@ class TestRunAgentLoopStream:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -605,7 +605,7 @@ class TestRunAgentLoopStream:
             )
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             captured_streamed_answer["value"] = streamed_answer
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
@@ -664,7 +664,7 @@ class TestRunAgentLoopStream:
             )
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             captured_streamed_answer["value"] = streamed_answer
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
@@ -868,7 +868,7 @@ class TestRunAgentLoopStream:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -942,7 +942,7 @@ class TestRunAgentLoopStream:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -1021,7 +1021,7 @@ class TestRunAgentLoopStream:
             await pending_started.wait()
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -1073,7 +1073,7 @@ class TestRunAgentLoopStream:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -1130,7 +1130,7 @@ class TestHeartbeat:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -1177,7 +1177,7 @@ class TestHeartbeat:
             agent = _slow_stream_agent(MagicMock(success=True, error=None, output="done"), delay=0.05)
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -1225,7 +1225,7 @@ class TestHeartbeat:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 

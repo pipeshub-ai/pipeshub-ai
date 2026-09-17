@@ -54,6 +54,70 @@ function createPendingAssistantId(): string {
   return `asst-pending-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
+/**
+ * Client-generated run identifier sent with the stream request so a later
+ * Stop can cooperatively cancel this exact run (`ChatApi.cancelStream`).
+ * Unlike `createPendingAssistantId`, there's no non-crypto fallback — the
+ * backend validates it as a UUID (`cancelRunBodySchema`) — so callers must
+ * treat `undefined` as "this run cannot be cooperatively cancelled" and
+ * fall back to a hard abort (see `cancelStreamForSlot`).
+ */
+function generateRunId(): string | undefined {
+  const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+  return cryptoApi && typeof cryptoApi.randomUUID === 'function' ? cryptoApi.randomUUID() : undefined;
+}
+
+/**
+ * Grace period between posting a cooperative cancel and hard-aborting the
+ * connection if the backend hasn't finished the run by then. Long enough
+ * for `RunCancellationRegistry` fan-out + the in-flight LLM chunk boundary
+ * check (`LangChainTransport.stream()`) to land under normal conditions;
+ * short enough that a stuck backend doesn't leave Stop looking unresponsive.
+ */
+const STOP_GRACE_MS = 5000;
+
+/**
+ * Builds the post-stop message list for the offline fallback (grace-timeout
+ * abort) — commits whatever text streamed so far as a locally-synthesized
+ * `status: 'stopped'` message, since the hard abort means we'll never see
+ * the backend's own persisted version.
+ *
+ * - Regenerate: replaces the target message in place (leaves it untouched,
+ *   i.e. the pre-regenerate answer, if nothing new streamed yet).
+ * - New message: replaces the trailing placeholder assistant row, or drops
+ *   it entirely if the stream was stopped before any tokens arrived (e.g.
+ *   during "Thinking") — an empty "stopped" bubble is just noise.
+ */
+function buildStoppedMessages(
+  messages: ThreadMessageLike[],
+  regenerateMessageId: string | null,
+  streamingContent: string
+): ThreadMessageLike[] {
+  if (regenerateMessageId) {
+    if (!streamingContent) return messages;
+    return messages.map((m) =>
+      m.id === regenerateMessageId
+        ? {
+            ...m,
+            content: [{ type: 'text' as const, text: streamingContent }],
+            metadata: { ...m.metadata, custom: { ...m.metadata?.custom, status: 'stopped' as const } },
+          }
+        : m
+    );
+  }
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== 'assistant') return messages;
+  if (!streamingContent) return messages.slice(0, -1);
+  return [
+    ...messages.slice(0, -1),
+    {
+      ...last,
+      content: [{ type: 'text' as const, text: streamingContent }],
+      metadata: { ...last.metadata, custom: { ...last.metadata?.custom, status: 'stopped' as const } },
+    },
+  ];
+}
+
 function applyAskUserQuestionSse(
   slotId: string,
   data: SSEAskUserQuestionEvent,
@@ -267,6 +331,10 @@ export async function streamMessageForSlot(
 
   // Create an abort controller scoped to this stream
   const abortController = new AbortController();
+  // Client-generated run identifier so a later Stop can target this exact
+  // run (see `ChatApi.cancelStream` / `cancelStreamForSlot`).
+  const runId = generateRunId();
+  if (runId) request.runId = runId;
 
   // Ephemeral empty assistant so the in-progress turn has a dedicated "last
   // assistant" message. Pairs with MessageList: only the last assistant whose
@@ -283,6 +351,8 @@ export async function streamMessageForSlot(
     streamingCitationMaps: null,
     streamingParts: [],
     abortController,
+    runId: runId ?? null,
+    stopping: false,
     threadAgentId: request.agentId ?? slot.threadAgentId ?? null,
     // `request.agentStreamTools` is `undefined` when every tool is
     // selected (see `buildStreamChatRequestForSlot` in runtime.ts) — must
@@ -630,6 +700,8 @@ export async function streamMessageForSlot(
             messages: finalMessages,
             hasLoaded: true,
             abortController: null,
+            runId: null,
+            stopping: false,
             conversationModelInfo: data.conversation.modelInfo,
             ...(newMsgPagination !== null ? { messagePagination: newMsgPagination } : {}),
             ...(isNewConversation ? { isOwner: true } : {}),
@@ -689,6 +761,8 @@ export async function streamMessageForSlot(
           streamingParts: [],
           pendingCollections: [],
           abortController: null,
+          runId: null,
+          stopping: false,
           pendingAskUserQuestion: null,
           messages: withStreamingErrorMessage(currentMessages, err),
         });
@@ -724,6 +798,8 @@ export async function streamMessageForSlot(
           streamingParts: [],
           pendingCollections: [],
           abortController: null,
+          runId: null,
+          stopping: false,
         });
       }
       if (isNewConversation) {
@@ -747,6 +823,8 @@ export async function streamMessageForSlot(
       streamingParts: [],
       pendingCollections: [],
       abortController: null,
+      runId: null,
+      stopping: false,
       pendingAskUserQuestion: null,
       messages: withStreamingErrorMessage(currentMessages, errorMessage),
     });
@@ -806,6 +884,7 @@ export async function streamRegenerateForSlot(
   }
 
   const abortController = new AbortController();
+  const runId = generateRunId();
 
   store.updateSlot(slotId, {
     isStreaming: true,
@@ -815,6 +894,8 @@ export async function streamRegenerateForSlot(
     streamingCitationMaps: null,
     streamingParts: [],
     abortController,
+    runId: runId ?? null,
+    stopping: false,
   });
 
   debugLog.flush('regenerate-started', { slotId, messageId });
@@ -984,6 +1065,8 @@ export async function streamRegenerateForSlot(
           streamingParts: [],
           messages: finalMessages,
           abortController: null,
+          runId: null,
+          stopping: false,
           ...(regenPagination ? { messagePagination: regenPagination } : {}),
           ...(postRegenModelInfo ? { conversationModelInfo: postRegenModelInfo } : {}),
         });
@@ -998,6 +1081,8 @@ export async function streamRegenerateForSlot(
           streamingCitationMaps: null,
           streamingParts: [],
           abortController: null,
+          runId: null,
+          stopping: false,
         });
         debugLog.flush('regenerate-reload-error', { slotId });
       }
@@ -1018,6 +1103,8 @@ export async function streamRegenerateForSlot(
         streamingCitationMaps: null,
         streamingParts: [],
         abortController: null,
+        runId: null,
+        stopping: false,
       });
       debugLog.flush('regenerate-error', { slotId });
     },
@@ -1072,6 +1159,7 @@ export async function streamRegenerateForSlot(
           filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),
           agentCapabilities: scopedCaps,
           ...(agentRegenReasoningEffort ? { reasoningEffort: agentRegenReasoningEffort } : {}),
+          runId,
         }
       );
     } else {
@@ -1101,12 +1189,18 @@ export async function streamRegenerateForSlot(
         ...(regenStreamTools !== undefined ? { agentStreamTools: regenStreamTools } : {}),
         ...(isUniversalAgent ? { agentCapabilities: store.settings.agentCapabilities } : {}),
         ...(assistantRegenReasoningEffort ? { reasoningEffort: assistantRegenReasoningEffort } : {}),
+        runId,
       });
     }
   } catch (error) {
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
     cancelPendingStatus();
-    console.error('[streaming] Fatal regenerate error for slot', slotId, error);
+    const aborted =
+      (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError') ||
+      (error instanceof Error && (error.name === 'AbortError' || error.name === 'CanceledError'));
+    if (!aborted) {
+      console.error('[streaming] Fatal regenerate error for slot', slotId, error);
+    }
     useChatStore.getState().updateSlot(slotId, {
       isStreaming: false,
       regenerateMessageId: null,
@@ -1115,34 +1209,101 @@ export async function streamRegenerateForSlot(
       streamingCitationMaps: null,
       streamingParts: [],
       abortController: null,
+      runId: null,
+      stopping: false,
     });
-    debugLog.flush('regenerate-fatal-error', { slotId });
+    debugLog.flush(aborted ? 'regenerate-aborted' : 'regenerate-fatal-error', { slotId });
   }
 }
 
 /**
- * Cancel the active stream for a slot by aborting its AbortController.
+ * Stop the active stream for a slot.
+ *
+ * Cooperative-first: posts `POST .../cancel` (same `runId` the stream
+ * request carried) and marks the slot `stopping` WITHOUT aborting the SSE
+ * connection — so the backend has a chance to actually stop token
+ * generation, persist the partial answer as `status: 'stopped'`, and send a
+ * normal `RUN_FINISHED` that this same stream's `onComplete` renders (see
+ * `streamMessageForSlot`/`streamRegenerateForSlot`).
+ *
+ * A `STOP_GRACE_MS` timer is the guaranteed fallback: if the run hasn't
+ * settled by then (backend unreachable, stuck request, cancel POST itself
+ * failed), it hard-aborts the connection and commits whatever text streamed
+ * so far as a locally-synthesized stopped message — never leaves the
+ * composer stuck showing "Stopping…" forever.
+ *
+ * No-ops if the slot isn't streaming or is already `stopping` (second Stop
+ * click). If `convId`/`runId` aren't known yet (stopped before
+ * `conversation_created` on the very first turn of a brand-new
+ * conversation), there's nothing to target server-side — fall straight to a
+ * hard abort; Node's passive disconnect path still saves the partial.
+ *
+ * Exported as `cancelStreamForSlot` — the name `runtime.ts`'s `onCancel`
+ * and the chat-input Stop button both already call.
  */
 export function cancelStreamForSlot(slotId: string): void {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
-  if (!slot) return;
+  if (!slot || !slot.isStreaming || slot.stopping) return;
 
-  slot.abortController?.abort();
-  store.updateSlot(slotId, {
-    isStreaming: false,
-    streamingContent: '',
-    streamingQuestion: '',
-    currentStatusMessage: null,
-    streamingCitationMaps: null,
-    streamingParts: [],
-    abortController: null,
-    regenerateMessageId: null,
-  });
-  if (slot.isTemp) {
-    store.clearPendingConversation(slotId);
+  const { convId, runId, threadAgentId, isTemp } = slot;
+
+  if (!convId || !runId) {
+    slot.abortController?.abort();
+    store.updateSlot(slotId, {
+      isStreaming: false,
+      streamingContent: '',
+      streamingQuestion: '',
+      currentStatusMessage: null,
+      streamingCitationMaps: null,
+      streamingParts: [],
+      abortController: null,
+      runId: null,
+      stopping: false,
+      regenerateMessageId: null,
+    });
+    if (isTemp) {
+      store.clearPendingConversation(slotId);
+    }
+    debugLog.flush('stream-cancelled-no-run-id', { slotId });
+    return;
   }
-  debugLog.flush('stream-cancelled', { slotId });
+
+  store.updateSlot(slotId, { stopping: true });
+  debugLog.flush('stream-stop-requested', { slotId, runId });
+
+  ChatApi.cancelStream(convId, runId, threadAgentId ?? undefined).catch((err) => {
+    // Best-effort — the grace timer below is the guaranteed fallback if this
+    // request fails outright (network blip, backend restart mid-run, etc).
+    console.warn('[streaming] cancelStream request failed for slot', slotId, err);
+  });
+
+  setTimeout(() => {
+    const cur = useChatStore.getState().slots[slotId];
+    // Already settled (normal RUN_FINISHED, a later error, or a brand-new
+    // stream started on this slot in the meantime) — nothing to do.
+    if (!cur || !cur.isStreaming || cur.runId !== runId) return;
+
+    cur.abortController?.abort();
+    const messages = buildStoppedMessages(cur.messages, cur.regenerateMessageId, cur.streamingContent);
+    useChatStore.getState().updateSlot(slotId, {
+      isStreaming: false,
+      streamingContent: '',
+      streamingQuestion: '',
+      currentStatusMessage: null,
+      streamingCitationMaps: null,
+      streamingParts: [],
+      abortController: null,
+      runId: null,
+      stopping: false,
+      regenerateMessageId: null,
+      messages,
+    });
+    if (cur.isTemp) {
+      useChatStore.getState().clearPendingConversation(slotId);
+    }
+    debugLog.flush('stream-stop-grace-timeout', { slotId });
+  }, STOP_GRACE_MS);
 }
 
 /**

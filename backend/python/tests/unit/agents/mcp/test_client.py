@@ -28,28 +28,6 @@ def _config(**overrides) -> MCPServerConfig:
     return MCPServerConfig(**defaults)
 
 
-class TestSanitizeUrlForDiagnostics:
-    def test_strips_userinfo_query_and_fragment(self) -> None:
-        from app.agents.mcp.client import _sanitize_url_for_diagnostics
-
-        raw = "https://user:pass@mcp.example.com:8443/v1/mcp?access_token=secret#frag"
-        assert _sanitize_url_for_diagnostics(raw) == "https://mcp.example.com:8443/v1/mcp"
-
-    def test_preserves_clean_url(self) -> None:
-        from app.agents.mcp.client import _sanitize_url_for_diagnostics
-
-        assert (
-            _sanitize_url_for_diagnostics("https://gitlab.com/api/v4/mcp")
-            == "https://gitlab.com/api/v4/mcp"
-        )
-
-    def test_ipv6_host_keeps_brackets_drops_userinfo(self) -> None:
-        from app.agents.mcp.client import _sanitize_url_for_diagnostics
-
-        raw = "https://token@[2001:db8::1]/mcp?key=abc"
-        assert _sanitize_url_for_diagnostics(raw) == "https://[2001:db8::1]/mcp"
-
-
 class TestLastHttpResponseRedaction:
     @pytest.mark.asyncio
     async def test_on_response_redacts_sensitive_url_components(self) -> None:

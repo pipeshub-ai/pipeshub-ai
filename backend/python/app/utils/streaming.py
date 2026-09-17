@@ -23,6 +23,7 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import map_source_status
 from app.modules.agents.qna.reference_data import normalize_reference_data_items
 from app.modules.parsers.excel.prompt_template import RowDescriptions
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -147,7 +148,12 @@ ANTHROPIC_LEGACY_MODEL_PATTERNS = [
 ]
 
 
-async def stream_content(signed_url: str, record_id: str | None = None, file_name: str | None = None) -> AsyncGenerator[bytes, None]:
+async def stream_content(
+    signed_url: str,
+    record_id: str | None = None,
+    file_name: str | None = None,
+    connector: str | None = None,
+) -> AsyncGenerator[bytes, None]:
     # Validate that signed_url is actually a string, not a coroutine
     if not isinstance(signed_url, str):
         error_msg = f"Expected signed_url to be a string, but got {type(signed_url).__name__}"
@@ -222,52 +228,95 @@ async def stream_content(signed_url: str, record_id: str | None = None, file_nam
                         logger.error(
                             f"❌ HTTP {response.status}: Failed to fetch file content. {log_prefix}{error_details}"
                         )
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Failed to fetch file content: {response.status}{error_details}"
+                    # error_details stays in the log: it can contain presigned
+                    # URL internals and bucket names.
+                    raise map_source_status(
+                        response.status,
+                        connector=connector,
+                        retry_after=response.headers.get("Retry-After")
+                        if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value
+                        else None,
                     )
                 async for chunk in response.content.iter_chunked(8192):
                     yield chunk
+    except asyncio.TimeoutError as e:
+        logger.error(f"❌ TIMEOUT: Fetching file content timed out | {log_prefix}")
+        raise map_source_status(
+            HttpStatusCode.GATEWAY_TIMEOUT.value, connector=connector
+        ) from e
     except aiohttp.ClientError as e:
         logger.error(
             f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {str(e)} | {log_prefix}"
         )
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Failed to fetch file content from signed URL {str(e)}"
-        )
+        raise map_source_status(
+            HttpStatusCode.BAD_GATEWAY.value, connector=connector
+        ) from e
+
+
+async def start_streaming_response(response: StreamingResponse) -> StreamingResponse:
+    """Pull the first chunk before the response starts.
+
+    Starlette sends ``http.response.start`` — committing the status code —
+    before it asks the body iterator for anything. Connectors that call the
+    source API lazily inside that iterator (Slack file downloads, Confluence
+    attachments) would otherwise fail after a 200 was already on the wire,
+    leaving the client with a truncated body that looks like success.
+
+    Draining one chunk here moves that call ahead of the status commit. A
+    failure *after* the first chunk still cannot change the status; those
+    abort the response instead.
+    """
+    response.body_iterator = await stream_with_eager_first_chunk(response.body_iterator)
+    return response
+
+
+async def _aclose(source: object) -> None:
+    """Close *source* if it is a generator. Starlette wraps a sync iterable in
+    `iterate_in_threadpool`, which has no `aclose`, so this cannot assume one."""
+    closer = getattr(source, "aclose", None)
+    if closer is None:
+        return
+    try:
+        await closer()
+    except Exception:
+        logger.debug("Failed to close stream source", exc_info=True)
 
 
 async def stream_with_eager_first_chunk(
-    source: AsyncGenerator[bytes, None],
-) -> AsyncGenerator[bytes, None]:
+    source: AsyncGenerator[bytes | str, None],
+) -> AsyncGenerator[bytes | str, None]:
     """Return a streaming generator after eagerly pulling its first chunk.
 
     Reading the first chunk before returning lets upstream auth / 404 / network
-    errors surface here, where they can still be converted to a clean HTTP 5xx,
+    errors surface here, where they can still be converted to a real HTTP status,
     rather than after ``StreamingResponse`` has already committed the status line
     and can only produce a truncated chunked body.
+
+    Chunks may be `str` as well as `bytes` — Starlette encodes either.
     """
     aiter = source.__aiter__()
     try:
         first = await aiter.__anext__()
     except StopAsyncIteration:
-        await source.aclose()
-        async def _empty() -> AsyncGenerator[bytes, None]:
+        await _aclose(source)
+        async def _empty() -> AsyncGenerator[bytes | str, None]:
             return
             yield b""  # noqa: unreachable — marks function as async generator
         return _empty()
     except Exception:
-        await source.aclose()
+        await _aclose(source)
         raise
 
-    async def _gen() -> AsyncGenerator[bytes, None]:
+    async def _gen() -> AsyncGenerator[bytes | str, None]:
+        # `finally` (not just falling off the end) so an abandoned download —
+        # the client disconnecting mid-file — still releases the upstream
+        # session. Starlette never closes `body_iterator` itself.
         try:
             yield first
             async for chunk in aiter:
                 yield chunk
         finally:
-            await source.aclose()
+            await _aclose(source)
 
     return _gen()
 

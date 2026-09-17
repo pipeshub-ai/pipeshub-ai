@@ -265,7 +265,15 @@ class PipesHubToolLoader:
 
             if ts_name in _KNOWLEDGE_TOOLSETS and not context.has_knowledge:
                 if state_logger:
-                    state_logger.debug("Skipping knowledge toolset with no knowledge configured: %s", ts_name)
+                    # `info`, not `debug`: this is the condition behind "the agent
+                    # answered as if it had searched and found nothing" (the prompt
+                    # says so explicitly — see `prompt_builder._NO_KNOWLEDGE_SOURCES`),
+                    # and it needs to be greppable in a running system without
+                    # turning debug logging on for everything else.
+                    state_logger.info(
+                        "Skipping knowledge toolset %s: no knowledge sources attached "
+                        "(conversation=%s)", ts_name, context.conversation_id,
+                    )
                 continue
 
             try:

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
@@ -15,7 +16,6 @@ from typing import (
     Tuple,
 )
 
-from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
@@ -26,13 +26,16 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    raise_for_stream_fetch,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -321,22 +324,30 @@ class BookStackConnector(BaseConnector):
             HTTPException if record cannot be streamed
         """
         if not self.data_source:
-            raise HTTPException(
-                status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail="BookStack connector not initialized"
-            )
+            raise connector_not_ready(self.display_name)
 
         record_id = record.external_record_id.split('/')[1]
         markdown_response = await self.data_source.export_page_markdown(record_id)
-        if not markdown_response.success:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="Record not found or access denied"
+        raw_markdown = (markdown_response.data or {}).get("markdown")
+        if not markdown_response.success or raw_markdown is None:
+            self.logger.error(
+                "BookStack markdown export failed for %s: %s",
+                record_id,
+                markdown_response.message or markdown_response.error,
             )
-        raw_markdown = markdown_response.data.get("markdown")
+            raise_for_stream_fetch(
+                success=markdown_response.success,
+                has_payload=raw_markdown is not None,
+                connector=self.display_name,
+                status=markdown_response.status_code,
+                message=markdown_response.message or markdown_response.error,
+            )
+
+        async def _markdown_stream() -> AsyncGenerator[bytes, None]:
+            yield raw_markdown.encode("utf-8")
 
         return create_stream_record_response(
-            raw_markdown,
+            _markdown_stream(),
             filename=record.record_name,
             mime_type=record.mime_type,
             fallback_filename=f"record_{record.id}"

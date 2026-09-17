@@ -27,10 +27,12 @@ from app.api.routes.mcp_resolvers import (
 from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.api.middlewares.auth import (
     authMiddleware,
+    deny_service_tokens,
     extract_bearer_token,
     get_config_service,
     isJwtTokenValid,
     require_scopes,
+    require_service_token,
 )
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router

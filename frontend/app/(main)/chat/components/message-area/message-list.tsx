@@ -83,6 +83,8 @@ interface MessagePair {
   persistedAskUserQuestion?: AskUserQuestionPayload;
   /** Persisted agent-activity transcript (absent for older / legacy-protocol messages) */
   persistedParts?: MessagePart[];
+  /** Set when this response was cut short by a user-initiated Stop. */
+  status?: 'stopped';
 }
 
 export function MessageList() {
@@ -263,6 +265,7 @@ export function MessageList() {
           feedbackInfo?: { value?: 'like' | 'dislike' };
           persistedAskUserQuestion?: AskUserQuestionPayload;
           persistedParts?: MessagePart[];
+          status?: 'stopped';
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
@@ -271,6 +274,7 @@ export function MessageList() {
           feedbackInfo?: { value?: 'like' | 'dislike' };
           persistedAskUserQuestion?: AskUserQuestionPayload;
           persistedParts?: MessagePart[];
+          status?: 'stopped';
         } | undefined;
 
         // Find preceding user message
@@ -322,6 +326,7 @@ export function MessageList() {
           attachments: userMessageAttachments,
           persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
           persistedParts: metadata?.persistedParts,
+          status: metadata?.status,
         });
       }
     }
@@ -1184,6 +1189,7 @@ export function MessageList() {
                   persistedParts={pair.persistedParts}
                   persistedAskUserQuestion={pair.persistedAskUserQuestion}
                   feedbackInfo={pair.feedbackInfo}
+                  status={pair.status}
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.

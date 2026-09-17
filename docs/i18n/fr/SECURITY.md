@@ -14,7 +14,7 @@ Nous prenons les vulnérabilités de sécurité au sérieux et apprécions vos e
 
 **Veuillez NE PAS créer d'issues GitHub publiques pour les vulnérabilités de sécurité.**
 
-Signalez plutôt les vulnérabilités de sécurité par e-mail à : **abhishek@pipeshub.com**
+Signalez plutôt les vulnérabilités de sécurité par e-mail à : **security@pipeshub.com**
 
 ### Ce qu'il faut inclure
 

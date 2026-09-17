@@ -616,9 +616,10 @@
     "diagramRenderFailed": "Could not render diagram",
     "showDiagramSource": "Show source",
     "hideDiagramSource": "Hide source",
+    "stoppedMarker": "Stopped",
     "toasts": {
-      "stopStreamTitle": "Coming Soon",
-      "stopStreamDescription": "Stop Generation is not supported",
+      "stopStreamTitle": "Stopping…",
+      "stopStreamDescription": "The response will stop shortly. Any partial answer will be kept.",
       "editComingSoonTitle": "Coming Soon",
       "editComingSoonDescription": "We're building out support for edit",
       "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",

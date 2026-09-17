@@ -59,7 +59,7 @@
 - 📝 **Erklärbare Antworten:** PipesHub liefert fundierte Antworten mit präzisen Block-Zitaten zu den Originaldokumenten.
 - 🔒 **Berechtigungsbewusste Suche:** Erzwingt Zugriffskontrollen auf Quellenebene, sodass Nutzer nur das sehen, wozu sie berechtigt sind.
 - 🕸️ **Wissensgraph-Abruf:** Graphgestützter Abruf, der Beziehungen über Unternehmensdaten hinweg erfasst.
-- 🔌 **Unternehmens-Konnektoren:** Über 30 Konnektoren mit Echtzeit- und geplanter Indexierung – sofort einsatzbereit.
+- 🔌 **Unternehmens-Konnektoren:** Über 50 Konnektoren mit Echtzeit- und geplanter Indexierung – sofort einsatzbereit.
 - 🔍 **Einheitliche Suche, Deep Research und Agenten:** Suche, Q&A, Deep Research, Websuche und KI-Agenten auf einer einzigen Kontextschicht.
 - 📊 **Artefakte und Codeausführung:** Erstelle Berichte, Diagramme und Dashboards in einer sicheren Ausführungs-Sandbox.
 - 🎙️ **Multimodale Unterstützung:** Verständnis von Bildern, Diagrammen und gescannten Dateien sowie sprachbasierte Interaktion.
@@ -86,51 +86,6 @@
 <p align="center">
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
-
-## Unterstützte Dateiformate
-
-| Format | Details |
-|--------|---------|
-| PDF | Einschließlich gescannter PDFs |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Kommagetrennte Werte |
-| Markdown | .md-Dateien |
-| HTML | Webseiten |
-| Text | Reine Textdateien |
-| Google Docs, Sheets, Slides | Google-Workspace-Formate |
-| Bilder | PNG, JPG usw. |
-| Audio | Audiodateien |
-| Video | Videodateien |
-
-## Technologie-Stack
-
-### Frontend
-
-| Technologie | Beschreibung |
-|-----------|-------------|
-| Next.js | App-Router-UI (clientseitig gerendertes React) |
-| TypeScript | Stark typisierte JavaScript-Obermenge |
-| Radix UI Themes | Barrierefreie Komponenten-Primitive und Styling |
-| Zod | Schemavalidierung und -parsing |
-| React Hook Form | Flexible Verwaltung des Formularzustands |
-
-### Backend
-
-| Technologie | Beschreibung |
-|-----------|-------------|
-| FastAPI | Hochperformantes Python-Web-Framework |
-| LangChain | Framework für LLM-Pipelines |
-| Qdrant | Engine für Vektor-Ähnlichkeitssuche |
-| Neo4j / ArangoDB | Graphdatenbank |
-| Kafka / Redis Streams | Verteilte Event-Streaming-Plattform |
-| Redis | Caching |
-| Redis / etcd3 | Verteilter Key-Value-Konfigurationsspeicher |
-| Celery | Verteiltes Task-Queue-System |
-| Docling | Toolkit zum Parsen und Extrahieren von Dokumenten |
-| PyMuPDF | Bibliothek zur PDF-Verarbeitung |
-| pandas | Datenanalyse und -verarbeitung |
 
 ## 🚀 Bereitstellungsanleitung
 
@@ -246,7 +201,11 @@ PipesHub ist vollständig quelloffen (Apache 2.0) und selbst hostbar – deine D
 
 ### Welche Konnektoren unterstützt PipesHub?
 
-PipesHub verfügt über mehr als 30 Unternehmens-Konnektoren mit Echtzeit- und geplanter Indexierung. Es unterstützt Dateiformate wie PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, Bilder, Audio und Video.
+PipesHub verfügt über mehr als 50 Unternehmens-Konnektoren mit Echtzeit- und geplanter Indexierung. Siehe die [Konnektoren-Übersicht](https://docs.pipeshub.com/connectors/overview).
+
+### Welche Dateiformate kann PipesHub indexieren?
+
+PDF (einschließlich Scans), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, reiner Text und Bilder. Audio und Video können gespeichert, aber noch nicht indexiert werden. Der Speicherdienst akzeptiert eine größere Menge an MIME-Typen — siehe [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### Wie stelle ich PipesHub bereit?
 
@@ -264,7 +223,19 @@ Hinweis: Verwende HTTPS für Cloud-Bereitstellungen. HTTP kann zu Sicherheitsblo
 
 ### Welche LLM-Anbieter unterstützt PipesHub?
 
-PipesHub folgt dem Prinzip „Bring dein eigenes Modell mit“ – du kannst jeden LLM-Anbieter verwenden. Stelle in deiner VPC die Modelle deiner Wahl bereit. Der Technologie-Stack umfasst LangChain für LLM-Pipelines und -Workflows.
+PipesHub folgt dem Prinzip „Bring dein eigenes Modell mit“ – du kannst jeden LLM-Anbieter verwenden. Stelle in deiner VPC die Modelle deiner Wahl bereit.
+
+### Wie sieht der Technologie-Stack aus?
+
+PipesHub besteht aus drei Teilen:
+
+- **Web-App** (Next.js) — Suche, Chat und Verwaltung im Browser.
+- **API** (Node.js) — Konten, Berechtigungen, Wissensdatenbanken und Dateien.
+- **Python-Dienste** — Konnektoren synchronisieren deine Quellen; die Indexierung zerlegt Dokumente; die Abfrage antwortet mit Zitaten.
+
+Diese Dienste rufen **KI-Modelle auf, die du mitbringst**. Ein **Embedding-Modell** macht aus Text Vektoren für die Suche. Ein **LLM** schreibt die zitierte Antwort. Nutze einen beliebigen Anbieter oder ein lokales Modell (Ollama); ein lokaler Embedding-Server ist die Voreinstellung.
+
+Die Daten liegen in einem Wissensgraphen (standardmäßig Neo4j, sonst ArangoDB), einem Vektorspeicher (Qdrant) und MongoDB. Redis ist der Cache. Dateien liegen auf der Festplatte oder in Object Storage. Die Dienste übergeben einander Arbeit über Redis auf einem lokalen Rechner, oder über Kafka in einer größeren Umgebung. Siehe die [Systemübersicht](https://docs.pipeshub.com/system-overview).
 
 ### Was ist die Funktion zum Wissensgraph-Abruf?
 

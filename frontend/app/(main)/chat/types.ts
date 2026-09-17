@@ -764,6 +764,8 @@ export interface ConversationMessage {
   reasoning?: ReasoningTurn[];
   /** Persisted agent-activity transcript (`agui` protocol only) — see MessagePart. */
   parts?: MessagePart[];
+  /** Set when this bot response was cut short by a user-initiated Stop (see Node's `IMessage.status`). */
+  status?: 'stopped';
 }
 
 export interface ConversationCompleteData {
@@ -864,6 +866,13 @@ export interface StreamChatRequest {
    * reasoning-capable model. Omitted → backend uses the model's own default.
    */
   reasoningEffort?: ReasoningEffort;
+  /**
+   * Client-generated UUID for this run, minted before the fetch in
+   * `streamMessageForSlot`/`streamRegenerateForSlot`. Lets a later
+   * `POST .../cancel` (see `ChatApi.cancelStream`) target this exact run —
+   * see `cancelRunBodySchema` (Node) / `CancelRunRequest` (Python).
+   */
+  runId?: string;
 }
 
 /**
@@ -1020,6 +1029,23 @@ export interface ChatSlot {
 
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
+
+  /**
+   * Client-generated UUID for the in-flight run, minted in
+   * `streamMessageForSlot`/`streamRegenerateForSlot` and sent to the backend
+   * so a later Stop can target this exact run. `null` when nothing is
+   * streaming. NOT cleared until the run fully settles (grace-timeout abort
+   * fallback in `stopStreamForSlot` still needs it after `stopping` starts).
+   */
+  runId: string | null;
+  /**
+   * True from the moment Stop is clicked until the run actually ends
+   * (`RUN_FINISHED` with `status: 'stopped'`, or the 5s grace-timeout abort
+   * fallback in `stopStreamForSlot`). Disables a second Stop click / shows a
+   * "Stopping…" affordance instead of hard-aborting immediately, so Python
+   * gets a chance to persist the partial answer before the connection dies.
+   */
+  stopping: boolean;
 
   /**
    * Tracks message pagination for the "load older messages" flow.

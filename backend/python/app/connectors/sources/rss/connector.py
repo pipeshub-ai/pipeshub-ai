@@ -24,13 +24,22 @@ from app.config.constants.arangodb import (
     OriginTypes,
 )
 from app.connectors.core.constants import IconPaths
-from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
+from app.connectors.sources.web.fetch_strategy import (
+    FetchResponse,
+    fetch_url_with_fallback,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
@@ -475,10 +484,23 @@ class RSSConnector(BaseConnector):
         self.logger.info(f"✅ Processed {processed_count} articles from '{feed_title}'")
         return processed_count
 
+    def _source_fetch_error(self, result: Optional[FetchResponse]) -> HTTPException:
+        """Map a failed `fetch_url_with_fallback` result onto our HTTP status."""
+        retry_after = getattr(result, "retry_after", None)
+        return map_source_status(
+            result.status_code if result else HttpStatusCode.BAD_GATEWAY.value,
+            connector=self.display_name,
+            retry_after=str(int(retry_after)) if retry_after else None,
+        )
+
     async def _fetch_and_parse_feed(
-        self, feed_url: str
+        self, feed_url: str, raise_on_error: bool = False
     ) -> Optional[feedparser.FeedParserDict]:
-        """Fetch and parse an RSS/Atom feed URL."""
+        """Fetch and parse an RSS/Atom feed URL.
+
+        Sync walks many feeds and must survive one bad feed, so failures return
+        None unless *raise_on_error* — the streaming path needs the real status.
+        """
         try:
             result = await fetch_url_with_fallback(
                 url=feed_url, session=self.session, logger=self.logger
@@ -486,6 +508,8 @@ class RSSConnector(BaseConnector):
             if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
                 status = result.status_code if result else "no response"
                 self.logger.warning(f"⚠️ HTTP {status} fetching feed: {feed_url}")
+                if raise_on_error:
+                    raise self._source_fetch_error(result)
                 return None
 
             feed = feedparser.parse(result.content_bytes)
@@ -498,11 +522,17 @@ class RSSConnector(BaseConnector):
 
             return feed
 
-        except asyncio.TimeoutError:
+        except HTTPException:
+            raise
+        except asyncio.TimeoutError as e:
             self.logger.warning(f"⚠️ Timeout fetching feed: {feed_url}")
+            if raise_on_error:
+                raise to_stream_error(e, connector=self.display_name) from e
             return None
         except Exception as e:
             self.logger.error(f"❌ Error fetching feed {feed_url}: {e}", exc_info=True)
+            if raise_on_error:
+                raise to_stream_error(e, connector=self.display_name) from e
             return None
 
     async def _process_entry(
@@ -575,12 +605,15 @@ class RSSConnector(BaseConnector):
 
         return file_record, permissions
 
-    async def _fetch_article_content(self, url: str) -> str:
+    async def _fetch_article_content(self, url: str, raise_on_error: bool = False) -> str:
         """
         Fetch the full article page and extract clean text content.
 
         Args:
             url: Article URL to crawl
+            raise_on_error: Surface the source's status instead of returning "".
+                Sync treats a failed crawl as "no extra content"; streaming must
+                not report a blocked page as an empty document.
 
         Returns:
             Cleaned text content or empty string on failure
@@ -592,6 +625,8 @@ class RSSConnector(BaseConnector):
             if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
                 status = result.status_code if result else "no response"
                 self.logger.debug(f"⚠️ HTTP {status} for article: {url}")
+                if raise_on_error:
+                    raise self._source_fetch_error(result)
                 return ""
 
             # Header casing varies across fetch strategies (aiohttp preserves case,
@@ -609,11 +644,17 @@ class RSSConnector(BaseConnector):
 
             return self._extract_text_content(result.content_bytes)
 
-        except asyncio.TimeoutError:
+        except HTTPException:
+            raise
+        except asyncio.TimeoutError as e:
             self.logger.debug(f"⚠️ Timeout fetching article: {url}")
+            if raise_on_error:
+                raise to_stream_error(e, connector=self.display_name) from e
             return ""
         except Exception as e:
             self.logger.debug(f"⚠️ Error fetching article {url}: {e}")
+            if raise_on_error:
+                raise to_stream_error(e, connector=self.display_name) from e
             return ""
 
     def _extract_title_from_url(self, url: str) -> str:
@@ -721,16 +762,27 @@ class RSSConnector(BaseConnector):
         the entry has aged out of the feed. No article-page crawl is needed for the
         default (feed-content) path.
         """
+        if not self.session:
+            raise connector_not_ready(self.display_name)
+
         article_url = record.weburl
         feed_url = record.external_record_group_id
         guid = record.external_record_id
 
         try:
             content_text = ""
+            # The feed and the article page are two chances at the same content,
+            # so a failure on either is only fatal if the other yields nothing.
+            # Held here so the user gets that status instead of a bare 404.
+            source_error: Optional[HTTPException] = None
 
             # Preferred path: reproduce sync from the feed entry
             if feed_url:
-                feed = await self._fetch_and_parse_feed(feed_url)
+                feed = None
+                try:
+                    feed = await self._fetch_and_parse_feed(feed_url, raise_on_error=True)
+                except HTTPException as exc:
+                    source_error = exc
                 if feed and feed.entries:
                     entry = None
                     for candidate in feed.entries:
@@ -747,16 +799,18 @@ class RSSConnector(BaseConnector):
 
             # Fallback: entry aged out of the feed → crawl the article page directly
             if not content_text and article_url:
-                content_text = await self._fetch_article_content(article_url)
+                try:
+                    content_text = await self._fetch_article_content(
+                        article_url, raise_on_error=True
+                    )
+                except HTTPException as exc:
+                    source_error = exc
 
             # Every feed entry carries at least a title, so empty content here means
             # both the feed fetch and the article crawl failed. Fail loud so indexing
             # retries (FAILED) instead of marking the record terminally EMPTY.
             if not content_text:
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_GATEWAY.value,
-                    detail=f"Failed to resolve content for {article_url}",
-                )
+                raise source_error or not_found_at_source(self.display_name)
 
             content_bytes = content_text.encode("utf-8")
             return create_stream_record_response(

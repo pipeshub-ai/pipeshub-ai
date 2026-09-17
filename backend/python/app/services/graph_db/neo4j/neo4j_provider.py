@@ -5142,6 +5142,27 @@ class Neo4jProvider(IGraphDBProvider):
                 if k not in ["kb", "apps"] and v
             }
 
+            # Reclassify KB app IDs that arrived in the apps filter.
+            # MCP and some API clients send all source IDs (connectors + KB
+            # collections) in a single `apps` array; the backend must route
+            # KB IDs to the KB query path so Scenario 4 does not silently
+            # drop them.  Only IDs the user can actually access are moved.
+            if connector_ids_filter and kb_app_ids_set:
+                kb_in_apps = [
+                    cid for cid in connector_ids_filter
+                    if cid in kb_app_ids_set
+                ]
+                if kb_in_apps:
+                    self.logger.debug(
+                        f"Reclassifying {len(kb_in_apps)} KB app ID(s) "
+                        f"from apps to kb filter: {kb_in_apps}"
+                    )
+                    connector_ids_filter = [
+                        cid for cid in connector_ids_filter
+                        if cid not in kb_app_ids_set
+                    ]
+                    kb_ids = list(dict.fromkeys((kb_ids or []) + kb_in_apps))
+
             has_kb_filter = kb_ids is not None and len(kb_ids) > 0
             has_app_filter = connector_ids_filter is not None and len(connector_ids_filter) > 0
 
@@ -11080,12 +11101,17 @@ class Neo4jProvider(IGraphDBProvider):
             return []
         try:
             label = collection_to_label(CollectionNames.RECORDS.value)
+            queued_stamp = (
+                ", n.queuedAtTimestamp = $now"
+                if new_status == ProgressStatus.QUEUED.value
+                else ""
+            )
             # MATCH + SET in one statement; a read-then-write would let the
             # indexing service advance a record in between and get clobbered.
             query = f"""
             MATCH (n:{label})
             WHERE n.id IN $keys AND n.indexingStatus = $expected
-            SET n.indexingStatus = $new_status
+            SET n.indexingStatus = $new_status{queued_stamp}
             RETURN n.id AS id
             """
             results = await self.client.execute_query(
@@ -11094,6 +11120,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "keys": unique_ids,
                     "expected": expected,
                     "new_status": new_status,
+                    "now": get_epoch_timestamp_in_ms(),
                 },
                 txn_id=transaction,
             )

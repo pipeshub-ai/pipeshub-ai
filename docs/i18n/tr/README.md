@@ -59,7 +59,7 @@
 - 📝 **Açıklanabilir Yanıtlar:** PipesHub, orijinal belgelere kesin blok alıntıları içeren, dayanağı olan yanıtlar sunar.
 - 🔒 **İzin Farkında Arama:** Kaynak düzeyinde erişim denetimlerini uygular; böylece kullanıcılar yalnızca yetkili oldukları içeriği görür.
 - 🕸️ **Bilgi Grafiği ile Erişim:** Kurumsal veriler arasındaki ilişkileri yakalayan, grafik tabanlı erişim.
-- 🔌 **Kurumsal Bağlayıcılar:** Gerçek zamanlı ve zamanlanmış indeksleme ile kutudan çıkar çıkmaz kullanılabilen 30'dan fazla bağlayıcı.
+- 🔌 **Kurumsal Bağlayıcılar:** Gerçek zamanlı ve zamanlanmış indeksleme ile kutudan çıkar çıkmaz kullanılabilen 50'den fazla bağlayıcı.
 - 🔍 **Birleşik Arama, Derin Araştırma ve Ajanlar:** Tek bir bağlam katmanı üzerinde arama, soru-cevap, derin araştırma, web araması ve yapay zekâ ajanları.
 - 📊 **Yapıtlar ve Kod Yürütme:** Güvenli bir yürütme korumalı alanında raporlar, grafikler ve panolar oluşturun.
 - 🎙️ **Çok Modlu Destek:** Görüntü, diyagram ve taranmış dosya anlama ile birlikte sesli etkileşim.
@@ -86,51 +86,6 @@
 <p align="center">
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
-
-## Desteklenen Dosya Biçimleri
-
-| Biçim | Ayrıntılar |
-|--------|---------|
-| PDF | Taranmış PDF'ler dahil |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Virgülle ayrılmış değerler |
-| Markdown | .md dosyaları |
-| HTML | Web sayfaları |
-| Text | Düz metin dosyaları |
-| Google Docs, Sheets, Slides | Google Workspace biçimleri |
-| Görüntüler | PNG, JPG vb. |
-| Ses | Ses dosyaları |
-| Video | Video dosyaları |
-
-## Teknoloji Yığını
-
-### Ön Uç (Frontend)
-
-| Teknoloji | Açıklama |
-|-----------|-------------|
-| Next.js | App Router arayüzü (istemcide işlenen React) |
-| TypeScript | Güçlü tipli JavaScript üst kümesi |
-| Radix UI Themes | Erişilebilir bileşen ilkelleri ve stillendirme |
-| Zod | Şema doğrulama ve ayrıştırma |
-| React Hook Form | Esnek form durumu yönetimi |
-
-### Arka Uç (Backend)
-
-| Teknoloji | Açıklama |
-|-----------|-------------|
-| FastAPI | Yüksek performanslı Python web çerçevesi |
-| LangChain | LLM ardışık düzenleri için çerçeve |
-| Qdrant | Vektör benzerliği arama motoru |
-| Neo4j / ArangoDB | Grafik veritabanı |
-| Kafka / Redis Streams | Dağıtık olay akışı platformu |
-| Redis | Önbellekleme |
-| Redis / etcd3 | Dağıtık anahtar-değer yapılandırma deposu |
-| Celery | Dağıtık görev kuyruğu sistemi |
-| Docling | Belge ayrıştırma ve çıkarma araç seti |
-| PyMuPDF | PDF işleme kitaplığı |
-| pandas | Veri analizi ve işleme |
 
 ## 🚀 Dağıtım Kılavuzu
 
@@ -246,7 +201,11 @@ PipesHub tamamen açık kaynaklıdır (Apache 2.0) ve kendi sunucunuzda barınd�
 
 ### PipesHub hangi bağlayıcıları destekler?
 
-PipesHub'ın gerçek zamanlı ve zamanlanmış indekslemeli 30'dan fazla kurumsal bağlayıcısı vardır. PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, görüntü, ses ve video gibi dosya biçimlerini destekler.
+PipesHub'ın gerçek zamanlı ve zamanlanmış indekslemeli 50'den fazla kurumsal bağlayıcısı vardır. [Bağlayıcı genel bakışına](https://docs.pipeshub.com/connectors/overview) bakın.
+
+### PipesHub hangi dosya biçimlerini indeksleyebilir?
+
+PDF (taramalar dahil), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, düz metin ve görüntüler. Ses ve video depolanabilir ancak henüz indekslenmez. Depolama daha geniş bir MIME türü kümesini kabul eder — [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage) sayfasına bakın.
 
 ### PipesHub'ı nasıl dağıtırım?
 
@@ -264,7 +223,19 @@ Not: Bulut dağıtımları için HTTPS kullanın. HTTP, ön uçta güvenlik enge
 
 ### PipesHub hangi LLM sağlayıcılarını destekler?
 
-PipesHub "Kendi Modelini Getir" yaklaşımını benimser — herhangi bir LLM sağlayıcısını kullanabilirsiniz. Tercih ettiğiniz modellerle kendi VPC'nizde dağıtım yapın. Teknoloji yığını, LLM ardışık düzenleri ve iş akışları için LangChain içerir.
+PipesHub "Kendi Modelini Getir" yaklaşımını benimser — herhangi bir LLM sağlayıcısını kullanabilirsiniz. Tercih ettiğiniz modellerle kendi VPC'nizde dağıtım yapın.
+
+### Teknoloji yığını nedir?
+
+PipesHub üç parçadan oluşur:
+
+- **Web uygulaması** (Next.js) — tarayıcıda arama, sohbet ve yönetim.
+- **API** (Node.js) — hesaplar, izinler, bilgi tabanları ve dosyalar.
+- **Python hizmetleri** — bağlayıcılar kaynaklarınızı senkronize eder; indeksleme belgeleri ayrıştırır; sorgu alıntılarla yanıtlar.
+
+Bu hizmetler **sizin getirdiğiniz yapay zekâ modellerini** çağırır. Bir **gömme modeli** metni arama için vektöre çevirir. Bir **LLM** alıntılı yanıtı yazar. Herhangi bir sağlayıcı veya yerel bir model (Ollama) kullanın; yerel gömme sunucusu varsayılandır.
+
+Veriler bir bilgi grafiğinde (varsayılan Neo4j, alternatif ArangoDB), bir vektör deposunda (Qdrant) ve MongoDB'de durur. Önbellek Redis'tir. Dosyalar diskte veya nesne depolamada durur. Hizmetler işi yerel makinede Redis üzerinden, daha büyük bir kurulumda Kafka üzerinden birbirine aktarır. [Sistem genel bakışına](https://docs.pipeshub.com/system-overview) bakın.
 
 ### Bilgi Grafiği ile Erişim özelliği nedir?
 

@@ -37,6 +37,11 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    internal_service_status,
+    map_source_status,
+)
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
@@ -3222,6 +3227,10 @@ class WebConnector(BaseConnector):
 
             # Fallback: live fetch (for legacy records without stored content)
             if not record.weburl:
+                if record.storage_document_id:
+                    # The read above failed and there is no live URL to fall
+                    # back on — a storage outage, not a deleted page.
+                    raise internal_service_status(HttpStatusCode.BAD_GATEWAY.value)
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value,
                     detail=f"No stored content and no web URL for record {record.record_name} (id:{record.id})",
@@ -3230,10 +3239,7 @@ class WebConnector(BaseConnector):
             referer = self.url if self.url else None
 
             if self.session is None:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Session not initialized",
-                )
+                raise connector_not_ready(self.display_name)
 
             if self.use_headless_browser and self.crawl4ai_fetcher:
                 result = await self._headless_fetch(record.weburl)
@@ -3245,10 +3251,29 @@ class WebConnector(BaseConnector):
                     referer=referer,
                 )
 
-            if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
-                raise HTTPException(
-                    status_code=result.status_code if result else 502,
-                    detail=f"Failed to fetch {record.weburl}",
+            # The crawled site's status is never returned as our own: a 401 from
+            # any target site would trip the frontend's axios interceptor and log
+            # the user out of PipesHub, and sites emit non-standard codes (999)
+            # that Starlette would hand to the client verbatim.
+            if (
+                result is None
+                or not result.success
+                or result.status_code >= HttpStatusCode.BAD_REQUEST.value
+            ):
+                self.logger.warning(
+                    "Web fetch failed for record %s: status=%s error=%s",
+                    record.id,
+                    result.status_code if result else "no response",
+                    result.error_message if result else None,
+                )
+                raise map_source_status(
+                    result.status_code if result else HttpStatusCode.BAD_GATEWAY.value,
+                    connector=self.display_name,
+                    retry_after=(
+                        str(int(result.retry_after))
+                        if result and result.retry_after
+                        else None
+                    ),
                 )
 
             content_bytes = result.content_bytes

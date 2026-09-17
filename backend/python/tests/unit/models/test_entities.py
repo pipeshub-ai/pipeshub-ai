@@ -1,6 +1,7 @@
 """Tests for entities module: Record, TicketRecord, ProjectRecord, FileRecord, MailRecord, LinkRecord, ProductRecord, DealRecord."""
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,6 +31,7 @@ from app.models.entities import (
     SQLViewRecord,
     TicketRecord,
 )
+from app.models.permission import EntityType, Permission, PermissionType
 
 
 def _record_kwargs(**overrides):
@@ -45,6 +47,45 @@ def _record_kwargs(**overrides):
     }
     defaults.update(overrides)
     return defaults
+
+
+class TestTimestampDefaults:
+    """Defaults are evaluated per instance, not once at import.
+
+    Evaluated at import, every record built on the default carried the process
+    start time: after an hour of uptime all of them looked an hour old, and the
+    stranded-record sweep re-sent every one still queued.
+    """
+
+    def test_each_record_gets_its_own_timestamps(self) -> None:
+        first = Record(**_record_kwargs())
+        time.sleep(0.005)
+        second = Record(**_record_kwargs())
+        assert second.created_at > first.created_at
+        assert second.updated_at > first.updated_at
+
+    def test_each_permission_gets_its_own_timestamps(self) -> None:
+        first = Permission(type=PermissionType.READ, entity_type=EntityType.USER)
+        time.sleep(0.005)
+        second = Permission(type=PermissionType.READ, entity_type=EntityType.USER)
+        assert second.created_at > first.created_at
+
+    def test_queued_at_is_stored_only_once_set(self) -> None:
+        record = Record(**_record_kwargs())
+        assert "queuedAtTimestamp" not in record.to_arango_base_record()
+        record.queued_at = 123
+        assert record.to_arango_base_record()["queuedAtTimestamp"] == 123
+
+    def test_the_sweep_clocks_are_declared_in_the_record_schema(self) -> None:
+        """Arango enforces record_schema strictly: an undeclared field is rejected."""
+        schema = get_node_schema(CollectionNames.RECORDS.value)
+        doc = {
+            k: v
+            for k, v in Record(**_record_kwargs(queued_at=123)).to_arango_base_record().items()
+            if k != "_key"
+        }
+        doc["lastRepublishedAt"] = 456
+        jsonschema.validate(instance=doc, schema=schema)
 
 
 # ============================================================================

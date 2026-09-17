@@ -78,6 +78,12 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.gcs.gcs import GCSClient
 from app.sources.external.gcs.gcs import GCSDataSource
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
@@ -1277,7 +1283,7 @@ class GCSConnector(BaseConnector):
     async def get_signed_url(self, record: Record) -> str | None:
         """Generate a signed URL for a GCS object."""
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
         try:
             bucket_name = record.external_record_group_id
             if not bucket_name:
@@ -1309,36 +1315,24 @@ class GCSConnector(BaseConnector):
 
             if response.success and response.data:
                 return response.data.get("url")
-            else:
-                error_msg = response.error or "Unknown error"
-                error_str = str(error_msg)
-                if any(
-                    phrase in error_str
-                    for phrase in ["403", "denied", "permission", "PermissionDenied", "Forbidden"]
-                ):
-                    self.logger.error(
-                        f"❌ ACCESS DENIED: Failed to generate signed URL. "
-                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                    )
-                elif any(
-                    phrase in error_str
-                    for phrase in ["404", "NotFound", "NoSuchKey", "not found"]
-                ):
-                    self.logger.error(
-                        f"❌ KEY NOT FOUND: The object may not exist or the key is incorrect. "
-                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                    )
-                else:
-                    self.logger.error(
-                        f"❌ FAILED: Failed to generate signed URL. "
-                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                    )
-                return None
+
+            error_msg = response.error or "Unknown error"
+            # The status comes off the google.api_core exception. The error text
+            # embeds the bucket and object key, so matching phrases in it would
+            # let a key like "hr/permissions/2024.xlsx" pick the status.
+            source_status = getattr(response, "status_code", None)
+            self.logger.error(
+                f"❌ FAILED: Failed to generate signed URL (status {source_status}). "
+                f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
+            )
+            raise map_source_status(source_status, connector=self.display_name)
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(
-                f"Error generating signed URL for record {record.id}: {e}"
+                f"Error generating signed URL for record {record.id}: {e}", exc_info=True
             )
-            return None
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream GCS object content."""
@@ -1350,13 +1344,15 @@ class GCSConnector(BaseConnector):
 
         signed_url = await self.get_signed_url(record)
         if not signed_url:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="File not found or access denied",
-            )
+            raise not_found_at_source(self.display_name)
 
         return create_stream_record_response(
-            stream_content(signed_url, record_id=record.id, file_name=record.record_name),
+            stream_content(
+                signed_url,
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=self.display_name,
+            ),
             filename=record.record_name,
             mime_type=record.mime_type if record.mime_type else "application/octet-stream",
             fallback_filename=f"record_{record.id}"
