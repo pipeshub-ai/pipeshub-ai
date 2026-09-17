@@ -1597,7 +1597,6 @@ export class UserAccountController {
         recordEvent('login', {
           orgId: user.orgId?.toString(),
           userId: user._id?.toString(),
-          email: user.email,
           domain: domainFromEmail(user.email),
           first_login: isFirstLogin,
           auth_method: method,
