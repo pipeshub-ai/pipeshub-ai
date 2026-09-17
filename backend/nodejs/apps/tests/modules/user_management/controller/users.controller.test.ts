@@ -3393,15 +3393,16 @@ describe('UserController', () => {
       expect(userSave.called).to.be.false;
     });
 
-    it('undoes the user and group membership when the credential save fails', async () => {
-      // The credential is the last write; if it fails the account exists but
-      // cannot sign in, and its address is taken so recreating it is refused.
+    it('removes the saved user when the credential save fails, before any group write or event', async () => {
+      // The credential is saved right after the user and before the group
+      // membership and the creation event, so a failure has one thing to
+      // undo and nothing downstream has been told about the account.
       req.body = {
         email: 'alice@acme-demo.example',
         fullName: 'Alice Chen',
         password: 'Str0ng-pass!',
       };
-      sinon.stub(UserGroups, 'updateOne').resolves();
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
       sinon.stub(Users.prototype, 'save').resolves();
       sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential save failed'));
       const userDelete = sinon.stub(Users, 'deleteOne').resolves();
@@ -3411,7 +3412,45 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal('credential save failed');
       expect(userDelete.calledOnce).to.be.true;
+      expect(groupUpdate.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
       expect(res.status.called).to.be.false;
+    });
+
+    it('reports the credential error even when removing the half-created user fails', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(UserGroups, 'updateOne').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential save failed'));
+      sinon.stub(Users, 'deleteOne').rejects(new Error('db down'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('credential save failed');
+      expect(mockLogger.error.calledOnce).to.be.true;
+      expect(mockLogger.error.firstCall.args[0]).to.include('removing the account failed');
+    });
+
+    it('publishes the creation event only after the user and credential are saved', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      const order: string[] = [];
+      sinon.stub(Users.prototype, 'save').callsFake(async () => { order.push('user'); });
+      sinon.stub(UserCredentials.prototype, 'save').callsFake(async () => { order.push('credential'); });
+      sinon.stub(UserGroups, 'updateOne').callsFake(async () => { order.push('group'); });
+      mockEventService.publishEvent.callsFake(async () => { order.push('event'); });
+
+      await controller.createUser(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(order).to.deep.equal(['user', 'credential', 'group', 'event']);
     });
 
     it('should reject a weak starting password before creating anything', async () => {
@@ -3421,7 +3460,7 @@ describe('UserController', () => {
         password: 'weak',
       };
 
-      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
       const userSave = sinon.stub(Users.prototype, 'save').resolves();
 
       await controller.createUser(req, res, next);
