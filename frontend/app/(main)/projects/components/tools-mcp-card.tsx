@@ -86,7 +86,7 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
       setLoadError(false);
       try {
         const [toolsetsRes, mcpRes] = await Promise.all([
-          ToolsetsApi.getMyToolsets({ limit: MAX_TOOLSETS_LIST_LIMIT, authStatus: 'authenticated' }),
+          ToolsetsApi.getAllMyToolsets({ limitPerPage: MAX_TOOLSETS_LIST_LIMIT, authStatus: 'authenticated' }),
           mcpEnabled
             ? McpServersApi.getMyMcpServers(true)
             : Promise.resolve({ instances: [] as McpMyServerEntry[] }),

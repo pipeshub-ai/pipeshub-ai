@@ -161,6 +161,32 @@ class TestCreateKnowledgeBase:
         resp = client.post("/api/v1/kb/", json={"name": "Test"})
         assert resp.status_code == 500
 
+    def test_is_hidden_true_boolean_accepted(self):
+        app, kb_svc, _ = _make_app()
+        kb_svc.create_knowledge_base = AsyncMock(return_value={
+            "success": True, "id": "kb1", "name": "Hidden",
+            "createdAtTimestamp": 100, "updatedAtTimestamp": 100, "userRole": "OWNER"
+        })
+        client = TestClient(app)
+        resp = client.post("/api/v1/kb/", json={"name": "Hidden", "isHidden": True})
+        assert resp.status_code == 200
+        kb_svc.create_knowledge_base.assert_called_once()
+        call_kwargs = kb_svc.create_knowledge_base.call_args
+        assert call_kwargs.kwargs.get("is_hidden") is True
+
+    def test_is_hidden_string_rejected(self):
+        app, _, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post("/api/v1/kb/", json={"name": "Bad", "isHidden": "false"})
+        assert resp.status_code == 400
+        assert "boolean" in resp.json()["detail"].lower()
+
+    def test_is_hidden_integer_rejected(self):
+        app, _, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post("/api/v1/kb/", json={"name": "Bad", "isHidden": 1})
+        assert resp.status_code == 400
+
 
 class TestListUserKnowledgeBases:
     _valid_pagination = {

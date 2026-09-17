@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text, TextField } from '@radix-ui/themes';
+import type { ProjectSummary } from '@/chat/project-types';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SidebarBase, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
@@ -48,6 +49,14 @@ export function ProjectsSidebar() {
   const [search, setSearch] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
 
+  // Server-side search results, kept separate from the shared `projects`
+  // cache (`useChatStore.projects`) so searching here can never truncate the
+  // list `MoveToProjectDialog` reads from that same store field.
+  const [searchResults, setSearchResults] = useState<ProjectSummary[] | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState(false);
+  const searchRequestIdRef = useRef(0);
+
   const load = useCallback(async () => {
     setIsProjectsLoading(true);
     setProjectsError(null);
@@ -71,14 +80,55 @@ export function ProjectsSidebar() {
     load();
   }, [load, projectsVersion, projectsEnabled]);
 
+  // The cached `projects` list is capped at SIDEBAR_PROJECTS_FETCH_LIMIT, so
+  // filtering it in-memory would silently miss matches beyond the cap.
+  // Search the server instead once a query is entered; a request-id guard
+  // drops responses for a query the user has since changed or cleared.
+  useEffect(() => {
+    const query = search.trim();
+    if (!query) {
+      searchRequestIdRef.current += 1;
+      setSearchResults(null);
+      setIsSearching(false);
+      setSearchError(false);
+      return;
+    }
+    const requestId = ++searchRequestIdRef.current;
+    setIsSearching(true);
+    setSearchError(false);
+    const handle = setTimeout(() => {
+      ProjectApi.list({
+        scope: 'all',
+        limit: SIDEBAR_PROJECTS_FETCH_LIMIT,
+        includeArchived: false,
+        search: query,
+      })
+        .then(({ projects: rows }) => {
+          if (requestId !== searchRequestIdRef.current) return;
+          setSearchResults(rows);
+        })
+        .catch(() => {
+          if (requestId !== searchRequestIdRef.current) return;
+          setSearchResults([]);
+          setSearchError(true);
+        })
+        .finally(() => {
+          if (requestId === searchRequestIdRef.current) setIsSearching(false);
+        });
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [search]);
+
+  const isSearchActive = search.trim().length > 0;
+  const isListLoading = isSearchActive ? isSearching : isProjectsLoading;
+
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const rows = q ? projects.filter((p) => p.name.toLowerCase().includes(q)) : projects;
+    const rows = isSearchActive ? (searchResults ?? []) : projects;
     return [...rows].sort((a, b) => {
       if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
       return b.lastActivityAt - a.lastActivityAt;
     });
-  }, [projects, search]);
+  }, [projects, searchResults, isSearchActive]);
 
   const pinned = filtered.filter((p) => p.isPinned);
   const recent = filtered.filter((p) => !p.isPinned);
@@ -144,11 +194,15 @@ export function ProjectsSidebar() {
             addAriaLabel={t('chat.projects.newProject')}
           />
 
-          {projectsError ? (
+          {isSearchActive && searchError ? (
+            <Text size="1" style={{ padding: 'var(--space-2) var(--space-3)', color: '#ef4444' }}>
+              {t('chat.projects.failedToLoad')}
+            </Text>
+          ) : !isSearchActive && projectsError ? (
             <Text size="1" style={{ padding: 'var(--space-2) var(--space-3)', color: '#ef4444' }}>
               {projectsError}
             </Text>
-          ) : isProjectsLoading ? (
+          ) : isListLoading ? (
             <Flex direction="column" gap="1">
               {Array.from({ length: PROJECTS_SKELETON_COUNT }, (_, i) => (
                 <ChatItemSkeleton key={i} />

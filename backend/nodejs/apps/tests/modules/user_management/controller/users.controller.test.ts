@@ -134,11 +134,13 @@ describe('UserController', () => {
 
     next = sinon.stub();
 
-    // deleteUser awaits this; default to "no projects had a linked KB" so
-    // tests that don't care about project cleanup don't buffer against a
-    // real Mongo connection for 10s or hit the KB-revoke loop below it.
+    // deleteUser calls find-then-revoke-then-pull; default both to no-op
+    // so tests that don't care about project cleanup aren't affected.
+    if (!(ProjectService.findProjectsWithLinkedKbForUser as any).restore) {
+      sinon.stub(ProjectService, 'findProjectsWithLinkedKbForUser').resolves([]);
+    }
     if (!(ProjectService.removeUserFromAllProjects as any).restore) {
-      sinon.stub(ProjectService, 'removeUserFromAllProjects').resolves([]);
+      sinon.stub(ProjectService, 'removeUserFromAllProjects').resolves();
     }
   });
 

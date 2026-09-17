@@ -27,7 +27,8 @@
     "lastActive": "Aktiv {{date}}",
     "pinnedSection": "Angepinnt",
     "allSection": "Alle Projekte",
-    "backToAllProjects": "Alle Projekte"
+    "backToAllProjects": "Alle Projekte",
+    "loadMore": "Mehr laden"
   },
   "timeGroup": {
     "today": "Heute",
@@ -845,7 +846,12 @@
         "memberCount_other": "{{count}} Mitglieder",
         "share": "Teilen",
         "recentChatsTitle": "Letzte Chats",
-        "seeAllChats": "Alle Chats anzeigen"
+        "seeAllChats": "Alle Chats anzeigen",
+        "saveInstructionsFailed": "Anweisungen konnten nicht gespeichert werden",
+        "updateToolsFailed": "Tools konnten nicht aktualisiert werden",
+        "updatePinFailed": "Pin-Status konnte nicht aktualisiert werden",
+        "updateArchiveFailed": "Archivierungsstatus konnte nicht aktualisiert werden",
+        "shareRefreshFailed": "Freigabedetails konnten nicht aktualisiert werden"
       },
       "moveDialog": {
         "title": "In Projekt verschieben",
@@ -857,7 +863,8 @@
         "title": "Dieses Projekt löschen?",
         "description": "Das Projekt wird entfernt und die Verknüpfung mit den Chats aufgehoben. Die Chats selbst werden nicht gelöscht.",
         "confirm": "Projekt löschen",
-        "deleting": "Wird gelöscht…"
+        "deleting": "Wird gelöscht…",
+        "failed": "Projekt konnte nicht gelöscht werden"
       },
       "roles": {
         "owner": "Eigentümer",

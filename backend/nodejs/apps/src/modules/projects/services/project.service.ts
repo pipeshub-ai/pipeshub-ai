@@ -510,30 +510,50 @@ export class ProjectService {
    * this user as a member *and* a linked KB, so the caller can revoke the
    * corresponding graph permission — the pull below only touches Mongo.
    */
-  static async removeUserFromAllProjects(
+  /**
+   * Returns projects where the user is a member AND a linked KB exists —
+   * used by `deleteUser` to revoke KB permissions *before* pulling
+   * memberships. Finding first, revoking, then pulling guarantees that a
+   * failed revocation leaves the membership intact so a retry still finds
+   * the projects.
+   */
+  static async findProjectsWithLinkedKbForUser(
     orgId: string,
     userId: string,
   ): Promise<IProjectDocument[]> {
-    const orgObjId = new Types.ObjectId(orgId);
-    const userObjId = new Types.ObjectId(userId);
-    const affected = await Project.find({
-      orgId: orgObjId,
+    return Project.find({
+      orgId: new Types.ObjectId(orgId),
       isDeleted: false,
-      members: { $elemMatch: { principalType: 'user', principalId: userObjId } },
+      members: {
+        $elemMatch: {
+          principalType: 'user',
+          principalId: new Types.ObjectId(userId),
+        },
+      },
       linkedKnowledgeBaseId: { $ne: null },
     });
+  }
+
+  /**
+   * Pulls the user from every project's `members` array in this org.
+   * Call **after** any KB permission revocations that depend on finding
+   * the membership — see `findProjectsWithLinkedKbForUser`.
+   */
+  static async removeUserFromAllProjects(
+    orgId: string,
+    userId: string,
+  ): Promise<void> {
     await Project.updateMany(
-      { orgId: orgObjId },
+      { orgId: new Types.ObjectId(orgId) },
       {
         $pull: {
           members: {
             principalType: 'user',
-            principalId: userObjId,
+            principalId: new Types.ObjectId(userId),
           },
         },
       },
     );
-    return affected;
   }
 
   /**

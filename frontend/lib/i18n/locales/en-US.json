@@ -40,7 +40,8 @@
     "lastActive": "Active {{date}}",
     "pinnedSection": "Pinned",
     "allSection": "All projects",
-    "backToAllProjects": "All projects"
+    "backToAllProjects": "All projects",
+    "loadMore": "Load more"
   },
   "timeGroup": {
     "today": "Today",
@@ -863,7 +864,12 @@
         "memberCount_other": "{{count}} members",
         "share": "Share",
         "recentChatsTitle": "Recent chats",
-        "seeAllChats": "See all chats"
+        "seeAllChats": "See all chats",
+        "saveInstructionsFailed": "Failed to save instructions",
+        "updateToolsFailed": "Failed to update tools",
+        "updatePinFailed": "Failed to update pin status",
+        "updateArchiveFailed": "Failed to update archive status",
+        "shareRefreshFailed": "Failed to refresh sharing details"
       },
       "moveDialog": {
         "title": "Move to project",
@@ -875,7 +881,8 @@
         "title": "Delete this project?",
         "description": "This removes the project and unlinks its chats. The chats themselves are not deleted.",
         "confirm": "Delete project",
-        "deleting": "Deleting…"
+        "deleting": "Deleting…",
+        "failed": "Failed to delete project"
       },
       "roles": {
         "owner": "Owner",

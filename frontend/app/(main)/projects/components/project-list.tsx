@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Box, Flex, Text, TextField } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -112,33 +112,55 @@ export function ProjectList() {
 
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [search, setSearch] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
 
-  const load = useCallback(async (query: string) => {
-    setIsLoading(true);
+  // Guards against an in-flight request for a stale query/page overwriting
+  // the result of a newer one that resolves first.
+  const requestIdRef = useRef(0);
+
+  const load = useCallback(async (query: string, targetPage: number) => {
+    const requestId = ++requestIdRef.current;
+    if (targetPage === 1) setIsLoading(true);
+    else setIsLoadingMore(true);
     setHasError(false);
     try {
-      const { projects: rows } = await ProjectApi.list({
+      const { projects: rows, pagination } = await ProjectApi.list({
         scope: 'all',
+        page: targetPage,
         limit: PROJECT_LIST_PAGE_SIZE,
         includeArchived: false,
         ...(query.trim() ? { search: query.trim() } : {}),
       });
-      setProjects(rows);
+      if (requestId !== requestIdRef.current) return;
+      setProjects((prev) => (targetPage === 1 ? rows : [...prev, ...rows]));
+      setPage(targetPage);
+      setHasMore(targetPage < pagination.totalPages);
     } catch {
+      if (requestId !== requestIdRef.current) return;
       setHasError(true);
-      setProjects([]);
+      if (targetPage === 1) setProjects([]);
     } finally {
-      setIsLoading(false);
+      if (requestId === requestIdRef.current) {
+        setIsLoading(false);
+        setIsLoadingMore(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    const handle = setTimeout(() => void load(search), search ? 250 : 0);
+    const handle = setTimeout(() => void load(search, 1), search ? 250 : 0);
     return () => clearTimeout(handle);
   }, [search, load]);
+
+  const loadMore = () => {
+    if (isLoadingMore || !hasMore) return;
+    void load(search, page + 1);
+  };
 
   const openProject = (projectId: string) => {
     router.push(`/projects/?projectId=${encodeURIComponent(projectId)}`);
@@ -193,17 +215,26 @@ export function ProjectList() {
           </Text>
         </Flex>
       ) : (
-        <Box
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
-            gap: 'var(--space-4)',
-          }}
-        >
-          {sorted.map((project) => (
-            <ProjectCard key={project._id} project={project} onOpen={() => openProject(project._id)} />
-          ))}
-        </Box>
+        <Flex direction="column" gap="4">
+          <Box
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+              gap: 'var(--space-4)',
+            }}
+          >
+            {sorted.map((project) => (
+              <ProjectCard key={project._id} project={project} onOpen={() => openProject(project._id)} />
+            ))}
+          </Box>
+          {hasMore && (
+            <Flex justify="center">
+              <LoadingButton variant="outline" loading={isLoadingMore} onClick={loadMore}>
+                {t('projects.loadMore')}
+              </LoadingButton>
+            </Flex>
+          )}
+        </Flex>
       )}
 
       <CreateProjectDialog

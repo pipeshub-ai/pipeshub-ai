@@ -40,7 +40,8 @@
     "lastActive": "活躍於 {{date}}",
     "pinnedSection": "已置頂",
     "allSection": "所有專案",
-    "backToAllProjects": "所有專案"
+    "backToAllProjects": "所有專案",
+    "loadMore": "載入更多"
   },
   "timeGroup": {
     "today": "今天",
@@ -862,7 +863,12 @@
         "memberCount_other": "{{count}} 位成員",
         "share": "分享",
         "recentChatsTitle": "最近對話",
-        "seeAllChats": "查看所有對話"
+        "seeAllChats": "查看所有對話",
+        "saveInstructionsFailed": "無法儲存指示",
+        "updateToolsFailed": "無法更新工具",
+        "updatePinFailed": "無法更新釘選狀態",
+        "updateArchiveFailed": "無法更新封存狀態",
+        "shareRefreshFailed": "無法重新整理共用詳細資料"
       },
       "moveDialog": {
         "title": "移至專案",
@@ -874,7 +880,8 @@
         "title": "刪除此專案？",
         "description": "這將刪除專案並取消與對話的關聯。對話本身不會被刪除。",
         "confirm": "刪除專案",
-        "deleting": "刪除中…"
+        "deleting": "刪除中…",
+        "failed": "無法刪除專案"
       },
       "roles": {
         "owner": "擁有者",

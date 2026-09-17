@@ -40,7 +40,8 @@
     "lastActive": "活跃于 {{date}}",
     "pinnedSection": "已置顶",
     "allSection": "所有项目",
-    "backToAllProjects": "所有项目"
+    "backToAllProjects": "所有项目",
+    "loadMore": "加载更多"
   },
   "timeGroup": {
     "today": "今天",
@@ -862,7 +863,12 @@
         "memberCount_other": "{{count}} 位成员",
         "share": "分享",
         "recentChatsTitle": "最近对话",
-        "seeAllChats": "查看所有对话"
+        "seeAllChats": "查看所有对话",
+        "saveInstructionsFailed": "保存说明失败",
+        "updateToolsFailed": "更新工具失败",
+        "updatePinFailed": "更新置顶状态失败",
+        "updateArchiveFailed": "更新归档状态失败",
+        "shareRefreshFailed": "刷新共享详情失败"
       },
       "moveDialog": {
         "title": "移至项目",
@@ -874,7 +880,8 @@
         "title": "删除此项目？",
         "description": "这将删除项目并取消与对话的关联。对话本身不会被删除。",
         "confirm": "删除项目",
-        "deleting": "删除中…"
+        "deleting": "删除中…",
+        "failed": "删除项目失败"
       },
       "roles": {
         "owner": "拥有者",

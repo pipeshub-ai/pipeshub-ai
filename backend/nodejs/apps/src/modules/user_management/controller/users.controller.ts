@@ -1360,10 +1360,15 @@ export class UserController {
       );
 
       await this.softDeleteOAuthAppsForUser(orgId, userId, req.user);
-      const projectsWithLinkedKb = await ProjectService.removeUserFromAllProjects(
-        orgId.toString(),
-        userId.toString(),
-      );
+
+      // Revoke KB permissions BEFORE pulling memberships so a failed
+      // revocation leaves the membership row intact — a retry of
+      // deleteUser will re-find the same projects and reattempt.
+      const projectsWithLinkedKb =
+        await ProjectService.findProjectsWithLinkedKbForUser(
+          orgId.toString(),
+          userId.toString(),
+        );
       for (const project of projectsWithLinkedKb) {
         await ProjectKnowledgeBaseService.revokePrincipalPermission(
           this.config,
@@ -1373,6 +1378,10 @@ export class UserController {
           'user',
         );
       }
+      await ProjectService.removeUserFromAllProjects(
+        orgId.toString(),
+        userId.toString(),
+      );
 
       user.isDeleted = true;
       user.hasLoggedIn = false;

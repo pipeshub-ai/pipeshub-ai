@@ -28645,9 +28645,9 @@ paths:
                 type: object
                 additionalProperties: false
                 required:
-                  - knowledgeBaseId
+                  - kbId
                 properties:
-                  knowledgeBaseId:
+                  kbId:
                     type: string
         '401':
           description: Unauthorized
@@ -28763,6 +28763,16 @@ paths:
           schema:
             type: string
             format: objectId
+        - name: principalType
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [user, team]
+            default: user
+          description: |
+            Whether `memberUserId` identifies a user or a team.
+            Defaults to `user` when omitted.
       responses:
         '200':
           description: Updated member list

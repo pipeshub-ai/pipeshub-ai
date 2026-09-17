@@ -40,7 +40,8 @@
     "lastActive": "{{date}} 활동",
     "pinnedSection": "고정됨",
     "allSection": "모든 프로젝트",
-    "backToAllProjects": "모든 프로젝트"
+    "backToAllProjects": "모든 프로젝트",
+    "loadMore": "더 보기"
   },
   "timeGroup": {
     "today": "오늘",
@@ -862,7 +863,12 @@
         "memberCount_other": "멤버 {{count}}명",
         "share": "공유",
         "recentChatsTitle": "최근 채팅",
-        "seeAllChats": "모든 채팅 보기"
+        "seeAllChats": "모든 채팅 보기",
+        "saveInstructionsFailed": "지침을 저장하지 못했습니다",
+        "updateToolsFailed": "도구를 업데이트하지 못했습니다",
+        "updatePinFailed": "고정 상태를 업데이트하지 못했습니다",
+        "updateArchiveFailed": "보관 상태를 업데이트하지 못했습니다",
+        "shareRefreshFailed": "공유 세부정보를 새로고침하지 못했습니다"
       },
       "moveDialog": {
         "title": "프로젝트로 이동",
@@ -874,7 +880,8 @@
         "title": "이 프로젝트를 삭제하시겠습니까?",
         "description": "프로젝트가 삭제되고 채팅 연결이 해제됩니다. 채팅 자체는 삭제되지 않습니다.",
         "confirm": "프로젝트 삭제",
-        "deleting": "삭제 중…"
+        "deleting": "삭제 중…",
+        "failed": "프로젝트를 삭제하지 못했습니다"
       },
       "roles": {
         "owner": "소유자",

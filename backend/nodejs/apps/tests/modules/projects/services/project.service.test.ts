@@ -666,16 +666,22 @@ describe('ProjectService', () => {
     });
   });
 
-  describe('removeUserFromAllProjects', () => {
-    it('pulls the user from every project member list in the org and returns projects with a linked KB', async () => {
+  describe('findProjectsWithLinkedKbForUser', () => {
+    it('returns projects where the user is a member and a linked KB exists', async () => {
       const linkedProject = makeProjectDoc({ linkedKnowledgeBaseId: 'kb-1' });
       const findStub = sinon.stub(Project, 'find').resolves([linkedProject] as any);
-      const updateManyStub = sinon.stub(Project, 'updateMany').resolves({} as any);
-      const result = await ProjectService.removeUserFromAllProjects(ORG_ID, MEMBER_ID);
+      const result = await ProjectService.findProjectsWithLinkedKbForUser(ORG_ID, MEMBER_ID);
       expect(result).to.deep.equal([linkedProject]);
       const findFilter = findStub.firstCall.args[0] as any;
       expect(findFilter.orgId.toString()).to.equal(ORG_ID);
       expect(findFilter.linkedKnowledgeBaseId).to.deep.equal({ $ne: null });
+    });
+  });
+
+  describe('removeUserFromAllProjects', () => {
+    it('pulls the user from every project member list in the org', async () => {
+      const updateManyStub = sinon.stub(Project, 'updateMany').resolves({} as any);
+      await ProjectService.removeUserFromAllProjects(ORG_ID, MEMBER_ID);
       expect(updateManyStub.calledOnce).to.equal(true);
       const [filter, update] = updateManyStub.firstCall.args;
       expect((filter as any).orgId.toString()).to.equal(ORG_ID);
@@ -683,7 +689,6 @@ describe('ProjectService', () => {
     });
 
     it('propagates DB failures so the caller can abort and retry', async () => {
-      sinon.stub(Project, 'find').resolves([] as any);
       sinon.stub(Project, 'updateMany').rejects(new Error('db down'));
       try {
         await ProjectService.removeUserFromAllProjects(ORG_ID, MEMBER_ID);

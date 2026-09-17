@@ -7195,6 +7195,7 @@ export const createAgentConversation =
         currentTime: req.body.currentTime || null,
         attachments: req.body.attachments || [],
       };
+      assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
       applyProjectScope(aiPayload, projectLink.project);
       if (projectLink.projectId) {

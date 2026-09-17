@@ -36,6 +36,12 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
     async (files: File[]): Promise<void> => {
       if (files.length === 0) return;
 
+      // SSE events correlate by file name, so duplicates would collapse
+      // tracker rows. Keep only the last File for each name (matches the
+      // FormData append order the backend sees).
+      const uniqueByName = new Map(files.map((f) => [f.name, f]));
+      files = Array.from(uniqueByName.values());
+
       let kbId: string;
       try {
         kbId = await getKbId();

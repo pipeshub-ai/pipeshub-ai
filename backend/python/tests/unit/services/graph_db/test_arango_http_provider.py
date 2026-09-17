@@ -12985,6 +12985,7 @@ class TestCreateKbPermissionsExtended:
             "user_operations": [],
             "team_operations": [],
             "users_to_insert": [{"user_key": "u2", "user_id": "u2"}],
+            "users_to_update": [],
             "teams_to_insert": [],
         }
         connected_provider.execute_query = AsyncMock(return_value=[query_result])
@@ -13035,6 +13036,48 @@ class TestCreateKbPermissionsExtended:
         )
         assert result["success"] is True
         assert result["grantedCount"] == 1
+
+    @pytest.mark.asyncio
+    async def test_role_update_for_existing_user(self, connected_provider):
+        """When a user already has a PERMISSION edge with a different role,
+        create_kb_permissions should UPDATE the existing edge rather than
+        silently skipping it (the 'operation == update' branch)."""
+        query_result = {
+            "is_valid": True,
+            "requester_found": True,
+            "kb_exists": True,
+            "user_operations": [
+                {"user_id": "u2", "user_key": "u2", "operation": "update",
+                 "current_role": "WRITER", "perm_key": "perm_123"},
+            ],
+            "team_operations": [],
+            "users_to_insert": [],
+            "users_to_update": [
+                {"user_id": "u2", "user_key": "u2", "operation": "update",
+                 "current_role": "WRITER", "perm_key": "perm_123"},
+            ],
+            "teams_to_insert": [],
+        }
+        call_count = 0
+        async def fake_execute(query, bind_vars=None, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [query_result]
+            return []
+
+        connected_provider.execute_query = AsyncMock(side_effect=fake_execute)
+        connected_provider.batch_create_edges = AsyncMock()
+        result = await connected_provider.create_kb_permissions(
+            "kb1", "u1", ["u2"], [], "READER"
+        )
+        assert result["success"] is True
+        assert result["updatedCount"] == 1
+        assert result["updatedUsers"] == ["u2"]
+        assert result["grantedCount"] == 0
+        assert connected_provider.execute_query.call_count == 2
+        update_call = connected_provider.execute_query.call_args_list[1]
+        assert update_call[1].get("bind_vars", update_call[0][1] if len(update_call[0]) > 1 else {}).get("role") == "READER"
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):

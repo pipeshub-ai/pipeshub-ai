@@ -110,7 +110,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       setInstructionsDraft(updated.instructions ?? '');
       setIsEditingInstructions(false);
     } catch {
-      toast.error(t('chat.projects.workspace.failedToLoad'));
+      toast.error(t('chat.projects.workspace.saveInstructionsFailed'));
     } finally {
       setIsSavingInstructions(false);
     }
@@ -130,7 +130,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
         setProject(updated);
       } catch {
         setProject((prev) => (prev ? { ...prev, tools: previous } : prev));
-        toast.error(t('chat.projects.workspace.failedToLoad'));
+        toast.error(t('chat.projects.workspace.updateToolsFailed'));
       }
     },
     [project, projectId, t],
@@ -146,7 +146,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       setProject(updated);
       upsertProjectInList({ ...updated, conversationCount: conversationTotal });
     } catch {
-      toast.error(t('chat.projects.failedToLoad'));
+      toast.error(t('chat.projects.workspace.updatePinFailed'));
     } finally {
       setIsMutating(false);
     }
@@ -162,7 +162,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       setProject(updated);
       bumpProjectsVersion();
     } catch {
-      toast.error(t('chat.projects.failedToLoad'));
+      toast.error(t('chat.projects.workspace.updateArchiveFailed'));
     } finally {
       setIsMutating(false);
     }
@@ -176,7 +176,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       setDeleteDialogOpen(false);
       router.push('/projects/');
     } catch {
-      toast.error(t('chat.projects.deleteDialog.title'));
+      toast.error(t('chat.projects.deleteDialog.failed'));
     } finally {
       setIsDeleting(false);
     }
@@ -187,7 +187,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       const refreshed = await ProjectApi.get(projectId);
       setProject(refreshed);
     } catch {
-      toast.error(t('chat.projects.workspace.share'));
+      toast.error(t('chat.projects.workspace.shareRefreshFailed'));
     }
   }, [projectId, t]);
 

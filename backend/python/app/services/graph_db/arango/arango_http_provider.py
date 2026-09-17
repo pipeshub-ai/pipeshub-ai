@@ -12460,6 +12460,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 user_operations: user_operations,
                 team_operations: team_operations,
                 users_to_insert: user_operations[* FILTER CURRENT.operation == "insert"],
+                users_to_update: user_operations[* FILTER CURRENT.operation == "update"],
                 teams_to_insert: team_operations[* FILTER CURRENT.operation == "insert"],
             }
             """
@@ -12485,6 +12486,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if not result.get("kb_exists"):
                     return {"success": False, "reason": "Knowledge base not found", "code": 404}
             users_to_insert = result.get("users_to_insert", [])
+            users_to_update = result.get("users_to_update", [])
             teams_to_insert = result.get("teams_to_insert", [])
             insert_docs = [
                 {
@@ -12517,11 +12519,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if insert_docs:
                 await self.batch_create_edges(insert_docs, CollectionNames.PERMISSION.value)
+
+            # Apply role changes for users whose PERMISSION edge already
+            # exists but carries a stale role (e.g. WRITER → READER on a
+            # project-member downgrade).  The detection AQL above already
+            # tagged these as operation == "update" with their perm_key.
+            if users_to_update:
+                perm_keys = [u["perm_key"] for u in users_to_update]
+                update_query = """
+                FOR key IN @perm_keys
+                    UPDATE key WITH { role: @role, updatedAtTimestamp: @timestamp } IN @@permissions_collection
+                """
+                await self.execute_query(
+                    update_query,
+                    bind_vars={
+                        "perm_keys": perm_keys,
+                        "role": role,
+                        "timestamp": timestamp,
+                        "@permissions_collection": CollectionNames.PERMISSION.value,
+                    },
+                )
+
             granted_count = len(users_to_insert) + len(teams_to_insert)
+            updated_count = len(users_to_update)
             return {
                 "success": True,
                 "grantedCount": granted_count,
+                "updatedCount": updated_count,
                 "grantedUsers": [u["user_id"] for u in users_to_insert],
+                "updatedUsers": [u["user_id"] for u in users_to_update],
                 "grantedTeams": [t["team_id"] for t in teams_to_insert],
                 "role": role,
                 "kbId": kb_id,

@@ -2652,11 +2652,18 @@ class TestVirtualAccessAndRecordLookup:
         assert "coalesce(kb.isHidden, false) = false" not in query
 
     @pytest.mark.asyncio
-    async def test_get_accessible_kb_ids_excludes_hidden(self, neo4j_provider: Neo4jProvider):
+    async def test_get_accessible_kb_ids_excludes_hidden_by_default(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider._get_accessible_kb_ids("user-1")
-        query = neo4j_provider.client.execute_query.await_args.args[0]
-        assert query.count("coalesce(kb.isHidden, false) = false") == 2
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert params["includeHidden"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_kb_ids_includes_hidden_when_flagged(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider._get_accessible_kb_ids("user-1", include_hidden=True)
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert params["includeHidden"] is True
 
     @pytest.mark.asyncio
     async def test_get_accessible_virtual_record_ids_returns_empty_when_user_missing(

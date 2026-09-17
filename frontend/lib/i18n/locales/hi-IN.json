@@ -27,7 +27,8 @@
     "lastActive": "सक्रिय {{date}}",
     "pinnedSection": "पिन किया गया",
     "allSection": "सभी प्रोजेक्ट",
-    "backToAllProjects": "सभी प्रोजेक्ट"
+    "backToAllProjects": "सभी प्रोजेक्ट",
+    "loadMore": "और लोड करें"
   },
   "timeGroup": {
     "today": "आज",
@@ -845,7 +846,12 @@
         "memberCount_other": "{{count}} सदस्य",
         "share": "साझा करें",
         "recentChatsTitle": "हाल की चैट",
-        "seeAllChats": "सभी चैट देखें"
+        "seeAllChats": "सभी चैट देखें",
+        "saveInstructionsFailed": "निर्देश सहेजने में विफल",
+        "updateToolsFailed": "टूल अपडेट करने में विफल",
+        "updatePinFailed": "पिन स्थिति अपडेट करने में विफल",
+        "updateArchiveFailed": "संग्रह स्थिति अपडेट करने में विफल",
+        "shareRefreshFailed": "साझाकरण विवरण रीफ़्रेश करने में विफल"
       },
       "moveDialog": {
         "title": "प्रोजेक्ट में ले जाएँ",
@@ -857,7 +863,8 @@
         "title": "क्या यह प्रोजेक्ट हटाना है?",
         "description": "प्रोजेक्ट हटा दिया जाएगा और चैट अनलिंक हो जाएँगी। चैट स्वयं हटाई नहीं जाएँगी।",
         "confirm": "प्रोजेक्ट हटाएँ",
-        "deleting": "हटाया जा रहा है…"
+        "deleting": "हटाया जा रहा है…",
+        "failed": "प्रोजेक्ट हटाने में विफल"
       },
       "roles": {
         "owner": "स्वामी",

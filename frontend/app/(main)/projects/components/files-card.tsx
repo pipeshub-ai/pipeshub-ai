@@ -82,12 +82,14 @@ export function FilesCard({ projectId, linkedKnowledgeBaseId, canEdit, onKbCreat
   const handleFilesSelected = useCallback(
     (fileList: FileList | null) => {
       if (!fileList || fileList.length === 0) return;
-      void uploadFiles(Array.from(fileList)).then(() =>
-        // Re-resolve the kbId (idempotent — `ensureLinkedKb` short-circuits
-        // once linked) since the very first upload creates it mid-flight and
-        // this closure's `linkedKnowledgeBaseId` may still be stale.
-        getKbId().then((kbId) => load(kbId)),
-      );
+      void uploadFiles(Array.from(fileList))
+        .then(() =>
+          // Re-resolve the kbId (idempotent — `ensureLinkedKb` short-circuits
+          // once linked) since the very first upload creates it mid-flight and
+          // this closure's `linkedKnowledgeBaseId` may still be stale.
+          getKbId().then((kbId) => load(kbId)),
+        )
+        .catch(() => setLoadError(true));
     },
     [uploadFiles, getKbId, load],
   );

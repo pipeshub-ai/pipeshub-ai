@@ -4878,7 +4878,9 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return {}
 
-    async def _get_accessible_kb_ids(self, user_id: str) -> list[str]:
+    async def _get_accessible_kb_ids(
+        self, user_id: str, *, include_hidden: bool = False
+    ) -> list[str]:
         """KB App ids this user can reach, directly or through a team.
 
         Mirrors the access paths `_get_kb_virtual_ids` resolves inline, so that
@@ -4886,8 +4888,11 @@ class Neo4jProvider(IGraphDBProvider):
         may see stays a live check. Raises on failure so callers can fall back
         to the uncached path rather than silently narrowing the result.
 
-        Excludes hidden KBs — this always feeds the "all accessible KBs"
-        scenario (no explicit kb_ids), never the explicit-filter path.
+        By default, excludes hidden KBs (project-linked Collections) so they
+        never surface in unscoped search.  Pass ``include_hidden=True`` when the
+        caller already has explicit ``kb_ids`` — the intersection in
+        ``_get_kb_virtual_ids_cached`` must not discard a hidden KB that the
+        caller explicitly requested.
         """
         query = """
         MATCH (userDoc:User {userId: $userId})
@@ -4895,7 +4900,7 @@ class Neo4jProvider(IGraphDBProvider):
         CALL {
             WITH userDoc
             OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:App {type: "KB"})
-            WHERE coalesce(kb.isHidden, false) = false
+            WHERE $includeHidden OR coalesce(kb.isHidden, false) = false
             RETURN collect(DISTINCT kb.id) AS directIds
         }
 
@@ -4904,7 +4909,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Teams)
             WHERE ute.type = "USER"
             OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:App {type: "KB"})
-            WHERE tke.type = "TEAM" AND coalesce(kb.isHidden, false) = false
+            WHERE tke.type = "TEAM" AND ($includeHidden OR coalesce(kb.isHidden, false) = false)
             RETURN collect(DISTINCT kb.id) AS teamIds
         }
 
@@ -4913,7 +4918,9 @@ class Neo4jProvider(IGraphDBProvider):
         WITH kbId WHERE kbId IS NOT NULL
         RETURN DISTINCT kbId AS kbId
         """
-        results = await self.client.execute_query(query, parameters={"userId": user_id})
+        results = await self.client.execute_query(
+            query, parameters={"userId": user_id, "includeHidden": include_hidden}
+        )
         return [r.get("kbId") for r in results if r.get("kbId")]
 
     async def _get_kb_virtual_ids_for_kb(self, kb_id: str) -> dict[str, str]:
@@ -5018,7 +5025,9 @@ class Neo4jProvider(IGraphDBProvider):
         narrowing what the user can search.
         """
         try:
-            accessible = await self._get_accessible_kb_ids(user_id)
+            accessible = await self._get_accessible_kb_ids(
+                user_id, include_hidden=bool(kb_ids)
+            )
             accessible_set = set(accessible)
             targets = [kb for kb in kb_ids if kb in accessible_set] if kb_ids else accessible
 
