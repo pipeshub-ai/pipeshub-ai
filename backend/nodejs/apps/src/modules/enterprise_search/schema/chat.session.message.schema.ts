@@ -182,6 +182,9 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
       enum: ['MARKDOWN', 'JSON', 'HTML'],
       default: 'MARKDOWN',
     },
+    // Set on a `bot_response` persisted from a cancelled/disconnected run
+    // (see savePartialConversation) so the UI can render a "Stopped" marker.
+    status: { type: String, enum: ['stopped'] },
     citations: [messageCitationSchema],
     confidence: { type: String, enum: CONFIDENCE_LEVELS },
     followUpQuestions: [followUpQuestionSchema],

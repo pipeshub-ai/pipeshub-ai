@@ -260,6 +260,17 @@ class TestFetchImageAsBase64:
             )
         assert result is None
 
+    def test_fetches_with_private_host_blocking_on(self) -> None:
+        mock_result = MagicMock()
+        mock_result.status_code = 404
+        mock_result.content = b""
+
+        with patch("app.utils.image_utils.get_image_info_from_url", return_value=(None, None)), \
+             patch("app.utils.image_utils.fetch_url", return_value=mock_result) as mock_fetch:
+            asyncio.run(_fetch_image_as_base64("https://example.com/img.png"))
+
+        assert mock_fetch.call_args.kwargs["block_private_hosts"] is True
+
 
 # ---------------------------------------------------------------------------
 # Module-level constants

@@ -212,74 +212,42 @@ class TestGetToolsetById:
 
 
 class TestCheckUserIsAdmin:
-    """Tests for admin verification via Node.js API call."""
+    """check_user_is_admin uses the live role Node reports for the caller's own token."""
 
-    async def test_admin_confirmed(self) -> None:
+    @pytest.mark.parametrize(
+        ("status", "role", "expected"),
+        [
+            ("valid", "admin", True),
+            ("valid", "member", False),
+            ("rejected", "member", False),
+            ("unknown", "member", False),
+        ],
+    )
+    async def test_uses_the_callers_live_role(self, status, role, expected) -> None:
+        from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
         from app.api.routes.toolset_resolvers import check_user_is_admin
 
         request = MagicMock()
-        request.headers = {"authorization": "Bearer tok", "x-organization-id": "org-1"}
         config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={
-            "nodejs": {"endpoint": "http://localhost:3000"},
-        })
+        caller = CallerRole(CallerRoleStatus(status), role)
 
-        with patch("app.api.routes.toolset_resolvers.httpx.AsyncClient") as mock_cls:
-            mock_resp = MagicMock(status_code=200)
-            mock_client = AsyncMock()
-            mock_client.get = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_cls.return_value = mock_client
-
+        with patch(
+            "app.api.routes.toolset_resolvers.fetch_caller_role",
+            new=AsyncMock(return_value=caller),
+        ) as mock_role:
             result = await check_user_is_admin("user-1", "org-1", request, config_service)
-        assert result is True
 
-    async def test_not_admin(self) -> None:
-        from app.api.routes.toolset_resolvers import check_user_is_admin
-
-        request = MagicMock()
-        request.headers = {"authorization": "Bearer tok"}
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={
-            "nodejs": {"endpoint": "http://localhost:3000"},
-        })
-
-        with patch("app.api.routes.toolset_resolvers.httpx.AsyncClient") as mock_cls:
-            mock_resp = MagicMock(status_code=403)
-            mock_client = AsyncMock()
-            mock_client.get = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_cls.return_value = mock_client
-
-            result = await check_user_is_admin("user-1", "org-1", request, config_service)
-        assert result is False
+        assert result is expected
+        mock_role.assert_awaited_once_with(request, config_service)
 
     async def test_no_request_returns_false(self) -> None:
         from app.api.routes.toolset_resolvers import check_user_is_admin
 
-        config_service = AsyncMock()
-        result = await check_user_is_admin("user-1", "org-1", None, config_service)
+        with patch("app.api.routes.toolset_resolvers.fetch_caller_role", new=AsyncMock()) as mock_role:
+            result = await check_user_is_admin("user-1", "org-1", None, AsyncMock())
+
         assert result is False
-
-    async def test_api_error_returns_false(self) -> None:
-        from app.api.routes.toolset_resolvers import check_user_is_admin
-
-        request = MagicMock()
-        request.headers = {"authorization": "Bearer tok"}
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(side_effect=Exception("timeout"))
-
-        with patch("app.api.routes.toolset_resolvers.httpx.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.get = AsyncMock(side_effect=Exception("conn refused"))
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_cls.return_value = mock_client
-
-            result = await check_user_is_admin("user-1", "org-1", request, config_service)
-        assert result is False
+        mock_role.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

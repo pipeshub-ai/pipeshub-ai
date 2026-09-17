@@ -123,9 +123,10 @@ class TestCorrectFirstToolSelection:
 
     def test_no_sources_prompt_has_no_finding_information(self) -> None:
         """When no search surface is granted, the Finding Information
-        section is absent (nothing to steer, no section needed)."""
+        section states that no knowledge source is attached (so the model
+        doesn't hallucinate one or substitute a pinned tool)."""
         prompt = build_prompt_for_fixture("no_sources")
-        assert "Finding Information" not in prompt
+        assert "No knowledge source is attached" in prompt
 
     def test_kb_only_prompt_names_retrieval_tool(self) -> None:
         """KB-only fixture must name the knowledge search tool in the

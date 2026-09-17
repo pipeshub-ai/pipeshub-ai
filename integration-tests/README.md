@@ -251,6 +251,13 @@ pytest -m azure_blob -v
 pytest -m azure_files -v
 ```
 
+**MCP server surface** (`response-validation/mcp/`): connects an MCP client to `{PIPESHUB_BASE_URL}/mcp` with an OAuth token (authorization_code + PKCE, obtained with API calls) and compares the served instructions, tool descriptions, input schemas, annotations, and prompts with `response-validation/mcp/golden/mcp_surface_<version>.json`. `<version>` is the `@pipeshub-ai/mcp` pin in `backend/nodejs/apps/package.json`. After bumping that pin, review the served text and regenerate the golden:
+
+```bash
+pytest -m mcp -v                                     # compare with the golden
+pytest response-validation/mcp --update-mcp-golden   # rewrite the golden from the live server
+```
+
 **Other options:**
 
 ```bash
@@ -314,7 +321,11 @@ Tests clone the [pipeshub-ai/integration-test](https://github.com/pipeshub-ai/in
 | `.env.local.example` | Template for `.env.local` (all vars for local). |
 | `.env.prod.example`  | Template for `.env.prod` (all vars for prod). |
 | `conftest.py`        | Loads `.env` then `.env.local` or `.env.prod`, exports Neo4j env, local OAuth fixture. |
-| `helper/local_auth.py` | Gets OAuth client creds from local backend (initAuth → authenticate → create app). |
+| `helper/local_auth.py` | Gets OAuth client creds from local backend (initAuth → authenticate → create app). `obtain_user_session_token` also handles the enterprise `auth/token/switch` step. |
+| `helper/mcp_oauth.py` | Registers a full-access OAuth app and mints tokens (authorization_code + PKCE, client_credentials) with API calls only. |
+| `helper/mcp_client.py` | Reads the `/mcp` surface (initialize, tools, prompts) with `fastmcp` as plain JSON. |
+| `helper/mcp_pin.py` | Reads the `@pipeshub-ai/mcp` pin from `backend/nodejs/apps/package.json`. |
+| `response-validation/mcp/` | MCP surface tests and the per-version golden files. |
 | `helper/pipeshub_client.py` | HTTP client for Pipeshub connector API (client_credentials). |
 | `helper/graph_provider.py` | `GraphProviderProtocol` — common graph test helper interface. |
 | `helper/graph_provider_utils.py` | Shared polling helpers (`wait_until_graph_condition`, etc.). |

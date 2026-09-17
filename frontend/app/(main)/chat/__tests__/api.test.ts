@@ -13,6 +13,7 @@ vi.mock('@/lib/api', () => ({
 }));
 
 const mockedGet = vi.mocked(apiClient.get);
+const mockedPost = vi.mocked(apiClient.post);
 
 describe('ChatApi.fetchAvailableLlms', () => {
   beforeEach(() => {
@@ -48,5 +49,49 @@ describe('ChatApi.fetchAvailableLlms', () => {
     mockedGet.mockResolvedValueOnce({ data: { status: 'success', models: { oops: true }, message: '' } });
     const result = await ChatApi.fetchAvailableLlms();
     expect(result).toEqual([]);
+  });
+});
+
+describe('ChatApi.cancelStream', () => {
+  beforeEach(() => {
+    mockedPost.mockReset();
+  });
+
+  it('posts to the assistant cancel endpoint with the runId when no agentId is given', async () => {
+    mockedPost.mockResolvedValueOnce({ data: { cancelled: true } });
+
+    const result = await ChatApi.cancelStream('conv-1', 'run-123');
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/conversations/conv-1/cancel',
+      { runId: 'run-123' },
+      { suppressErrorToast: true },
+    );
+    expect(result).toEqual({ cancelled: true });
+  });
+
+  it('posts to the agent-scoped cancel endpoint when agentId is given', async () => {
+    mockedPost.mockResolvedValueOnce({ data: { cancelled: false } });
+
+    const result = await ChatApi.cancelStream('conv-1', 'run-123', 'agent-42');
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/agents/agent-42/conversations/conv-1/cancel',
+      { runId: 'run-123' },
+      { suppressErrorToast: true },
+    );
+    expect(result).toEqual({ cancelled: false });
+  });
+
+  it('falls back to the assistant endpoint when agentId is null', async () => {
+    mockedPost.mockResolvedValueOnce({ data: { cancelled: true } });
+
+    await ChatApi.cancelStream('conv-1', 'run-123', null);
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/conversations/conv-1/cancel',
+      { runId: 'run-123' },
+      { suppressErrorToast: true },
+    );
   });
 });

@@ -46,6 +46,7 @@ from helper.storage_incremental import (  # noqa: E402
     settle_record_baseline,
     sync_until_names_visible,
     unique_incremental_csv_files,
+    wait_for_record_reindex,
 )
 from connectors.s3.s3_storage_helper import (  # type: ignore[import-not-found]  # noqa: E402
     S3StorageHelper,
@@ -178,6 +179,20 @@ class TestS3Connector:
 
         await async_wait_for_stable_record_count(graph_provider, connector_id)
         before_count = await graph_provider.count_records(connector_id)
+
+        # The etag check below proves the *object* changed. This proves the
+        # *record* was re-indexed: the connector derives a new version from the
+        # existing record when it updates one, so a version that does not move
+        # means the change was never picked up. A stable count alone cannot tell
+        # those apart — a connector that ignored the object keeps it stable too.
+        before_record = await graph_provider.get_record_by_name(
+            connector_id, update_name
+        )
+        assert before_record is not None, (
+            f"TC-UPDATE-001: {update_name} is not in the graph before the update "
+            f"(connector {connector_id})"
+        )
+        before_version = before_record.get("version")
         logger.info(
             "TC-UPDATE-001 baseline: %d records (connector %s)",
             before_count, connector_id,
@@ -204,15 +219,12 @@ class TestS3Connector:
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        async def _update_synced() -> bool:
-            return await graph_provider.count_records(connector_id) >= before_count
-
-        await wait_until_graph_condition(
-            connector_id,
-            check=_update_synced,
-            timeout=120,
-            poll_interval=10,
-            description="update sync",
+        # Wait for the re-index itself. A count-based wait returns on the
+        # first poll after an in-place update, which would race the
+        # version read below: a connector that is merely slow would look
+        # the same as one that ignored the change.
+        after_record = await wait_for_record_reindex(
+            graph_provider, connector_id, update_name, before_version
         )
 
         await graph_provider.assert_record_paths_or_names_contain(
@@ -223,6 +235,12 @@ class TestS3Connector:
         assert after_count == before_count, (
             f"Record count must be stable after content update; "
             f"before={before_count}, after={after_count} (connector {connector_id})"
+        )
+
+        assert after_record.get("version") != before_version, (
+            f"TC-UPDATE-001: record version stayed at {before_version} after the "
+            f"object content changed, so it was never re-indexed. The ETag and "
+            f"count assertions above pass either way (connector {connector_id})"
         )
 
         logger.info(

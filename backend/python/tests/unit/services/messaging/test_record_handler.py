@@ -1929,6 +1929,8 @@ class TestProcessEventErrors:
         updates = gp.update_node.await_args[0][2]
         assert updates.get("indexingStatus") == ProgressStatus.QUEUED.value
         assert updates.get("extractionStatus") == ProgressStatus.NOT_STARTED.value
+        # Back in line for its retry: restart the clock the stranded sweep ages on.
+        assert isinstance(updates.get("queuedAtTimestamp"), int)
 
     @pytest.mark.asyncio
     async def test_transient_parse_failure_reverts_all_in_progress_statuses(self):

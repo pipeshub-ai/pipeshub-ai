@@ -9,12 +9,11 @@ import os
 import re
 import tempfile
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import jwt
 from dependency_injector.wiring import Provide, inject
 from fastapi import (
     APIRouter,
@@ -28,8 +27,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from googleapiclient.errors import HttpError
 from googleapiclient.http import HttpRequest, MediaIoBaseDownload
-from jose import JWTError
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from app.agents.actions.knowledge_graph.catalog import ConnectorCatalog
 from app.agents.actions.knowledge_graph.identifiers import _BARE_ISSUE_KEY, _is_url
@@ -43,7 +41,8 @@ from app.agents.actions.knowledge_graph.views import (
     render_lookup_result,
     render_navigation_view,
 )
-from app.api.middlewares.auth import is_request_admin, require_scopes
+from app.api.middlewares.auth import is_request_admin, require_scopes, require_service_token
+from app.api.middlewares.token_policy import has_service_scope
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppStatus,
@@ -84,6 +83,7 @@ from app.edition_config import (
 from app.edition_services import get_data_entities_processor_cls
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.error.stream_errors import to_internal_service_error, to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
@@ -139,7 +139,7 @@ from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
 from app.utils.retry import retry_async
-from app.utils.streaming import create_stream_record_response
+from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("connector_service")
@@ -366,7 +366,16 @@ async def _stream_artifact_from_storage(
         "scopes": ["storage:token"],
     }
     storage_token = await generate_jwt(config_service, jwt_payload)
-    response = await make_api_call(route=buffer_url, token=storage_token)
+    try:
+        response = await make_api_call(route=buffer_url, token=storage_token)
+    except Exception as e:
+        # make_api_call raises ApiCallError carrying the storage service's own
+        # status; without this it falls through to a blanket 500.
+        logger.error(
+            "Failed to fetch artifact buffer for record %s: %s",
+            record.id, str(e), exc_info=True,
+        )
+        raise to_internal_service_error(e) from e
 
     if isinstance(response["data"], dict):
         data = response["data"].get("data")
@@ -408,6 +417,43 @@ async def get_graph_provider(request: Request) -> IGraphDBProvider:
 async def get_kafka_service(request: Request) -> KafkaService:
     container: ConnectorAppContainer = request.app.container
     return container.kafka_service()
+
+
+async def _invoke_connector_stream(
+    connector_obj: BaseConnector,
+    record: Record,
+    user_id: str | None = None,
+) -> Response | StreamingResponse | None:
+    """Call the connector's stream_record and resolve the source call eagerly.
+
+    Mapping happens here so every source failure — whether raised while
+    building the response or on the stream's first chunk — becomes a real
+    status before Starlette commits one.
+    """
+    # Same source the connectors use, so a failure names one connector
+    # regardless of whether it surfaced here or inside stream_record.
+    connector_display = connector_obj.display_name
+    try:
+        app_name = connector_obj.get_app_name()
+        if app_name in (
+            Connectors.GOOGLE_DRIVE_WORKSPACE,
+            Connectors.GOOGLE_MAIL_WORKSPACE,
+        ):
+            buffer = await connector_obj.stream_record(record, user_id)
+        else:
+            buffer = await connector_obj.stream_record(record)
+
+        if isinstance(buffer, StreamingResponse):
+            buffer = await start_streaming_response(buffer)
+        return buffer
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Error streaming record %s from %s: %s",
+            record.id, connector_display, str(e), exc_info=True,
+        )
+        raise to_stream_error(e, connector=connector_display) from e
 
 
 async def _resolve_record_content_response(
@@ -460,12 +506,7 @@ async def _resolve_record_content_response(
         logger=logger,
     )
 
-    if connector_obj.get_app_name() in (
-        Connectors.GOOGLE_DRIVE_WORKSPACE, Connectors.GOOGLE_MAIL_WORKSPACE,
-    ):
-        buffer = await connector_obj.stream_record(record, user_id)
-    else:
-        buffer = await connector_obj.stream_record(record)
+    buffer = await _invoke_connector_stream(connector_obj, record, user_id)
 
     if convert_to == MimeTypes.PDF.value:
         needs_conversion, record_name, file_extension = get_pdf_conversion_info(record)
@@ -492,11 +533,13 @@ async def get_record_content_internal(
     version: int | None = Query(None, ge=0, description="Registry version (ARTIFACT records only)"),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.RECORD_CONTENT)),
 ) -> Response | StreamingResponse:
     """ACL-enforcing record-content endpoint for the agent (query service).
 
-    Auth: Bearer <scoped JWT carrying orgId, userId, scopes=["record:content"]>.
-    - Requires `userId` — the endpoint refuses a JWT without it to avoid
+    Auth: service token with scope ``record:content`` carrying orgId and userId,
+    verified by the auth middleware and ``require_service_token``.
+    - Requires `userId` — the endpoint refuses a token without it to avoid
       silently degrading into an admin path.
     - Runs `check_record_access_with_details` independently (never trusts the
       caller) and rejects on org mismatch rather than widening.
@@ -507,33 +550,8 @@ async def get_record_content_internal(
     (`/api/v1/internal/stream/record/{id}/`) which runs `is_admin=True`.
     """
     try:
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value,
-                detail="Missing or invalid Authorization header",
-            )
-
-        token = auth_header.split(" ")[1]
-        secret_keys = await config_service.get_config(config_node_constants.SECRET_KEYS.value)
-        jwt_secret = (secret_keys or {}).get("scopedJwtSecret")
-        if not jwt_secret:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Service misconfiguration: missing JWT secret",
-            )
-
-        payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
-
-        scopes = payload.get("scopes", [])
-        if TokenScopes.RECORD_CONTENT.value not in scopes:
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail=f"Token is missing required scope: {TokenScopes.RECORD_CONTENT.value}",
-            )
-
-        org_id = payload.get("orgId")
-        user_id = payload.get("userId")
+        org_id = claims.get("orgId")
+        user_id = claims.get("userId")
         if not org_id:
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
@@ -584,11 +602,6 @@ async def get_record_content_internal(
             graph_provider=graph_provider,
         )
 
-    except JWTError as e:
-        logger.error("JWT validation error in get_record_content_internal: %s", str(e))
-        raise HTTPException(
-            status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token"
-        ) from e
     except HTTPException:
         raise
     except Exception as e:
@@ -866,16 +879,12 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
 
     return trimmed_config
 
-def _is_scoped_service_token(user: Any) -> bool:
-    """Internal workers mint scoped JWTs (orgId + scopes, often no userId)."""
-    token_type = str(user.get("token_type") or "").strip()
-    scopes = user.get("scopes") or user.get("oauthScopes") or []
-    if isinstance(scopes, str):
-        scopes = [part for part in scopes.replace(",", " ").split() if part]
-    return token_type == "scoped" or "connector:signedUrl" in scopes
-
-
 def _caller_org_and_user(request: Request) -> tuple[str, str, bool]:
+    """Return (org_id, user_id, is_indexing_service) for the signed-URL routes.
+
+    Only an indexing service token (``connector:signedUrl``) may omit userId; the
+    route's ``require_scopes`` opt-in is what admits it in the first place.
+    """
     user = getattr(getattr(request, "state", None), "user", None)
     if user is None:
         raise HTTPException(
@@ -889,7 +898,7 @@ def _caller_org_and_user(request: Request) -> tuple[str, str, bool]:
             detail="Authentication required",
         )
     user_id = str(user.get("userId") or "").strip()
-    is_scoped = _is_scoped_service_token(user)
+    is_scoped = has_service_scope(user, TokenScopes.CONNECTOR_SIGNED_URL)
     if not user_id and not is_scoped:
         raise HTTPException(
             status_code=HttpStatusCode.UNAUTHORIZED.value,
@@ -898,7 +907,17 @@ def _caller_org_and_user(request: Request) -> tuple[str, str, bool]:
     return org_id, user_id, is_scoped
 
 
-@router.get("/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get(
+    "/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl",
+    dependencies=[
+        Depends(
+            require_scopes(
+                OAuthScopes.CONNECTOR_READ,
+                service_scopes=(TokenScopes.CONNECTOR_SIGNED_URL,),
+            )
+        )
+    ],
+)
 @inject
 async def get_signed_url(
     request: Request,
@@ -1002,30 +1021,17 @@ async def stream_record_internal(
     request: Request,
     record_id: str,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONNECTOR_SIGNED_URL)),
 ) -> dict | StreamingResponse | None:
-    """
-    Stream a record to the client.
+    """Stream a record's bytes to the indexing service.
+
+    Admin-level read (no per-user ACL), so it is gated by an indexing service token
+    and confined to that token's org.
     """
     try:
         logger.info(f"Stream Record Start: {time.time()}")
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value,
-                detail="Missing or invalid Authorization header",
-            )
-
-        # Extract the token
-        token = auth_header.split(" ")[1]
-        secret_keys = await config_service.get_config(
-            config_node_constants.SECRET_KEYS.value
-        )
-        jwt_secret = secret_keys.get("scopedJwtSecret")
-        payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
-        # TODO: Validate scopes ["connector:signedUrl"]
-
-        org_id = payload.get("orgId")
+        org_id = claims.get("orgId")
         if not org_id:
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
@@ -1039,15 +1045,20 @@ async def stream_record_internal(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        # Prefer the org_id stored on the record itself — the JWT org_id may differ
-        # if the token was issued for a slightly different context.
-        effective_org_id = record.org_id or org_id
+        # Same response as a missing record, so a token for one org cannot probe another's.
+        # A record with no org cannot be confined to one, so it is refused as well.
+        if not record.org_id or record.org_id != org_id:
+            logger.warning(
+                "stream_record_internal: org mismatch record=%s record_org=%r token_org=%s",
+                record_id, record.org_id, org_id,
+            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
         if not org:
-            # Retry with the record's own org_id in case it differs from the JWT claim
-            if effective_org_id != org_id:
-                org = await graph_provider.get_document(effective_org_id, CollectionNames.ORGS.value)
-            if not org:
-                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
+
+        effective_org_id = org_id
+        token_user_id = claims.get("userId")
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
@@ -1062,9 +1073,14 @@ async def stream_record_internal(
                 "scopes": ["storage:token"],
             }
             token = await generate_jwt(config_service, jwt_payload)
-            response = await make_api_call(
-                route=buffer_url, token=token
-            )
+            try:
+                response = await make_api_call(route=buffer_url, token=token)
+            except Exception as e:
+                logger.error(
+                    "Failed to fetch KB buffer for record %s: %s",
+                    record.id, str(e), exc_info=True,
+                )
+                raise to_internal_service_error(e) from e
             if isinstance(response["data"], dict):
                 data = response['data'].get('data')
                 buffer = bytes(data) if isinstance(data, list) else data
@@ -1090,40 +1106,45 @@ async def stream_record_internal(
             connector_instance=connector_instance,
             connector_registry=connector_registry,
             graph_provider=graph_provider,
-            user_id=payload.get("userId", ""),
+            user_id=token_user_id or "",
             org_id=effective_org_id,
             is_admin=True,
             logger=logger,
         )
 
-        if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
-            return await connector_obj.stream_record(record, payload.get("userId"))
-        else:
-            return await connector_obj.stream_record(record)
+        return await _invoke_connector_stream(
+            connector_obj, record, token_user_id
+        )
 
-    except JWTError as e:
-        logger.error("JWT validation error: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token") from e
-    except ValidationError as e:
-        logger.error("Payload validation error: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload") from e
     except HTTPException:
         raise
     except Exception as e:
-        # exc_info preserves the full traceback in the connector logs;
-        # the message is also echoed into the response detail so the
-        # calling service (e.g. the indexing consumer) does not see a
-        # constant "Error streaming record" with no actionable cause.
-        # This endpoint is JWT-protected and internal-only, so surfacing
-        # the underlying error message is consistent with how the other
-        # internal handlers in this router (e.g. delete_record) behave.
         logger.error("Unexpected error in stream_record_internal: %s", str(e), exc_info=True)
+        mapped = to_stream_error(e)
+        if mapped.status_code != HttpStatusCode.INTERNAL_SERVER_ERROR.value:
+            # A classified failure keeps its status so the indexing consumer
+            # can tell "retry later" from "permanently failed".
+            raise mapped from e
+        # Unclassified: this endpoint is JWT-protected and internal-only, so
+        # echo the underlying message rather than leaving the consumer with a
+        # constant string that has no actionable cause.
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error streaming record: {e}",
         ) from e
 
-@router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
+@router.get(
+    "/api/v1/index/{org_id}/{connector}/record/{record_id}",
+    response_model=None,
+    dependencies=[
+        Depends(
+            require_scopes(
+                OAuthScopes.CONNECTOR_READ,
+                service_scopes=(TokenScopes.CONNECTOR_SIGNED_URL,),
+            )
+        )
+    ],
+)
 @inject
 async def download_file(
     request: Request,
@@ -1215,8 +1236,8 @@ async def download_file(
         logger.error("HTTPException: %s", str(e))
         raise e
     except Exception as e:
-        logger.error("Error downloading file: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file") from e
+        logger.error("Error downloading file: %s", str(e), exc_info=True)
+        raise to_stream_error(e) from e
 
 
 @router.get("/api/v1/stream/record/{record_id}", response_model=None, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
@@ -1286,8 +1307,8 @@ async def stream_record(
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error("Error downloading file: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file") from e
+        logger.error("Error streaming record: %s", str(e), exc_info=True)
+        raise to_stream_error(e) from e
 
 
 @router.post("/api/v1/record/buffer/convert", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -2991,7 +3012,7 @@ async def _fetch_connector_sync_block(
 
 @router.get(
     "/api/v1/connectors/internal/all-scheduled",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
+    dependencies=[Depends(require_service_token(TokenScopes.FETCH_CONFIG))],
 )
 async def get_all_scheduled_connector_instances_internal(
     request: Request,
@@ -6849,6 +6870,7 @@ async def _get_streaming_connector(
     if hasattr(container, "connectors_map"):
         connector_obj = container.connectors_map.get(connector_id)
     if connector_obj:
+        _tag_instance_name(connector_obj, connector_display_name)
         return connector_obj
 
     if not connector_instance.get("isActive", False):
@@ -6893,7 +6915,20 @@ async def _get_streaming_connector(
                 "Enable it from Connector Settings and try again."
             ),
         )
+    _tag_instance_name(connector_obj, connector_display_name)
     return connector_obj
+
+
+def _tag_instance_name(connector_obj: BaseConnector, name: str | None) -> None:
+    """Give the connector the user's name for *this* connection.
+
+    Connector objects are cached per connector_id in ``connectors_map``, so
+    several instances of one type share a class but not an identity — a
+    Collections error has to say "Engineering Docs", not "Collections".
+    Assignment is idempotent and picks up renames on the next request.
+    """
+    if name and name != "connector":
+        connector_obj.instance_name = name
 
 
 async def _ensure_connector_initialized(

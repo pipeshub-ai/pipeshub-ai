@@ -1580,7 +1580,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 pass
             except Exception as exc:
                 retry_current = True
-                self.logger.error(f"Task completed with unhandled exception: {exc}")
+                # %r and the traceback: a bare TimeoutError's message is empty.
+                self.logger.error(
+                    "Task completed with unhandled exception: %r", exc, exc_info=exc
+                )
             main_loop = self.main_loop
             if main_loop is not None and main_loop.is_running():
                 main_loop.call_soon_threadsafe(

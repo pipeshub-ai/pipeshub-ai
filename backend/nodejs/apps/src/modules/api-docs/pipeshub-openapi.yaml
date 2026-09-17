@@ -3830,6 +3830,11 @@ components:
           format: int64
           nullable: true
           description: Epoch ms when parse/index processing began for the current attempt; null when idle
+        queuedAtTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms the platform last queued this record for indexing; absent until first queued. Platform-owned, unlike updatedAtTimestamp
         parsingStatus:
           type: string
           enum: [NOT_STARTED, IN_PROGRESS, FAILED, COMPLETED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, QUEUED]
@@ -4050,6 +4055,10 @@ components:
               type: integer
               format: int64
             processingStartedAt:
+              type: integer
+              format: int64
+              nullable: true
+            queuedAtTimestamp:
               type: integer
               format: int64
               nullable: true
@@ -5941,6 +5950,14 @@ components:
             that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /conversations/{conversationId}/cancel {runId}` while the
+            stream is still generating. Optional — a caller that never sends
+            one just can't cooperatively cancel the run.
 
     ConversationStreamRequest:
       allOf:
@@ -6086,6 +6103,13 @@ components:
             send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /agents/{agentKey}/conversations/{conversationId}/cancel
+            {runId}` while the stream is still generating.
       example:
         query: what are some latest tech news?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
@@ -6205,6 +6229,13 @@ components:
             compatibility with callers that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this regeneration run. Send it
+            here to enable `POST .../cancel {runId}` while it is still
+            generating.
 
     AgentRegenerateRequest:
       allOf:
@@ -6297,6 +6328,13 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /conversations/{conversationId}/cancel {runId}` while the
+            stream is still generating.
 
     ConversationMessageStreamRequest:
       allOf:
@@ -6448,6 +6486,13 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /agents/{agentKey}/conversations/{conversationId}/cancel
+            {runId}` while the stream is still generating.
       example:
         query: can you elaborate on the latest headlines?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
@@ -7734,6 +7779,9 @@ components:
           type: string
           nullable: true
         processingStartedAt:
+          type: number
+          nullable: true
+        queuedAtTimestamp:
           type: number
           nullable: true
         parsingStatus:
@@ -9542,10 +9590,11 @@ components:
 
     AgentCreateWebSearch:
       description: |
-        Web-search attachment for an agent. Accepts either a provider string
-        or an object with at least a `provider` field.
+        Web-search attachment for an agent. Accepts a provider string, an object
+        with at least a `provider` field, or `null`.
       anyOf:
         - type: string
+          nullable: true
         - type: object
           additionalProperties: false
           properties:
@@ -9562,7 +9611,6 @@ components:
               maxLength: 500
           required:
             - provider
-        - type: 'null'
 
     AgentSkillAssignment:
       type: object
@@ -9822,6 +9870,7 @@ components:
         webSearch:
           anyOf:
             - type: object
+              nullable: true
               additionalProperties: false
               properties:
                 provider:
@@ -9830,7 +9879,6 @@ components:
                   type: string
                 providerLabel:
                   type: string
-            - type: 'null'
         defaultReasoningEffort:
           type: string
           nullable: true
@@ -9886,11 +9934,10 @@ components:
         agent:
           $ref: '#/components/schemas/AgentCreateResponseAgent'
         warnings:
-          anyOf:
-            - type: array
-              items:
-                $ref: '#/components/schemas/AgentCreateWarning'
-            - type: 'null'
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/AgentCreateWarning'
 
     AgentUpdateRequest:
       type: object
@@ -10543,8 +10590,12 @@ components:
           enum:
             - Conversation deleted successfully
         conversation:
-          nullable: true
-          $ref: '#/components/schemas/StoredAgentConversation'
+          anyOf:
+            - $ref: '#/components/schemas/StoredAgentConversation'
+            # OAS 3.0 has no null type and nullable needs a sibling type: admits only null.
+            - type: object
+              nullable: true
+              enum: [null]
 
     AgentConversationDetailMessageCitation:
       type: object
@@ -17085,15 +17136,15 @@ paths:
                 Frontend success URL or `{frontendUrl}/login?saml_error=<code>` on failure.
               schema:
                 type: string
-                examples:
-                  success:
-                    value: "https://app.example.com/auth/sign-in/samlSso/success"
-                  error_sso_disabled:
-                    value: "https://app.example.com/login?saml_error=saml_sso_disabled"
-                  error_jit_disabled:
-                    value: "https://app.example.com/login?saml_error=jit_disabled"
-                  error_auth_failed:
-                    value: "https://app.example.com/login?saml_error=auth_failed"
+              examples:
+                success:
+                  value: "https://app.example.com/auth/sign-in/samlSso/success"
+                error_sso_disabled:
+                  value: "https://app.example.com/login?saml_error=saml_sso_disabled"
+                error_jit_disabled:
+                  value: "https://app.example.com/login?saml_error=jit_disabled"
+                error_auth_failed:
+                  value: "https://app.example.com/login?saml_error=auth_failed"
             Set-Cookie:
               description: |
                 Set on successful authentication only.
@@ -19022,6 +19073,44 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: "`userId` or `orgId` missing from token (`userAdminCheck`)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/me/role:
+    get:
+      tags:
+        - Users
+      summary: Get the requester's role
+      description: |
+        Returns the **authenticated requester's** current role in their organization, read
+        live from the user record. Only the bearer's own role is disclosed, so no OAuth scope
+        is required.
+
+        Returns `401` when the credentials are no longer valid — an expired or revoked
+        OAuth/PAT token, an invalidated session, or a user that no longer exists. Internal
+        services rely on this to stop accepting such tokens.
+      operationId: getMyRole
+      security:
+        - bearerAuth: []
+        - oauth2: []
+      responses:
+        '200':
+          description: The requester's role
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - role
+                properties:
+                  role:
+                    type: string
+                    enum: [admin, member]
+        '401':
+          description: Unauthorized - token missing, invalid, expired or revoked, or the user no longer exists
           content:
             application/json:
               schema:
@@ -22888,6 +22977,7 @@ paths:
         '500':
           description: Failed to verify knowledge base or folder access
           content:
+            application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
@@ -27231,6 +27321,75 @@ paths:
         '404':
           description: Conversation or message not found
 
+  /conversations/{conversationId}/cancel:
+    post:
+      tags:
+        - Conversations
+      summary: Cancel an in-flight chat stream
+      description: |
+        Cooperatively stop a `POST /conversations/stream` or
+        `POST /conversations/{conversationId}/messages/stream` run that is
+        still generating, using the `runId` sent when that stream started.
+
+        This is a synchronous JSON ack, not another SSE stream. The
+        cancelled run's own stream (if still connected) receives a terminal
+        frame with a `stopped` status and whatever partial answer had
+        already generated; nothing further is delivered here.
+
+        `{ cancelled: false }` — not an error — covers a `runId` that
+        already finished or was never registered; the caller only needs to
+        know the stream is not running anymore, not why.
+
+        `runId` must belong to a run started on THIS `conversationId` — a
+        `runId` that exists but was registered under a different
+        conversation (even one owned by the same caller) is rejected with
+        `403`, same as a `runId` owned by a different user/org.
+      operationId: cancelConversationStream
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - runId
+              properties:
+                runId:
+                  type: string
+                  format: uuid
+                  description: The `runId` sent when the stream was started.
+      responses:
+        '200':
+          description: Cancellation requested, or the run had already finished.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: boolean
+        '400':
+          description: Missing or malformed `runId`.
+        '401':
+          description: Unauthorized
+        '403':
+          description: >-
+            `runId` exists but was registered under a different user, org,
+            or conversation than this request.
+        '404':
+          description: Conversation not found or unauthorized
+
   /conversations/{conversationId}/message/{messageId}/feedback:
     post:
       tags:
@@ -29384,6 +29543,80 @@ paths:
         '401':
           description: Unauthorized
 
+  /agents/{agentKey}/conversations/{conversationId}/cancel:
+    post:
+      tags:
+        - Agents
+      summary: Cancel an in-flight agent chat stream
+      description: |
+        Cooperatively stop a `POST /agents/{agentKey}/conversations/stream`
+        or `.../messages/stream` run that is still generating, using the
+        `runId` sent when that stream started.
+
+        Same synchronous JSON ack contract as the assistant
+        `POST /conversations/{conversationId}/cancel` — both forward to the
+        same backend cancellation endpoint, since the run registry is keyed
+        by `runId` alone. `{ cancelled: false }` covers a `runId` that
+        already finished or was never registered.
+
+        `runId` must belong to a run started on THIS `conversationId` — a
+        `runId` that exists but was registered under a different
+        conversation (even one owned by the same caller) is rejected with
+        `403`, same as a `runId` owned by a different user/org.
+      operationId: cancelAgentConversationStream
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Stable key identifying the agent that owns this conversation.
+          schema:
+            type: string
+            minLength: 1
+        - name: conversationId
+          in: path
+          required: true
+          description: ID of the agent conversation to cancel a run for.
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - runId
+              properties:
+                runId:
+                  type: string
+                  format: uuid
+                  description: The `runId` sent when the stream was started.
+      responses:
+        '200':
+          description: Cancellation requested, or the run had already finished.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: boolean
+        '400':
+          description: Missing or malformed `runId`.
+        '401':
+          description: Unauthorized
+        '403':
+          description: >-
+            `runId` exists but was registered under a different user, org,
+            or conversation than this request.
+        '404':
+          description: Conversation not found or unauthorized
+
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
     post:
       tags:
@@ -30132,8 +30365,9 @@ paths:
           description: |
             Filter by scope. Defaults to <code>team</code> when omitted.
           schema:
-            $ref: '#/components/schemas/ConnectorScope'
-          default: team
+            allOf:
+              - $ref: '#/components/schemas/ConnectorScope'
+            default: team
         - name: page
           in: query
           schema:

@@ -15,6 +15,10 @@ export const CONVERSATION_STATUS = {
   FAILED: 'Failed' as const,
   INPROGRESS: 'Inprogress' as const,
   NONE: 'None' as const,
+  /** Cooperatively cancelled (Phase 3) or ended by a passive disconnect
+   * before completion (Phase 2) — the persisted message carries whatever
+   * partial answer the user had already seen. */
+  STOPPED: 'Stopped' as const,
 } as const;
 
 // Create a type from the object values

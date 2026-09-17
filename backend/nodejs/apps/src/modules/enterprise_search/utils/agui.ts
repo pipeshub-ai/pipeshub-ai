@@ -50,4 +50,7 @@ export const AGUIEventType = {
   RUN_ERROR: 'RUN_ERROR',
   STATE_SNAPSHOT: 'STATE_SNAPSHOT',
   CUSTOM: 'CUSTOM',
+  // Root-run text deltas — fed to StreamedContentAccumulator for the
+  // passive-disconnect partial save; otherwise forwarded through untouched.
+  TEXT_MESSAGE_CONTENT: 'TEXT_MESSAGE_CONTENT',
 } as const;

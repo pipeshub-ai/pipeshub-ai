@@ -10,7 +10,7 @@ change. Only the two frozen blocks snapshots are pinned by number.
 
 Every CI leg, every PR and the nightly cron share ONE GitHub org, and different PRs run
 at the same time. The primary and public repos are therefore never written to: the three
-mutation tests (orders 15-17) each create a throw-away connector scoped to the *mutation*
+mutation tests (orders 18-20) each create a throw-away connector scoped to the *mutation*
 repo and assert by external id, so nothing another run does can reach an assertion here.
 Code mutations are further confined to ``it/<run_id>/`` — the connector only syncs the
 default branch, so concurrent runs share it and only a path namespace keeps them apart.
@@ -32,12 +32,13 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 14 TC-GH-PERM-001         — private repo ACL, role mapping, 2-hop inheritance
   order 15 TC-GH-PERM-002         — public repo ORG grant placement
   order 16 TC-GH-IDX-001          — indexing reaches COMPLETED / AUTO_INDEX_OFF
-  order 17 TC-INCR-ISSUE-001      — new issue + sub-issue, then title/comment update
-  order 18 TC-INCR-PR-001         — PR update-only: no new record, version += 1
-  order 19 TC-INCR-CODE-001       — new/update/rename/move/delete in one commit set
-  order 20 TC-FILTER-001          — REPO_IDS scoping: unlisted repos do not sync
-  order 21 TC-FILTER-002          — Index Code Files off: records exist, AUTO_INDEX_OFF
-  order 22 TC-GH-FILTEROPT-001    — org/repo picker options, search ranking, paging
+  order 17 TC-GH-CKPT-001         — issue / PR / code checkpoints at their exact values
+  order 18 TC-INCR-ISSUE-001      — new issues (one pre-closed → DONE), then edit + not_planned close
+  order 19 TC-INCR-PR-001         — PR update-only: no new record, version += 1; closed PR → CANCELLED
+  order 20 TC-INCR-CODE-001       — new/update/rename/move/delete in one commit set; untouched file stable
+  order 21 TC-FILTER-001          — REPO_IDS scoping: unlisted repos do not sync
+  order 22 TC-FILTER-002          — Index Code Files off: records exist, AUTO_INDEX_OFF
+  order 23 TC-GH-FILTEROPT-001    — org/repo picker options, search ranking, paging
 """
 
 import logging
@@ -55,6 +56,7 @@ if str(_ROOT) not in sys.path:
 
 from app.config.constants.arangodb import (  # type: ignore[import-not-found]  # noqa: E402
     CollectionNames,
+    Connectors,
     MimeTypes,
     ProgressStatus,
 )
@@ -109,9 +111,11 @@ from connectors.github_teams.github_test_utils import (  # noqa: E402
     create_issue,
     dedicated_connector,
     delete_issue_comment,
+    get_branch_head,
     get_issue,
     get_pull,
     list_filter,
+    list_pulls,
     sync_filters,
     tree_dirs,
     update_issue,
@@ -214,6 +218,12 @@ def _connector_name(kind: str) -> str:
     return f"github-teams-{kind}-{GH_IT_RUN_ID}-{uuid.uuid4().hex[:6]}"
 
 
+def _status_value(record: Any) -> str:
+    """``status`` hydrates as a ``Status`` enum on tickets and a plain string on pull
+    requests, so compare the value rather than ``str()`` of whichever came back."""
+    return str(getattr(record.status, "value", record.status))
+
+
 # =============================================================================
 # TestGitHubTeamsConnector — sync baseline and structure
 # =============================================================================
@@ -280,6 +290,23 @@ class TestGitHubTeamsConnector:
                 f"PR #{pr['number']} missing from the graph ({external_id})"
             )
 
+        # Every blob on the default branch, by external id. This connector applies no
+        # path exclusion of its own — every tree entry of type blob becomes a record —
+        # so a missing one can only mean a dropped tree page or a truncated walk, and
+        # neither moves any of the counts above.
+        missing_blobs = []
+        for entry in github_connector["primary_tree"]:
+            if entry.get("type") != "blob":
+                continue
+            if not await graph_provider.get_record_by_external_id(
+                connector_id, f"/{primary_id}/blob/{entry['path']}",
+            ):
+                missing_blobs.append(entry["path"])
+        assert not missing_blobs, (
+            f"blobs on {github_connector['primary_repo']['full_name']} with no CODE_FILE "
+            f"record: {missing_blobs}"
+        )
+
         graph_app = await graph_provider.get_app_metadata_by_connector_id(connector_id)
         assert graph_app is not None, f"apps document missing for connector {connector_id}"
         assert_graph_entity_matches(
@@ -289,7 +316,8 @@ class TestGitHubTeamsConnector:
             skip_compare=frozenset({
                 "created_at_timestamp", "updated_at_timestamp", "auth_type", "is_active",
                 "is_agent_active", "is_configured", "is_authenticated", "created_by",
-                "updated_by", "status", "is_locked",
+                "updated_by", "status", "is_locked", "last_synced_by",
+                "vector_membership_backfill_after_key",
             }),
         )
         logger.info("TC-SYNC-001 passed: %d records %s", total, by_type)
@@ -1354,6 +1382,82 @@ class TestGitHubTeamsIndexing:
             )
         logger.info("TC-GH-IDX-001 passed: %d record(s) indexed", len(targets))
 
+    @pytest.mark.order(17)
+    async def test_tc_gh_ckpt_001_sync_points(
+        self,
+        github_connector: dict[str, Any],
+        github_rest: Any,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GH-CKPT-001: one checkpoint per per-repo data group, at the right value.
+
+        Three independent checkpoints keyed ``GITHUB TEAMS/{repo_id}-{kind}/`` — note
+        the space in the connector name and the trailing slash from the empty entity
+        id. Issues and PRs store the sweep's high-water ``updated_at``; code stores the
+        default-branch HEAD. A missing or stale checkpoint is invisible in the graph:
+        the next sync silently re-walks the whole repo and re-upserts every record,
+        which is a reindex storm nothing else in this suite can see.
+
+        Exact values, not presence: the primary repo is read-only, so each watermark
+        must equal the newest ``updated_at`` GitHub reports for the listing the
+        connector reads, and the code checkpoint must sit on HEAD.
+        """
+        connector_id = github_connector["connector_id"]
+        repo = github_connector["primary_repo"]
+        repo_id = repo["id"]
+
+        def key(kind: str) -> str:
+            return f"{Connectors.GITHUB_TEAMS.value}/{repo_id}-{kind}/"
+
+        watermarks: dict[str, int] = {
+            "work-items": max(
+                epoch_ms(i["updated_at"]) for i in github_connector["primary_issues"]
+            ),
+        }
+        if github_connector["primary_pulls"]:
+            watermarks["pull-requests"] = max(
+                epoch_ms(p["updated_at"]) for p in github_connector["primary_pulls"]
+            )
+        else:
+            logger.warning(
+                "PR CHECKPOINT COVERAGE INACTIVE: %s has no pull requests", repo["full_name"],
+            )
+
+        for kind, expected in watermarks.items():
+            point = await graph_provider.get_sync_point(connector_id, key(kind))
+            assert point, (
+                f"no sync point stored for {key(kind)}; the next sync re-walks every "
+                f"{kind.replace('-', ' ')} in the repo instead of the delta"
+            )
+            actual = point.get("last_sync_time")
+            assert actual is not None and int(actual) == expected, (
+                f"{key(kind)} is at {actual!r}, expected {expected} — the newest "
+                f"updated_at on the primary repo's {kind.replace('-', ' ')} listing. "
+                "The sweep advances this to its high-water mark only after every page "
+                "succeeds, so a different value means the sweep stopped early or the "
+                "watermark was computed from the wrong field."
+            )
+
+        code_key = key("code-repository")
+        code_point = await graph_provider.get_sync_point(connector_id, code_key)
+        assert code_point, f"no sync point stored for {code_key}"
+        head = await get_branch_head(
+            github_rest, github_connector["org"], repo["name"], repo["default_branch"],
+        )
+        assert code_point.get("last_commit_sha") == head, (
+            f"code checkpoint is {code_point.get('last_commit_sha')!r} but the branch "
+            f"HEAD is {head!r}; the next incremental sync compares from the wrong commit"
+        )
+        # A default-branch rename is detected by comparing the stored name, and forces
+        # a full re-baseline; a wrong stored name either misses the rename or forces a
+        # re-baseline every run.
+        assert code_point.get("default_branch") == repo["default_branch"]
+        assert code_point.get("full_name") == repo["full_name"]
+        logger.info(
+            "TC-GH-CKPT-001 passed: %d watermark(s) exact, code at %s",
+            len(watermarks), head[:8],
+        )
+
 
 # =============================================================================
 # TestGitHubTeamsIncremental — dedicated connectors, mutation repo
@@ -1363,7 +1467,7 @@ class TestGitHubTeamsIndexing:
 class TestGitHubTeamsIncremental:
     """Mutation cases. Each owns its connector and asserts only by external id."""
 
-    @pytest.mark.order(17)
+    @pytest.mark.order(18)
     async def test_tc_incr_issue_001_new_issue_and_update(
         self,
         github_connector: dict[str, Any],
@@ -1371,8 +1475,17 @@ class TestGitHubTeamsIncremental:
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-INCR-ISSUE-001: a new issue + sub-issue arrive on the next incremental,
-        then a title edit bumps the version and the revision."""
+        """TC-INCR-ISSUE-001: new issues arrive on the next incremental; an edit bumps
+        the version; state changes map to Status; untouched records stay put.
+
+        Three issues share the two resyncs. The parent is edited and closed as
+        ``not_planned`` in the update leg (version bump + CANCELLED). A third issue is
+        closed as ``completed`` before the first sync ever sees it (straight to DONE).
+        The sub-issue is never touched after its link is made: ``since`` is inclusive,
+        so the update-leg sweep re-fetches it anyway, and an unchanged revision must
+        come back as an idempotent upsert rather than a new version — a resync that
+        bumps untouched records re-embeds the whole repo every run.
+        """
         state = github_connector
         org = state["org"]
         repo_name = state["mutation_repo_name"]
@@ -1380,6 +1493,7 @@ class TestGitHubTeamsIncremental:
 
         parent_num: int | None = None
         child_num: int | None = None
+        done_num: int | None = None
         async with dedicated_connector(
             pipeshub_client, graph_provider,
             token=state["token"], name=_connector_name("incr-issue"),
@@ -1396,6 +1510,16 @@ class TestGitHubTeamsIncremental:
                     title=artifact_title("SubIssue"), body="Sub-issue of the above.",
                 )
                 child_num = child["number"]
+                done = await create_issue(
+                    github_rest, org, repo_name,
+                    title=artifact_title("DoneIssue"),
+                    body="Closed as completed before the first sync.",
+                )
+                done_num = done["number"]
+                await update_issue(
+                    github_rest, org, repo_name, done_num,
+                    state="closed", state_reason="completed",
+                )
 
                 sub_issues_supported = True
                 try:
@@ -1411,13 +1535,26 @@ class TestGitHubTeamsIncremental:
 
                 parent_external = f"{repo_id}/issues/{parent_num}"
                 child_external = f"{repo_id}/issues/{child_num}"
+                done_external = f"{repo_id}/issues/{done_num}"
                 before = await wait_for_record_by_external_id(
                     graph_provider, connector_id, parent_external,
                     description="TC-INCR-ISSUE-001 new issue (the `since` clock)",
                 )
-                await wait_for_record_by_external_id(
+                child_before = await wait_for_record_by_external_id(
                     graph_provider, connector_id, child_external,
                     description="TC-INCR-ISSUE-001 second new issue",
+                )
+                await wait_for_record_by_external_id(
+                    graph_provider, connector_id, done_external,
+                    description="TC-INCR-ISSUE-001 pre-closed issue",
+                )
+                done_record = await graph_provider.get_typed_record_by_external_id(
+                    connector_id, done_external,
+                )
+                assert done_record is not None, "typed record missing for the pre-closed issue"
+                assert _status_value(done_record) == "DONE", (
+                    f"an issue closed as completed must map to DONE, got "
+                    f"{done_record.status!r}"
                 )
 
                 if sub_issues_supported:
@@ -1432,7 +1569,12 @@ class TestGitHubTeamsIncremental:
                 # --- update leg ---
                 old_version = int(before.version)
                 new_title = artifact_title("Edited")
-                await update_issue(github_rest, org, repo_name, parent_num, title=new_title)
+                # Title edit and a not_planned close in one PATCH, so the resync that
+                # proves the version bump also proves the CANCELLED mapping.
+                await update_issue(
+                    github_rest, org, repo_name, parent_num,
+                    title=new_title, state="closed", state_reason="not_planned",
+                )
                 await add_comment(
                     github_rest, org, repo_name, parent_num, "Comment added by TC-INCR-ISSUE-001.",
                 )
@@ -1453,15 +1595,40 @@ class TestGitHubTeamsIncremental:
                 assert str(after.external_revision_id) == str(epoch_ms(live["updated_at"])), (
                     "external_revision_id must track the source updated_at in epoch ms"
                 )
+                after_typed = await graph_provider.get_typed_record_by_external_id(
+                    connector_id, parent_external,
+                )
+                assert after_typed is not None, "typed record missing after update"
+                assert _status_value(after_typed) == "CANCELLED", (
+                    f"an issue closed as not_planned must map to CANCELLED, got "
+                    f"{after_typed.status!r}; collapsing it to DONE loses the difference "
+                    "between finished and abandoned work"
+                )
+
+                child_after = await graph_provider.get_record_by_external_id(
+                    connector_id, child_external,
+                )
+                assert child_after is not None, "the untouched sub-issue disappeared"
+                assert child_after.id == child_before.id, (
+                    "the untouched sub-issue must keep its record vertex"
+                )
+                assert child_after.version == child_before.version, (
+                    f"the untouched sub-issue's version moved {child_before.version} → "
+                    f"{child_after.version}. An unchanged revision must be an idempotent "
+                    "upsert; bumping it re-queues every untouched issue for indexing on "
+                    "every sync."
+                )
+                assert child_after.external_revision_id == child_before.external_revision_id
                 logger.info(
-                    "TC-INCR-ISSUE-001 passed: version %s → %s", old_version, after.version,
+                    "TC-INCR-ISSUE-001 passed: version %s → %s, CANCELLED + DONE mapped, "
+                    "untouched sub-issue stable", old_version, after.version,
                 )
             finally:
-                for number in (child_num, parent_num):
+                for number in (done_num, child_num, parent_num):
                     if number:
                         await delete_issue(github_rest, org, repo_name, number)
 
-    @pytest.mark.order(18)
+    @pytest.mark.order(19)
     async def test_tc_incr_pr_001_update_only(
         self,
         github_connector: dict[str, Any],
@@ -1525,6 +1692,36 @@ class TestGitHubTeamsIncremental:
                 pr_count_before = await graph_provider.count_records_by_type(
                     connector_id, RecordType.PULL_REQUEST.value, scoped=True,
                 )
+
+                # The mutation repo carries closed, never-merged PRs left by earlier
+                # fixtures, and no read-only repo in the suite has one. One is enough
+                # to pin the CANCELLED branch: merged_at is None and state is closed.
+                closed = next(
+                    (
+                        p for p in await list_pulls(github_rest, org, repo_name, state="closed")
+                        if p.get("merged_at") is None
+                    ),
+                    None,
+                )
+                if closed is None:
+                    logger.warning(
+                        "CANCELLED PR COVERAGE INACTIVE: %s/%s has no closed unmerged PR",
+                        org, repo_name,
+                    )
+                else:
+                    closed_external = f"{repo_id}/pull/{closed['number']}"
+                    await wait_for_record_by_external_id(
+                        graph_provider, connector_id, closed_external,
+                        description="TC-INCR-PR-001 closed unmerged PR",
+                    )
+                    closed_typed = await graph_provider.get_typed_record_by_external_id(
+                        connector_id, closed_external,
+                    )
+                    assert closed_typed is not None, f"typed PR record missing for {closed_external}"
+                    assert _status_value(closed_typed) == "CANCELLED", (
+                        f"PR #{closed['number']} is closed with merged_at=None and must map "
+                        f"to CANCELLED, got {closed_typed.status!r}"
+                    )
 
                 # --- three kinds of update, no creation ---
                 await commit_changes(
@@ -1595,7 +1792,7 @@ class TestGitHubTeamsIncremental:
                 if comment_id:
                     await delete_issue_comment(github_rest, org, repo_name, comment_id)
 
-    @pytest.mark.order(19)
+    @pytest.mark.order(20)
     async def test_tc_incr_code_001_all_deltas(
         self,
         github_connector: dict[str, Any],
@@ -1619,6 +1816,7 @@ class TestGitHubTeamsIncremental:
         branch = repo["default_branch"]
 
         # Paths for this run only.
+        steady = it_path("code", "steady.txt")      # never touched after the baseline
         keep = it_path("code", "keep.txt")          # updated in place
         renamed_from = it_path("code", "before.txt")  # renamed within its directory
         renamed_to = it_path("code", "after.txt")
@@ -1642,6 +1840,7 @@ class TestGitHubTeamsIncremental:
             await commit_changes(
                 github_rest, org, repo_name, branch,
                 [
+                    FileChange.upsert(steady, "leave me alone\n"),
                     FileChange.upsert(keep, "v1\n"),
                     FileChange.upsert(renamed_from, "rename me\n"),
                     FileChange.upsert(moved_from, "move me\n"),
@@ -1655,7 +1854,7 @@ class TestGitHubTeamsIncremental:
                 return f"/{repo_id}/blob/{path}"
 
             baseline = {}
-            for path in (keep, renamed_from, moved_from, doomed):
+            for path in (steady, keep, renamed_from, moved_from, doomed):
                 baseline[path] = await wait_for_record_by_external_id(
                     graph_provider, connector_id, blob_id(path),
                     description=f"TC-INCR-CODE-001 baseline {path}",
@@ -1760,6 +1959,20 @@ class TestGitHubTeamsIncremental:
                 connector_id, blob_id(doomed),
             ) is None, f"deleted file {doomed} still has a record"
 
+            # (g) UNTOUCHED — the incremental path must leave it alone. A resync that
+            #     re-upserts every file passes (a)-(e) and still re-embeds the repo.
+            steady_after = await graph_provider.get_record_by_external_id(
+                connector_id, blob_id(steady),
+            )
+            assert steady_after is not None, f"untouched file {steady} disappeared"
+            assert steady_after.id == baseline[steady].id, "an untouched file must keep its vertex"
+            assert steady_after.version == int(baseline[steady].version), (
+                f"untouched file version moved {baseline[steady].version} → "
+                f"{steady_after.version}; the incremental sync rewrote records outside "
+                "the compare delta"
+            )
+            assert str(steady_after.external_revision_id) == str(baseline[steady].external_revision_id)
+
             # (f) Timestamps written by the first sync survived this resync.
             #     Neo4j `SET n += null` deletes a property, so upserting a record
             #     built with None dates silently wiped whatever the backfill filled.
@@ -1792,7 +2005,7 @@ class TestGitHubTeamsFilters:
     """Filter behaviour. Both cases build their own connector over repos nothing
     writes to, so they are the most parallel-safe tests in the suite."""
 
-    @pytest.mark.order(20)
+    @pytest.mark.order(21)
     async def test_tc_filter_001_repo_scoping(
         self,
         github_connector: dict[str, Any],
@@ -1851,7 +2064,7 @@ class TestGitHubTeamsFilters:
                 public["full_name"], total,
             )
 
-    @pytest.mark.order(21)
+    @pytest.mark.order(22)
     async def test_tc_filter_002_code_files_indexing_off(
         self,
         github_connector: dict[str, Any],
@@ -1927,7 +2140,7 @@ class TestGitHubTeamsFilters:
                 len(code_files), len(folders), len(tickets),
             )
 
-    @pytest.mark.order(22)
+    @pytest.mark.order(23)
     async def test_tc_gh_filteropt_001_dynamic_filter_options(
         self,
         github_connector: dict[str, Any],

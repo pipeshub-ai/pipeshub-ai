@@ -678,44 +678,10 @@ class TestGetServices:
         request.app.container = container
 
         result = await get_services(request)
-        assert "llm" in result
+        assert "llm" not in result
         assert "retrieval_service" in result
 
-    @pytest.mark.asyncio
-    async def test_llm_none_tries_get_instance(self) -> None:
-        from app.api.routes.agent import get_services
-        request = MagicMock()
-        container = MagicMock()
-        retrieval = AsyncMock()
-        retrieval.llm = None
-        retrieval.get_llm_instance = AsyncMock(return_value=MagicMock())
-        container.retrieval_service = AsyncMock(return_value=retrieval)
-        container.graph_provider = AsyncMock(return_value=AsyncMock())
-        container.reranker_service.return_value = MagicMock()
-        container.config_service.return_value = MagicMock()
-        container.logger.return_value = MagicMock()
-        request.app.container = container
 
-        result = await get_services(request)
-        assert result["llm"] is not None
-
-    @pytest.mark.asyncio
-    async def test_llm_none_both_fail(self) -> None:
-        from app.api.routes.agent import LLMInitializationError, get_services
-        request = MagicMock()
-        container = MagicMock()
-        retrieval = AsyncMock()
-        retrieval.llm = None
-        retrieval.get_llm_instance = AsyncMock(return_value=None)
-        container.retrieval_service = AsyncMock(return_value=retrieval)
-        container.graph_provider = AsyncMock(return_value=AsyncMock())
-        container.reranker_service.return_value = MagicMock()
-        container.config_service.return_value = MagicMock()
-        container.logger.return_value = MagicMock()
-        request.app.container = container
-
-        with pytest.raises(LLMInitializationError):
-            await get_services(request)
 class TestChatStreamWithPlaceholder:
     """Tests for chat_stream endpoint when using agentIdPlaceholder."""
 

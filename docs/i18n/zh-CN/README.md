@@ -59,7 +59,7 @@
 - 📝 **可解释的答案：** PipesHub 提供有据可依的答案，并精确引用到原始文档中的具体段落。
 - 🔒 **权限感知搜索：** 强制执行数据源级别的访问控制，用户只能看到其有权访问的内容。
 - 🕸️ **知识图谱检索：** 基于图谱的检索，捕捉企业数据之间的关联关系。
-- 🔌 **企业级连接器：** 开箱即用的 30 多个连接器，支持实时和定时索引。
+- 🔌 **企业级连接器：** 开箱即用的 50 多个连接器，支持实时和定时索引。
 - 🔍 **统一搜索、深度研究与智能体：** 在同一上下文层上实现搜索、问答、深度研究、网页搜索与 AI 智能体。
 - 📊 **工件与代码执行：** 在安全的执行沙箱中生成报告、图表和仪表盘。
 - 🎙️ **多模态支持：** 理解图像、图表和扫描文件，并支持基于语音的交互。
@@ -86,51 +86,6 @@
 <p align="center">
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
-
-## 支持的文件格式
-
-| 格式 | 详情 |
-|--------|---------|
-| PDF | 包括扫描版 PDF |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | 逗号分隔值 |
-| Markdown | .md 文件 |
-| HTML | 网页 |
-| Text | 纯文本文件 |
-| Google Docs、Sheets、Slides | Google Workspace 格式 |
-| 图像 | PNG、JPG 等 |
-| 音频 | 音频文件 |
-| 视频 | 视频文件 |
-
-## 技术栈
-
-### 前端
-
-| 技术 | 说明 |
-|-----------|-------------|
-| Next.js | App Router 界面（客户端渲染的 React） |
-| TypeScript | 强类型的 JavaScript 超集 |
-| Radix UI Themes | 无障碍的组件原语与样式 |
-| Zod | 模式校验与解析 |
-| React Hook Form | 灵活的表单状态管理 |
-
-### 后端
-
-| 技术 | 说明 |
-|-----------|-------------|
-| FastAPI | 高性能的 Python Web 框架 |
-| LangChain | 用于 LLM 流水线的框架 |
-| Qdrant | 向量相似度搜索引擎 |
-| Neo4j / ArangoDB | 图数据库 |
-| Kafka / Redis Streams | 分布式事件流平台 |
-| Redis | 缓存 |
-| Redis / etcd3 | 分布式键值配置存储 |
-| Celery | 分布式任务队列系统 |
-| Docling | 文档解析与抽取工具包 |
-| PyMuPDF | PDF 处理库 |
-| pandas | 数据分析与处理 |
 
 ## 🚀 部署指南
 
@@ -246,7 +201,11 @@ PipesHub 完全开源（Apache 2.0）且可自托管——你的数据永不离�
 
 ### PipesHub 支持哪些连接器？
 
-PipesHub 拥有 30 多个企业级连接器，支持实时和定时索引。它支持 PDF、Docx、XLSX、PPTX、CSV、Markdown、HTML、Google Docs/Sheets/Slides、图像、音频和视频等文件格式。
+PipesHub 拥有 50 多个企业级连接器，支持实时和定时索引。详见 [连接器概览](https://docs.pipeshub.com/connectors/overview)。
+
+### PipesHub 可以索引哪些文件格式？
+
+PDF（含扫描件）、Microsoft Office（Word、Excel、PowerPoint）、Google Docs/Sheets/Slides、Markdown、HTML、CSV、纯文本和图像。音频和视频可以存储，但尚不索引。存储服务接受更广的 MIME 类型 — 见 [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage)。
 
 ### 如何部署 PipesHub？
 
@@ -264,7 +223,19 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### PipesHub 支持哪些 LLM 提供商？
 
-PipesHub 是“自带模型”——你可以使用任意 LLM 提供商。在你的 VPC 中部署你偏好的模型。技术栈包括用于 LLM 流水线和工作流的 LangChain。
+PipesHub 是“自带模型”——你可以使用任意 LLM 提供商。在你的 VPC 中部署你偏好的模型。
+
+### 技术栈是什么？
+
+PipesHub 由三部分组成：
+
+- **Web 应用**（Next.js）— 浏览器里的搜索、对话和管理。
+- **API**（Node.js）— 账号、权限、知识库和文件。
+- **Python 服务** — 连接器同步数据源；索引解析文档；查询带着引用作答。
+
+这些服务会调用 **你自带的 AI 模型**。**嵌入模型**把文本变成检索向量，**LLM** 写出带引用的回答。任意云厂商或本地模型（Ollama）都可以；默认是本地嵌入服务。
+
+数据在知识图谱（默认 Neo4j，或 ArangoDB）、向量库（Qdrant）和 MongoDB 里。Redis 是缓存。文件在磁盘或对象存储上。服务之间在本地用 Redis 传任务，更大规模可以用 Kafka。详见 [系统概览](https://docs.pipeshub.com/system-overview)。
 
 ### 什么是知识图谱检索功能？
 

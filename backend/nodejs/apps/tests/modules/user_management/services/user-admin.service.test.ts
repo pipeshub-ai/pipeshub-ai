@@ -6,6 +6,7 @@ import {
   normalizeUserRole,
   resolveOptionalUserRole,
   toDisplayUserRole,
+  getActiveUserOrgRole,
   isUserOrgAdmin,
   findOrgAdminUserIds,
   assertCanDemoteAdmin,
@@ -157,6 +158,47 @@ describe('user-admin.service', () => {
 
       expect(result).to.equal(false);
       expect(findOneStub.called).to.equal(false);
+    });
+  });
+
+  describe('getActiveUserOrgRole', () => {
+    it('returns admin for an active admin', async () => {
+      stubUsersFindOne('admin');
+      expect(await getActiveUserOrgRole(userId, orgId)).to.equal('admin');
+    });
+
+    it('returns member for an active member', async () => {
+      stubUsersFindOne('member');
+      expect(await getActiveUserOrgRole(userId, orgId)).to.equal('member');
+    });
+
+    it('returns member when the stored role is unset', async () => {
+      stubUsersFindOne(null);
+      expect(await getActiveUserOrgRole(userId, orgId)).to.equal('member');
+    });
+
+    it('returns null for a missing or deleted user', async () => {
+      stubUsersFindOne(undefined);
+      expect(await getActiveUserOrgRole(userId, orgId)).to.equal(null);
+    });
+
+    it('returns null for invalid ObjectIds without querying', async () => {
+      const findOneStub = sinon.stub(Users, 'findOne');
+
+      expect(await getActiveUserOrgRole(userId, 'not-an-id')).to.equal(null);
+      expect(findOneStub.called).to.equal(false);
+    });
+
+    it('only considers active users of the org', async () => {
+      const findOneStub = stubUsersFindOne('admin');
+
+      await getActiveUserOrgRole(userId, orgId);
+
+      expect(findOneStub.firstCall.args[0]).to.deep.equal({
+        _id: userId,
+        orgId,
+        isDeleted: { $ne: true },
+      });
     });
   });
 

@@ -1,6 +1,7 @@
 import asyncio
 import mimetypes
 import re
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
@@ -27,7 +28,6 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -80,6 +80,13 @@ from app.sources.client.dropbox.dropbox_ import (
     DropboxTokenConfig,
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_downloadable,
+    not_found_at_source,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.utils.streaming import create_stream_record_response, stream_content
 
 
@@ -490,8 +497,7 @@ class DropboxIndividualConnector(BaseConnector):
             # 5.5 Get preview URL
             # We keep the verbose logging and fallback logic from Teams because
             # Dropbox API often throws "shared_link_already_exists" for individual users too.
-            self.logger.info("=" * 50)
-            self.logger.info("Processing weburl for path: %s", entry.path_lower)
+            self.logger.debug("Processing weburl for path: %s", entry.path_lower)
 
             preview_url = None
             link_settings = SharedLinkSettings(
@@ -505,19 +511,19 @@ class DropboxIndividualConnector(BaseConnector):
                 settings=link_settings
             )
 
-            self.logger.info("Result 1: %s", shared_link_result)
+            self.logger.debug("Result 1: %s", shared_link_result)
 
             if shared_link_result.success:
                 # Successfully created new link
                 preview_url = shared_link_result.data.url
-                self.logger.info("Successfully created new link: %s", preview_url)
+                self.logger.debug("Successfully created new link: %s", preview_url)
             else:
                 # First call failed - check if link already exists
                 error_str = str(shared_link_result.error)
-                self.logger.info("First call failed with error type")
+                self.logger.debug("First call failed with error type")
 
                 if 'shared_link_already_exists' in error_str:
-                    self.logger.info("Link already exists, making second call to retrieve it")
+                    self.logger.debug("Link already exists, making second call to retrieve it")
 
                     # Make second call with settings=None to get the existing link
                     second_result = await self.data_source.sharing_create_shared_link_with_settings(
@@ -525,12 +531,12 @@ class DropboxIndividualConnector(BaseConnector):
                         settings=None
                     )
 
-                    self.logger.info("Result 2 received")
+                    self.logger.debug("Result 2 received")
 
                     if second_result.success:
                         # Unexpectedly succeeded
                         preview_url = second_result.data.url
-                        self.logger.info("Second call succeeded: %s", preview_url)
+                        self.logger.debug("Second call succeeded: %s", preview_url)
                     else:
                         # Expected to fail - extract URL from error string
                         second_error_str = str(second_result.error)
@@ -542,7 +548,7 @@ class DropboxIndividualConnector(BaseConnector):
 
                             if url_match:
                                 preview_url = url_match.group(1)
-                                self.logger.info("Successfully extracted URL from error: %s", preview_url)
+                                self.logger.debug("Successfully extracted URL from error: %s", preview_url)
                             else:
                                 self.logger.error("Could not extract URL from second error string")
                                 self.logger.debug("Error string: %s", second_error_str[:500]) # Log first 500 chars
@@ -551,11 +557,18 @@ class DropboxIndividualConnector(BaseConnector):
                 else:
                     self.logger.error("Unexpected error type on first call (not shared_link_already_exists)")
 
-            # Final check
+            # Final check - fall back to a direct Dropbox web link if we couldn't
+            # create/retrieve a shared link (e.g. access_denied on nested shared
+            # folders with a restrictive shared_link_policy, or path/not_found
+            # for content whose path doesn't resolve in this namespace context).
             if preview_url is None:
-                self.logger.error("Failed to retrieve preview URL for %s", entry.path_lower)
+                encoded_path = urllib.parse.quote(entry.path_display, safe="/")
+                preview_url = f"https://www.dropbox.com/home{encoded_path}"
+                self.logger.warning(
+                    "Falling back to home URL for %s: %s", entry.path_lower, preview_url
+                )
             else:
-                self.logger.info("Final preview_url: %s", preview_url)
+                self.logger.debug("Final preview_url: %s", preview_url)
 
             # 6. Get parent record ID
             parent_path = None
@@ -1068,7 +1081,7 @@ class DropboxIndividualConnector(BaseConnector):
         Simplified for individual accounts.
         """
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
         try:
             # Dropbox uses path or file ID for temporary links. ID is more robust.
             target_identifier = record.external_record_id
@@ -1077,21 +1090,44 @@ class DropboxIndividualConnector(BaseConnector):
                 target_identifier = getattr(record, 'path', None)
             if not target_identifier:
                 self.logger.warning(f"Cannot generate signed URL: Record {record.id} missing external_id")
-                return None
-            response = await self.data_source.files_get_temporary_link(path=target_identifier)
-
+                raise not_downloadable(
+                    "This item is missing its Dropbox path and cannot be downloaded.",
+                    connector=self.display_name,
+                )
+            response = await self.data_source.files_get_temporary_link(
+                path=target_identifier, raise_on_error=True
+            )
+            if not response.success or not response.data:
+                self.logger.error(
+                    f"Failed to get temporary link for record {record.id}: {response.error}"
+                )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data),
+                connector=self.display_name,
+                message=response.error,
+            )
             return response.data.link
+        except HTTPException:
+            raise
         except Exception as e:
-            self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
-            return None
+            self.logger.error(
+                f"Error creating signed URL for record {record.id}: {e}", exc_info=True
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         signed_url = await self.get_signed_url(record)
         if not signed_url:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+            raise not_found_at_source(self.display_name)
 
         return create_stream_record_response(
-            stream_content(signed_url),
+            stream_content(
+                signed_url,
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=self.display_name,
+            ),
             filename=record.record_name,
             mime_type=record.mime_type,
             fallback_filename=f"record_{record.id}"

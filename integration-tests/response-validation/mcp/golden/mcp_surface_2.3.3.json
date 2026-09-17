@@ -1,0 +1,399 @@
+{
+  "capabilities": {
+    "prompts": {
+      "listChanged": true
+    },
+    "tools": {
+      "listChanged": true
+    }
+  },
+  "instructions": "# PipesHub MCP — instructions for the LLM\n\nPipesHub is the user's workplace AI platform. It indexes their documents,\nknowledge base content, and connector sources (Drive, Box, Confluence,\nSlack, Jira, Gmail, ...). When in doubt, the answer is in PipesHub.\n\n## Full-document tasks: `pipeshub_search` → `pipeshub_get_record_content`\n\n`pipeshub_chat` answers from a handful of retrieved passages — it never\nreads a whole document. Whenever the task depends on a document's\nCOMPLETE content, fetch the document itself:\n\n1. `pipeshub_search` with the document's name / topic.\n2. Take the top hit's `recordId`.\n3. `pipeshub_get_record_content`, and answer from the returned content.\n\nTasks that need this path — anything where missing part of the document\ncould make the answer wrong:\n\n- Summarize / TL;DR / key points / takeaways / action items of a doc.\n- Extract or list ALL of something (dates, owners, requirements, ...).\n- Check whether / where a doc mentions something.\n- Translate, rewrite, outline, review, or reformat a doc.\n- Compare named docs (fetch each `recordId`).\n- Any question explicitly scoped to ONE named document — chat retrieval\n  cannot be restricted to a single record.\n\n## Default tool: `pipeshub_chat`\n\n**Use `pipeshub_chat` for any question that could plausibly be answered\nby the user's PipesHub-indexed data** and is not a full-document task:\n\n- A question that may span several documents, or where you don't yet\n  know which record holds the answer (e.g. \"what did Aashil say about\n  onboarding?\").\n- Anything about company / org policies, processes, decisions, or\n  history (e.g. \"what's our vacation policy?\", \"who owns the auth\n  service?\").\n- Anything explicitly mentioning PipesHub itself, or its sources\n  (Drive / Box / Confluence / Slack / Gmail / Jira / etc.) when the\n  user has those connected.\n- Open-ended \"what do we know about X\" questions where the answer\n  likely lives in the org's documents.\n\nDo NOT answer those from your own knowledge — `pipeshub_chat` grounds\nthe answer in the user's actual indexed content and returns citations\nthe user can verify.\n\n## When to use the other tools\n\n- `pipeshub_search` — locate a document by name or topic and resolve it\n  to a `recordId`. To read or summarize one specific document, search,\n  then pass the top hit's `recordId` to `pipeshub_get_record_content`.\n- `pipeshub_download_record` — when the user wants the actual file\n  bytes (download, attach, open). Get the `recordId` either from\n  citations on a prior `pipeshub_chat` response or from\n  `pipeshub_search`.\n- `pipeshub_get_record_content` — when you need a record's full parsed\n  content (returned as a single `content` string: metadata header plus\n  the document's text) without downloading the original file. Prefer this\n  over download when the question is about what the record says.\n- `pipeshub_directory` — people, groups, teams, and `whoami` lookups.\n  Not for documents.\n- `pipeshub_sources` — call once at the start of a session to discover\n  which connectors / KB / models are available, then cache the result.\n- `pipeshub_agents` — list the org's configured **agents** (specialized\n  assistants with their own prompt, tools, and knowledge scope).\n\n## Knowledge Sources\n\nA source (an app connector or a KB) holds record groups (a project, space,\ndrive, folder), which hold records (one ticket, page, file). Records nest —\nan epic over its stories, a page over its child pages.\n\n**Every tool returns metadata or content.**\n\n- `pipeshub_search` / `pipeshub_chat` — content, but only a ranked sample of\n  blocks: never all blocks of a record, never every record that matches, never\n  a complete list of what exists.\n- `mode:\"lookup\"` and `mode:\"navigate\"` — metadata: recordIds, fields, and\n  structure. No document text. `mode:\"content\"` — one whole record.\n\n**Combining them.** Search finds a starting point by wording; navigate on a\n`recordId` reveals what search structurally cannot — siblings, children,\nlinked records, and the group's total count. For a question that must be\nexhaustive (\"all\", \"how many\", \"every\"), do NOT count search hits or trust a\nchat answer: navigate the record group, which reports the real total. For a\nrecord's siblings, navigate its parent — take the id from the `Path` line.\n\n**A named record** — an issue key, a Confluence / Drive / Slack link, an\nexternal ID → `mode:\"lookup\"` FIRST. It returns that record's metadata (for a\nticket: status, assignee, priority, dates) plus its `recordId`, which often\nanswers the question outright. Never guess a `recordId`.\n\nPass a source's id from `pipeshub_sources` as `apps: [\"<id>\"]` to search or\nchat, and as `nodeId` to navigate. Navigate and lookup end in a `Next:` line\nnaming the exact follow-up call — follow it.\n\n## Agents\n\nSome orgs configure **agents** for specific jobs (e.g. a Slack messenger, a\nJira ticket creator, a Salesforce CRM updater). To run a turn against an\nagent, call `pipeshub_chat` with its `agentId` (from `pipeshub_agents`)\n— optionally with an agent `chatMode` (`auto` by default, or `quick` /\n`verification` / `deep`). Keep passing the same `agentId` plus the\nreturned `conversationId` on follow-up turns.\n\n**When to route to an agent vs plain chat:**\n- The user names a system/action that maps to an agent (e.g. \"post to\n  Slack\", \"create a Jira ticket\", \"update the Salesforce deal\") → call\n  `pipeshub_agents`, pick the matching agent, and use it.\n- Plain question about the org's knowledge or the public web → just use\n  `pipeshub_chat` (no `agentId`) with `internal_search` or `web_search`.\n\n**If you are unsure which agent or route fits the request**, call\n`pipeshub_agents` FIRST and read the returned names/descriptions, then\neither pick the best match or present the list to the user and let them\nchoose. Do NOT guess an agent blindly, and do NOT refuse — list the agents\nand decide from real data. The list may be empty (no agents configured),\nin which case fall back to plain `pipeshub_chat`.\n\n## Conversation lifecycle\n\n`pipeshub_chat` is a single tool that handles both starting and\ncontinuing conversations (plain or with an `agentId`). On the first turn\nomit `conversationId`; on every subsequent turn pass back the\n`conversationId` returned by the previous call (along with the same\n`agentId` if you used one). Server-side context is preserved — do NOT\nreplay prior messages. Only start a fresh conversation when the user\nexplicitly asks to clear context.\n",
+  "prompts": [
+    {
+      "arguments": [
+        {
+          "description": "Optional. The user's request to route. Provide it to have the guidance applied to a concrete request; omit it to just load the routing guidance as a seed system prompt at the start of a session.",
+          "name": "query",
+          "required": false
+        }
+      ],
+      "description": "Load PipesHub tool-routing guidance so the assistant picks the correct tool (pipeshub_chat / search / agents / directory) and lists agents with pipeshub_agents when unsure which route fits the query.",
+      "name": "pipeshub-assistant",
+      "text": "# PipesHub MCP — instructions for the LLM\n\nPipesHub is the user's workplace AI platform. It indexes their documents,\nknowledge base content, and connector sources (Drive, Box, Confluence,\nSlack, Jira, Gmail, ...). When in doubt, the answer is in PipesHub.\n\n## Full-document tasks: `pipeshub_search` → `pipeshub_get_record_content`\n\n`pipeshub_chat` answers from a handful of retrieved passages — it never\nreads a whole document. Whenever the task depends on a document's\nCOMPLETE content, fetch the document itself:\n\n1. `pipeshub_search` with the document's name / topic.\n2. Take the top hit's `recordId`.\n3. `pipeshub_get_record_content`, and answer from the returned content.\n\nTasks that need this path — anything where missing part of the document\ncould make the answer wrong:\n\n- Summarize / TL;DR / key points / takeaways / action items of a doc.\n- Extract or list ALL of something (dates, owners, requirements, ...).\n- Check whether / where a doc mentions something.\n- Translate, rewrite, outline, review, or reformat a doc.\n- Compare named docs (fetch each `recordId`).\n- Any question explicitly scoped to ONE named document — chat retrieval\n  cannot be restricted to a single record.\n\n## Default tool: `pipeshub_chat`\n\n**Use `pipeshub_chat` for any question that could plausibly be answered\nby the user's PipesHub-indexed data** and is not a full-document task:\n\n- A question that may span several documents, or where you don't yet\n  know which record holds the answer (e.g. \"what did Aashil say about\n  onboarding?\").\n- Anything about company / org policies, processes, decisions, or\n  history (e.g. \"what's our vacation policy?\", \"who owns the auth\n  service?\").\n- Anything explicitly mentioning PipesHub itself, or its sources\n  (Drive / Box / Confluence / Slack / Gmail / Jira / etc.) when the\n  user has those connected.\n- Open-ended \"what do we know about X\" questions where the answer\n  likely lives in the org's documents.\n\nDo NOT answer those from your own knowledge — `pipeshub_chat` grounds\nthe answer in the user's actual indexed content and returns citations\nthe user can verify.\n\n## When to use the other tools\n\n- `pipeshub_search` — locate a document by name or topic and resolve it\n  to a `recordId`. To read or summarize one specific document, search,\n  then pass the top hit's `recordId` to `pipeshub_get_record_content`.\n- `pipeshub_download_record` — when the user wants the actual file\n  bytes (download, attach, open). Get the `recordId` either from\n  citations on a prior `pipeshub_chat` response or from\n  `pipeshub_search`.\n- `pipeshub_get_record_content` — when you need a record's full parsed\n  content (returned as a single `content` string: metadata header plus\n  the document's text) without downloading the original file. Prefer this\n  over download when the question is about what the record says.\n- `pipeshub_directory` — people, groups, teams, and `whoami` lookups.\n  Not for documents.\n- `pipeshub_sources` — call once at the start of a session to discover\n  which connectors / KB / models are available, then cache the result.\n- `pipeshub_agents` — list the org's configured **agents** (specialized\n  assistants with their own prompt, tools, and knowledge scope).\n\n## Knowledge Sources\n\nA source (an app connector or a KB) holds record groups (a project, space,\ndrive, folder), which hold records (one ticket, page, file). Records nest —\nan epic over its stories, a page over its child pages.\n\n**Every tool returns metadata or content.**\n\n- `pipeshub_search` / `pipeshub_chat` — content, but only a ranked sample of\n  blocks: never all blocks of a record, never every record that matches, never\n  a complete list of what exists.\n- `mode:\"lookup\"` and `mode:\"navigate\"` — metadata: recordIds, fields, and\n  structure. No document text. `mode:\"content\"` — one whole record.\n\n**Combining them.** Search finds a starting point by wording; navigate on a\n`recordId` reveals what search structurally cannot — siblings, children,\nlinked records, and the group's total count. For a question that must be\nexhaustive (\"all\", \"how many\", \"every\"), do NOT count search hits or trust a\nchat answer: navigate the record group, which reports the real total. For a\nrecord's siblings, navigate its parent — take the id from the `Path` line.\n\n**A named record** — an issue key, a Confluence / Drive / Slack link, an\nexternal ID → `mode:\"lookup\"` FIRST. It returns that record's metadata (for a\nticket: status, assignee, priority, dates) plus its `recordId`, which often\nanswers the question outright. Never guess a `recordId`.\n\nPass a source's id from `pipeshub_sources` as `apps: [\"<id>\"]` to search or\nchat, and as `nodeId` to navigate. Navigate and lookup end in a `Next:` line\nnaming the exact follow-up call — follow it.\n\n## Agents\n\nSome orgs configure **agents** for specific jobs (e.g. a Slack messenger, a\nJira ticket creator, a Salesforce CRM updater). To run a turn against an\nagent, call `pipeshub_chat` with its `agentId` (from `pipeshub_agents`)\n— optionally with an agent `chatMode` (`auto` by default, or `quick` /\n`verification` / `deep`). Keep passing the same `agentId` plus the\nreturned `conversationId` on follow-up turns.\n\n**When to route to an agent vs plain chat:**\n- The user names a system/action that maps to an agent (e.g. \"post to\n  Slack\", \"create a Jira ticket\", \"update the Salesforce deal\") → call\n  `pipeshub_agents`, pick the matching agent, and use it.\n- Plain question about the org's knowledge or the public web → just use\n  `pipeshub_chat` (no `agentId`) with `internal_search` or `web_search`.\n\n**If you are unsure which agent or route fits the request**, call\n`pipeshub_agents` FIRST and read the returned names/descriptions, then\neither pick the best match or present the list to the user and let them\nchoose. Do NOT guess an agent blindly, and do NOT refuse — list the agents\nand decide from real data. The list may be empty (no agents configured),\nin which case fall back to plain `pipeshub_chat`.\n\n## Conversation lifecycle\n\n`pipeshub_chat` is a single tool that handles both starting and\ncontinuing conversations (plain or with an `agentId`). On the first turn\nomit `conversationId`; on every subsequent turn pass back the\n`conversationId` returned by the previous call (along with the same\n`agentId` if you used one). Server-side context is preserved — do NOT\nreplay prior messages. Only start a fresh conversation when the user\nexplicitly asks to clear context.\n"
+    }
+  ],
+  "protocolVersion": "2025-11-25",
+  "serverInfo": {
+    "name": "pipeshub-mcp",
+    "version": "0.0.4"
+  },
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "List PipesHub agents (with toolsets & knowledge)"
+      },
+      "description": "List the PipesHub **agents** configured for this org, each with its\ncapabilities.\n\nAgents are specialized assistants (custom system prompt, tools, knowledge\nscope). To converse with one, take its `agentId` and pass it to\n`pipeshub_chat`'s `agentId` argument.\n\nEach agent is returned as:\n`{ agentId, name, description, systemPrompt, startMessage, tags, webSearch,\nisActive, toolsets, knowledge }`.\n- `toolsets` — what the agent can DO: each `{ name, tools }` where `name`\n  is the connector (e.g. `jira`, `gmail`) and `tools` are the runnable\n  tool ids (e.g. `jira.create_issue`, `gmail.send_email`).\n- `knowledge` — what the agent can READ: each `{ name, type }` (e.g.\n  `Confluence-2` / `Confluence`).\n\n**Route on `toolsets`/`knowledge`, not the name** — names and descriptions\nare often generic or misleading. Match the request to the agent whose tools can\nactually perform it (e.g. \"create a Jira ticket\" → the agent whose toolset is\n`jira` and whose tools include `jira.create_issue`). If NO agent has a tool\nfor the requested action, say so — don't force an unrelated agent.\n\nThe list **may be empty** (no agents configured). For plain Q&A when no\nspecific agent is needed, use `pipeshub_chat` WITHOUT `agentId` and pick a\n`chatMode`: `internal_search` (org's indexed knowledge) or `web_search`\n(live web). Use `agentId` everywhere an agent is referenced.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "search": {
+            "description": "Optional case-insensitive substring match across agent name, description, and tags. Omit to return every agent.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "pipeshub_agents"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Chat with PipesHub"
+      },
+      "description": "Ask a question, get an answer grounded in the org's indexed data with\ncitations. It reads a few retrieved passages — never a whole document,\nnever a complete list.\n\n**Three questions this tool gets WRONG. Check them first:**\n- **Structure** — \"what's under this epic?\", \"which pages are in this\n  space?\", \"what links to this ticket?\", \"what's in this folder?\" →\n  `pipeshub_get_record_content` `mode:\"navigate\"`. Ranking cannot see how\n  records relate.\n- **Exhaustive** — \"how many X?\", \"list ALL the Y\", \"every Z\" →\n  `mode:\"navigate\"`, which reports the group's real total. This tool\n  undercounts and will not say so.\n- **One named document** — summarize it, extract from it, what does it say\n  about X → `pipeshub_search` for the `recordId`, then `mode:\"content\"`.\n\nEverything else about the org's knowledge belongs here: policies,\nprocesses, decisions, history, \"what do we know about X\", and any question\nspanning several documents.\n\n**Internal search** (default, `chatMode: \"internal_search\"`): the user's\ndocuments, files, knowledge base, company policies — anything in their\nPipesHub-indexed sources (Drive, Box, Confluence, Slack, Gmail, Jira, the\norg's KB, ...).\n\n**Web search** (`chatMode: \"web_search\"`): current events or public\ninformation unlikely to be in the org's knowledge base.\n\nBoth are plain-chat modes. **Agent chat** — pass an `agentId` from\n`pipeshub_agents` — runs against that agent's own prompt, tools and knowledge;\n`quick` is its only mode, requires the `agentId`, and is sent automatically.\n\n- \"What's our policy on Y?\" → `pipeshub_chat` (internal_search)\n- \"What's in the news about Z?\" → `pipeshub_chat` (web_search)\n- \"Find / locate the file named X\" → `pipeshub_search` (then\n  `pipeshub_download_record` if the user wants the bytes).\n\n**Conversation lifecycle** — one tool, both start and continue:\n\n- **First turn**: omit `conversationId`. The server creates a new\n  conversation; capture `conversationId` from the response.\n- **Follow-up turn**: pass the `conversationId` from the previous\n  response. Server-side context is preserved — do NOT replay earlier\n  messages, and `filters` is ignored on follow-ups (set once at\n  creation).\n\nOnly re-omit `conversationId` (start a fresh conversation) when the\nuser explicitly asks to start over / clear context.\n\nThe response contains the AI's `answer` plus `citations`. To download a\ncited document, take `citations[*].recordId` and call\n`pipeshub_download_record`.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "agentId": {
+            "description": "Optional PipesHub agent to converse with — the `agentId` from `pipeshub_agents`. When set, this turn runs against that agent's configuration (prompt, tools, knowledge). On follow-up turns pass the SAME `agentId` together with the `conversationId` returned by the previous call. Omit for a plain (non-agent) conversation. If unsure which agent to use, call `pipeshub_agents` first to see the options.",
+            "type": "string"
+          },
+          "chatMode": {
+            "description": "Response strategy. The valid values depend on whether `agentId` is set:\n- WITHOUT `agentId` (plain chat): `internal_search` — answer from the org's indexed knowledge (default) — or `web_search` — answer from the live web.\n- WITH `agentId` (agent chat): `quick` is the only supported mode and is sent automatically, so this argument can be omitted.",
+            "enum": [
+              "internal_search",
+              "web_search",
+              "quick"
+            ],
+            "type": "string"
+          },
+          "conversationId": {
+            "description": "Existing conversation id to continue. Omit on the FIRST turn; on every subsequent turn pass the `conversationId` returned by the previous call. Server-side message history is preserved — do NOT replay prior messages.",
+            "type": "string"
+          },
+          "filters": {
+            "description": "Source scoping for retrieval. Pass `apps` ids from `pipeshub_sources`. Only meaningful on the FIRST turn (when starting a new conversation).",
+            "properties": {
+              "apps": {
+                "description": "Source-scoping ids from `pipeshub_sources` — connector instance and / or knowledge base ids, mixed freely. The legacy org-wide `knowledgeBase_<orgId>` id is still accepted on deployments that predate per-KB sources. Empty / omitted means no app-side restriction.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kb": {
+                "description": "Legacy / unused. Leave empty.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "modelFriendlyName": {
+            "type": "string"
+          },
+          "modelKey": {
+            "description": "Model id to use (from `pipeshub_sources` `llmModels[*].modelKey`). Defaults to the org's default LLM.",
+            "type": "string"
+          },
+          "modelName": {
+            "type": "string"
+          },
+          "query": {
+            "description": "The user's question or message for this turn.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "pipeshub_chat"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "PipesHub directory (users / groups / teams / whoami)"
+      },
+      "description": "Look up people, groups, and teams in PipesHub. One tool with five\nactions — pick the right `action`:\n\n- `whoami` — who is the caller?  Use this whenever you need the\n  authenticated user's own id, email, or full name (e.g. before\n  `get_user` on themselves). Errors if the credential is expired\n  or revoked.\n- `list_users` — search / page through org users.\n- `get_user` — full `User` document for one user (requires `userId`).\n- `list_groups` — list user groups with `userCount`.\n- `list_my_teams` — teams the caller belongs to, with capability flags\n  (`canEdit` / `canDelete` / `canManageMembers`).\n\nOutput shape varies by action; see each action's docs above.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "action": {
+            "description": "What to do:\n- `whoami` — return the authenticated user's identity, confirmed against the server. No other args needed.\n- `list_users` — paginated list of org users. Optional `page`, `limit`, `search` (substring match against name or email).\n- `get_user` — full profile for one user. Required `userId`. Use `whoami` to find your own id first if needed.\n- `list_groups` — paginated list of user groups (with `userCount`).\n- `list_my_teams` — teams the authenticated user belongs to, with capability flags.",
+            "enum": [
+              "whoami",
+              "list_users",
+              "get_user",
+              "list_groups",
+              "list_my_teams"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "description": "Pagination — items per page. Used by list_* actions.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "page": {
+            "description": "Pagination — 1-based page number. Used by list_* actions.",
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "search": {
+            "description": "Substring match against name / email. Used by list_users.",
+            "type": "string"
+          },
+          "userId": {
+            "description": "Required when `action` is `get_user`. 24-character ObjectId.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pipeshub_directory"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Download a document by record id"
+      },
+      "description": "Stream the binary content of a single record from PipesHub.\n\nTypical sources for the `recordId`:\n- A chat citation:\n  `pipeshub_chat` response → `citations[*].recordId`.\n- A search result:\n  `pipeshub_search` response → `hits[*].recordId` /\n  `uniqueRecords[*].recordId`.\n\nResponse `Content-Type` is forwarded from the upstream service —\n`application/pdf`, `application/octet-stream`, etc. Binary content is\nreturned base64-encoded; text content is returned inline.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "convertTo": {
+            "description": "Optional server-side format conversion target (e.g. `pdf`). When omitted, the original file bytes are returned.",
+            "type": "string"
+          },
+          "recordId": {
+            "description": "Record identifier — usually a UUID for connector-sourced records or a 24-character ObjectId for uploaded records. Get it from a chat citation (`citations[*].recordId`) or from a `pipeshub_search` hit.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "recordId"
+        ],
+        "type": "object"
+      },
+      "name": "pipeshub_download_record"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Read, browse, or resolve records"
+      },
+      "description": "Three operations on the org's records. Pick by what you hold:\n\n  `mode:\"lookup\"`   — a URL, issue key (PA-1787), or external ID\n                    → its recordId plus the record's metadata\n  `mode:\"navigate\"` — a question about structure: what is under X,\n                    what links to Y → browses the hierarchy\n  `mode:\"content\"`  — a recordId, and you need the document's COMPLETE text\n\n**`mode:\"content\"` (default)** — the only way to see a document's complete\ntext. Use it whenever missing part of the document could make the answer\nwrong: summarize, extract or list ALL of something, check whether or where\na doc mentions X, review, or compare named docs. `pipeshub_chat` cannot do\nthese — it never sees a whole document.\n\nJudge by the user's INTENT, not their keywords: \"what's this doc about?\",\n\"walk me through the report\", \"anything in here about Y?\" are all\nfull-content tasks. Get the `recordId` from a `pipeshub_search` top hit, a\nchat citation, or `mode:\"lookup\"`.\n\nReturns one `content` string: a metadata header (title, source, key fields,\npre-generated summary) then the full parsed text. A record with no\nextractable content returns the literal `No record found`. Use\n`pipeshub_download_record` only for the original file bytes.\n\n**`mode:\"navigate\"`** — browse the hierarchy: RecordGroup (project /\nspace / drive / folder) → Record (epic / story / page / file) → children,\nwith breadcrumbs, related links and record IDs.\n\nUse it when the question depends on structure rather than wording: what is\nunder this epic, which pages sit in this space, what is linked to this\nticket, what is in this folder — and every \"how many\" / \"all of\" / \"every\"\nquestion. Search ranks by content; only this shows how records relate, and\nonly this gives a count you can trust.\n\nOmit `nodeId` for a flat listing of everything reachable, most recently\nupdated first — the usual starting point. A URL, an issue key, or a\n`pipeshub_sources` id also works and resolves automatically.\n\nPass `depth:2` or `depth:3` to see several levels in ONE call — an epic's\nstories AND their subtasks, a space's pages AND their children — instead of\none call per level. Use it whenever the question needs an overview of a\nhierarchy rather than a single node.\n\nOpening a record also prints that record's own metadata — for a ticket,\nstatus, assignee, priority and dates — so a question about one record is\noften answered by this call alone. It returns no document text; for that,\nre-call with `mode:\"content\"`.\n\nReturns `Path` breadcrumbs, the current node's metadata, a children listing\ncarrying `record_id=` or `node_id=` per row plus the group's total\n(`Children 1-50 of 61`), `Related` cross-references, and a `Next:` line.\nOne page is usually every child, so only pass `page:2` when that `Next:`\nline says more exist.\n\n**`mode:\"lookup\"`** — turn an external reference into a recordId, the first\nstep whenever the question names one. Returns that record's metadata (for a\nticket: status, assignee, priority, dates) plus its recordId, which\n`mode:\"navigate\"` takes to list what is under it and `mode:\"content\"` takes\nto read it.\n\nHandles Jira keys and URLs, Confluence, Drive, Slack permalinks, Linear,\nNotion, ServiceNow sys_id, SharePoint, Gmail/Outlook, and any connector\nwhose records index a web URL. Resolution searches ALL connectors you can\naccess, regardless of any source filter you used elsewhere.\n\nA miss is a 200 with empty `matches` and the input echoed in\n`not_found_identifiers` — that may mean no-access, not non-existence. Use\n`mode:\"navigate\"` to confirm the record exists before telling the user it\ndoes not. If `ambiguous` is true, pick from `matches` rather than taking\nthe first.\n\nNavigate and lookup return a rendered text view whose closing `Next:` line\nnames the exact follow-up call — follow it. When presenting a record, link\nit using the `Web URL` from its metadata header (when present).",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "connectorName": {
+            "description": "Optional hint that prioritises resolution order, e.g. `JIRA`, `CONFLUENCE`, `GOOGLE_DRIVE`, `SLACK`. It cannot widen the search beyond the connectors you can already access. Useful on a retry when a lookup came back empty.",
+            "type": "string"
+          },
+          "createdAfter": {
+            "description": "Filter children by source creation time. ISO 8601 `YYYY-MM-DD`, or a full datetime that MUST carry a timezone offset — a naive datetime is rejected rather than assumed to be UTC.",
+            "type": "string"
+          },
+          "createdBefore": {
+            "description": "Filter children by source creation time. `YYYY-MM-DD` is inclusive of the whole day.",
+            "type": "string"
+          },
+          "depth": {
+            "default": 1,
+            "description": "Levels of descendants to return in one call. Above 1, the listing is a flat list of all descendants down to that level rather than only direct children, and each row carries its own `level`.",
+            "maximum": 3,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "identifiers": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "items": {
+                  "maxLength": 2048,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 10,
+                "minItems": 1,
+                "type": "array"
+              }
+            ],
+            "description": "The reference(s) to resolve: a URL, an issue key such as `PA-1787`, or a bare external system ID. Paste each exactly as you found it — tracking parameters and fragments are handled. Pass a single string, or an array of up to 10 to resolve them in one call. Required when `mode` is `lookup`."
+          },
+          "limit": {
+            "default": 50,
+            "description": "Children per page. The minimum is 50 — smaller values are rejected rather than silently raised.",
+            "maximum": 200,
+            "minimum": 50,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "content",
+            "description": "`content` (default) reads a record's full text by `recordId`. `lookup` resolves a URL / issue key / external ID to a recordId. `navigate` browses the knowledge graph tree.",
+            "enum": [
+              "content",
+              "navigate",
+              "lookup"
+            ],
+            "type": "string"
+          },
+          "modifiedAfter": {
+            "description": "Filter children by source modification time. Same formats as `createdAfter`.",
+            "type": "string"
+          },
+          "modifiedBefore": {
+            "description": "Filter children by source modification time. Same formats as `createdBefore`.",
+            "type": "string"
+          },
+          "nodeId": {
+            "description": "The node to open. Take it from a `record_id=` or `node_id=` shown in a previous navigate or lookup response, from a search hit's `recordId`, or from a `pipeshub_sources` id — a KB or connector id opens that source directly. Omit it entirely for the flat listing of everything reachable, newest first — the usual starting point. A URL or an issue key such as `PA-1787` also works: it is resolved to its record automatically, so no separate lookup is needed.",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "nodeTypes": {
+            "description": "Restrict children to these node types, e.g. `[\"record\", \"folder\"]`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "page": {
+            "default": 1,
+            "description": "Page number, 1-indexed.",
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "recordId": {
+            "description": "Record identifier — usually a UUID for connector-sourced records or a 24-character ObjectId for uploaded records. Get it from a chat citation (`citations[*].recordId`) or from a `pipeshub_search` hit. Required when `mode` is `content`.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "pipeshub_get_record_content"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Semantic search"
+      },
+      "description": "Vector / semantic search across the org's indexed documents.\n\n**Use this when the user wants to LOCATE a document** — by name, topic,\nor a phrase to grep for — and to resolve it to a `recordId`. For\nopen-ended questions across many documents, use `pipeshub_chat`\ninstead, which does the retrieval internally and grounds the answer in\ncitations.\n\nTypical uses:\n- Resolve a doc name / topic into a `recordId` for\n  `pipeshub_get_record_content` — step 1 of any full-document task\n  (summarize, extract, review, \"what does the doc say?\").\n- Resolve a filename / phrase into a `recordId` for\n  `pipeshub_download_record`.\n- Show the user a ranked list of matching files when they ask \"find /\n  search for X\".\n\nNot for structural questions — what is under this epic, which pages are\nin this space, what links to this ticket. Ranking by content cannot show\nhow records relate; use `pipeshub_get_record_content` `mode:\"navigate\"`.\n\n**A ranked sample, never a complete list.** Hits are the top-scoring\nblocks from the best-matching records — not all blocks of any record, and\nnot every record that matches. Never count them to answer \"how many\" /\n\"all\" / \"every\"; navigate the record group instead, which reports its\nreal total.\n\nThe response is trimmed to one row per hit:\n`{ recordId, recordName, score, snippet, mimeType, webUrl, ... }`.\nHighest `score` first; multiple hits may share the same `recordId`\n(different blocks of the same record).\n\nWhen presenting results to the user, link each record using its\n`webUrl` (when present).",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "apps": {
+            "description": "Source-scoping ids — connector instance UUIDs and / or `knowledgeBase_<orgId>`. Get them from `pipeshub_sources`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "description": "Max number of result chunks. Default 10. Use a small value (5–10) when the goal is to resolve a filename / topic into a recordId.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Natural language query. Vector search across the org's indexed records.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "pipeshub_search"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "List PipesHub sources and AI models"
+      },
+      "description": "Discover available chat sources and AI models in one call.\n\nReturns up to three sections:\n\n- `sources` — every connector instance the org has wired up plus the\n  synthetic `knowledgeBase_<orgId>` entry for the org's KB. Each\n  item's `id` is exactly the value to put in `pipeshub_chat`'s or\n  `pipeshub_search`'s `apps` filter.\n- `llmModels` — chat / generation models. Each item's `modelKey`\n  is the value to pass on `pipeshub_chat` / `pipeshub_search` as\n  `modelKey`. Pick `isDefault: true` unless the user asks for a\n  specific model.\n- `embeddingModels` — vector embedding models (only fetched when\n  explicitly requested via `include`).\n\nCall this once at the start of a session and cache the result —\nsources and models change infrequently. `sources` and `llmModels`\nare returned by default; pass `include` to override.",
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "include": {
+            "description": "Which sections to fetch. Default: `[\"sources\", \"llmModels\"]`. Add `embeddingModels` if the user is configuring re-embedding.",
+            "items": {
+              "enum": [
+                "sources",
+                "llmModels",
+                "embeddingModels"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "pipeshub_sources"
+    }
+  ]
+}
