@@ -261,6 +261,8 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     artifacts: [],
     pendingAskUserQuestion: null,
     abortController: null,
+    runId: null,
+    stopping: false,
     messagePagination: null,
     lastAccessedAt: Date.now(),
     isOwner: isNew ? true : null,

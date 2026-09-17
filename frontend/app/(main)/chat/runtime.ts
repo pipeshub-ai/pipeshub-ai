@@ -395,6 +395,7 @@ export function loadHistoricalMessages(
             confidence: msg.confidence,
             modelInfo: msg.modelInfo,
             ...(feedbackInfo ? { feedbackInfo } : {}),
+            ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
             ...(capturedPayload && isAnswered
               ? { persistedAskUserQuestion: capturedPayload }
               : {}),

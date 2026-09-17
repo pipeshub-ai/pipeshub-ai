@@ -59,7 +59,7 @@
 - 📝 **Câu trả lời có thể giải thích:** PipesHub đưa ra các câu trả lời có căn cứ kèm trích dẫn chính xác đến từng khối trong tài liệu gốc.
 - 🔒 **Tìm kiếm nhận biết quyền truy cập:** Thực thi kiểm soát truy cập ở cấp nguồn để người dùng chỉ thấy những gì họ được phép.
 - 🕸️ **Truy xuất bằng đồ thị tri thức:** Truy xuất dựa trên đồ thị, nắm bắt các mối quan hệ giữa dữ liệu doanh nghiệp.
-- 🔌 **Trình kết nối doanh nghiệp:** Hơn 30 trình kết nối với lập chỉ mục thời gian thực và theo lịch, sẵn sàng dùng ngay.
+- 🔌 **Trình kết nối doanh nghiệp:** Hơn 50 trình kết nối với lập chỉ mục thời gian thực và theo lịch, sẵn sàng dùng ngay.
 - 🔍 **Tìm kiếm hợp nhất, Nghiên cứu sâu và Tác nhân:** Tìm kiếm, hỏi đáp, nghiên cứu sâu, tìm kiếm web và các tác nhân AI trên cùng một lớp ngữ cảnh.
 - 📊 **Tạo tác phẩm và Thực thi mã:** Tạo báo cáo, biểu đồ và bảng điều khiển trong một hộp cát thực thi an toàn.
 - 🎙️ **Hỗ trợ đa phương thức:** Hiểu hình ảnh, sơ đồ và tệp quét, cùng với tương tác bằng giọng nói.
@@ -86,51 +86,6 @@
 <p align="center">
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
-
-## Các định dạng tệp được hỗ trợ
-
-| Định dạng | Chi tiết |
-|--------|---------|
-| PDF | Bao gồm cả PDF đã quét |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Giá trị phân tách bằng dấu phẩy |
-| Markdown | Tệp .md |
-| HTML | Trang web |
-| Text | Tệp văn bản thuần |
-| Google Docs, Sheets, Slides | Định dạng Google Workspace |
-| Hình ảnh | PNG, JPG, v.v. |
-| Âm thanh | Tệp âm thanh |
-| Video | Tệp video |
-
-## Ngăn xếp công nghệ
-
-### Frontend
-
-| Công nghệ | Mô tả |
-|-----------|-------------|
-| Next.js | Giao diện App Router (React kết xuất phía client) |
-| TypeScript | Tập cha của JavaScript với kiểu mạnh |
-| Radix UI Themes | Các thành phần nguyên thủy dễ truy cập và tạo kiểu |
-| Zod | Xác thực và phân tích lược đồ |
-| React Hook Form | Quản lý trạng thái biểu mẫu linh hoạt |
-
-### Backend
-
-| Công nghệ | Mô tả |
-|-----------|-------------|
-| FastAPI | Khung web Python hiệu năng cao |
-| LangChain | Khung cho các pipeline LLM |
-| Qdrant | Công cụ tìm kiếm theo độ tương đồng vectơ |
-| Neo4j / ArangoDB | Cơ sở dữ liệu đồ thị |
-| Kafka / Redis Streams | Nền tảng truyền sự kiện phân tán |
-| Redis | Bộ nhớ đệm |
-| Redis / etcd3 | Kho cấu hình khóa-giá trị phân tán |
-| Celery | Hệ thống hàng đợi tác vụ phân tán |
-| Docling | Bộ công cụ phân tích và trích xuất tài liệu |
-| PyMuPDF | Thư viện xử lý PDF |
-| pandas | Phân tích và xử lý dữ liệu |
 
 ## 🚀 Hướng dẫn triển khai
 
@@ -246,7 +201,11 @@ PipesHub hoàn toàn mã nguồn mở (Apache 2.0) và có thể tự lưu trữ
 
 ### PipesHub hỗ trợ những trình kết nối nào?
 
-PipesHub có hơn 30 trình kết nối doanh nghiệp với lập chỉ mục thời gian thực và theo lịch. Nó hỗ trợ các định dạng tệp như PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, hình ảnh, âm thanh và video.
+PipesHub có hơn 50 trình kết nối doanh nghiệp với lập chỉ mục thời gian thực và theo lịch. Xem [tổng quan trình kết nối](https://docs.pipeshub.com/connectors/overview).
+
+### PipesHub có thể lập chỉ mục những định dạng tệp nào?
+
+PDF (kể cả bản quét), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, văn bản thuần và hình ảnh. Âm thanh và video có thể được lưu trữ nhưng chưa được lập chỉ mục. Dịch vụ lưu trữ chấp nhận tập MIME rộng hơn — xem [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### Tôi triển khai PipesHub như thế nào?
 
@@ -264,7 +223,19 @@ Lưu ý: Hãy dùng HTTPS cho việc triển khai trên đám mây. HTTP có th�
 
 ### PipesHub hỗ trợ những nhà cung cấp LLM nào?
 
-PipesHub theo nguyên tắc "Mang mô hình của riêng bạn" — bạn có thể dùng bất kỳ nhà cung cấp LLM nào. Triển khai trong VPC của bạn với các mô hình bạn ưa thích. Ngăn xếp công nghệ bao gồm LangChain cho các pipeline và quy trình LLM.
+PipesHub theo nguyên tắc "Mang mô hình của riêng bạn" — bạn có thể dùng bất kỳ nhà cung cấp LLM nào. Triển khai trong VPC của bạn với các mô hình bạn ưa thích.
+
+### Ngăn xếp công nghệ là gì?
+
+PipesHub gồm ba phần:
+
+- **Ứng dụng web** (Next.js) — tìm kiếm, chat và quản trị trên trình duyệt.
+- **API** (Node.js) — tài khoản, quyền, kho tri thức và tệp.
+- **Dịch vụ Python** — trình kết nối đồng bộ nguồn; lập chỉ mục phân tích tài liệu; truy vấn trả lời kèm trích dẫn.
+
+Các dịch vụ đó gọi **mô hình AI do bạn mang tới**. **Mô hình embedding** biến văn bản thành vector để tìm kiếm. **LLM** viết câu trả lời có trích dẫn. Dùng bất kỳ nhà cung cấp nào hoặc mô hình local (Ollama); máy chủ embedding local là mặc định.
+
+Dữ liệu nằm trong đồ thị tri thức (Neo4j mặc định, hoặc ArangoDB), kho vector (Qdrant) và MongoDB. Redis là bộ nhớ đệm. Tệp nằm trên đĩa hoặc object storage. Các dịch vụ chuyển việc cho nhau qua Redis trên máy local, hoặc Kafka khi triển khai lớn hơn. Xem [tổng quan hệ thống](https://docs.pipeshub.com/system-overview).
 
 ### Tính năng truy xuất bằng đồ thị tri thức là gì?
 

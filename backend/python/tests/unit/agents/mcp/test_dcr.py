@@ -325,6 +325,29 @@ class TestAssertDiscoveryTargetAllowed:
         with pytest.raises(DiscoveryBlockedError):
             await assert_discovery_target_allowed("http://169.254.169.254/latest/meta-data")
 
+    @pytest.mark.asyncio
+    async def test_keeps_non_global_hosts_reachable_for_admin_configured_servers(self) -> None:
+        url = "https://mcp.tailnet.example/.well-known/oauth-authorization-server"
+        with patch("app.agents.mcp.dcr.validate_public_http_url", return_value=None) as mock_validate:
+            await assert_discovery_target_allowed(url)
+        mock_validate.assert_called_once_with(url, block_non_global=False)
+
+    @pytest.mark.asyncio
+    async def test_allows_cgnat_literal_without_network_access(self) -> None:
+        await assert_discovery_target_allowed("http://100.64.1.1:8080/register")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://100.100.100.200/latest/meta-data",
+            "http://168.63.129.16/machine?comp=goalstate",
+        ],
+    )
+    async def test_rejects_cloud_metadata_despite_the_cgnat_exception(self, url: str) -> None:
+        with pytest.raises(DiscoveryBlockedError):
+            await assert_discovery_target_allowed(url)
+
 
 class TestRegisterDynamicClient:
     @pytest.mark.asyncio

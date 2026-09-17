@@ -139,6 +139,7 @@ class AnswerFinalizer:
         streamed_answer: str = "",
         reasoning_turns: list[dict[str, Any]] | None = None,
         agent_confidence: str | None = None,
+        agent_cancelled: bool = False,
     ) -> dict[str, Any]:
         """Produce `completion_data` from the completed agent run.
 
@@ -154,9 +155,30 @@ class AnswerFinalizer:
         `agent_confidence` is the normalized confidence level from
         `AgentResult.confidence` (populated by `final_answer` when the tool is
         enabled). Takes precedence over the legacy text-trailer parser.
+
+        `agent_cancelled` (Stop Generation, Phase 3b) is `AgentResult.
+        cancelled` — an immutable snapshot `Agent.fail(..., status=
+        "cancelled")` took the moment the agent loop itself observed
+        cancellation, NOT a live re-check of `context.cancellation_token.
+        is_cancelled` (a late cancel() arriving after the run already
+        finished, successfully or with an unrelated failure, must not
+        relabel that outcome "stopped" — see `AgentResult.cancelled`'s
+        docstring). Also not derived from `agent_success`/`agent_error`
+        directly: `Agent.fail(..., status="cancelled")` still sets
+        `success=False` with a generic `error="Cancelled"` string
+        `AgentResult` has no OTHER way to distinguish from any other
+        failure. Checked BEFORE `agent_success` below: a cancelled run is
+        always `agent_success=False` too, but must route to
+        `_run_cancelled_path`, never `_emit_error_response` — the run was
+        stopped on purpose, not because it failed.
         """
         state = self._context.tool_state
         log = self._context.logger or logger
+
+        if agent_cancelled:
+            return await self._run_cancelled_path(
+                state, log, event_sink, streamed_answer, reasoning_turns or [],
+            )
 
         if not agent_success:
             return await self._emit_error_response(
@@ -389,6 +411,88 @@ class AnswerFinalizer:
             await event_sink.write(evt)
         log.info(
             "AnswerFinalizer: finalized response (%d chars, %d citations)",
+            len(normalized), len(citations),
+        )
+        return completion_data
+
+    async def _run_cancelled_path(
+        self,
+        state: dict[str, Any],
+        log: logging.Logger,
+        event_sink: EventSink,
+        streamed_answer: str,
+        reasoning_turns: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Cooperative-cancel branch (Stop Generation, Phase 3b): finalizes
+        whatever text `TerminalAnswerStreamer` already put on screen as a
+        first-class (if partial) answer — `completion_data["status"] =
+        "stopped"` propagates through `AGUIFormatter.answer_final`'s
+        `STATE_SNAPSHOT`/`RUN_FINISHED` (and `LegacyFormatter`'s `complete`)
+        so Node's `buildAIResponseMessage`/`saveCompleteConversation` persist
+        a `Stopped` message/conversation instead of `Failed`.
+
+        Deliberately NOT `_run_success_path` with `streamed_answer`
+        substituted for `agent_output`: that method falls back to
+        `_EMPTY_ANSWER_FALLBACK`'s apologetic text when the answer is empty,
+        which is right for a genuine empty completion but wrong here — a
+        cancel during "Thinking" (before any text streamed) should persist
+        an empty answer, which Node's save path already treats as valid
+        exactly when `status == "stopped"`.
+        """
+        final_results = self._collector.final_results
+        virtual_record_map = self._collector.virtual_records
+        ref_mapper = self._collector.citation_ref_mapper
+        ref_to_url = ref_mapper.ref_to_url if ref_mapper is not None else None
+        prior_web_records = self._collector.web_records
+
+        clean_output, _ = parse_confidence_from_answer(streamed_answer)
+        completion_data: dict[str, Any] = {"status": "stopped"}
+        self._attach_parts(completion_data, final_text=clean_output)
+
+        parts = completion_data.get("parts")
+        if parts:
+            from app.utils.streaming import (  # noqa: PLC0415
+                strip_llm_authored_markers_in_parts,
+            )
+
+            strip_llm_authored_markers_in_parts(parts)
+            normalized, citations = self._normalize_all_parts_citations(
+                parts, final_results, self._collector.tool_records,
+                ref_to_url, virtual_record_map, prior_web_records,
+            )
+            for part in reversed(parts):
+                if part.get("isFinal") and part.get("type") == "text":
+                    normalized = part["content"]
+                    break
+        else:
+            normalized, citations = normalize_citations_and_chunks(
+                clean_output, final_results, self._collector.tool_records,
+                ref_to_url=ref_to_url,
+                virtual_record_id_to_result=virtual_record_map,
+                web_records=prior_web_records,
+            )
+
+        for evt in self._context.formatter.answer_delta(
+            self._context,
+            chunk=normalized if normalized.strip() else "",
+            accumulated=normalized, citations=citations,
+            raw_length=len(streamed_answer),
+        ):
+            await event_sink.write(evt)
+
+        completion_data["answer"] = normalized
+        completion_data["citations"] = citations
+        reasoning_payload = build_reasoning_payload(reasoning_turns)
+        if reasoning_payload is not None:
+            completion_data["reasoning"] = reasoning_payload
+        completion_data.update(_tool_names_from_state(state))
+        state["response"] = normalized
+        state["completion_data"] = completion_data
+        await self._emit_ask_user_question_fallback(state, event_sink)
+        for evt in self._context.formatter.answer_final(self._context, completion_data=completion_data):
+            await event_sink.write(evt)
+        log.info(
+            "AnswerFinalizer: finalized STOPPED response (%d chars, %d citations)",
             len(normalized), len(citations),
         )
         return completion_data

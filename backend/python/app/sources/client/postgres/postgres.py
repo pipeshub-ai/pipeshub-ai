@@ -173,8 +173,12 @@ class PostgreSQLClient:
                 status = await conn.execute(query, *prepared_params)
                 return [{"affected_rows": self._parse_affected_rows(status)}]
         except Exception as e:
+            # Re-raised as-is: the driver's class (InsufficientPrivilegeError,
+            # UndefinedTableError, the acquire timeout above) is what the
+            # streaming path maps to a status, and a RuntimeError wrapper
+            # destroys it.
             logger.error(f"🔧 [PostgreSQLClient] Query execution failed: {e}")
-            raise RuntimeError(f"Query execution failed: {e}") from e
+            raise
 
     async def execute_query_raw(
         self,
@@ -206,7 +210,7 @@ class PostgreSQLClient:
                 return (columns, raw_rows)
         except Exception as e:
             logger.error(f"🔧 [PostgreSQLClient.execute_query_raw] Query execution failed: {e}")
-            raise RuntimeError(f"Query execution failed: {e}") from e
+            raise
 
     @staticmethod
     def _normalize_params(

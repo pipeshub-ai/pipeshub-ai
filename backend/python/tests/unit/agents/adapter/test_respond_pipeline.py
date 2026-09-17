@@ -309,3 +309,84 @@ class TestAskUserQuestionFallback:
         )
 
         assert not [e for e in sink.events if e["event"] == "ask_user_question"]
+
+
+class TestCancelledPath:
+    """`agent_cancelled=True` (Stop Generation, Phase 3b) — must persist
+    whatever text was already streamed as a first-class `status: "stopped"`
+    answer, never the generic error/apology text `_emit_error_response`/
+    `_run_success_path`'s empty-answer fallback would otherwise produce."""
+
+    async def test_cancelled_with_partial_text_persists_it_with_stopped_status(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False, agent_error="Cancelled", agent_output=None,
+            event_sink=sink, streamed_answer="Here is the partial answer",
+            agent_cancelled=True,
+        )
+
+        assert result["status"] == "stopped"
+        assert result["answer"] == "Here is the partial answer"
+        assert result["citations"] == []
+        assert context.tool_state["completion_data"] == result
+        event_types = [e["event"] for e in sink.events]
+        assert event_types == ["answer_chunk", "complete"]
+        assert sink.events[0]["data"]["accumulated"] == "Here is the partial answer"
+
+    async def test_cancelled_before_any_text_streamed_persists_an_empty_answer_not_a_fallback(
+        self,
+    ) -> None:
+        """Cancelled during "Thinking", before the first token — this must
+        NOT fall through to `_EMPTY_ANSWER_FALLBACK`'s apologetic text (the
+        branch an empty `agent_output` takes on the success path): Node's
+        save path already treats an empty answer as valid exactly when
+        `status == "stopped"` (see `_run_cancelled_path`'s docstring)."""
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False, agent_error="Cancelled", agent_output=None,
+            event_sink=sink, streamed_answer="",
+            agent_cancelled=True,
+        )
+
+        assert result["status"] == "stopped"
+        assert result["answer"] == ""
+
+    async def test_agent_cancelled_takes_precedence_over_agent_success_false(self) -> None:
+        """`Agent.fail(..., status="cancelled")` sets `success=False` with a
+        generic `error="Cancelled"` — indistinguishable from a real failure
+        by those two fields alone. `agent_cancelled` must still route to the
+        cancelled branch, never `_emit_error_response`'s generic error text."""
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False, agent_error="Cancelled", agent_output=None,
+            event_sink=sink, streamed_answer="partial",
+            agent_cancelled=True,
+        )
+
+        assert result["status"] == "stopped"
+        assert "errorCode" not in result
+        assert result["answer"] == "partial"
+
+    async def test_reasoning_turns_are_still_attached_when_cancelled(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False, agent_error="Cancelled", agent_output=None,
+            event_sink=sink, streamed_answer="partial",
+            reasoning_turns=[{"turn": 1, "content": "thinking..."}],
+            agent_cancelled=True,
+        )
+
+        assert result["status"] == "stopped"
+        assert "reasoning" in result

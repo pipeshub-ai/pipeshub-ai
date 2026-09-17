@@ -178,6 +178,10 @@ describe('createAGUIEventHandler', () => {
       chunk: '',
       accumulated: body,
       citations: [],
+      // The trailer is stripped from the text, and the confidence it carried is
+      // surfaced as a field — this case sends /confidence in its final
+      // STATE_DELTA, so the handler is expected to pass it through.
+      confidence: 'High',
     });
   });
 
@@ -460,6 +464,15 @@ describe('createAGUIEventHandler', () => {
     const handle = createAGUIEventHandler(callbacks);
 
     handle(frame('RUN_ERROR', { parentRunId: 'root-run', message: 'tool crashed' }));
+
+    expect(spies.onError).not.toHaveBeenCalled();
+  });
+
+  it('treats a root RUN_ERROR with code "abort" as a stop, not an error', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('RUN_ERROR', { code: 'abort', message: 'Stream aborted' }));
 
     expect(spies.onError).not.toHaveBeenCalled();
   });

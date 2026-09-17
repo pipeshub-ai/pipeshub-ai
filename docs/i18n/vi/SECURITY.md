@@ -14,7 +14,7 @@ Chúng tôi xem trọng các lỗ hổng bảo mật và đánh giá cao những
 
 **Vui lòng KHÔNG tạo issue công khai trên GitHub cho các lỗ hổng bảo mật.**
 
-Thay vào đó, vui lòng báo cáo các lỗ hổng bảo mật bằng cách gửi email đến: **abhishek@pipeshub.com**
+Thay vào đó, vui lòng báo cáo các lỗ hổng bảo mật bằng cách gửi email đến: **security@pipeshub.com**
 
 ### Những gì cần đưa vào
 

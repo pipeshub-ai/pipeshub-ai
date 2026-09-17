@@ -527,21 +527,32 @@ class TestGetSignedUrl:
         assert result == "https://dl.dropbox.com/temp"
 
     async def test_no_external_id(self, connector):
+        from fastapi import HTTPException
+
         record = MagicMock(external_record_id=None, path=None, id="r1")
-        result = await connector.get_signed_url(record)
-        assert result is None
+        # A missing local path is not a file deleted at Dropbox.
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     async def test_not_initialized(self, connector):
         connector.data_source = None
         record = MagicMock(external_record_id="/test.txt", id="r1")
-        result = await connector.get_signed_url(record)
-        assert result is None
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
     async def test_exception(self, connector):
+        from fastapi import HTTPException
+
         connector.data_source.files_get_temporary_link = AsyncMock(side_effect=Exception("err"))
         record = MagicMock(external_record_id="/test.txt", id="r1")
-        result = await connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Could not retrieve this item. Please try again."
 
 
 # ---------------------------------------------------------------------------

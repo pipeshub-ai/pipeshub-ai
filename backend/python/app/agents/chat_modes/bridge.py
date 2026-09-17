@@ -31,10 +31,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.core.context import CancellationToken
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
+from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.error_classification import classify_error
@@ -65,6 +68,8 @@ from app.utils.streaming import create_sse_event, handle_simple_mode
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +321,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     supports_tool_calls: bool = True,
     protocol: str = "legacy",
     client_name: str | None = None,
+    cancellation_registry: "RunCancellationRegistry | None" = None,
+    cancellation_owner: "RunOwner | None" = None,
 ) -> "AsyncGenerator[str, None]":
     """Entry point `chatbot.py::askAIStream()` calls for every `/chat/stream`
     request, regardless of mode. See module docstring."""
@@ -327,14 +334,35 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     policy = policy or resolve_chat_mode_policy(query_info.get("chatMode"))
     system_prompts_config = system_prompts_config or {}
 
+    # Stop Generation (Phase 3a): registered BEFORE `build_initial_state()`
+    # below (same reasoning as `stream_bridge.py::run_agent_loop_stream`)
+    # so the "Thinking" phase is cancellable too. Covers the no-tools path
+    # too — `_run_no_tools_degradation` has no agent loop to cancel INTO,
+    # but registration lets `/chat/cancel` return `{cancelled: true}` so
+    # the frontend's 5-second grace timer fires and aborts the connection.
+    run_id = query_info.get("runId") or str(uuid.uuid4())
+    cancellation_token = CancellationToken()
+    run_owner = cancellation_owner or RunOwner(
+        user_id=user_info.get("userId", ""),
+        org_id=user_info.get("orgId", ""),
+        conversation_id=query_info.get("conversationId"),
+    )
+
+    if cancellation_registry is not None:
+        await cancellation_registry.register(run_id, cancellation_token, run_owner)
+
     if not supports_tool_calls:
-        async for event in _run_no_tools_degradation(
-            query_info=query_info, user_info=user_info, llm=llm, policy=policy, log=log,
-            retrieval_service=retrieval_service, graph_provider=graph_provider,
-            config_service=config_service, system_prompts_config=system_prompts_config,
-            is_multimodal_llm=is_multimodal_llm, context_length=context_length,
-        ):
-            yield event
+        try:
+            async for event in _run_no_tools_degradation(
+                query_info=query_info, user_info=user_info, llm=llm, policy=policy, log=log,
+                retrieval_service=retrieval_service, graph_provider=graph_provider,
+                config_service=config_service, system_prompts_config=system_prompts_config,
+                is_multimodal_llm=is_multimodal_llm, context_length=context_length,
+            ):
+                yield event
+        finally:
+            if cancellation_registry is not None:
+                await cancellation_registry.unregister(run_id)
         return
 
     try:
@@ -395,6 +423,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     except Exception as exc:
         log.error("run_chat_stream: failed to build initial state: %s", exc, exc_info=True)
         error_code, user_message = classify_error(str(exc))
+        if cancellation_registry is not None:
+            await cancellation_registry.unregister(run_id)
         yield _pre_stream_error_frame(protocol, user_message, error_code)
         return
 
@@ -408,6 +438,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     context = AgentContext.from_chat_state(
         chat_state, event_sink=event_sink, protocol=protocol,
         llm_provider=llm_provider, context_length=context_length,
+        run_id=run_id, cancellation_token=cancellation_token,
     )
 
     async def _produce() -> None:
@@ -562,6 +593,13 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     agent_success=result.success, agent_error=result.error,
                     agent_output=result.output, event_sink=context.event_sink,
                     streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,
+                    # Stop Generation (Phase 3b) — see the matching call in
+                    # `stream_bridge.py::run_agent_loop_stream` for why this
+                    # reads `result.cancelled` (an immutable snapshot taken
+                    # when the agent loop itself observed cancellation)
+                    # rather than live-checking `cancellation_token.
+                    # is_cancelled` here.
+                    agent_cancelled=result.cancelled,
                 )
         except Exception as exc:
             log.error("run_chat_stream: run failed: %s", exc, exc_info=True)
@@ -569,6 +607,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            if cancellation_registry is not None:
+                await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
             if context.sandbox_manager is not None:
                 try:

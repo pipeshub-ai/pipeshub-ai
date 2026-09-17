@@ -51,7 +51,7 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
     lastActivityAt: { type: Number, default: Date.now },
     status: {
       type: String,
-      enum: ['None', 'Inprogress', 'Complete', 'Failed'],
+      enum: ['None', 'Inprogress', 'Complete', 'Failed', 'Stopped'],
     },
     failReason: { type: String },
     // Model information used for this session

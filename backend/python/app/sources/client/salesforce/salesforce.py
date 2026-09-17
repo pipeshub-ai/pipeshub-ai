@@ -16,6 +16,9 @@ class SalesforceResponse(BaseModel):
     )
     error: Optional[str] = Field(None, description="Error message if the call failed")
     message: Optional[str] = Field(None, description="Additional message information")
+    status_code: Optional[int] = Field(
+        None, description="HTTP status returned by Salesforce, when there was one"
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""

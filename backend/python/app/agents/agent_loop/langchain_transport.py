@@ -30,6 +30,8 @@ not a replacement for, `OpikTracingTransport`'s own summary span.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -79,6 +81,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
     from langchain_core.messages import BaseMessage
 
+    from app.agent_loop_lib.core.context import CancellationToken
     from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.tool_schema import ToolSchema
 
@@ -232,9 +235,16 @@ class LangChainTransport(LLMTransport):
         opik_project_name: str | None = None,
         model_key: str | None = None,
         max_images_per_request: int | None = None,
+        cancellation_token: "CancellationToken | None" = None,
     ) -> None:
         self._llm = chat_model
         self._model = model_name
+        # Stop Generation (Phase 3b): checked once per streamed chunk in
+        # `stream()` — the only place mid-response cancellation can act,
+        # since `complete()` makes one un-chunked provider call with no
+        # earlier exit point. `None` for every transport built without a
+        # `runId` (background/test runs) — `stream()`'s check is a no-op.
+        self._cancellation_token = cancellation_token
         # Final enforcement of this model's image cap (see `image_guard`).
         # `None` means "not wired by this caller" and leaves the messages
         # untouched -- selection at the source already bounded them.
@@ -774,10 +784,47 @@ class LangChainTransport(LLMTransport):
         original_exc: Exception | None = None
         retried = False
         relocated_images = False
+        # Stop Generation (Phase 3b): set once the token fires mid-stream —
+        # short-circuits the retry/fallback logic below (a cancelled call
+        # is not a failure to retry) and overrides `stop_reason` after the
+        # loop regardless of how far generation got.
+        cancelled = False
         current_llm = lc_llm
         while True:
+            stream_iter: AsyncIterator[AIMessage] | None = None
+            cancel_task: asyncio.Task[None] | None = None
             try:
-                async for chunk in current_llm.astream(lc_messages, config=self._langchain_config()):
+                stream_iter = current_llm.astream(
+                    lc_messages, config=self._langchain_config(),
+                ).__aiter__()
+                if self._cancellation_token is not None:
+                    cancel_task = asyncio.ensure_future(self._cancellation_token.wait())
+                while True:
+                    next_chunk_task = asyncio.ensure_future(stream_iter.__anext__())
+                    wait_set = (
+                        {next_chunk_task} if cancel_task is None
+                        else {next_chunk_task, cancel_task}
+                    )
+                    await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
+                    if self._cancellation_token is not None and self._cancellation_token.is_cancelled:
+                        # `cancel_task` (racing `CancellationToken.wait()` against
+                        # the next chunk) is what makes this fire even when the
+                        # provider stalls between chunks -- checking is_cancelled
+                        # only inside the loop body (as before) would leave a
+                        # cooperative cancel stuck until another chunk arrived,
+                        # which may never happen. Not awaited for its result: a
+                        # provider error racing the same cancel is irrelevant
+                        # once we've already decided to stop.
+                        if not next_chunk_task.done():
+                            next_chunk_task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await next_chunk_task
+                        cancelled = True
+                        break
+                    try:
+                        chunk = next_chunk_task.result()
+                    except StopAsyncIteration:
+                        break
                     chunks.append(chunk)
                     text = getattr(chunk, "content", None)
                     if isinstance(text, str) and text:
@@ -896,6 +943,22 @@ class LangChainTransport(LLMTransport):
                     "retrying once with api_mode=%s: %s",
                     self._model, fallback_mode, exc,
                 )
+            finally:
+                # Best-effort: never let cleanup mask the real outcome (an
+                # exception from `except Exception` above, or the
+                # cancelled/natural-completion break already decided).
+                if cancel_task is not None and not cancel_task.done():
+                    cancel_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await cancel_task
+                if stream_iter is not None:
+                    # Explicit close, not left to GC: this is what actually
+                    # stops the provider from continuing to generate/bill
+                    # for tokens nobody will read once cancellation wins the
+                    # race above. A no-op on the natural-completion path
+                    # (the generator is already exhausted).
+                    with contextlib.suppress(BaseException):
+                        await stream_iter.aclose()
 
         if relocated_images:
             # Pinned for the rest of this run so every later call builds the
@@ -929,10 +992,18 @@ class LangChainTransport(LLMTransport):
 
         assistant_message = convert_assistant_message_from_langchain(final_ai_message)
         usage = token_usage_from_ai_message(final_ai_message)
-        stop_reason = (
-            StopReason.MAX_TOKENS if assistant_message.truncated
-            else self._stop_reason_from(final_ai_message)
-        )
+        if cancelled:
+            # Keep the text the user already saw; drop any tool call this
+            # chunk stream was still assembling — its arguments are
+            # truncated mid-JSON and would corrupt the tool-dispatch loop
+            # if `Agent.step()` tried to execute it.
+            assistant_message.tool_calls = None
+            stop_reason = StopReason.CANCELLED
+        else:
+            stop_reason = (
+                StopReason.MAX_TOKENS if assistant_message.truncated
+                else self._stop_reason_from(final_ai_message)
+            )
         self._log_turn_outcome(tools, final_ai_message, stop_reason)
         yield StreamCompleteEvent(
             response=ModelResponse(

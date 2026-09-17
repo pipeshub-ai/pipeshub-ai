@@ -1,5 +1,9 @@
 import { expect } from 'chai';
-import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum';
+import {
+  TokenScopes,
+  USER_ACTION_TOKEN_SCOPES,
+  isUserActionScope,
+} from '../../../src/libs/enums/token-scopes.enum';
 
 describe('TokenScopes', () => {
   it('should have SEND_MAIL as "mail:send"', () => {
@@ -75,5 +79,29 @@ describe('TokenScopes', () => {
     const values = Object.values(TokenScopes);
     const uniqueValues = new Set(values);
     expect(uniqueValues.size).to.equal(values.length);
+  });
+});
+
+describe('isUserActionScope', () => {
+  it('should be true for scopes on user-held tokens', () => {
+    [
+      TokenScopes.PASSWORD_RESET,
+      TokenScopes.VALIDATE_EMAIL,
+      TokenScopes.TOKEN_REFRESH,
+      TokenScopes.ORG_EMAIL_VERIFY,
+      TokenScopes.EMAIL_VERIFIED,
+    ].forEach((scope) => expect(isUserActionScope(scope)).to.be.true);
+    expect(USER_ACTION_TOKEN_SCOPES.size).to.equal(5);
+  });
+
+  it('should be false for service scopes and unknown strings', () => {
+    [
+      TokenScopes.SEND_MAIL,
+      TokenScopes.FETCH_CONFIG,
+      TokenScopes.USER_LOOKUP,
+      TokenScopes.STORAGE_TOKEN,
+      TokenScopes.CONVERSATION_CREATE,
+      'not:a:scope',
+    ].forEach((scope) => expect(isUserActionScope(scope)).to.be.false);
   });
 });

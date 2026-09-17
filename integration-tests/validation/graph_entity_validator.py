@@ -68,16 +68,23 @@ GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entit
     "app_metadata",
 ]
 
+# Things integration tests often cannot know ahead of time or that change after sync.
+# indexing_status, parsing_status and queued_at belong to the indexing pipeline, which
+# keeps moving them after the connector hands the record over.
+# parent_record_type and record_group_type are write-time hints (edge creation, record-group
+# linkage); Record.to_arango_base_record never serializes them, so they always read back None.
+_RECORD_DEFAULT_SKIP: Final[frozenset[str]] = frozenset({
+    "id", "org_id", "indexing_status", "parsing_status", "queued_at",
+    "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type",
+})
+
 _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
-    # Things integration tests often cannot know ahead of time or that change after sync.
-    # parent_record_type and record_group_type are write-time hints (edge creation, record-group
-    # linkage); Record.to_arango_base_record never serializes them, so they always read back None.
-    "ticket_record": frozenset[str]({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
-    "file_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
-    "pull_request_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
-    "code_file_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
-    "link_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
-    "webpage_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
+    "ticket_record": _RECORD_DEFAULT_SKIP,
+    "file_record": _RECORD_DEFAULT_SKIP,
+    "pull_request_record": _RECORD_DEFAULT_SKIP,
+    "code_file_record": _RECORD_DEFAULT_SKIP,
+    "link_record": _RECORD_DEFAULT_SKIP,
+    "webpage_record": _RECORD_DEFAULT_SKIP,
     "record_group": frozenset({"id", "org_id"}),
     "app_user_group": frozenset({"id", "org_id"}),
     "app_role": frozenset({"id", "org_id"}),

@@ -53,9 +53,15 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
+)
+from app.connectors.core.base.error.stream_errors import (
+    map_source_status,
+    not_downloadable,
+    to_stream_error,
 )
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
@@ -88,6 +94,10 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.slack.common.apps import SlackApp
+from app.connectors.sources.slack.common.stream_errors import (
+    sanitize_retry_after,
+    slack_stream_error,
+)
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -3756,7 +3766,10 @@ class SlackIndividualConnector(BaseConnector):
             if record.record_type == RecordType.LINK:
                 # Stream link as markdown (same as Linear connector)
                 if not record.weburl:
-                    raise ValueError(f"LinkRecord {record.external_record_id} missing weburl")
+                    raise not_downloadable(
+                        f"LinkRecord {record.external_record_id} has no URL to open.",
+                        connector=self.display_name,
+                    )
                 link_name = record.record_name or "Link"
                 markdown_content = f"# {link_name}\n\n[{record.weburl}]({record.weburl})"
                 return StreamingResponse(
@@ -3773,7 +3786,7 @@ class SlackIndividualConnector(BaseConnector):
             raise
         except Exception as exc:
             self.logger.error(f"stream_record failed: {exc}", exc_info=True)
-            raise HTTPException(500, str(exc))
+            raise to_stream_error(exc, connector=self.display_name) from exc
 
     async def _build_message_blocks_for_streaming(
         self, record: MessageRecord
@@ -3812,7 +3825,7 @@ class SlackIndividualConnector(BaseConnector):
                 inclusive=True, limit=200,
             )
             if not resp or not resp.success:
-                raise HTTPException(404, f"Could not fetch burst messages: {ext_id}")
+                raise slack_stream_error(resp, connector=self.display_name)
 
             burst_msgs = sorted(
                 [m for m in resp.data.get("messages", [])
@@ -3869,7 +3882,7 @@ class SlackIndividualConnector(BaseConnector):
                 inclusive=True, limit=200,
             )
             if not resp or not resp.success:
-                raise HTTPException(404, f"Could not fetch thread burst messages: {ext_id}")
+                raise slack_stream_error(resp, connector=self.display_name)
 
             burst_msgs = sorted(
                 [m for m in resp.data.get("messages", [])
@@ -3934,6 +3947,10 @@ class SlackIndividualConnector(BaseConnector):
                             msg = msgs[0]
 
             if not msg:
+                # Only an empty result from a *successful* fetch means the
+                # message is gone; a failed call says nothing about that.
+                if not resp or not resp.success:
+                    raise slack_stream_error(resp, connector=self.display_name)
                 raise HTTPException(404, f"Message not found: {ext_id}")
 
             await self._warm_user_cache_for_messages([msg], ctx)
@@ -3971,12 +3988,15 @@ class SlackIndividualConnector(BaseConnector):
         ds   = await self._fresh_datasource()
         info = await ds.files_info(file=fid)
         if not info or not info.success:
-            raise HTTPException(404, f"File not found: {fid}")
+            raise slack_stream_error(info, connector=self.display_name)
 
         fd  = info.data.get("file", {})
         url = fd.get("url_private_download") or fd.get("url_private")
         if not url:
-            raise HTTPException(404, f"No download URL for file {fid}")
+            raise not_downloadable(
+                f"Slack does not expose a download URL for file {fid}.",
+                connector=self.display_name,
+            )
 
         token = getattr(
             self.external_client.get_client(), "get_token", lambda: None
@@ -3987,10 +4007,24 @@ class SlackIndividualConnector(BaseConnector):
             headers = {"Authorization": f"Bearer {token}"} if token else {}
             async with http.stream("GET", url, headers=headers) as r:
                 if r.status_code != 200:
-                    raise HTTPException(r.status_code, f"Download failed: {fid}")
+                    self.logger.error(
+                        f"Slack file download for {fid} failed with status {r.status_code}"
+                    )
+                    raise map_source_status(
+                        r.status_code,
+                        connector=self.display_name,
+                        retry_after=sanitize_retry_after(r.headers.get("retry-after")),
+                    )
                 content_type = r.headers.get("content-type", "")
                 if "text/html" in content_type:
-                    raise HTTPException(403, f"Received HTML instead of file content for {fid} — likely an auth issue")
+                    # Slack serves its sign-in page (200 text/html) instead of the
+                    # file when the token no longer authorises the download.
+                    self.logger.error(
+                        f"Received HTML instead of file content for {fid} — likely an auth issue"
+                    )
+                    raise map_source_status(
+                        HttpStatusCode.UNAUTHORIZED.value, connector=self.display_name
+                    )
                 async for chunk in r.aiter_bytes(8192):
                     yield chunk
 

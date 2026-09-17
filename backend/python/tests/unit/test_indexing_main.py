@@ -2092,6 +2092,54 @@ class TestRepublishStrandedRecords:
         assert "updatedAtTimestamp" not in fields
 
     @pytest.mark.asyncio
+    async def test_a_fresh_queue_stamp_outweighs_a_source_system_updated_at(self) -> None:
+        """A Jira issue last edited a year ago, synced a minute ago, is not stranded.
+
+        Connectors may fill updatedAtTimestamp with source-system time, so aged
+        on that alone every freshly synced row was sent a second event.
+        """
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(queuedAtTimestamp=get_epoch_timestamp_in_ms())
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stale_queue_stamp_is_still_recovered(self) -> None:
+        graph = _sweep_graph(
+            {ProgressStatus.NOT_STARTED.value: [self._old_record(queuedAtTimestamp=1)]},
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_clock_does_not_hide_a_stale_one(self) -> None:
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    self._old_record(updatedAtTimestamp="not-a-number", queuedAtTimestamp=1)
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
     async def test_a_recently_republished_row_is_skipped(self):
         """At most one republish per threshold window, per record."""
         graph = _sweep_graph(

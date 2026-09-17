@@ -132,7 +132,17 @@ const contextFieldsSchema = {
       deepSearch: z.boolean().optional(),
     })
     .optional(),
+  // Client-generated identifier for this run so a later `POST .../cancel
+  // {runId}` (see `cancelRunBodySchema`) can target it. Optional — a caller
+  // that never sends one just can't be cooperatively cancelled.
+  runId: z.string().uuid({ message: 'runId must be a valid UUID' }).optional(),
 };
+
+/** Body of `POST .../cancel` — one schema for both the assistant and agent
+ * cancel routes, matching Python's `CancelRunRequest`. */
+export const cancelRunBodySchema = z.object({
+  runId: z.string().uuid({ message: 'runId must be a valid UUID' }),
+});
 
 /** Title body shared by conversation/agent rename endpoints. */
 const titleBodySchema = z.object({
@@ -236,6 +246,11 @@ export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
   body: z.object({ userIds: userIdsSchema }),
 });
 
+/** Schema for POST /:conversationId/cancel — cooperatively stop an in-flight assistant run. */
+export const cancelConversationStreamParamsSchema = conversationIdParamsSchema.extend({
+  body: cancelRunBodySchema,
+});
+
 // ---------------------------------------------------------------------------
 // Agent conversation params / title
 // ---------------------------------------------------------------------------
@@ -253,6 +268,12 @@ export const deleteAgentConversationParamsSchema = agentConversationParamsSchema
 export const agentConversationTitleParamsSchema =
   agentConversationParamsSchema.extend({
     body: titleBodySchema,
+  });
+
+/** Schema for POST /:agentKey/conversations/:conversationId/cancel — cooperatively stop an in-flight agent run. */
+export const cancelAgentConversationStreamParamsSchema =
+  agentConversationParamsSchema.extend({
+    body: cancelRunBodySchema,
   });
 
 /** Schema for GET /:agentKey/conversations/:conversationId — fetch one agent conversation with message pagination/filtering. */

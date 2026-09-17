@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
+from fastapi import APIRouter, Body, Depends, HTTPException, Request  #type: ignore
 from fastapi.responses import JSONResponse  #type: ignore
 from langchain_core.embeddings import Embeddings  #type: ignore
 from langchain_core.language_models.chat_models import BaseChatModel  #type: ignore
@@ -16,6 +16,7 @@ from langchain_core.messages import BaseMessage, HumanMessage  #type: ignore
 from langchain_core.tools import StructuredTool  #type: ignore
 from pydantic import BaseModel, Field
 
+from app.api.middlewares.auth import deny_service_tokens
 from app.utils.aimodels import (
     ImageGenerationProvider,
     LLMProvider,
@@ -30,7 +31,7 @@ from app.utils.aimodels import (
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(deny_service_tokens)])
 
 SPARSE_IDF = False
 
