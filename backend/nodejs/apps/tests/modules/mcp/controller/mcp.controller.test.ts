@@ -106,13 +106,16 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(serialised).to.not.include('dev@example.com')
     })
 
-    it('records mcp_tool_called with the tool name only, never its arguments', async () => {
-      arm()
-      const req = createMockRequest({
+    const toolCallRequest = () =>
+      createMockRequest({
         user: { ...patUser, oauthClientId: 'some-oauth-app' },
         body: { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'pipeshub_search', arguments: { query: 'confidential plan' } } },
       })
-      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+
+    it('records mcp_tool_called with the tool name only, never its arguments', async () => {
+      arm()
+      const res = { ...createMockResponse(), statusCode: 200 }
+      await handleMCPRequest(appConfig)(toolCallRequest(), res as any, createMockNext())
 
       const events = eventBuffer.drain()
       expect(events).to.have.length(1)
@@ -120,6 +123,43 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(events[0].props?.tool).to.equal('pipeshub_search')
       expect(events[0].props?.auth_type).to.equal('oauth')
       expect(JSON.stringify(events[0])).to.not.include('confidential plan')
+    })
+
+    it('records mcp_tool_called only after the transport has served the request', async () => {
+      arm()
+      let servedBeforeRecorded = false
+      sdkTransportExports.StreamableHTTPServerTransport = class {
+        async handleRequest() {
+          servedBeforeRecorded = eventBuffer.size() === 0
+        }
+      }
+      const res = { ...createMockResponse(), statusCode: 200 }
+      await handleMCPRequest(appConfig)(toolCallRequest(), res as any, createMockNext())
+
+      expect(servedBeforeRecorded).to.be.true
+      expect(eventBuffer.drain().map((e) => e.event)).to.deep.equal(['mcp_tool_called'])
+    })
+
+    it('does not count a tool call the transport could not serve', async () => {
+      arm()
+      sdkTransportExports.StreamableHTTPServerTransport = class {
+        async handleRequest() { throw new Error('transport down') }
+      }
+      const next = createMockNext()
+      await handleMCPRequest(appConfig)(toolCallRequest(), { ...createMockResponse(), statusCode: 200 } as any, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(eventBuffer.drain()).to.have.length(0)
+    })
+
+    it('does not count a tool call answered with an HTTP error', async () => {
+      arm()
+      sdkTransportExports.StreamableHTTPServerTransport = class {
+        async handleRequest() { /* the transport wrote a 4xx itself */ }
+      }
+      await handleMCPRequest(appConfig)(toolCallRequest(), { ...createMockResponse(), statusCode: 406 } as any, createMockNext())
+
+      expect(eventBuffer.drain()).to.have.length(0)
     })
 
     it('records nothing for other JSON-RPC methods', async () => {

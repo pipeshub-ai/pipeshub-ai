@@ -567,14 +567,20 @@ def _record_answer_generated(
     the bundled Demo connector, which is how "demo query run" is measured.
     """
     try:
-        knowledge: list[object] = list(state.get("agent_knowledge") or [])
+        # The agent route describes its sources in `agent_knowledge`
+        # ({connectorId, type}); the chat route in `available_connectors`
+        # ({id, type}). Either may be present, so read both.
         demo_ids: set[str] = set()
-        for entry in knowledge:
+        sources: list[object] = list(state.get("agent_knowledge") or []) + list(
+            state.get("available_connectors") or []
+        )
+        for entry in sources:
             if not isinstance(entry, dict):
                 continue
             typed: dict[str, object] = dict(entry)  # type: ignore[arg-type]
             if str(typed.get("type") or "").lower() == "demo":
-                demo_ids.add(str(typed.get("connectorId") or ""))
+                demo_ids.add(str(typed.get("connectorId") or typed.get("id") or ""))
+        demo_ids.discard("")
         connectors: set[str] = set()
         demo_sources = False
         for citation in citations:

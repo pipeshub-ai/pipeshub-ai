@@ -68,15 +68,20 @@ function mcpConnectedProps(
   };
 }
 
-function recordMcpToolCall(req: AuthenticatedUserRequest): void {
+/** Props for `mcp_tool_called`, or undefined when this request is not a
+ *  tools/call. Recorded once the transport has served the request, so a
+ *  request the server could not handle at all is not counted as a call. */
+function mcpToolCallProps(
+  req: AuthenticatedUserRequest,
+): Record<string, unknown> | undefined {
   const body = req.body as
     | { method?: unknown; params?: Record<string, unknown> }
     | undefined;
-  if (body?.method !== 'tools/call') return;
-  recordEvent('mcp_tool_called', {
+  if (body?.method !== 'tools/call') return undefined;
+  return {
     ...mcpEventBase(req),
     tool: typeof body.params?.name === 'string' ? body.params.name : undefined,
-  });
+  };
 }
 
 /**
@@ -129,8 +134,14 @@ export const handleMCPRequest =
         mcpServer.server.oninitialized = () =>
           recordEvent('mcp_connected', connectedProps);
       }
-      recordMcpToolCall(req);
+      const toolCallProps = mcpToolCallProps(req);
       await transport.handleRequest(req, res, req.body);
+      // The transport answers JSON-RPC errors (unknown tool, tool failure)
+      // inside a 200 body, so this counts "served", not "succeeded"; a
+      // transport failure throws above and is not counted.
+      if (toolCallProps && res.statusCode < 400) {
+        recordEvent('mcp_tool_called', toolCallProps);
+      }
     } catch (error: any) {
       logger.error('MCP request failed', {
         error: error.message,

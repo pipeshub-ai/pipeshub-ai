@@ -51,6 +51,39 @@ def test_records_counts_source_types_and_demo_flag() -> None:
     assert "dev@example.com" not in serialized
 
 
+def test_demo_flag_from_the_chat_route_source_list() -> None:
+    """The chat route has no agent_knowledge; its sources are `available_connectors`
+    with `id` and `type`, and the citation's connectorId has to match one of them."""
+    _drain()
+    state = {
+        "chat_mode": "internal_search",
+        "available_connectors": [
+            {"id": "demo-1", "name": "Acme Corp demo data", "type": "Demo"},
+            {"id": "gh-1", "name": "GitHub", "type": "GitHub"},
+        ],
+    }
+    citations = [{"metadata": {"connector": "DRIVE", "connectorId": "demo-1", "origin": "CONNECTOR"}}]
+    _record_answer_generated(_context(), state, citations)  # type: ignore[arg-type]
+    (event,) = _drain()
+    assert event["props"]["demo_sources"] is True
+    assert event["props"]["connectors"] == ["DRIVE"]
+
+
+def test_demo_flag_false_when_the_cited_connector_is_a_real_one() -> None:
+    _drain()
+    state = {
+        "chat_mode": "internal_search",
+        "available_connectors": [
+            {"id": "demo-1", "type": "Demo"},
+            {"id": "gh-1", "type": "GitHub"},
+        ],
+    }
+    citations = [{"metadata": {"connector": "GITHUB", "connectorId": "gh-1", "origin": "CONNECTOR"}}]
+    _record_answer_generated(_context(), state, citations)  # type: ignore[arg-type]
+    (event,) = _drain()
+    assert event["props"]["demo_sources"] is False
+
+
 def test_no_citations_and_no_demo_sources() -> None:
     _drain()
     _record_answer_generated(_context(), {"chat_mode": "agent"}, [])  # type: ignore[arg-type]
