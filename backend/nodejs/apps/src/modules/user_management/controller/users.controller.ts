@@ -558,12 +558,46 @@ export class UserController {
       // nothing, whereas one that failed after the user was saved would leave
       // an account with no way to sign in and no way to retry creating it.
       const hashedPassword =
-        password !== undefined ? await bcrypt.hash(password, SALT_ROUNDS) : undefined;
+        password !== undefined
+          ? await bcrypt.hash(password, SALT_ROUNDS)
+          : undefined;
       const newUser = new Users({
         ...userFields,
         orgId: req.user?.orgId,
         role: resolveOptionalUserRole(req.body.role),
       });
+
+      // Persist the account and its credential before anything that is hard
+      // to take back (the group membership, and the event the graph side
+      // acts on). A credential failure then has exactly one thing to undo.
+      await newUser.save();
+      if (hashedPassword !== undefined) {
+        try {
+          await new UserCredentials({
+            userId: newUser._id,
+            orgId: newUser.orgId,
+            isDeleted: false,
+            hashedPassword,
+            ipAddress: req.ip,
+          }).save();
+        } catch (credentialError) {
+          try {
+            await Users.deleteOne({ _id: newUser._id });
+          } catch (cleanupError) {
+            this.logger.error(
+              'Demo account was saved but its credential was not, and removing the account failed too',
+              {
+                userId: String(newUser._id),
+                error:
+                  cleanupError instanceof Error
+                    ? cleanupError.message
+                    : String(cleanupError),
+              },
+            );
+          }
+          throw credentialError;
+        }
+      }
 
       await UserGroups.updateOne(
         { orgId: newUser.orgId, type: 'everyone' }, // Find the everyone group in the same org
@@ -584,30 +618,7 @@ export class UserController {
       };
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      await newUser.save();
       if (hashedPassword !== undefined) {
-        // The credential is the last write. If it fails, the demo account
-        // exists but cannot sign in, and its address is taken so recreating it
-        // is refused as a duplicate — so undo the user and its group
-        // membership and surface the failure, leaving nothing half-created.
-        try {
-          await new UserCredentials({
-            userId: newUser._id,
-            orgId: newUser.orgId,
-            isDeleted: false,
-            hashedPassword,
-            ipAddress: req.ip,
-          }).save();
-        } catch (credentialError) {
-          await Promise.all([
-            Users.deleteOne({ _id: newUser._id }).catch(() => undefined),
-            UserGroups.updateOne(
-              { orgId: newUser.orgId, type: 'everyone' },
-              { $pull: { users: newUser._id } },
-            ).catch(() => undefined),
-          ]);
-          throw credentialError;
-        }
         this.logger.info('Demo account created with a starting password', {
           orgId: newUser.orgId.toString(),
           createdBy: req.user?.userId,
