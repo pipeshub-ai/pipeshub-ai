@@ -1,0 +1,6 @@
+<!doctype html>
+<title>Web fixture server</title>
+<p>Document root for the Web connector integration tests. The suite publishes
+the crawlable site here at runtime and overwrites this file; it is committed so
+the container healthcheck has something to serve, because an nginx root holding
+only .gitkeep answers 403 rather than 200.</p>
