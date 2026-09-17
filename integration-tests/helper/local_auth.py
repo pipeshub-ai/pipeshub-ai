@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import time
+from typing import Tuple
 
 import requests
 

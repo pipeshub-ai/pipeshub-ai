@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict
 
+import pytest
 import requests
 from neo4j.exceptions import Neo4jError
 
@@ -20,14 +21,13 @@ try:
 except ImportError:
     _GRAPH_TEARDOWN_HTTP_ERRORS = ()
 
+from helper.graph_provider import GraphProviderProtocol
+from helper.graph_provider_utils import wait_until_graph_condition
 from pipeshub_client import (  # type: ignore[import-not-found]
     PipeshubAuthError,
     PipeshubClient,
     PipeshubClientError,
 )
-
-from helper.graph_provider import GraphProviderProtocol
-from helper.graph_provider_utils import wait_until_graph_condition
 
 logger = logging.getLogger("connector-lifecycle")
 
@@ -71,6 +71,23 @@ def _storage_clear_error_types() -> tuple[type[BaseException], ...]:
 
 
 STORAGE_CLEAR_ERRORS = _storage_clear_error_types()
+
+
+def source_unavailable(reason: str) -> None:
+    """A connector source that cannot be reached: skip locally, fail in CI.
+
+    Suites that sync from a self-hosted source check it is up before running.
+    Skipping on any failure there turns a broken stack into a green run, because
+    the checks catch wrong credentials and setup errors as readily as a service
+    that is not listening.
+
+    CI starts these sources itself, so being unable to reach one there is a
+    result. Locally, running against a partial stack is normal and skipping is
+    the useful behaviour.
+    """
+    if os.getenv("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
 
 RESOURCE_NAME = "pipeshub-integration-tests"
 
@@ -144,6 +161,42 @@ async def constructor(
     state["update_target_key"] = update_key
     state["update_target_name"] = Path(update_key).name
 
+    await create_connector_and_await_sync(
+        pipeshub_client,
+        graph_provider,
+        state,
+        connector_type=connector_type,
+        connector_name=connector_name,
+        connector_config=connector_config,
+        scope=scope,
+        auth_type=auth_type,
+        expected_records=state["uploaded_count"],
+    )
+
+    return state
+
+
+async def create_connector_and_await_sync(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    state: dict[str, Any],
+    *,
+    connector_type: str,
+    connector_name: str,
+    connector_config: dict,
+    expected_records: int,
+    scope: str = "personal",
+    auth_type: str | None = None,
+    timeout: int = 180,
+) -> dict[str, Any]:
+    """Create the connector, enable sync, and wait for the records to land.
+
+    Shared by every connector fixture. What differs between connectors is how
+    the source data gets there — objects uploaded to a bucket, rows inserted
+    into a table — not what happens afterwards, which is identical.
+
+    Sets ``connector_id`` and ``full_sync_count`` on ``state``.
+    """
     instance = pipeshub_client.create_connector(
         connector_type=connector_type,
         instance_name=connector_name,
@@ -159,15 +212,13 @@ async def constructor(
     pipeshub_client.toggle_sync(connector_id, enable=True)
     logger.info("CONSTRUCTOR [%s]: Sync enabled — waiting for full sync (connector %s)", connector_type, connector_id)
 
-    uploaded = state["uploaded_count"]
-
     async def _check_full_sync() -> bool:
-        return await graph_provider.count_records(connector_id) >= uploaded
+        return await graph_provider.count_records(connector_id) >= expected_records
 
     await wait_until_graph_condition(
         connector_id,
         check=_check_full_sync,
-        timeout=180,
+        timeout=timeout,
         poll_interval=10,
         description="full sync",
     )

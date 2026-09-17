@@ -29,6 +29,7 @@ interface AppInfo {
   logoUrl?: string;
   homepageUrl?: string;
   privacyPolicyUrl?: string;
+  isDynamic?: boolean;
 }
 
 interface ConsentData {
@@ -542,6 +543,12 @@ export function OAuthAuthorizeView() {
               {appName}
             </Text>
           </Flex>
+
+          {consentData.app.isDynamic ? (
+            <Text as="p" size="2" color="amber">
+              {t('oauthConsent.unreviewedApp')}
+            </Text>
+          ) : null}
 
           <Separator size="4" />
 
