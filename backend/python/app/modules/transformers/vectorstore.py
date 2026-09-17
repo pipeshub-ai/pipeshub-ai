@@ -986,7 +986,7 @@ class VectorStore(Transformer):
         ai_models = await self.config_service.get_config(
             config_node_constants.AI_MODELS.value, use_cache=False
         )
-        embedding_configs = ai_models["embedding"]
+        embedding_configs = ai_models.get("embedding") if ai_models else None
         config_hash = embedding_config_hash(embedding_configs)
 
         # The config is re-read every record so an admin-UI change takes effect
@@ -1010,8 +1010,19 @@ class VectorStore(Transformer):
         configuration = None
 
         if not embedding_configs:
-            dense_embeddings = get_default_embedding_model()
-            self.logger.info("Using default embedding model")
+            self.logger.info(
+                "No embedding model configured for this organisation; "
+                "falling back to the local embedding service."
+            )
+            try:
+                dense_embeddings = get_default_embedding_model()
+            except Exception as e:
+                raise IndexingError(
+                    "No embedding model is configured for this organisation "
+                    "and the local fallback embedding service is unavailable. "
+                    "Configure an embedding provider in AI Models settings.",
+                    details={"error": str(e)},
+                )
         else:
             config = next(
                 (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]

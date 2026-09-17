@@ -657,6 +657,76 @@ eval "$(extract_fn project_has_pinned_container_names "$INNER_INSTALLER")"
 )
 
 echo
+echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
+(
+  # --version is parsed at the top of install.sh but is only consumed inside the
+  # configuration wizard, which --upgrade skips. Without apply_requested_tag,
+  # `--upgrade --version X` re-reads the old IMAGE_TAG from .env and restarts the
+  # version the user was trying to leave, exiting 0 with no warning.
+  work="$TMP_ROOT/upgrade-version"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  [[ -f "$COMPOSE_DIR/docker-compose.yml" ]] && cp "$COMPOSE_DIR/docker-compose.yml" "$work/"
+
+  seed_env() {
+    printf 'IMAGE_TAG=%s\nSECRET_KEY=do-not-touch\nMONGO_PASSWORD=keep-me\nAPP_PORT=3000\nPROJECT_NAME=testproj\n' \
+      "$1" >"$work/.env"
+  }
+
+  # Seed a .env whose SANDBOX_DOCKER_IMAGE is set; $2 is the value to write.
+  seed_env_with_sandbox() {
+    seed_env "$1"
+    printf 'SANDBOX_DOCKER_IMAGE=%s\n' "$2" >>"$work/.env"
+  }
+
+  # --print-env-only must exit 0. Without this an installer that prints the
+  # right summary and then dies would still satisfy the output assertions.
+  run_installer() { # run_installer <desc> [VAR=val ...] -- <installer args...>
+    local desc="$1"; shift
+    local -a envs=() args=()
+    while [[ $# -gt 0 ]]; do
+      [[ "$1" == "--" ]] && { shift; args=("$@"); break; }
+      envs+=("$1"); shift
+    done
+    local status=0
+    out="$(cd "$work" && env "${envs[@]}" bash ./install.sh "${args[@]}" --print-env-only 2>&1)" || status=$?
+    if [[ $status -eq 0 ]]; then pass "$desc exits 0"; else fail "$desc exits 0 (got $status)"; fi
+  }
+
+  seed_env "0.6.0-slim"
+  run_installer "--upgrade --version" -- --upgrade --version 0.7.0-slim
+  check "--upgrade --version reports the tag change" "$out" "0.6.0-slim -> 0.7.0-slim"
+  check "--upgrade --version resolves the new tag"   "$out" "Image tag:             0.7.0-slim"
+  check "--upgrade --version persists the new tag"   "$(cat "$work/.env")" "IMAGE_TAG=0.7.0-slim"
+  check "--upgrade leaves SECRET_KEY alone"          "$(cat "$work/.env")" "SECRET_KEY=do-not-touch"
+  check "--upgrade leaves other secrets alone"       "$(cat "$work/.env")" "MONGO_PASSWORD=keep-me"
+
+  seed_env "0.6.0-slim"
+  run_installer "--upgrade with PIPESHUB_VERSION" PIPESHUB_VERSION=0.7.0-slim -- --upgrade
+  check "--upgrade honours PIPESHUB_VERSION" "$out" "Image tag:             0.7.0-slim"
+
+  # The default sandbox image tracks IMAGE_TAG: re-tag it on upgrade.
+  seed_env_with_sandbox "0.6.0-slim" "pipeshubai/pipeshub-sandbox:0.6.0-slim"
+  run_installer "--upgrade re-tags the default sandbox image" -- --upgrade --version 0.7.0-slim
+  check "default sandbox image moves to the new tag" "$(cat "$work/.env")" \
+    "SANDBOX_DOCKER_IMAGE=pipeshubai/pipeshub-sandbox:0.7.0-slim"
+
+  # A custom sandbox image — an air-gapped mirror or private registry — was set
+  # deliberately, so an upgrade must leave it exactly as it is.
+  seed_env_with_sandbox "0.6.0-slim" "myregistry.example/pipeshub-sandbox:pinned"
+  run_installer "--upgrade preserves a custom sandbox image" -- --upgrade --version 0.7.0-slim
+  check "custom sandbox image is left untouched" "$(cat "$work/.env")" \
+    "SANDBOX_DOCKER_IMAGE=myregistry.example/pipeshub-sandbox:pinned"
+
+  seed_env "0.6.0-slim"
+  run_installer "plain --upgrade" -- --upgrade
+  check "plain --upgrade keeps the recorded tag" "$out" "Image tag:             0.6.0-slim"
+  check "plain --upgrade does not rewrite .env"  "$(cat "$work/.env")" "IMAGE_TAG=0.6.0-slim"
+
+  seed_env "0.7.0-slim"
+  run_installer "--upgrade to the tag already in use" -- --upgrade --version 0.7.0-slim
+  check "asking for the current tag is a no-op with a clear message" "$out" "Already on image tag 0.7.0-slim"
+)
+
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"
 FAIL="$(wc -l <"$FAIL_FILE" | tr -d ' ')"
 printf "Results: %s passed, %s failed\n" "$PASS" "$FAIL"
