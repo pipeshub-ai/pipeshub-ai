@@ -322,7 +322,7 @@ export class UserAccountController {
       const configMethodMap: Record<string, { path: string, key: string }> = {
         'google': { path: GOOGLE_AUTH_CONFIG_PATH, key: 'google' },
         'microsoft': { path: MICROSOFT_AUTH_CONFIG_PATH, key: 'microsoft' },
-        [AuthMethodType.AZURE_AD]: { path: AZURE_AD_AUTH_CONFIG_PATH, key: 'azuread' },
+        [AuthMethodType.AZURE_AD]: { path: AZURE_AD_AUTH_CONFIG_PATH, key: 'azureAd' },
         [AuthMethodType.OAUTH]: { path: OAUTH_AUTH_CONFIG_PATH, key: 'oauth' },
         [AuthMethodType.SAML_SSO]: { path: SSO_AUTH_CONFIG_PATH, key: 'saml' },
       };
@@ -361,7 +361,7 @@ export class UserAccountController {
               const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configData;
               authProviders.oauth = publicConfig;
             } else {
-              authProviders[mapping.key === 'azuread' ? 'azuread' : mapping.key] = configData;
+              authProviders[mapping.key] = configData;
             }
 
             if (configData?.enableJit === true) {
@@ -1557,7 +1557,7 @@ export class UserAccountController {
         }
         if (allowedMethods.includes(AuthMethodType.AZURE_AD)) {
           const cfg = await this.configurationManagerService.getConfig(this.config.cmBackend, AZURE_AD_AUTH_CONFIG_PATH, user, this.config.scopedJwtSecret);
-          authProviders.azuread = cfg.data;
+          authProviders.azureAd = cfg.data;
         }
         if (allowedMethods.includes(AuthMethodType.OAUTH)) {
           const cfg = await this.configurationManagerService.getConfig(this.config.cmBackend, OAUTH_AUTH_CONFIG_PATH, user, this.config.scopedJwtSecret);

@@ -2536,7 +2536,7 @@ describe('UserAccountController', () => {
 
       if (!next.called) {
         const jsonArg = res.json.firstCall.args[0];
-        expect(jsonArg.authProviders).to.have.property('azuread');
+        expect(jsonArg.authProviders).to.have.property('azureAd');
       }
     });
   });
