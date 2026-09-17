@@ -677,8 +677,8 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     ValidationMiddleware.validate(updateUserEmailValidationSchema),
-    userAdminOrSelfCheck,
     emailChangeSelfOnly,
+    userAdminOrSelfCheck,
     userExists,
     async (
       req: AuthenticatedUserRequest,
@@ -727,8 +727,8 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     ValidationMiddleware.validate(updateUserValidationSchema),
-    userAdminOrSelfCheck,
     emailChangeSelfOnly,
+    userAdminOrSelfCheck,
     userExists,
     async (
       req: AuthenticatedUserRequest,
