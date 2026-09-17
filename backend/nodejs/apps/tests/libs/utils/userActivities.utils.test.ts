@@ -45,8 +45,12 @@ describe('userActivities.utils', () => {
       expect(userActivitiesType.ROLE_CHANGED).to.equal('ROLE CHANGED')
     })
 
-    it('should have exactly 9 activity types', () => {
-      expect(Object.keys(userActivitiesType)).to.have.length(9)
+    it('should have ACCOUNT_BLOCKED activity type', () => {
+      expect(userActivitiesType.ACCOUNT_BLOCKED).to.equal('ACCOUNT BLOCKED')
+    })
+
+    it('should have exactly 10 activity types', () => {
+      expect(Object.keys(userActivitiesType)).to.have.length(10)
     })
 
     it('should have unique values for all activity types', () => {
