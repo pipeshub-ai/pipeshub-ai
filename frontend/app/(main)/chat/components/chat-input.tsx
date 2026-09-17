@@ -366,10 +366,17 @@ export function ChatInput({
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? (s.slots[s.activeSlotId]?.isStreaming ?? false) : false
   );
+  // True from the moment Stop is clicked until the run actually ends —
+  // disables the stop button so a second click can't fire another cancel
+  // POST / restart the grace timer (see `cancelStreamForSlot`).
+  const isStopping = useChatStore((s) =>
+    s.activeSlotId ? (s.slots[s.activeSlotId]?.stopping ?? false) : false
+  );
 
   const handleStopStream = useCallback(() => {
     const sid = useChatStore.getState().activeSlotId;
-    if (sid) cancelStreamForSlot(sid);
+    if (!sid || useChatStore.getState().slots[sid]?.stopping) return;
+    cancelStreamForSlot(sid);
     toast.info(t('chat.toasts.stopStreamTitle'), {
       description: t('chat.toasts.stopStreamDescription'),
     });
@@ -1333,9 +1340,14 @@ export function ChatInput({
               variant="solid"
               size="2"
               onClick={handleStopStream}
+              disabled={isStopping}
+              aria-label={t('chat.stopGenerating', { defaultValue: 'Stop generating' })}
+              data-testid="chat-stop-button"
               style={{
                 margin: 0,
                 backgroundColor: activeToggleColor,
+                opacity: isStopping ? 0.6 : 1,
+                cursor: isStopping ? 'default' : 'pointer',
               }}
             >
               <MaterialIcon name="stop" size={ICON_SIZES.PRIMARY} color="white" />
@@ -2331,9 +2343,14 @@ export function ChatInput({
               variant="solid"
               size="2"
               onClick={handleStopStream}
+              disabled={isStopping}
+              aria-label={t('chat.stopGenerating', { defaultValue: 'Stop generating' })}
+              data-testid="chat-stop-button"
               style={{
                 margin: 0,
                 backgroundColor: activeToggleColor,
+                opacity: isStopping ? 0.6 : 1,
+                cursor: isStopping ? 'default' : 'pointer',
               }}
             >
               <MaterialIcon

@@ -315,10 +315,47 @@ class TestFindingInformation:
     granted, must always list every granted surface, and must only add
     the parallelism rule once two or more surfaces are actually present."""
 
-    def test_no_section_when_nothing_granted(self) -> None:
-        context = make_context()
+    def test_no_section_when_nothing_granted_but_knowledge_is_attached(self) -> None:
+        """Knowledge attached but no tool names resolved yet: nothing to say
+        about where to look, so the section stays absent."""
+        context = make_context(has_knowledge=True)
         result = _build(context, tool_names=[])
         assert "## Finding Information" not in result
+
+    def test_no_knowledge_source_is_stated_when_nothing_granted(self) -> None:
+        """An agent with no knowledge attached gets no retrieval toolset (see
+        `tool_loader._KNOWLEDGE_TOOLSETS`). Left unsaid, the model substitutes
+        another tool and reports an authoritative empty result, so the prompt
+        has to name the absence."""
+        context = make_context()
+        result = _build(context, tool_names=[])
+        assert "## Finding Information" in result
+        section = result.split("## Finding Information", 1)[1]
+        assert "No knowledge source is attached to this agent." in section
+        assert "as though a search had been run" in section
+
+    def test_no_knowledge_source_is_stated_alongside_other_surfaces(self) -> None:
+        """Web search being available does not make the knowledge base
+        searchable — the notice must survive next to the precedence list."""
+        context = make_context()
+        context.tool_state["web_search_config"] = {"enabled": True}
+        result = _build(context, tool_names=["web_search", "fetch_url"])
+        section = result.split("## Finding Information", 1)[1]
+        assert "No knowledge source is attached to this agent." in section
+        assert "web_search" in section or "fetch_url" in section
+
+    def test_no_knowledge_notice_absent_when_retrieval_is_granted(self) -> None:
+        """The notice must never contradict a tool the model can see, even if
+        `has_knowledge` disagrees with the granted tool set."""
+        context = make_context(has_knowledge=False)
+        result = _build(context, tool_names=["retrieval__search_internal_knowledge"])
+        section = result.split("## Finding Information", 1)[1]
+        assert "No knowledge source is attached" not in section
+
+    def test_no_knowledge_notice_absent_when_knowledge_is_attached(self) -> None:
+        context = make_context(has_knowledge=True)
+        result = _build(context, tool_names=["retrieval__search_internal_knowledge"])
+        assert "No knowledge source is attached" not in result
 
     def test_section_present_when_retrieval_granted(self) -> None:
         context = make_context(has_knowledge=True)

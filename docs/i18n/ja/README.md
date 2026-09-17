@@ -59,7 +59,7 @@
 - 📝 **説明可能な回答：** PipesHub は、元のドキュメントへの正確なブロック単位の引用を伴う、根拠に基づいた回答を提供します。
 - 🔒 **権限を考慮した検索：** ソースレベルのアクセス制御を適用し、ユーザーは権限のある範囲のみを閲覧できます。
 - 🕸️ **ナレッジグラフ検索：** 企業データ間の関係性を捉える、グラフベースの検索。
-- 🔌 **エンタープライズコネクタ：** リアルタイムおよびスケジュール索引に対応した 30 以上のコネクタを標準搭載。
+- 🔌 **エンタープライズコネクタ：** リアルタイムおよびスケジュール索引に対応した 50 以上のコネクタを標準搭載。
 - 🔍 **統合検索・ディープリサーチ・エージェント：** 検索、Q&A、ディープリサーチ、Web 検索、AI エージェントを単一のコンテキストレイヤー上で提供。
 - 📊 **アーティファクトとコード実行：** 安全な実行サンドボックス内でレポート、グラフ、ダッシュボードを生成。
 - 🎙️ **マルチモーダル対応：** 画像・図・スキャンファイルの理解に加え、音声ベースの操作にも対応。
@@ -86,51 +86,6 @@
 <p align="center">
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
-
-## 対応ファイル形式
-
-| 形式 | 詳細 |
-|--------|---------|
-| PDF | スキャンされた PDF を含む |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | カンマ区切り値 |
-| Markdown | .md ファイル |
-| HTML | ウェブページ |
-| Text | プレーンテキストファイル |
-| Google Docs、Sheets、Slides | Google Workspace 形式 |
-| 画像 | PNG、JPG など |
-| 音声 | 音声ファイル |
-| 動画 | 動画ファイル |
-
-## 技術スタック
-
-### フロントエンド
-
-| 技術 | 説明 |
-|-----------|-------------|
-| Next.js | App Router の UI（クライアントレンダリングの React） |
-| TypeScript | 強い型付けを持つ JavaScript のスーパーセット |
-| Radix UI Themes | アクセシブルなコンポーネントプリミティブとスタイリング |
-| Zod | スキーマ検証とパース |
-| React Hook Form | 柔軟なフォーム状態管理 |
-
-### バックエンド
-
-| 技術 | 説明 |
-|-----------|-------------|
-| FastAPI | 高性能な Python Web フレームワーク |
-| LangChain | LLM パイプライン向けフレームワーク |
-| Qdrant | ベクトル類似度検索エンジン |
-| Neo4j / ArangoDB | グラフデータベース |
-| Kafka / Redis Streams | 分散イベントストリーミングプラットフォーム |
-| Redis | キャッシュ |
-| Redis / etcd3 | 分散キーバリュー構成ストア |
-| Celery | 分散タスクキューシステム |
-| Docling | ドキュメント解析・抽出ツールキット |
-| PyMuPDF | PDF 処理ライブラリ |
-| pandas | データ分析・操作 |
 
 ## 🚀 デプロイガイド
 
@@ -246,7 +201,11 @@ PipesHub は完全にオープンソース（Apache 2.0）でセルフホスト�
 
 ### PipesHub はどのようなコネクタに対応していますか？
 
-PipesHub はリアルタイムおよびスケジュール索引に対応した 30 以上のエンタープライズコネクタを備えています。PDF、Docx、XLSX、PPTX、CSV、Markdown、HTML、Google Docs/Sheets/Slides、画像、音声、動画などのファイル形式に対応しています。
+PipesHub はリアルタイムおよびスケジュール索引に対応した 50 以上のエンタープライズコネクタを備えています。詳しくは [コネクタの概要](https://docs.pipeshub.com/connectors/overview) を参照してください。
+
+### PipesHub はどのファイル形式を索引できますか？
+
+PDF（スキャンを含む）、Microsoft Office（Word、Excel、PowerPoint）、Google Docs/Sheets/Slides、Markdown、HTML、CSV、プレーンテキスト、画像。音声と動画は保存できますが、まだ索引されません。ストレージはより幅広い MIME タイプを受け付けます — [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage) を参照してください。
 
 ### PipesHub はどうやってデプロイしますか？
 
@@ -264,7 +223,19 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### PipesHub はどの LLM プロバイダーに対応していますか？
 
-PipesHub は「自前のモデルを使用（Bring Your Own Model）」方式で、任意の LLM プロバイダーを使用できます。お好みのモデルを VPC 内にデプロイしてください。技術スタックには、LLM パイプラインとワークフローのための LangChain が含まれます。
+PipesHub は「自前のモデルを使用（Bring Your Own Model）」方式で、任意の LLM プロバイダーを使用できます。お好みのモデルを VPC 内にデプロイしてください。
+
+### 技術スタックは何ですか？
+
+PipesHub は次の 3 つの部分でできています。
+
+- **Web アプリ** (Next.js) — ブラウザ上の検索、チャット、管理画面。
+- **API** (Node.js) — アカウント、権限、ナレッジベース、ファイル。
+- **Python サービス** — コネクタがソースを同期し、索引が文書を解析し、クエリが引用付きで答えます。
+
+これらのサービスは **あなたが用意する AI モデル** を呼び出します。**埋め込みモデル** がテキストを検索用ベクトルにし、**LLM** が引用付きの回答を書きます。任意のプロバイダーでもローカルモデル (Ollama) でもよく、埋め込みはローカルサーバーが既定です。
+
+データはナレッジグラフ (既定は Neo4j、代替は ArangoDB)、ベクトルストア (Qdrant)、MongoDB にあります。キャッシュは Redis です。ファイルはディスクまたはオブジェクトストレージに置きます。サービス同士の作業の受け渡しは、ローカルでは Redis、規模が大きい場合は Kafka です。詳しくは [システム概要](https://docs.pipeshub.com/system-overview) を参照してください。
 
 ### ナレッジグラフ検索機能とは何ですか？
 

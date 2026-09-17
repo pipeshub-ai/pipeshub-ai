@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import jwt
 import pytest
 from fastapi import HTTPException
-from jose import JWTError
 from pydantic import ValidationError
 
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler, TokenPayload
@@ -361,9 +360,7 @@ class TestSignedUrlHandler:
         token = jwt.encode(payload, "secret", algorithm="HS256")
         with pytest.raises(HTTPException) as exc_info:
             handler.validate_token(token)
-        # PyJWT's ExpiredSignatureError is not caught by jose.JWTError,
-        # so it falls through to the generic Exception handler -> 500
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 401
 
     def test_validate_token_wrong_key(self):
         handler = self._make_handler(private_key="correct-key")
@@ -378,7 +375,28 @@ class TestSignedUrlHandler:
         token = jwt.encode(payload, "wrong-key", algorithm="HS256")
         with pytest.raises(HTTPException) as exc_info:
             handler.validate_token(token)
-        assert exc_info.value.status_code in (401, 500)
+        assert exc_info.value.status_code == 401
+
+    def test_validate_token_never_logs_the_token(self):
+        """A signed URL token is a bearer credential and must stay out of logs."""
+        handler = self._make_handler(private_key="secret")
+        now = datetime.now(timezone.utc)
+        payload = {
+            "record_id": "rec1",
+            "user_id": "user1",
+            "exp": (now + timedelta(hours=1)).timestamp(),
+            "iat": now.timestamp(),
+            "additional_claims": {},
+        }
+        token = jwt.encode(payload, "secret", algorithm="HS256")
+        handler.validate_token(token)
+        logged = " ".join(
+            str(arg)
+            for method in (handler.logger.debug, handler.logger.info, handler.logger.error)
+            for call in method.call_args_list
+            for arg in call.args
+        )
+        assert token not in logged
 
     def test_validate_token_with_required_claims_pass(self):
         handler = self._make_handler(private_key="secret")
@@ -407,9 +425,7 @@ class TestSignedUrlHandler:
         token = jwt.encode(payload, "secret", algorithm="HS256")
         with pytest.raises(HTTPException) as exc_info:
             handler.validate_token(token, required_claims={"role": "admin"})
-        # The inner HTTPException(401) is caught by the outer except Exception
-        # handler which re-raises as HTTPException(500)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 401
 
     def test_validate_token_missing_required_claim_key(self):
         handler = self._make_handler(private_key="secret")
@@ -424,8 +440,7 @@ class TestSignedUrlHandler:
         token = jwt.encode(payload, "secret", algorithm="HS256")
         with pytest.raises(HTTPException) as exc_info:
             handler.validate_token(token, required_claims={"scope": "write"})
-        # The inner HTTPException(401) is caught by the outer except Exception -> 500
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 401
 
     def test_validate_token_malformed(self):
         handler = self._make_handler(private_key="secret")
@@ -509,12 +524,12 @@ class TestSignedUrlHandler:
                 handler.validate_token("dummy-token")
             assert exc_info.value.status_code == 400
 
-    def test_validate_token_jose_jwt_error(self):
-        """JWTError from jose should raise 401 (lines 167-168)."""
+    def test_validate_token_pyjwt_error(self):
+        """Any PyJWT decode failure is a 401, not a 500."""
         handler = self._make_handler(private_key="secret")
         with patch(
             "app.core.signed_url.jwt.decode",
-            side_effect=JWTError("Invalid signature"),
+            side_effect=jwt.InvalidSignatureError("Invalid signature"),
         ):
             with pytest.raises(HTTPException) as exc_info:
                 handler.validate_token("some-token")

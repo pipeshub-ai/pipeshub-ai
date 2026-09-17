@@ -178,14 +178,28 @@ class AgentContext(BaseModel):
     # inside any individual producer.
     protocol: str = "legacy"
 
-    # The top-level agent's `run_ctx.run_id`, stashed here by
-    # `stream_bridge.py` right after `PipesHubAgentFactory.create()`
-    # returns — `AnswerFinalizer`/`clarification`/hooks never hold an
-    # `Agent`/`RunContext` reference themselves, but `AGUIFormatter` needs
-    # a `runId` to stamp onto the frames it builds directly (STATE_SNAPSHOT,
-    # RUN_FINISHED, RUN_ERROR, CUSTOM). `None` until then; irrelevant for
-    # `LegacyFormatter`.
+    # The top-level agent's `run_ctx.run_id` — set here BEFORE `factory.
+    # create()` runs (from the client-supplied/generated `runId`, by
+    # `stream_bridge.py`/`bridge.py`) so `factory.create()` can pass it
+    # into `Agent(..., run_id=...)` and get the SAME value back on
+    # `agent.run_ctx.run_id`; re-assigned (a no-op when already set, or
+    # filled in for callers that never set it) right after `Agent()`
+    # construction for exactly that reason. `AnswerFinalizer`/
+    # `clarification`/hooks never hold an `Agent`/`RunContext` reference
+    # themselves, but `AGUIFormatter` needs a `runId` to stamp onto the
+    # frames it builds directly (STATE_SNAPSHOT, RUN_FINISHED, RUN_ERROR,
+    # CUSTOM). `None` until then; irrelevant for `LegacyFormatter`.
     run_id: str | None = None
+
+    # Stop Generation (Phase 3a): the `CancellationToken` this request's
+    # `RunCancellationRegistry` entry was registered with — `None` for
+    # every caller that didn't supply a `runId` (background/test runs,
+    # callers predating this field). Read by `factory.create()` to wire
+    # `AgentRuntime.cancellation_token`, which `Agent.__init__` already
+    # turns into a PRE_TURN `check_not_cancelled` guard and a per-tool-call
+    # check (`install_turn_guards`, `agent_loop_lib/agent/__init__.py`) —
+    # this field is the ONLY plumbing Phase 3a needed to add on this side.
+    cancellation_token: Any = None
 
     # Per-request agent_loop_lib `SandboxManager` (only set when code
     # execution is enabled for this request — see
@@ -325,7 +339,8 @@ class AgentContext(BaseModel):
     def from_chat_state(
         cls, state: dict[str, Any], *, event_sink: Any = None, protocol: str = "legacy",
         llm_provider: str = "", context_length: int | None = None,
-        is_reasoning_model: bool = False,
+        is_reasoning_model: bool = False, run_id: str | None = None,
+        cancellation_token: Any = None,
     ) -> "AgentContext":
         """Builds an `AgentContext` from an already-built `ChatState` dict
         (Phase 8, `stream_bridge.py`) rather than re-deriving every field a
@@ -386,6 +401,8 @@ class AgentContext(BaseModel):
             llm_provider=llm_provider,
             context_length=context_length,
             is_reasoning_model=is_reasoning_model,
+            run_id=run_id,
+            cancellation_token=cancellation_token,
             tool_state=state,
         )
 

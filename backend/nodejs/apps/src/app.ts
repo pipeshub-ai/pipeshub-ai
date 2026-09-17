@@ -104,6 +104,8 @@ import {
   getPreparedRedisProvider,
 } from './libs/services/redis/connectionProviderFactory';
 
+const SERVER_KEEP_ALIVE_TIMEOUT_MS = 65_000;
+
 const loggerConfig = {
   service: 'Application',
 };
@@ -136,6 +138,12 @@ export class Application {
     this.app = express();
     this.port = parseInt(process.env.PORT || '3000', 10);
     this.server = http.createServer(this.app);
+    // Python services reuse pooled connections to this server for up to 4s
+    // after they *process* a response, and a busy event loop can get there
+    // seconds late. Node's 5s default closed sockets they were about to reuse
+    // ("Can not write request body" on record uploads).
+    this.server.keepAliveTimeout = SERVER_KEEP_ALIVE_TIMEOUT_MS;
+    this.server.headersTimeout = SERVER_KEEP_ALIVE_TIMEOUT_MS + 1_000;
   }
 
 

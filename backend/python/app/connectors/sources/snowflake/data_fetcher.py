@@ -19,9 +19,43 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+from app.sources.client.snowflake.snowflake import SnowflakeResponse
 from app.sources.external.snowflake.snowflake_ import SnowflakeDataSource
 
 logger = logging.getLogger(__name__)
+
+
+class SnowflakeFetchError(Exception):
+    """A metadata query Snowflake refused, carrying what it refused with.
+
+    Every fetch below returns an empty result on failure so that a sync keeps
+    going past one bad schema. The streaming path cannot do that — an empty
+    result there is a successful download of a hollow table — so it passes
+    ``strict=True`` and gets this instead.
+
+    ``status_code`` and ``sqlstate`` are the attribute names ``to_stream_error``
+    and ``to_sql_stream_error`` read, and only one of them is ever set: the SQL
+    API answers *every* statement-level failure with HTTP 422, so where a
+    SQLSTATE exists the status is noise and must not reach ``map_source_status``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        sqlstate: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.sqlstate = sqlstate
+
+    @classmethod
+    def from_response(cls, response: SnowflakeResponse, context: str) -> "SnowflakeFetchError":
+        """Build from a failed ``execute_sql`` envelope, preferring its SQLSTATE."""
+        if response.sql_state:
+            return cls(response.error or context, sqlstate=response.sql_state)
+        return cls(context, status_code=response.status_code)
+
 
 @dataclass
 class SnowflakeDatabase:
@@ -485,7 +519,7 @@ class SnowflakeDataFetcher:
         return folders
     
     async def _fetch_all_columns_in_schema(
-        self, database: str, schema: str
+        self, database: str, schema: str, strict: bool = False
     ) -> Dict[str, List[Dict[str, Any]]]:
         cache_key = f"{database}.{schema}"
         if cache_key in self._columns_cache:
@@ -509,6 +543,10 @@ class SnowflakeDataFetcher:
         
         if not response.success:
             logger.warning("Failed to fetch columns: %s", response.error)
+            if strict:
+                raise SnowflakeFetchError.from_response(
+                    response, f"Failed to fetch columns for {database}.{schema}"
+                )
             return {}
         
         columns_by_table: Dict[str, List[Dict[str, Any]]] = {}
@@ -530,7 +568,9 @@ class SnowflakeDataFetcher:
         self._columns_cache[cache_key] = columns_by_table
         return columns_by_table
     
-    async def get_table_ddl(self, database: str, schema: str, table: str) -> Optional[str]:
+    async def get_table_ddl(
+        self, database: str, schema: str, table: str, strict: bool = False
+    ) -> Optional[str]:
         """Fetch the DDL for a specific table using GET_DDL function."""
         if not self.warehouse:
             return None
@@ -549,10 +589,14 @@ class SnowflakeDataFetcher:
                 return rows[0].get("DDL")
         
         logger.warning(f"Failed to fetch DDL for {database}.{schema}.{table}: {response.error}")
+        if strict and not response.success:
+            raise SnowflakeFetchError.from_response(
+                response, f"Failed to fetch DDL for {database}.{schema}.{table}"
+            )
         return None
     
     async def _fetch_foreign_keys_in_schema(
-        self, database: str, schema: str
+        self, database: str, schema: str, strict: bool = False
     ) -> List[ForeignKey]:
         if not self.warehouse:
             logger.warning("Warehouse not set, skipping foreign keys")
@@ -568,6 +612,10 @@ class SnowflakeDataFetcher:
         
         if not response.success:
             logger.warning("Failed to fetch foreign keys: %s", response.error)
+            if strict:
+                raise SnowflakeFetchError.from_response(
+                    response, f"Failed to fetch foreign keys for {database}.{schema}"
+                )
             return []
         
         foreign_keys = []
@@ -597,7 +645,7 @@ class SnowflakeDataFetcher:
         return foreign_keys
     
     async def _fetch_primary_keys_in_schema(
-        self, database: str, schema: str
+        self, database: str, schema: str, strict: bool = False
     ) -> List[Dict[str, str]]:
         if not self.warehouse:
             return []
@@ -615,6 +663,10 @@ class SnowflakeDataFetcher:
         
         if not response.success:
             logger.warning("Failed to fetch primary keys: %s", response.error)
+            if strict:
+                raise SnowflakeFetchError.from_response(
+                    response, f"Failed to fetch primary keys for {database}.{schema}"
+                )
             return []
         
         pks = []

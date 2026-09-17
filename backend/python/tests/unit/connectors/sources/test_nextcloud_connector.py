@@ -1514,8 +1514,14 @@ class TestStreamRecordAdditional:
             await nextcloud_connector.stream_record(record)
 
     @pytest.mark.asyncio
-    async def test_stream_record_download_fails(self, nextcloud_connector):
-        """Download response is not successful (line 1628-1632)."""
+    @pytest.mark.parametrize(
+        "source_status,expected_status",
+        [(401, 409), (403, 403), (404, 404), (503, 502)],
+    )
+    async def test_stream_record_download_fails(
+        self, nextcloud_connector, source_status, expected_status
+    ):
+        """The WebDAV status decides ours — an expired token is not 'file not found'."""
         from fastapi import HTTPException
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
@@ -1527,11 +1533,13 @@ class TestStreamRecordAdditional:
         mock_resp = MagicMock()
         mock_resp.success = False
         mock_resp.error = "download error"
+        mock_resp.status = source_status
         nextcloud_connector.data_source.download_file = AsyncMock(return_value=mock_resp)
 
         record = MagicMock(id="r1", record_name="test.txt", mime_type="text/plain")
-        with pytest.raises(HTTPException, match="Failed to download"):
+        with pytest.raises(HTTPException) as exc_info:
             await nextcloud_connector.stream_record(record)
+        assert exc_info.value.status_code == expected_status
 
     @pytest.mark.asyncio
     async def test_stream_record_empty_content(self, nextcloud_connector):
@@ -1571,5 +1579,7 @@ class TestStreamRecordAdditional:
         )
 
         record = MagicMock(id="r1", record_name="test.txt", mime_type="text/plain")
-        with pytest.raises(HTTPException, match="Error streaming file"):
+        with pytest.raises(HTTPException) as exc_info:
             await nextcloud_connector.stream_record(record)
+        assert exc_info.value.status_code == 500
+        assert "unexpected" not in str(exc_info.value.detail)

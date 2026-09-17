@@ -949,6 +949,8 @@ class TestGetSignedUrl:
 
     @pytest.mark.asyncio
     async def test_missing_drive_id(self):
+        from fastapi import HTTPException
+
         c = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
 
@@ -957,8 +959,10 @@ class TestGetSignedUrl:
         record.external_record_group_id = None
         record.id = "record-1"
 
-        result = await c.get_signed_url(record)
-        assert result is None
+        # A local metadata gap, not a file deleted in SharePoint.
+        with pytest.raises(HTTPException) as exc_info:
+            await c.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
 
 # ===========================================================================

@@ -757,6 +757,23 @@ class DataSourceEntitiesProcessor:
                 f"Created {len(edges_to_create)} entity relation edges for message {message.id}"
             )
 
+    @staticmethod
+    def _stamp_queued_at(record: Record) -> None:
+        """Mark a record put in line for indexing, before its event is published.
+
+        The stranded-record sweep ages rows on this, not on updated_at, which
+        connectors may fill with source-system time: a Jira issue last edited a
+        year ago otherwise looks stranded the moment it is synced. Stamped before
+        the publish, so a failed one still leaves an ageable marker; never on a
+        write that publishes nothing, which would keep postponing the recovery of
+        a record whose event was lost.
+        """
+        if record.indexing_status in (
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.QUEUED.value,
+        ):
+            record.queued_at = get_epoch_timestamp_in_ms()
+
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         self.logger.debug("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
@@ -891,7 +908,7 @@ class DataSourceEntitiesProcessor:
                         "to restore graph edges",
                         record.record_name,
                     )
-                    await self._process_record(record, [], tx_store)
+                    await self._process_record(record, [], tx_store, publishes_event=False)
                 elif record.shared_with_me_record_group_ids:
                     # The record already has BELONGS_TO edges (e.g. to the owner's "My Drive"), but
                     # the shared-with-me edge for *this* user may still be missing because
@@ -955,7 +972,14 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
             raise
 
-    async def _process_record(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> Record | None:
+    async def _process_record(
+        self,
+        record: Record,
+        permissions: list[Permission],
+        tx_store: TransactionStore,
+        *,
+        publishes_event: bool = True,
+    ) -> Record | None:
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
@@ -987,6 +1011,8 @@ class DataSourceEntitiesProcessor:
             # COMPLETED for KB folders, ...) is kept.
             if record.indexing_status == ProgressStatus.QUEUED.value:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
+            if publishes_event:
+                self._stamp_queued_at(record)
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
@@ -1053,6 +1079,8 @@ class DataSourceEntitiesProcessor:
                 record.is_placeholder = False
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
+                if publishes_event:
+                    self._stamp_queued_at(record)
                 await self._handle_updated_record(record, existing_record, tx_store)
 
         # Link record to group AFTER saving (when record.id is available for edges)
@@ -1268,7 +1296,9 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
-            processed_record = await self._process_record(record, [], tx_store)
+            processed_record = await self._process_record(
+                record, [], tx_store, publishes_event=False
+            )
             if processed_record:
                 if existing_record is not None:
                     self._preserve_indexing_state(processed_record, existing_record)
@@ -1367,6 +1397,7 @@ class DataSourceEntitiesProcessor:
                     if content_changed:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
                             new_record.indexing_status = ProgressStatus.QUEUED.value
+                        self._stamp_queued_at(new_record)
                         records_to_reindex.append(new_record)
                     else:
                         # Carry the VRID across explicitly: the upsert below reuses

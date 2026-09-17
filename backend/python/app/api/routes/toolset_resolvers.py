@@ -5,12 +5,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
 from fastapi import HTTPException, Request
 
+from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints
 
 logger = logging.getLogger(__name__)
 
@@ -168,38 +167,16 @@ async def check_user_is_admin(
     request: Request | None,
     config_service: ConfigurationService,
 ) -> bool:
-    """Admin check via Node.js CM backend."""
-    del org_id
+    """Whether the caller is an org admin, from the live role Node reports for the
+    caller's own token.
+
+    ``user_id``/``org_id`` stay for the edition seam's signature; the token identifies
+    the user, so no other user's status can be checked instead.
+    """
+    del user_id, org_id
     if request is None:
         return False
-    try:
-        try:
-            endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-            nodejs_url = (
-                endpoints.get("nodejs", {}).get("endpoint")
-                if isinstance(endpoints, dict)
-                else None
-            ) or DefaultEndpoints.NODEJS_ENDPOINT.value
-        except Exception:
-            nodejs_url = DefaultEndpoints.NODEJS_ENDPOINT.value
-
-        auth_headers: dict[str, str] = {}
-        for header_name in ("authorization", "x-organization-id", "cookie"):
-            val = request.headers.get(header_name)
-            if val:
-                auth_headers[header_name] = val
-
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"{nodejs_url}/api/v1/users/{user_id}/adminCheck",
-                headers=auth_headers,
-            )
-            return resp.status_code == HttpStatusCode.OK.value
-    except Exception as e:
-        logger.warning(
-            f"Admin check via REST API failed for user {user_id}: {e}. Defaulting to non-admin."
-        )
-        return False
+    return (await fetch_caller_role(request, config_service)).is_admin
 
 
 async def resolve_inherited_from_org_id(
