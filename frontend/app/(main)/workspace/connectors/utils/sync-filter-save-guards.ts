@@ -88,7 +88,8 @@ export function syncFilterRowError(field: FilterSchemaField, raw: unknown): stri
   const values = items
     .map((item) => (item && typeof item === 'object' && 'id' in item ? (item as { id: unknown }).id : item))
     .filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
-  if (field.required && values.length === 0) {
+  // `values` only reads list and string rows, so non-list required fields cannot be judged here.
+  if (field.required && isListLikeFilterField(field) && values.length === 0) {
     return (
       `Select a ${field.displayName.toLowerCase()} before saving. ` +
       `Each connector instance syncs exactly one ${field.displayName.toLowerCase()}.`

@@ -1157,6 +1157,12 @@ class TestSyncFilterSelectionProblems:
         values = {"org_ids": {"operator": "in", "value": ["a", "b"]}}
         assert sync_filter_selection_problems([ORG_FIELD], values) == []
 
+    def test_required_non_list_field_is_not_flagged(self) -> None:
+        """A set datetime value is not a list, so it must not read as a missing selection."""
+        field = {"name": "modified", "displayName": "Modified", "filterType": "datetime", "required": True}
+        values = {"modified": {"operator": "is_after", "value": {"start": 1700000000000}}}
+        assert sync_filter_selection_problems([field], values) == []
+
     def test_legacy_not_in_select_blocks_enable(self) -> None:
         values = {"repo_ids": {"operator": "not_in", "value": [{"id": "o/r", "label": "o/r"}]}}
         problems = sync_filter_selection_problems([REPO_FIELD], values)

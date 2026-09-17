@@ -1025,7 +1025,12 @@ def sync_filter_selection_problems(
         values = _selected_ids(entry.get("value")) if isinstance(entry, dict) else []
         display = str(field.get("displayName") or name)
         is_select = field.get("filterType") == FilterType.SELECT.value
-        if field.get("required") and not values:
+        # Only list-valued fields can be judged: _selected_ids reads lists and strings,
+        # so a required boolean, number or datetime would always look empty.
+        is_list_like = field.get("filterType") in (
+            FilterType.SELECT.value, FilterType.MULTISELECT.value, FilterType.LIST.value,
+        )
+        if field.get("required") and is_list_like and not values:
             problems.append(
                 f"Select a {display.lower()} before {action}. "
                 f"Each connector instance syncs exactly one {display.lower()}."
