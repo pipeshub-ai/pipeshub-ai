@@ -1899,7 +1899,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     message_id,
                 )
             except Exception as exc:
-                self.logger.error("Task completed with unhandled exception: %s", exc)
+                # %r and the traceback: a bare TimeoutError's message is empty.
+                self.logger.error(
+                    "Processing task for %s ended with an unhandled exception: %r",
+                    message_id,
+                    exc,
+                    exc_info=exc,
+                )
 
         future.add_done_callback(on_future_done)
 

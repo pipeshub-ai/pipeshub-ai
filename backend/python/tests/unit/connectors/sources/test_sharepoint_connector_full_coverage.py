@@ -166,7 +166,12 @@ class TestStreamRecord:
             mock_create.return_value = MagicMock()
             result = await connector.stream_record(record)
             mock_create.assert_called_once()
-            mock_stream.assert_called_once_with("https://signed.url/file.docx")
+            mock_stream.assert_called_once_with(
+                "https://signed.url/file.docx",
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=connector.display_name,
+            )
 
     @pytest.mark.asyncio
     async def test_stream_file_record_no_signed_url(self):
@@ -272,8 +277,10 @@ class TestGetSignedUrl:
         connector._reinitialize_credential_if_needed = AsyncMock()
 
         record = _make_file_record(external_record_group_id=None)
-        result = await connector.get_signed_url(record)
-        assert result is None
+        # A local metadata gap, not a file deleted in SharePoint.
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_get_signed_url_raises_on_error(self):
@@ -283,8 +290,25 @@ class TestGetSignedUrl:
         connector.msgraph_client.get_signed_url = AsyncMock(side_effect=Exception("token expired"))
 
         record = _make_file_record()
-        with pytest.raises(Exception, match="token expired"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_get_signed_url_expired_token_is_not_reported_as_deleted(self):
+        connector = _make_connector()
+        connector._reinitialize_credential_if_needed = AsyncMock()
+        connector.msgraph_client = MagicMock()
+
+        class _ODataError(Exception):
+            response_status_code = 401
+
+        connector.msgraph_client.get_signed_url = AsyncMock(side_effect=_ODataError("401"))
+
+        record = _make_file_record()
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
 
 # ===========================================================================

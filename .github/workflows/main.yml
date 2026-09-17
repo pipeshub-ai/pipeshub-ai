@@ -72,6 +72,14 @@ jobs:
           cd frontend
           npm install
 
+      # frontend/package.json defines test:unit (vitest) and 380 tests exist
+      # across 27 files, but no workflow ran them. They need no browser and no
+      # services and finish in about twenty seconds.
+      - name: Run frontend unit tests
+        run: |
+          cd frontend
+          npm run test:unit
+
       - name: Build frontend
         run: |
           cd frontend

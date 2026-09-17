@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from dropbox.exceptions import ApiError
+from fastapi import HTTPException
 from dropbox.files import DeletedMetadata, FileMetadata, FolderMetadata
 from dropbox.sharing import AccessLevel
 from dropbox.team_log import EventCategory
@@ -2185,7 +2186,7 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     async def test_shared_link_second_call_unexpected_error(self, connector):
         entry = _make_file_entry()
@@ -2209,7 +2210,7 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     async def test_first_shared_link_call_unexpected_error(self, connector):
         entry = _make_file_entry()
@@ -2227,7 +2228,25 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
+
+    async def test_fallback_url_encodes_special_characters(self, connector):
+        entry = _make_file_entry(path="/folder/a#b?c.pdf")
+        connector.data_source.files_get_temporary_link = AsyncMock(
+            return_value=_make_dropbox_response(success=True, data=MagicMock(link="https://tmp"))
+        )
+        connector.data_source.sharing_create_shared_link_with_settings = AsyncMock(
+            return_value=_make_dropbox_response(success=False, error="rate_limit_exceeded")
+        )
+        connector.data_source.files_get_metadata = AsyncMock(
+            return_value=_make_dropbox_response(success=False)
+        )
+
+        result = await connector._process_dropbox_entry(
+            entry, "user1", "user@test.com", "rg1", False
+        )
+        assert result is not None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/a%23b%3Fc.pdf"
 
     async def test_parent_path_resolution(self, connector):
         entry = _make_file_entry(path="/a/b/file.pdf")
@@ -2321,10 +2340,9 @@ class TestProcessDropboxEntryBranches:
         assert "user@test.com" in emails
 
     async def test_permissions_single_group_is_shared(self, connector):
-        """When a single group permission is returned, the source code tries to compare
-        permission type with PermissionType.GROUP which doesn't exist, causing an
-        AttributeError. This is caught by the try/except, which falls back to owner
-        permission, and is_shared remains False (its default)."""
+        """When the only permission returned is a group permission, the file is
+        considered shared, since access is granted via the group rather than
+        directly to the syncing user."""
         entry = _make_file_entry()
         connector.data_source.files_get_temporary_link = AsyncMock(
             return_value=_make_dropbox_response(success=True, data=MagicMock(link="https://tmp"))
@@ -2353,9 +2371,7 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        # PermissionType.GROUP doesn't exist, so the code raises AttributeError,
-        # falls back to owner permission, and is_shared stays False
-        assert result.record.is_shared is False
+        assert result.record.is_shared is True
 
     async def test_permission_fetch_exception_fallback(self, connector):
         entry = _make_file_entry()
@@ -4376,16 +4392,22 @@ class TestGetSignedUrl:
     async def test_no_data_source(self, connector):
         connector.data_source = None
         record = MagicMock(id="r1")
-        result = await connector.get_signed_url(record)
-        assert result is None
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
+        assert "not connected" in exc_info.value.detail
 
     async def test_no_user_with_permission(self, connector):
         record = MagicMock(id="r1")
         connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
         connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock(path="/file.pdf"))
 
-        result = await connector.get_signed_url(record)
-        assert result is None
+        # A local metadata gap, not a file deleted at Dropbox.
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     async def test_no_file_record(self, connector):
         record = MagicMock(id="r1")
@@ -4393,8 +4415,9 @@ class TestGetSignedUrl:
         connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
         connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
 
-        result = await connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     async def test_success(self, connector):
         record = MagicMock(id="r1", external_record_group_id="ns:1")
@@ -4442,8 +4465,11 @@ class TestGetSignedUrl:
         record = MagicMock(id="r1")
         connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(side_effect=Exception("DB error"))
 
-        result = await connector.get_signed_url(record)
-        assert result is None
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Could not retrieve this item. Please try again."
 
 
 # ===========================================================================

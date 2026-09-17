@@ -30,6 +30,11 @@ import {
 } from '../types/storage.service.types';
 import { StorageService } from '../storage.service';
 import {
+  createDocumentOnce,
+  getIdempotencyKey,
+  requestFingerprint,
+} from '../utils/idempotency';
+import {
   getCurrentFilePath,
   DocumentInfoResponse,
   LeanDocumentInfoResponse,
@@ -262,8 +267,25 @@ export class StorageController {
         extension: `.${extension}`,
       };
 
-      const savedDocument = await DocumentModel.create(documentInfo);
-      res.status(200).json(savedDocument);
+      // A replayed key returns the placeholder the first attempt made; its
+      // content is uploaded separately, so there is nothing left to finish.
+      const idempotencyKey = getIdempotencyKey(req);
+      const { document } = await createDocumentOnce(
+        documentInfo,
+        idempotencyKey === undefined
+          ? undefined
+          : {
+              key: idempotencyKey,
+              fingerprint: requestFingerprint({
+                documentName,
+                documentPath,
+                isVersionedFile,
+                extension,
+                customMetadata,
+              }),
+            },
+      );
+      res.status(200).json(document);
     } catch (error) {
       next(error);
     }

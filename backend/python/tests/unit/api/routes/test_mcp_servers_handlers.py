@@ -113,31 +113,29 @@ def _admin_request(config_service=None, registry=None) -> MagicMock:
 
 class TestCheckUserIsAdmin:
     @pytest.mark.asyncio
-    async def test_returns_true_on_200(self) -> None:
+    @pytest.mark.parametrize(
+        ("status", "role", "expected"),
+        [
+            ("valid", "admin", True),
+            ("valid", "member", False),
+            ("rejected", "member", False),
+            ("unknown", "member", False),
+        ],
+    )
+    async def test_uses_the_callers_live_role(self, status, role, expected) -> None:
+        from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
+
         config_service = MagicMock()
-        config_service.get_config = AsyncMock(return_value={"nodejs": {"endpoint": "http://nodejs:3000"}})
         request = _mock_request(headers={"authorization": "Bearer t", "x-organization-id": "org-1"})
+        caller = CallerRole(CallerRoleStatus(status), role)
 
-        mock_resp = MagicMock(status_code=200)
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
+        with patch(
+            "app.api.routes.mcp_servers.fetch_caller_role",
+            new=AsyncMock(return_value=caller),
+        ) as mock_role:
+            assert await _check_user_is_admin("admin-1", request, config_service) is expected
 
-        with patch("app.api.routes.mcp_servers.httpx.AsyncClient", return_value=mock_client):
-            assert await _check_user_is_admin("admin-1", request, config_service) is True
-
-        mock_client.get.assert_awaited_once()
-        assert mock_client.get.await_args.args[0].endswith("/api/v1/users/admin-1/adminCheck")
-
-    @pytest.mark.asyncio
-    async def test_defaults_false_on_transport_error(self) -> None:
-        config_service = MagicMock()
-        config_service.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
-        request = _mock_request()
-
-        with patch("app.api.routes.mcp_servers.httpx.AsyncClient", side_effect=RuntimeError("network")):
-            assert await _check_user_is_admin("u1", request, config_service) is False
+        mock_role.assert_awaited_once_with(request, config_service)
 
 
 class TestGetConfiguredFrontendBaseUrl:

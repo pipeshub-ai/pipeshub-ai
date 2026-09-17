@@ -50,6 +50,9 @@ fields:
   processing_started_at:
     required: false
     type: integer
+  queued_at:
+    required: false
+    type: integer
   inherit_permissions:
     required: false
     type: boolean

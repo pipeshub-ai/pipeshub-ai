@@ -1,6 +1,7 @@
 import base64
 import json
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from jose import jwt  # type: ignore
 
@@ -48,17 +49,34 @@ def is_jwt_expired(token: str) -> bool:
     return payload_data['exp'] < current_time
 
 
+SERVICE_TOKEN_TTL = timedelta(hours=1)
+
+
+def mint_service_token(
+    scoped_jwt_secret: str,
+    claims: dict[str, Any],
+    ttl: timedelta = SERVICE_TOKEN_TTL,
+) -> str:
+    """Sign a service-to-service JWT with the scoped secret.
+
+    ``iat``/``exp`` are always stamped here, overriding any in ``claims``, so no
+    service token can be minted without an expiry.
+    """
+    issued_at = datetime.now(timezone.utc)
+    payload = {**claims, "iat": issued_at, "exp": issued_at + ttl}
+    return jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+
+
 async def generate_jwt(config_service: ConfigurationService, token_payload: dict) -> str:
     """
-    Generate a JWT token using the jose library.
+    Mint a service token signed with the scoped JWT secret from configuration.
 
     Args:
-        token_payload (dict): The payload to include in the JWT
+        token_payload (dict): The claims to include in the JWT
 
     Returns:
         str: The generated JWT token
     """
-    # Get the JWT secret from environment variable
     secret_keys = await config_service.get_config(
         config_node_constants.SECRET_KEYS.value
     )
@@ -68,16 +86,4 @@ async def generate_jwt(config_service: ConfigurationService, token_payload: dict
     if not scoped_jwt_secret:
         raise ValueError("SCOPED_JWT_SECRET environment variable is not set")
 
-    # Add standard claims if not present
-    if "exp" not in token_payload:
-        # Set expiration to 1 hour from now
-        token_payload["exp"] = datetime.now(timezone.utc) + timedelta(hours=1)
-
-    if "iat" not in token_payload:
-        # Set issued at to current time
-        token_payload["iat"] = datetime.now(timezone.utc)
-
-    # Generate the JWT token using jose
-    token = jwt.encode(token_payload, scoped_jwt_secret, algorithm="HS256")
-
-    return token
+    return mint_service_token(scoped_jwt_secret, token_payload)

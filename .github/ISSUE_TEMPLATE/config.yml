@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Ask a question
+    url: https://github.com/pipeshub-ai/pipeshub-ai/discussions/categories/q-a
+    about: Questions and ideas. Opening an issue is also welcome.
+  - name: Discord
+    url: https://discord.com/invite/K5RskzJBm2
+    about: Chat with maintainers and other contributors.

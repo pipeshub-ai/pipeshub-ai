@@ -28,6 +28,9 @@ def _pool_mock():
     return pool
 
 
+
+class _DriverError(Exception):
+    """Stands in for the MariaDB driver's own exception type."""
 class _AsyncContextManager:
     def __init__(self, value):
         self._value = value
@@ -302,11 +305,15 @@ class TestMariaDBClient:
     @pytest.mark.asyncio
     async def test_execute_query_error(self):
         with patch("app.sources.client.mariadb.mariadb.mariadb") as mock_mod:
-            cursor = _make_async_cursor(execute_side_effect=Exception("Query error"))
+            cursor = _make_async_cursor(execute_side_effect=_DriverError("Query error"))
             client, _, conn = self._make_pooled_client(mock_mod, cursor)
 
-            with pytest.raises(RuntimeError, match="Query execution failed"):
+            # The driver's own exception must survive the client layer: the
+            # stream mapper classifies on its type, SQLSTATE and errno, all of
+            # which a RuntimeError wrapper would destroy.
+            with pytest.raises(_DriverError) as exc_info:
                 await client.execute_query("BAD QUERY")
+            assert "Query execution failed" not in str(exc_info.value)
             conn.rollback.assert_awaited()
 
     @pytest.mark.asyncio
@@ -335,11 +342,12 @@ class TestMariaDBClient:
     @pytest.mark.asyncio
     async def test_execute_query_raw_error(self):
         with patch("app.sources.client.mariadb.mariadb.mariadb") as mock_mod:
-            cursor = _make_async_cursor(execute_side_effect=Exception("error"))
+            cursor = _make_async_cursor(execute_side_effect=_DriverError("error"))
             client, _, _ = self._make_pooled_client(mock_mod, cursor)
 
-            with pytest.raises(RuntimeError, match="Query execution failed"):
+            with pytest.raises(_DriverError) as exc_info:
                 await client.execute_query_raw("BAD QUERY")
+            assert "Query execution failed" not in str(exc_info.value)
 
     def test_get_connection_info(self):
         with patch("app.sources.client.mariadb.mariadb.mariadb"):

@@ -105,58 +105,53 @@ class TestGenerateJwt:
         assert len(token.split(".")) == 3
 
     @pytest.mark.asyncio
-    async def test_adds_exp_if_missing(self):
-        mock_config = AsyncMock()
-        mock_config.get_config.return_value = {"scopedJwtSecret": "test-secret-key-12345"}
+    async def test_stamps_one_hour_expiry(self):
+        from jose import jwt as jose_jwt
 
-        payload = {"sub": "user1"}
-        assert "exp" not in payload
-        token = await generate_jwt(mock_config, payload)
-        assert isinstance(token, str)
-        # After call, payload should have exp added
-        assert "exp" in payload
+        mock_config = AsyncMock()
+        secret = "test-secret-key-12345"
+        mock_config.get_config.return_value = {"scopedJwtSecret": secret}
+
+        token = await generate_jwt(mock_config, {"sub": "user1"})
+        decoded = jose_jwt.decode(token, secret, algorithms=["HS256"])
+        assert decoded["exp"] - decoded["iat"] == 3600
+        assert abs(decoded["iat"] - int(time.time())) <= 5
 
     @pytest.mark.asyncio
-    async def test_adds_iat_if_missing(self):
+    async def test_does_not_mutate_caller_payload(self):
         mock_config = AsyncMock()
         mock_config.get_config.return_value = {"scopedJwtSecret": "test-secret-key-12345"}
 
         payload = {"sub": "user1"}
-        assert "iat" not in payload
         await generate_jwt(mock_config, payload)
-        assert "iat" in payload
+        assert payload == {"sub": "user1"}
 
     @pytest.mark.asyncio
-    async def test_preserves_existing_exp(self):
-        """When exp is already set, generate_jwt should not overwrite it."""
+    async def test_caller_cannot_extend_expiry(self):
+        """A service token's lifetime is fixed by the minter, not the caller."""
         from jose import jwt as jose_jwt
 
         mock_config = AsyncMock()
         secret = "test-secret-key-12345"
         mock_config.get_config.return_value = {"scopedJwtSecret": secret}
 
-        custom_exp = datetime.now(timezone.utc) + timedelta(hours=5)
-        expected_ts = int(custom_exp.timestamp())
-        payload = {"sub": "user1", "exp": custom_exp}
-        token = await generate_jwt(mock_config, payload)
+        far_future = datetime.now(timezone.utc) + timedelta(days=365)
+        token = await generate_jwt(mock_config, {"sub": "user1", "exp": far_future})
         decoded = jose_jwt.decode(token, secret, algorithms=["HS256"])
-        assert decoded["exp"] == expected_ts
+        assert decoded["exp"] <= int(time.time()) + 3600 + 5
 
     @pytest.mark.asyncio
-    async def test_preserves_existing_iat(self):
-        """When iat is already set, generate_jwt should not overwrite it."""
+    async def test_caller_cannot_backdate_issued_at(self):
         from jose import jwt as jose_jwt
 
         mock_config = AsyncMock()
         secret = "test-secret-key-12345"
         mock_config.get_config.return_value = {"scopedJwtSecret": secret}
 
-        custom_iat = datetime.now(timezone.utc) - timedelta(minutes=10)
-        expected_ts = int(custom_iat.timestamp())
-        payload = {"sub": "user1", "iat": custom_iat}
-        token = await generate_jwt(mock_config, payload)
+        backdated = datetime.now(timezone.utc) - timedelta(days=1)
+        token = await generate_jwt(mock_config, {"sub": "user1", "iat": backdated})
         decoded = jose_jwt.decode(token, secret, algorithms=["HS256"])
-        assert decoded["iat"] == expected_ts
+        assert abs(decoded["iat"] - int(time.time())) <= 5
 
     @pytest.mark.asyncio
     async def test_raises_when_secret_keys_none(self):

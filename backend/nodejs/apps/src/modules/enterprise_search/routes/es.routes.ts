@@ -47,6 +47,8 @@ import {
   getWebSearchProviderUsage,
   getModelUsage,
   regenerateAgentAnswers,
+  cancelConversationStream,
+  cancelAgentConversationStream,
   streamChatInternal,
   addMessageStreamInternal,
   updateAgentConversationTitle,
@@ -75,6 +77,8 @@ import {
   conversationShareParamsSchema,
   conversationTitleParamsSchema,
   regenerateAnswersParamsSchema,
+  cancelConversationStreamParamsSchema,
+  cancelAgentConversationStreamParamsSchema,
   updateFeedbackParamsSchema,
   searchShareParamsSchema,
   regenerateAgentAnswersParamsSchema,
@@ -359,6 +363,21 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(regenerateAnswersParamsSchema),
     regenerateAnswers(appConfig),
+  );
+
+  /**
+   * @route POST /api/v1/conversations/:conversationId/cancel
+   * @desc Cooperatively stop an in-flight assistant chat stream
+   * @access Private
+   * @param {string} conversationId - Conversation ID
+   * @body { runId: string (UUID) }
+   */
+  router.post(
+    '/:conversationId/cancel',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    ValidationMiddleware.validate(cancelConversationStreamParamsSchema),
+    cancelConversationStream(appConfig),
   );
 
   /**
@@ -662,6 +681,22 @@ export function createAgentConversationalRouter(container: Container): Router {
       ValidationMiddleware.validate(regenerateAgentAnswersParamsSchema),
       regenerateAgentAnswers(appConfig),
     );
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/cancel
+   * @desc Cooperatively stop an in-flight agent chat stream
+   * @access Private
+   * @param {string} agentKey - Agent key
+   * @param {string} conversationId - Conversation ID
+   * @body { runId: string (UUID) }
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/cancel',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    ValidationMiddleware.validate(cancelAgentConversationStreamParamsSchema),
+    cancelAgentConversationStream(appConfig),
+  );
 
   /**
    * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/message/:messageId/feedback

@@ -26,6 +26,7 @@ from app.connectors.sources.snowflake.data_fetcher import (
     ForeignKey,
     SnowflakeDatabase,
     SnowflakeDataFetcher,
+    SnowflakeFetchError,
     SnowflakeFile,
     SnowflakeFolder,
     SnowflakeHierarchy,
@@ -36,9 +37,21 @@ from app.connectors.sources.snowflake.data_fetcher import (
 )
 
 
-def _resp(success: bool = True, data: Any = None, error: Optional[str] = None) -> SimpleNamespace:
+def _resp(
+    success: bool = True,
+    data: Any = None,
+    error: Optional[str] = None,
+    status_code: Optional[int] = None,
+    sql_state: Optional[str] = None,
+) -> SimpleNamespace:
     """Create a mock SnowflakeResponse-like object."""
-    return SimpleNamespace(success=success, data=data, error=error)
+    return SimpleNamespace(
+        success=success,
+        data=data,
+        error=error,
+        status_code=status_code,
+        sql_state=sql_state,
+    )
 
 
 # ===========================================================================
@@ -597,6 +610,31 @@ class TestFetchAllColumnsInSchema:
         f.data_source.execute_sql.return_value = _resp(success=False, error="bad")
         cols = await f._fetch_all_columns_in_schema("DB", "S")
         assert cols == {}
+
+    @pytest.mark.asyncio
+    async def test_strict_failure_keeps_sqlstate_and_drops_the_422(self) -> None:
+        f = _make_fetcher()
+        f.data_source.execute_sql.return_value = _resp(
+            success=False,
+            error="Insufficient privileges to operate on schema 'S'",
+            status_code=422,
+            sql_state="42501",
+        )
+        with pytest.raises(SnowflakeFetchError) as ei:
+            await f._fetch_all_columns_in_schema("DB", "S", strict=True)
+        assert ei.value.sqlstate == "42501"
+        assert ei.value.status_code is None
+
+    @pytest.mark.asyncio
+    async def test_strict_transport_failure_keeps_the_status(self) -> None:
+        f = _make_fetcher()
+        f.data_source.execute_sql.return_value = _resp(
+            success=False, error="unauthorized", status_code=401
+        )
+        with pytest.raises(SnowflakeFetchError) as ei:
+            await f._fetch_all_columns_in_schema("DB", "S", strict=True)
+        assert ei.value.status_code == 401
+        assert ei.value.sqlstate is None
 
 
 class TestGetTableDdl:
