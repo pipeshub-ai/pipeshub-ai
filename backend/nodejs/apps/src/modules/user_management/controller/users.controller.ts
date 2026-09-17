@@ -569,7 +569,28 @@ export class UserController {
 
       // Persist the account and its credential before anything that is hard
       // to take back (the group membership, and the event the graph side
-      // acts on). A credential failure then has exactly one thing to undo.
+      // acts on). If a later write fails, undo what was saved so the address
+      // is free to try again, and nothing has been published.
+      const undoSavedAccount = async (reason: string): Promise<void> => {
+        try {
+          if (hashedPassword !== undefined) {
+            await UserCredentials.deleteOne({ userId: newUser._id });
+          }
+          await Users.deleteOne({ _id: newUser._id });
+        } catch (cleanupError) {
+          this.logger.error(
+            `Account was saved but ${reason}, and removing it failed too`,
+            {
+              userId: String(newUser._id),
+              error:
+                cleanupError instanceof Error
+                  ? cleanupError.message
+                  : String(cleanupError),
+            },
+          );
+        }
+      };
+
       await newUser.save();
       if (hashedPassword !== undefined) {
         try {
@@ -581,28 +602,20 @@ export class UserController {
             ipAddress: req.ip,
           }).save();
         } catch (credentialError) {
-          try {
-            await Users.deleteOne({ _id: newUser._id });
-          } catch (cleanupError) {
-            this.logger.error(
-              'Demo account was saved but its credential was not, and removing the account failed too',
-              {
-                userId: String(newUser._id),
-                error:
-                  cleanupError instanceof Error
-                    ? cleanupError.message
-                    : String(cleanupError),
-              },
-            );
-          }
+          await undoSavedAccount('its credential was not');
           throw credentialError;
         }
       }
 
-      await UserGroups.updateOne(
-        { orgId: newUser.orgId, type: 'everyone' }, // Find the everyone group in the same org
-        { $addToSet: { users: newUser._id } }, // Add user to the group if not already present
-      );
+      try {
+        await UserGroups.updateOne(
+          { orgId: newUser.orgId, type: 'everyone' }, // Find the everyone group in the same org
+          { $addToSet: { users: newUser._id } }, // Add user to the group if not already present
+        );
+      } catch (groupError) {
+        await undoSavedAccount('the everyone-group membership was not');
+        throw groupError;
+      }
 
       await this.eventService.start();
       const event: Event = {
