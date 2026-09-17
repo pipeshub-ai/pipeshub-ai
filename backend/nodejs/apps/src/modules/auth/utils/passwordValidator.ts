@@ -5,11 +5,12 @@
 // that was thrown away.
 export const BCRYPT_MAX_PASSWORD_BYTES = 72;
 
-export const passwordValidator = (password:string) => {
-    if (Buffer.byteLength(password, 'utf8') > BCRYPT_MAX_PASSWORD_BYTES) {
-      return false;
-    }
-    // minimum 8 characters with minimum one uppercase, one lowercase, one number and one special character
-    const passwordRegex = /^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$/;
-    return passwordRegex.test(password);
-  };
+export const passwordValidator = (password: string): boolean => {
+  if (Buffer.byteLength(password, 'utf8') > BCRYPT_MAX_PASSWORD_BYTES) {
+    return false;
+  }
+  // minimum 8 characters with minimum one uppercase, one lowercase, one number and one special character
+  const passwordRegex =
+    /^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$/;
+  return passwordRegex.test(password);
+};
