@@ -58,10 +58,7 @@ function mcpConnectedProps(
     | { method?: unknown; params?: Record<string, unknown> }
     | undefined;
   if (body?.method !== 'initialize') return undefined;
-  const clientInfo = (body?.params?.clientInfo ?? {}) as Record<
-    string,
-    unknown
-  >;
+  const clientInfo = (body.params?.clientInfo ?? {}) as Record<string, unknown>;
   return {
     ...mcpEventBase(req),
     client_name:
@@ -78,7 +75,7 @@ function recordMcpToolCall(req: AuthenticatedUserRequest): void {
   if (body?.method !== 'tools/call') return;
   recordEvent('mcp_tool_called', {
     ...mcpEventBase(req),
-    tool: typeof body?.params?.name === 'string' ? body.params.name : undefined,
+    tool: typeof body.params?.name === 'string' ? body.params.name : undefined,
   });
 }
 
