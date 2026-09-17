@@ -1,0 +1,5 @@
+Document root for the nginx container that serves the RSS connector tests.
+
+The directory must exist before compose starts, otherwise Docker creates it as
+root and the test process cannot write the feed into it. The tests write
+feed.xml here; nothing else belongs in it.
