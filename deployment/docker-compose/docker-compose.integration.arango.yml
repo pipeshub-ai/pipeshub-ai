@@ -217,6 +217,24 @@ services:
       timeout: 3s
       retries: 20
 
+  # Like postgres-source, this is a connector *source* — a database to be
+  # indexed — not a store the platform uses.
+  mariadb-source:
+    image: mariadb:11.4.4-noble
+    restart: always
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_TEST_ROOT_PASSWORD:-pipeshubroot123}
+      MARIADB_USER: ${MARIADB_TEST_USER:-pipeshubtest}
+      MARIADB_PASSWORD: ${MARIADB_TEST_PASSWORD:-pipeshubtest123}
+      MARIADB_DATABASE: ${MARIADB_TEST_DB:-pipeshub_connector_test}
+    ports:
+      - "127.0.0.1:3307:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   redis:
     image: redis:7.4-bookworm
     restart: always
