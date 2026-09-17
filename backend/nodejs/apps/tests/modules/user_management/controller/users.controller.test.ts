@@ -3405,6 +3405,7 @@ describe('UserController', () => {
       const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
       sinon.stub(Users.prototype, 'save').resolves();
       sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential save failed'));
+      sinon.stub(UserCredentials, 'deleteOne').resolves();
       const userDelete = sinon.stub(Users, 'deleteOne').resolves();
 
       await controller.createUser(req, res, next);
@@ -3426,13 +3427,35 @@ describe('UserController', () => {
       sinon.stub(UserGroups, 'updateOne').resolves();
       sinon.stub(Users.prototype, 'save').resolves();
       sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential save failed'));
+      sinon.stub(UserCredentials, 'deleteOne').resolves();
       sinon.stub(Users, 'deleteOne').rejects(new Error('db down'));
 
       await controller.createUser(req, res, next);
 
       expect(next.firstCall.args[0].message).to.equal('credential save failed');
       expect(mockLogger.error.calledOnce).to.be.true;
-      expect(mockLogger.error.firstCall.args[0]).to.include('removing the account failed');
+      expect(mockLogger.error.firstCall.args[0]).to.include('removing it failed');
+    });
+
+    it('removes the user and its credential when the everyone-group write fails', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
+      const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(credentialDelete.calledOnce).to.be.true;
+      expect(userDelete.calledOnce).to.be.true;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.status.called).to.be.false;
     });
 
     it('publishes the creation event only after the user and credential are saved', async () => {
