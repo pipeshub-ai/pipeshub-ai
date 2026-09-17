@@ -4,6 +4,7 @@ import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { userExists } from '../middlewares/userExists';
+import { emailChangeSelfOnly } from '../middlewares/emailChangeSelfOnly';
 import { userAdminCheck } from '../middlewares/userAdminCheck';
 import { userAdminOrSelfCheck } from '../middlewares/userAdminOrSelfCheck';
 // import { attachContainerMiddleware } from '../../auth/middlewares/attachContainer.middleware';
@@ -646,6 +647,7 @@ export function createUserRouter(container: Container) {
     requireScopes(OAuthScopeNames.USER_WRITE),
     ValidationMiddleware.validate(updateUserEmailValidationSchema),
     userAdminOrSelfCheck,
+    emailChangeSelfOnly,
     userExists,
     async (
       req: AuthenticatedUserRequest,
@@ -695,6 +697,7 @@ export function createUserRouter(container: Container) {
     requireScopes(OAuthScopeNames.USER_WRITE),
     ValidationMiddleware.validate(updateUserValidationSchema),
     userAdminOrSelfCheck,
+    emailChangeSelfOnly,
     userExists,
     async (
       req: AuthenticatedUserRequest,
