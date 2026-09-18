@@ -56,38 +56,58 @@ async def read_platform_feature_flag(
         return default
 
 
+async def _platform_flag(
+    config_service: Optional["ConfigurationService"],
+    flag: str,
+    *,
+    default: bool,
+) -> bool:
+    """Shared resolution path for org-level platform feature flags.
+
+    Resolution order (first hit wins), mirroring ``is_mcp_enabled``:
+    1. ``config_service`` — live read of the platform settings the Labs UI writes,
+       via the shared ``read_platform_feature_flag`` helper (``use_cache=False``,
+       so flipping the flag in Labs takes effect on the next request instead of
+       after a service restart)
+    2. ``FeatureFlagService`` — only reachable in services that wire an
+       ``EtcdProvider`` (the connectors service); the query service does not, which
+       is why the ``config_service`` read above is the primary path
+    3. ``default``
+    """
+    if config_service is not None:
+        return await read_platform_feature_flag(flag, config_service, default=default)
+
+    try:
+        from app.services.featureflag.featureflag import FeatureFlagService
+
+        return bool(
+            FeatureFlagService.get_service().is_feature_enabled(flag, default=default)
+        )
+    except Exception as e:
+        logger.warning(
+            f"FeatureFlagService unavailable for {flag}, treating as default={default}: {e}"
+        )
+        return default
+
+
 async def is_actions_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
     """Deployment-level gate for Actions: agents may only load/use toolset
     (connector) tools when this is true. Source of truth is the
     ``ENABLE_ACTIONS`` platform feature flag. Defaults to ENABLED — unlike
     ``ENABLE_MCP``, toolsets/actions are pre-existing functionality; admins
     may opt out from Labs.
-
-    Resolution order (first hit wins), mirroring ``is_mcp_enabled``:
-    1. ``config_service`` — live read of the platform settings the Labs UI writes,
-       via the shared ``read_platform_feature_flag`` helper
-    2. ``FeatureFlagService`` — only reachable in services that wire an
-       ``EtcdProvider`` (the connectors service); the query service does not, which
-       is why the ``config_service`` read above is the primary path
-    3. Default: ``True``
-
-    Reads with ``use_cache=False`` (via ``read_platform_feature_flag``) so
-    flipping the flag in Labs takes effect on the next chat instead of after
-    a service restart.
     """
-    if config_service is not None:
-        return await read_platform_feature_flag(
-            CONFIG.ENABLE_ACTIONS, config_service, default=True,
-        )
+    return await _platform_flag(config_service, CONFIG.ENABLE_ACTIONS, default=True)
 
-    try:
-        from app.services.featureflag.featureflag import FeatureFlagService
 
-        return bool(
-            FeatureFlagService.get_service().is_feature_enabled(
-                CONFIG.ENABLE_ACTIONS, default=True
-            )
-        )
-    except Exception as e:
-        logger.warning(f"FeatureFlagService unavailable for ENABLE_ACTIONS, treating Actions as enabled: {e}")
-        return True
+async def is_skills_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+    """Org-level gate for the whole Skills subsystem: UI, REST, agent-runtime
+    skill tools, and builtin seeding. Source of truth is the ``ENABLE_SKILLS``
+    platform feature flag. Defaults to ENABLED (Beta) — mirrors
+    ``is_actions_enabled``, not ``is_mcp_enabled``.
+
+    This is layered *under* the deployment-level ``PIPESHUB_ENABLE_SKILLS`` env
+    kill-switch (see ``skills_wiring.skills_enabled()``); both must be true for
+    skills to run.
+    """
+    return await _platform_flag(config_service, CONFIG.ENABLE_SKILLS, default=True)

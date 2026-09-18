@@ -37,7 +37,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.agent_loop_lib.modules.providers.skills.loader import parse_skill_md
 from app.agent_loop_lib.modules.providers.skills.validator import SkillFormatError, SkillValidator
-from app.services.skills.npm_command_parser import PackageSpec
+from app.services.skills.npm_command_parser import PackageSpec, UrlSpec
 from app.utils.logger import create_logger
 from app.utils.public_http import (
     PublicFetchError,
@@ -57,8 +57,23 @@ __all__ = [
 logger = create_logger(__name__)
 
 _MIB = 1024 * 1024
-_RESOURCE_KINDS = ("scripts", "references", "assets")
+# Directories/files never imported as bundled resources, on top of the
+# archive-wide zip-slip guard in `_reject_unsafe_path`. Not restricted to
+# `scripts/`/`references/`/`assets/` — the agentskills.io spec allows "any
+# additional files or directories" (real community skills rely on this,
+# e.g. Anthropic's `docx` skill ships an `ooxml/` directory of scripts and
+# schemas alongside a root-level `ooxml.md`), so anything under the skill
+# directory is a candidate resource except these.
+_IGNORED_RESOURCE_DIR_NAMES = ("__pycache__", "node_modules", ".git")
 _NPM_REGISTRY_BASE = "https://registry.npmjs.org"
+
+# GitHub repo URL → downloadable archive.  The `/tarball/` endpoint
+# (api.github.com) redirects to the default-branch tarball without
+# needing to know the branch name.  The HTML-page pattern catches bare
+# `https://github.com/owner/repo` pastes (trailing .git stripped).
+_GITHUB_REPO_RE = re.compile(
+    r"^https?://github\.com/(?P<owner>[A-Za-z0-9._-]+)/(?P<repo>[A-Za-z0-9._-]+?)(?:\.git)?/?$",
+)
 _MAX_MANIFEST_BYTES = 5 * _MIB
 _MAX_ARCHIVE_BYTES = 25 * _MIB  # a skill pack is markdown + small scripts, not a model checkpoint
 _MAX_EXTRACTED_BYTES = 4 * _MAX_ARCHIVE_BYTES
@@ -184,6 +199,19 @@ def _extract_archive(data: bytes) -> dict[str, bytes]:
     raise PackageImportError("Not a valid zip or tar/tgz archive.")
 
 
+def _is_ignored_resource(rel_path: str) -> bool:
+    """Dotfiles/dot-directories and build/VCS artifact directories are never
+    imported as bundled resources — mirrors `loader._should_ignore_resource`
+    for the in-repo builtin-pack path, applied here to third-party
+    archives."""
+    if rel_path.endswith(".pyc"):
+        return True
+    parts = rel_path.split("/")
+    if any(part.startswith(".") for part in parts):
+        return True
+    return any(part in _IGNORED_RESOURCE_DIR_NAMES for part in parts[:-1])
+
+
 def _reject_unsafe_path(path: str) -> None:
     """Zip-slip guard: reject absolute paths and any `..` traversal segment
     before a single byte is written/kept in memory."""
@@ -225,14 +253,23 @@ def _files_to_preview(files: dict[str, bytes], *, source_label: str) -> ImportPr
         if path == skill_md_path or not path.startswith(skill_dir_prefix):
             continue
         rel = path[len(skill_dir_prefix):]
-        kind = rel.split("/", 1)[0]
-        if kind not in _RESOURCE_KINDS:
+        if _is_ignored_resource(rel):
+            continue
+        try:
+            validator.validate_resource_path(rel)
+        except SkillFormatError as e:
+            logger.warning("Skipping resource with an invalid path in archive: %s", e)
             continue
         text = _decode_text(data)
         if text is None:
             skipped.append(rel)
             continue
         resources[rel] = text
+
+    try:
+        validator.validate_resource_budget(resources)
+    except SkillFormatError as e:
+        raise PackageImportError(str(e)) from e
 
     warnings = [w.message for w in validator.lint(skill)]
     if skipped:
@@ -313,10 +350,19 @@ class SkillPackageImporter:
         files = _extract_tar(data)
         return _files_to_preview(files, source_label=f"npm:{spec.name}@{resolved_version}")
 
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        """Turn a GitHub repo page URL into its API tarball endpoint."""
+        m = _GITHUB_REPO_RE.match(url)
+        if m:
+            return f"https://api.github.com/repos/{m['owner']}/{m['repo']}/tarball"
+        return url
+
     async def preview_url(self, url: str) -> ImportPreview:
         if not url.lower().startswith(("https://", "http://")):
             raise PackageImportError("Only http(s) URLs are supported.")
-        data = await self._download(url, _ARCHIVE_LIMITS, "the archive")
+        download_url = self._normalize_url(url)
+        data = await self._download(download_url, _ARCHIVE_LIMITS, "the archive")
         return _files_to_preview(_extract_archive(data), source_label=f"url:{url}")
 
     def preview_upload(self, filename: str, data: bytes) -> ImportPreview:

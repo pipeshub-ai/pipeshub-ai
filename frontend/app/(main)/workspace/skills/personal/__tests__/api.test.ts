@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { apiClient } from '@/lib/api';
-import { SkillsApi } from '../api';
+import { SkillsApi, isSkillConflictError } from '../api';
 import type { SkillWritePayload } from '../types';
 
 vi.mock('@/lib/api', () => ({
@@ -86,11 +86,55 @@ describe('SkillsApi', () => {
   });
 
   describe('updateSkill', () => {
-    it('PUTs to the skill-specific URL', async () => {
+    it('PUTs to the skill-specific URL without If-Match when no token is given', async () => {
       const payload: SkillWritePayload = { name: 'ignored', description: 'd2', body: 'b2' };
       mockedPut.mockResolvedValueOnce({ data: { name: 'pdf-extractor' } });
       await SkillsApi.updateSkill('pdf-extractor', payload);
-      expect(mockedPut).toHaveBeenCalledWith(`${BASE_URL}/pdf-extractor`, payload);
+      expect(mockedPut).toHaveBeenCalledWith(`${BASE_URL}/pdf-extractor`, payload, { headers: {} });
+    });
+
+    it('sends If-Match when the caller supplies the last-seen updatedAt', async () => {
+      const payload: SkillWritePayload = { name: 'ignored', description: 'd2', body: 'b2' };
+      mockedPut.mockResolvedValueOnce({ data: { name: 'pdf-extractor' } });
+      await SkillsApi.updateSkill('pdf-extractor', payload, 1710000000000);
+      expect(mockedPut).toHaveBeenCalledWith(`${BASE_URL}/pdf-extractor`, payload, {
+        headers: { 'If-Match': '1710000000000' },
+      });
+    });
+
+    it('rejects a null or empty updatedAt instead of omitting If-Match', async () => {
+      const payload: SkillWritePayload = { name: 'ignored', description: 'd2', body: 'b2' };
+      await expect(SkillsApi.updateSkill('pdf-extractor', payload, null)).rejects.toThrow(/If-Match/);
+      await expect(SkillsApi.updateSkill('pdf-extractor', payload, '')).rejects.toThrow(/If-Match/);
+      expect(mockedPut).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('isSkillConflictError', () => {
+    it('detects a 409 whose body carries currentUpdatedAt', () => {
+      expect(
+        isSkillConflictError({
+          response: { status: 409, data: { detail: { currentUpdatedAt: 99, currentVersion: '1.0.3' } } },
+        }),
+      ).toBe(true);
+    });
+
+    it('ignores 409s from in-use deletes or name clashes', () => {
+      expect(
+        isSkillConflictError({
+          response: { status: 409, data: { detail: { usedByAgents: [{ id: 'a1' }] } } },
+        }),
+      ).toBe(false);
+      expect(
+        isSkillConflictError({
+          response: { status: 409, data: { detail: "Skill 'pdf-extractor' already exists" } },
+        }),
+      ).toBe(false);
+    });
+
+    it('ignores non-409 failures', () => {
+      expect(isSkillConflictError({ response: { status: 404, data: { detail: { currentUpdatedAt: 1 } } } })).toBe(false);
+      expect(isSkillConflictError(null)).toBe(false);
     });
   });
 
@@ -126,6 +170,22 @@ describe('SkillsApi', () => {
         reason: 'superseded',
         replaced_by: 'pdf-extractor-v2',
       });
+    });
+  });
+
+  describe('disableSkill / enableSkill', () => {
+    it('disableSkill posts to the disable endpoint and returns the updated metadata', async () => {
+      mockedPost.mockResolvedValueOnce({ data: { name: 'pdf-extractor', status: 'disabled' } });
+      const result = await SkillsApi.disableSkill('pdf-extractor');
+      expect(mockedPost).toHaveBeenCalledWith(`${BASE_URL}/pdf-extractor/disable`);
+      expect(result).toEqual({ name: 'pdf-extractor', status: 'disabled' });
+    });
+
+    it('enableSkill posts to the enable endpoint and returns the updated metadata', async () => {
+      mockedPost.mockResolvedValueOnce({ data: { name: 'pdf-extractor', status: 'active' } });
+      const result = await SkillsApi.enableSkill('pdf-extractor');
+      expect(mockedPost).toHaveBeenCalledWith(`${BASE_URL}/pdf-extractor/enable`);
+      expect(result).toEqual({ name: 'pdf-extractor', status: 'active' });
     });
   });
 

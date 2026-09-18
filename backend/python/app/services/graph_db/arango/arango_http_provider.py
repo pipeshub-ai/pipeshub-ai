@@ -2232,6 +2232,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Update node failed: {str(e)}")
             raise
 
+    async def update_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        node: dict,
+        match_field: str,
+        match_value: Any,
+        transaction: str | None = None,
+    ) -> bool:
+        """REPLACE the document only while `match_field` still equals
+        `match_value`. FILTER + REPLACE is one AQL statement so a concurrent
+        overwrite cannot sneak in between the check and the write."""
+        try:
+            arango_node = self._translate_node_to_arango(node)
+            arango_node["_key"] = key
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key == @key AND doc[@field] == @expected
+                REPLACE doc WITH @node IN @@collection
+                RETURN NEW._key
+            """
+            updated = await self.http_client.execute_aql(
+                query,
+                {
+                    "@collection": collection,
+                    "key": key,
+                    "field": match_field,
+                    "expected": match_value,
+                    "node": arango_node,
+                },
+                transaction,
+            )
+            return bool(updated)
+        except Exception as e:
+            self.logger.error("❌ Conditional node update failed: %s", str(e))
+            raise
+
     async def batch_update_nodes(
         self,
         nodes: list[dict],
@@ -20380,7 +20417,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         category: skill.category,
                         subcategory: skill.subcategory,
                         version: skill.version,
-                        status: skill.status
+                        status: skill.status,
+                        deprecatedReason: skill.deprecatedReason,
+                        replacedBy: skill.replacedBy
                     }}
             )
 

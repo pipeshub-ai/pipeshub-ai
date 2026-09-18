@@ -423,7 +423,11 @@
     "language": "語言",
     "english": "英文",
     "german": "德文",
-    "rotateLandscape": "旋轉您的裝置以獲得最佳體驗"
+    "rotateLandscape": "旋轉您的裝置以獲得最佳體驗",
+    "beta": {
+      "label": "測試版",
+      "tooltip": "此功能為測試版，未來可能會有所變動。"
+    }
   },
   "units": {
     "bytes": "位元組",
@@ -2401,7 +2405,10 @@
         "rollbackError": "回復失敗",
         "candidateApproved": "已核准「{{name}}」",
         "candidateRejected": "已拒絕「{{name}}」",
-        "candidateActionError": "更新候選項目失敗"
+        "candidateActionError": "更新候選項目失敗",
+        "conflict": "此技能已在其他位置被變更",
+        "conflictDescription": "請重新載入最新版本，然後再次套用您的編輯。",
+        "conflictReload": "重新載入"
       },
       "builtinReadOnly": "這是內建技能，無法編輯。",
       "editorPanel": {
@@ -3045,6 +3052,8 @@
     "noCollections": "沒有可用的集合",
     "noSkills": "尚無技能 — 請在「您的技能」下建立或匯入",
     "skillNodeTemplateDescription": "您的代理可以呼叫的自訂技能",
+    "skillDeprecated": "此技能已棄用",
+    "skillDeprecatedReplacedBy": "此技能已棄用。請改用 {{name}}。",
     "collapse": "收合",
     "expand": "展開",
     "serviceAccountCreated": "服務代理已建立。請使用元件面板中的鑰匙圖示設定每個工具組。",
@@ -3111,6 +3120,7 @@
     "toolsetsSection": "工具組",
     "mcpServersSection": "MCP 伺服器",
     "skillsSection": "技能",
+    "noSkillsAvailable": "沒有可用的技能",
     "inputSection": "輸入",
     "responseSection": "回應",
     "connectModel": "連接模型",

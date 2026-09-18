@@ -1028,6 +1028,45 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Update node failed: {str(e)}")
             raise
 
+    async def update_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        node: dict,
+        match_field: str,
+        match_value: Any,
+        transaction: str | None = None,
+    ) -> bool:
+        """SET the node only while `match_field` still equals `match_value`.
+        MATCH + WHERE + SET is one Cypher statement so a concurrent overwrite
+        cannot sneak in between the check and the write."""
+        try:
+            label = collection_to_label(collection)
+            neo4j_node = self._arango_to_neo4j_node(node, collection)
+            if "id" not in neo4j_node:
+                neo4j_node["id"] = key
+            self.validator.validate_node_update(collection, neo4j_node)
+            query = f"""
+            MATCH (n:{label} {{id: $key}})
+            WHERE n[$field] = $expected
+            SET n += $node
+            RETURN n.id AS id
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "key": key,
+                    "field": match_field,
+                    "expected": match_value,
+                    "node": neo4j_node,
+                },
+                txn_id=transaction,
+            )
+            return bool(results)
+        except Exception as e:
+            self.logger.error("❌ Conditional node update failed: %s", str(e))
+            raise
+
     async def batch_update_nodes(
         self,
         nodes: list[dict],
@@ -17725,7 +17764,8 @@ class Neo4jProvider(IGraphDBProvider):
         query = f"""
         MATCH (agent:{agent_label} {{id: $agent_id}})-[:{agent_has_skill_rel}]->(skill:{skill_label})
         RETURN skill.name AS name, skill.description AS description, skill.category AS category,
-               skill.subcategory AS subcategory, skill.version AS version, skill.status AS status
+               skill.subcategory AS subcategory, skill.version AS version, skill.status AS status,
+               skill.deprecatedReason AS deprecatedReason, skill.replacedBy AS replacedBy
         """
         result = await self.client.execute_query(
             query, parameters={"agent_id": agent_id}, txn_id=transaction
@@ -17738,6 +17778,8 @@ class Neo4jProvider(IGraphDBProvider):
                 "subcategory": row["subcategory"],
                 "version": row["version"],
                 "status": row["status"],
+                "deprecatedReason": row.get("deprecatedReason"),
+                "replacedBy": row.get("replacedBy"),
             }
             for row in result or []
         ]

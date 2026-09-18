@@ -517,8 +517,9 @@ export function buildExternalStoreConfig(
       const currentState = useChatStore.getState();
       const currentSlot = currentState.slots[targetSlotId];
       if (!currentSlot) return;
-      // Safety net: ChatInputWrapper blocks user sends while streaming; only programmatic api call `threadRuntime.append` reaches here.
-      if (currentSlot.isStreaming) return;
+      // Stop then send: `stopping` means the user already cancelled this run
+      // and a follow-up is allowed to start before the grace timer settles it.
+      if (currentSlot.isStreaming && !currentSlot.stopping) return;
 
       const msgAttachments = msgAttachmentsEarly;
 

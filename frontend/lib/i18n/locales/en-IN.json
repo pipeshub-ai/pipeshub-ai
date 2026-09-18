@@ -411,7 +411,11 @@
     "english": "English",
     "german": "German",
     "rotateLandscape": "Rotate your device for the best experience",
-    "errorOccurred": "An error occurred. Please try again."
+    "errorOccurred": "An error occurred. Please try again.",
+    "beta": {
+      "label": "Beta",
+      "tooltip": "This feature is in beta and may change."
+    }
   },
   "units": {
     "bytes": "Bytes",
@@ -2825,6 +2829,11 @@
     "modelSection": "Model",
     "toolsetsSection": "Toolsets",
     "mcpServersSection": "MCP Servers",
+    "skillsSection": "Skills",
+    "noSkillsAvailable": "No skills available",
+    "skillNodeTemplateDescription": "Custom skill your agent can invoke",
+    "skillDeprecated": "This skill has been deprecated",
+    "skillDeprecatedReplacedBy": "This skill has been deprecated. Use {{name}} instead.",
     "inputSection": "Input",
     "responseSection": "Response",
     "connectModel": "Connect a model",

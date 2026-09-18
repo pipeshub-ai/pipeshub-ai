@@ -1321,7 +1321,7 @@ agent_skills_schema = {
             "concepts": {"type": "array", "items": {"type": "string"}, "default": []},
             "related": {"type": "array", "items": {"type": "string"}, "default": []},
             "requires": {"type": "array", "items": {"type": "string"}, "default": []},
-            "status": {"type": "string", "enum": ["active", "deprecated"]},
+            "status": {"type": "string", "enum": ["active", "deprecated", "disabled"]},
             "source": {"type": "string"},
             "version": {"type": "string"},
             "deprecatedReason": {"type": ["string", "null"]},

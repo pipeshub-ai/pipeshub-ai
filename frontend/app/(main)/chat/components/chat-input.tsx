@@ -696,7 +696,9 @@ export function ChatInput({
 
     if (isListening) stopSpeech();
 
-    if (isStreaming || isUniversalAgentLoading) return;
+    const sid = useChatStore.getState().activeSlotId;
+    const liveSlot = sid ? useChatStore.getState().slots[sid] : undefined;
+    if ((liveSlot?.isStreaming && !liveSlot.stopping) || isUniversalAgentLoading) return;
     // Block submit while any chip is still uploading — every chip must be
     // either `uploaded` (forwarded as a ref) or removed by the user before
     // we hand off to the runtime.
@@ -1927,7 +1929,7 @@ export function ChatInput({
           onFocus={() => setIsInputFocused(true)}
           onBlur={() => setIsInputFocused(false)}
           placeholder={isListening ? t('chat.listening') : resolvedPlaceholder}
-          disabled={isRegenerateMode}
+          readOnly={isRegenerateMode}
           rows={1}
           style={{
             ...textareaLayoutStyle,

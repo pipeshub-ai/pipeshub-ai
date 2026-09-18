@@ -27,6 +27,8 @@ export interface FlowNodeData extends Record<string, unknown> {
   outputs?: string[];
   isConfigured?: boolean;
   category?: string;
+  /** Non-blocking notice (e.g. assigned skill has been deprecated). */
+  warning?: string;
 }
 
 export type FlowNode = Node<FlowNodeData>;

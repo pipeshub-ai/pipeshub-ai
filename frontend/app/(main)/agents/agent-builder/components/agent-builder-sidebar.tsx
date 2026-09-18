@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { CONTENT_PADDING, HEADER_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import type { Connector } from '@/app/(main)/workspace/connectors/types';
+import type { SkillForBuilder } from '../../types';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { NodeTemplate } from '../types';
 import { filterTemplatesBySearch, groupConnectorInstances, prepareDragData } from '../sidebar-utils';
@@ -18,9 +19,12 @@ import {
   useFeatureFlagsStore,
   selectMcpEnabled,
   selectActionsEnabled,
+  selectSkillsEnabled,
 } from '@/lib/store/feature-flags-store';
+import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
 import { AgentBuilderMcpSection } from './sidebar-mcp-section';
+import { AgentBuilderSkillsSection } from './sidebar-skills-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
 import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
@@ -109,6 +113,7 @@ export function AgentBuilderSidebar(props: {
   width: number;
   loading: boolean;
   nodeTemplates: NodeTemplate[];
+  availableSkills: SkillForBuilder[];
   configuredConnectors: Connector[];
   toolsets: BuilderSidebarToolset[];
   activeToolsetTypeKeys: Set<string>;
@@ -139,6 +144,7 @@ export function AgentBuilderSidebar(props: {
     width,
     loading,
     nodeTemplates,
+    availableSkills,
     configuredConnectors,
     toolsets,
     activeToolsetTypeKeys,
@@ -160,6 +166,7 @@ export function AgentBuilderSidebar(props: {
   const { t } = useTranslation();
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
+  const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
   const onPaletteDragBlocked = useCallback(() => {
     if (paletteDragBlockedMessage) onNotify(paletteDragBlockedMessage);
   }, [paletteDragBlockedMessage, onNotify]);
@@ -171,6 +178,7 @@ export function AgentBuilderSidebar(props: {
     'knowledge-collections': true,
     tools: true,
     mcpServers: true,
+    skills: true,
   });
 
   const filtered = useMemo(() => filterTemplatesBySearch(nodeTemplates, search), [nodeTemplates, search]);
@@ -185,6 +193,7 @@ export function AgentBuilderSidebar(props: {
   const kbIndividuals = filtered.filter(
     (t) => t.category === 'knowledge' && t.type.startsWith('kb-') && t.type !== 'kb-group'
   );
+  const skillTemplates = filtered.filter((t) => t.category === 'skills');
 
   const SHOW_MORE_LIMIT = 5;
   const [showAllKbCollections, setShowAllKbCollections] = useState(false);
@@ -578,6 +587,27 @@ export function AgentBuilderSidebar(props: {
               ) : null}
             </>
           ) : null}
+
+          {skillsEnabled ? (
+            <>
+              <SectionHeader
+                title={t('agentBuilder.skillsSection')}
+                icon="psychology"
+                open={expanded.skills}
+                onToggle={() => toggle('skills')}
+                beta
+              />
+              {expanded.skills ? (
+                <AgentBuilderSkillsSection
+                  availableSkills={availableSkills}
+                  skillTemplates={skillTemplates}
+                  loading={loading}
+                  structureLocked={paletteStructureLocked}
+                  onPaletteStructureDragBlocked={onPaletteDragBlocked}
+                />
+              ) : null}
+            </>
+          ) : null}
         </Box>
       </ScrollArea>
     </Box>
@@ -589,11 +619,13 @@ function SectionHeader({
   icon,
   open,
   onToggle,
+  beta = false,
 }: {
   title: string;
   icon?: string;
   open: boolean;
   onToggle: () => void;
+  beta?: boolean;
 }) {
   const { t } = useTranslation();
   return (
@@ -647,6 +679,7 @@ function SectionHeader({
         >
           {title}
         </span>
+        {beta ? <BetaBadge /> : null}
       </Flex>
       <IconButton
         size="2"

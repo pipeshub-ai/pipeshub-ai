@@ -114,4 +114,11 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
       'Organize conversations, files, and instructions into dedicated project workspaces. Disable to hide Projects from the chat sidebar and workspace.',
     defaultEnabled: false,
   },
+  {
+    key: 'ENABLE_SKILLS',
+    label: 'Enable Skills (Beta)',
+    description:
+      'Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them. Disable to hide Skills everywhere and stop agents from loading skill tools.',
+    defaultEnabled: true,
+  },
 ];

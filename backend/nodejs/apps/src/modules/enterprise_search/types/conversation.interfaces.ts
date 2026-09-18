@@ -130,6 +130,8 @@ export interface IMessagePart {
   content?: string;
   toolCallId?: string;
   toolName?: string;
+  /** Human-readable past-tense label for this tool call, computed server-side (see `Tool.display_name`); falls back to a generic humanized `toolName` on the frontend when absent (e.g. chats persisted before this field existed). */
+  displayName?: string;
   args?: string;
   /** Human-readable summary of `args`, computed server-side (see PipesHubToolSummarizer). */
   argsSummary?: string;

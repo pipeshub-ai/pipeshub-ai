@@ -204,6 +204,11 @@ tags:
     description: Reusable templates for creating AI agents with predefined configurations
   - name: Agent Conversations
     description: Conversations with custom AI agents including streaming and feedback
+  - name: Skills
+    description: |
+      Beta: Skills (SKILL.md packages) that agents load on demand — CRUD, versioning,
+      resources, import (npm/URL/upload), and learning-loop candidate review. Gated by
+      the ENABLE_SKILLS platform feature flag; disabled orgs get 403 on every route.
   - name: Conversational Speech
     description: |
       Server-backed Speech-to-Text (STT) and Text-to-Speech (TTS) for the chat UI.
@@ -12588,8 +12593,13 @@ components:
             Key-value map of feature flags to enable/disable platform features.
             Available flags:
             - ENABLE_BETA_CONNECTORS: Allow usage of beta connector integrations that may be unstable
+            - ENABLE_MCP: Allow agents to use MCP servers and show MCP server management in the UI
+            - ENABLE_ACTIONS: Allow agents to use toolset actions and show Actions management in the UI
+            - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
+            - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
           example:
             ENABLE_BETA_CONNECTORS: false
+            ENABLE_SKILLS: true
         updatedAt:
           type: string
           format: date-time
@@ -13268,7 +13278,9 @@ components:
       properties:
         key:
           type: string
-          description: Unique feature flag key
+          description: |
+            Unique feature flag key. Current keys: ENABLE_BETA_CONNECTORS,
+            ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_SKILLS.
           example: "ENABLE_BETA_CONNECTORS"
         label:
           type: string
@@ -13280,6 +13292,309 @@ components:
         defaultEnabled:
           type: boolean
           description: Default enabled state
+
+    # -------------------- Skills Schemas --------------------
+    SkillMetadata:
+      type: object
+      description: |
+        Skill metadata (SKILL.md YAML frontmatter, agentskills.io-compatible, plus
+        PipesHub lifecycle fields nested under `metadata["agent-loop"]` on the wire
+        format — flattened here for the REST response). Returned by list/search/
+        create/update/deprecate/rollback; `GET /skills/{name}` returns this shape
+        plus `body`/`resources` (see Skill).
+      properties:
+        name:
+          type: string
+          description: Unique skill identifier (kebab-case, matches `^[a-z0-9]+(-[a-z0-9]+)*$`, max 64 chars).
+          example: "deploy-runbook"
+        description:
+          type: string
+          description: One-line summary shown in skill_search/skills_list (max 1024 chars).
+        version:
+          type: string
+          example: "1.0.0"
+        category:
+          type: string
+          nullable: true
+        subcategory:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, deprecated, candidate, disabled]
+        source:
+          type: string
+          enum: [builtin, manual, imported, learned]
+          description: "`builtin` skills are seeded by `BuiltinSkillSeeder` and read-only for end users."
+        license:
+          type: string
+          nullable: true
+        compatibility:
+          type: string
+          nullable: true
+        allowedTools:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: Optional allowlist from the `allowed-tools` frontmatter key (metadata only today — not yet enforced at the tool registry).
+        related:
+          type: array
+          items:
+            type: string
+        requires:
+          type: array
+          items:
+            type: string
+          description: Other skill names this skill's body depends on — staged transitively alongside it into the coding sandbox.
+        concepts:
+          type: array
+          items:
+            type: string
+        deprecatedReason:
+          type: string
+          nullable: true
+        replacedBy:
+          type: string
+          nullable: true
+        createdAt:
+          oneOf:
+            - type: string
+              nullable: true
+            - type: integer
+        updatedAt:
+          oneOf:
+            - type: string
+              nullable: true
+            - type: integer
+        packName:
+          type: string
+          nullable: true
+          description: Builtin pack name this skill was seeded from, if `source == builtin`.
+        packVersion:
+          type: string
+          nullable: true
+
+    Skill:
+      description: Full skill — metadata plus editable body and bundled resource listing.
+      allOf:
+        - $ref: '#/components/schemas/SkillMetadata'
+        - type: object
+          properties:
+            body:
+              type: string
+              description: Markdown body (everything after the YAML frontmatter) — Tiptap-edited in the UI.
+            resources:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: string
+              description: Bundled resource paths grouped by first path segment (e.g. `scripts`, `references`, `assets`, or `files` for root-level files).
+
+    SkillWriteRequest:
+      type: object
+      description: |
+        Structured create/update payload. The backend renders this into a full,
+        spec-compliant SKILL.md string server-side — clients never hand-assemble
+        YAML frontmatter.
+      required: [description, body]
+      properties:
+        name:
+          type: string
+          description: Required on create; ignored on update (the `{name}` path param is authoritative).
+        description:
+          type: string
+          minLength: 1
+        body:
+          type: string
+          minLength: 1
+        category:
+          type: string
+          nullable: true
+        subcategory:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        license:
+          type: string
+          nullable: true
+        compatibility:
+          type: string
+          nullable: true
+        allowed_tools:
+          type: array
+          nullable: true
+          items:
+            type: string
+        related:
+          type: array
+          items:
+            type: string
+        requires:
+          type: array
+          items:
+            type: string
+        concepts:
+          type: array
+          items:
+            type: string
+
+    SkillDeprecateRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+        replaced_by:
+          type: string
+          nullable: true
+
+    SkillRollbackRequest:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: string
+          minLength: 1
+
+    SkillPatchBodyRequest:
+      type: object
+      description: Exact-match string replacement against the skill's current body — fails 400 if `old_string` isn't found exactly once.
+      required: [old_string, new_string]
+      properties:
+        old_string:
+          type: string
+        new_string:
+          type: string
+
+    SkillResourceWriteRequest:
+      type: object
+      required: [path, content]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          description: Path relative to the skill's own root (e.g. `scripts/run.py`). Traversal (`..`), absolute paths, and `SKILL.md` are rejected with 400.
+        content:
+          type: string
+          description: Text content only — binary resources are not yet supported (deferred to a blob-storage follow-up).
+
+    SkillNpmImportRequest:
+      type: object
+      required: [command_or_name]
+      properties:
+        command_or_name:
+          type: string
+          minLength: 1
+          example: "npm install @anthropic/skill-pdf"
+
+    SkillUrlImportRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          minLength: 1
+          example: "https://example.com/my-skill.zip"
+
+    SkillFinalizeImportRequest:
+      type: object
+      description: Persists exactly what a prior `preview_*` call returned — the client round-trips `content`/`resources` verbatim.
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          description: Full SKILL.md text (with YAML frontmatter) as returned by the preview step.
+        resources:
+          type: object
+          additionalProperties:
+            type: string
+        category:
+          type: string
+          nullable: true
+        subcategory:
+          type: string
+          nullable: true
+
+    SkillImportPreview:
+      type: object
+      description: Stateless preview of an npm/URL/upload import source — nothing is persisted until `POST /skills/import/finalize`.
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        content:
+          type: string
+          description: Full SKILL.md text extracted from the archive/package.
+        resources:
+          type: object
+          additionalProperties:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        skippedBinaryResources:
+          type: array
+          items:
+            type: string
+          description: Resource paths that were skipped because they are binary (text-only resources are supported today).
+        sourceLabel:
+          type: string
+          example: "npm:@anthropic/skill-pdf"
+
+    SkillVersionSummary:
+      type: object
+      properties:
+        version:
+          type: string
+        updatedBy:
+          type: string
+          nullable: true
+        createdAt:
+          oneOf:
+            - type: string
+              nullable: true
+            - type: integer
+        summary:
+          type: string
+          nullable: true
+
+    SkillUsageReference:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+
+    SkillUsage:
+      type: object
+      description: Referential-integrity snapshot used to gate `DELETE /skills/{name}`.
+      properties:
+        usedByAgents:
+          type: array
+          items:
+            $ref: '#/components/schemas/SkillUsageReference'
+          description: Agents this skill is currently assigned to via Agent Builder.
+        requiredBySkills:
+          type: array
+          items:
+            type: string
+          description: Other skill names whose frontmatter declares `requires` on this one — these can NEVER be force-deleted, only deprecated.
 
     # Custom System Prompt Schema
     CustomSystemPrompt:
@@ -35017,6 +35332,898 @@ paths:
         '409':
           description: OAuth config is in use by one or more toolset instances
 
+  # -------------------- Skills --------------------
+  /skills:
+    get:
+      tags:
+        - Skills
+      summary: List skills
+      description: |
+        List skills visible to the caller (their own custom skills plus org-wide
+        builtins). Also seeds the org's builtin skill catalog on first call if it
+        hasn't been seeded yet, so a fresh org sees builtins in the UI before its
+        first chat.
+      operationId: listSkills
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: subcategory
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, deprecated, candidate, disabled]
+        - name: source
+          in: query
+          schema:
+            type: string
+            enum: [builtin, manual, imported, learned]
+        - name: tag
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+          description: Free-text search across name/description/tags.
+      responses:
+        '200':
+          description: Skills retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skills:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization (ENABLE_SKILLS is off)
+
+    post:
+      tags:
+        - Skills
+      summary: Create a custom skill
+      description: |
+        Creates a new custom skill from structured form fields. Rejects (409) a
+        name that collides with a builtin pack name (e.g. `pdf`), so a custom
+        skill can never shadow a real builtin before it's seeded.
+      operationId: createSkill
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/SkillWriteRequest'
+                - type: object
+                  required: [name]
+      responses:
+        '201':
+          description: Skill created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '400':
+          description: Invalid payload, or the rendered SKILL.md failed validation
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '409':
+          description: A skill with this name already exists, or the name is reserved for a builtin pack
+
+  /skills/categories:
+    get:
+      tags:
+        - Skills
+      summary: Get skill categories and tags
+      operationId: getSkillCategories
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Categories and tags retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories:
+                    type: array
+                    items:
+                      type: string
+                  tags:
+                    type: array
+                    items:
+                      type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/search:
+    get:
+      tags:
+        - Skills
+      summary: Search skills
+      description: Semantic + keyword search over the skill catalog, ranked by relevance.
+      operationId: searchSkills
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+            default: ""
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        skill:
+                          $ref: '#/components/schemas/SkillMetadata'
+                        relevance:
+                          type: number
+                        matchReason:
+                          type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/candidates/pending:
+    get:
+      tags:
+        - Skills
+      summary: List pending learning-loop skill candidates
+      description: Skill candidates surfaced by the learning loop, awaiting admin/owner review before promotion into the catalog.
+      operationId: getPendingSkillCandidates
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Pending candidates retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  candidates:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/candidates/{candidateId}/approve:
+    post:
+      tags:
+        - Skills
+      summary: Approve a skill candidate
+      description: Promotes a learning-loop candidate into a real, active skill.
+      operationId: approveSkillCandidate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: candidateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Candidate approved and promoted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Candidate not found
+
+  /skills/candidates/{candidateId}/reject:
+    post:
+      tags:
+        - Skills
+      summary: Reject a skill candidate
+      operationId: rejectSkillCandidate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: candidateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Candidate rejected
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/import/npm/preview:
+    post:
+      tags:
+        - Skills
+      summary: Preview an npm-sourced skill import
+      description: |
+        Stateless preview — resolves and downloads the npm package but persists
+        nothing. Follow with `POST /skills/import/finalize` using the returned
+        `content`/`resources` to actually create the skill.
+      operationId: previewNpmSkillImport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillNpmImportRequest'
+      responses:
+        '200':
+          description: Preview generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillImportPreview'
+        '400':
+          description: Invalid npm command/name, or the package could not be parsed as a skill
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/import/url/preview:
+    post:
+      tags:
+        - Skills
+      summary: Preview a URL-sourced skill import
+      description: |
+        Downloads via an SSRF-safe fetcher with size limits and zip-slip
+        protection. Stateless — nothing is persisted until finalize.
+      operationId: previewUrlSkillImport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillUrlImportRequest'
+      responses:
+        '200':
+          description: Preview generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillImportPreview'
+        '400':
+          description: Invalid URL, or the archive could not be parsed as a skill
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/import/upload/preview:
+    post:
+      tags:
+        - Skills
+      summary: Preview an uploaded skill archive
+      description: |
+        Accepts a zip archive up to 25MB (mirrors the npm/URL archive size
+        ceiling). Stateless — nothing is persisted until finalize.
+      operationId: previewUploadSkillImport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Preview generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillImportPreview'
+        '400':
+          description: No file uploaded, or the archive could not be parsed as a skill
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/import/finalize:
+    post:
+      tags:
+        - Skills
+      summary: Finalize a previewed skill import
+      description: |
+        Persists a preview from any of the three sources (npm/URL/upload) —
+        the preview step already normalized all three into the same
+        `content`/`resources` shape. Rejects (409) a name reserved for a
+        builtin pack.
+      operationId: finalizeSkillImport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillFinalizeImportRequest'
+      responses:
+        '201':
+          description: Skill created from the imported content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '400':
+          description: Imported SKILL.md is missing a name, or failed validation
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '409':
+          description: A skill with this name already exists, or the name is reserved for a builtin pack
+
+  /skills/{name}:
+    get:
+      tags:
+        - Skills
+      summary: Get a skill
+      description: Returns the full skill — metadata, editable body, and bundled resource listing.
+      operationId: getSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Skill retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Skill'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+
+    put:
+      tags:
+        - Skills
+      summary: Update a skill
+      description: Full update of a skill's content and metadata from structured form fields. Builtin skills can only be edited by the seeding identity — a non-owner attempt surfaces as 404/409.
+      operationId: updateSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillWriteRequest'
+      responses:
+        '200':
+          description: Skill updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '400':
+          description: Invalid payload, or the rendered SKILL.md failed validation
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+        '409':
+          description: Update conflicts with the skill's current state
+
+    delete:
+      tags:
+        - Skills
+      summary: Delete a skill (safe delete)
+      description: |
+        Refuses to delete a skill that's in use (409, with structured
+        `usedByAgents`/`requiredBySkills` — see `SkillUsage`) unless
+        `detach=true`. A skill another skill `requires` can NEVER be
+        force-deleted — deprecate it instead so dependents still resolve.
+        `detach=true` unassigns the skill from any agents (removing the
+        `agentHasSkill` edges) before deleting; call `GET /skills/{name}/usage`
+        first to show the user which agents will be affected.
+      operationId: deleteSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: detach
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Skill deleted
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+        '409':
+          description: Skill is in use — response body is a SkillUsage-shaped object plus a message
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SkillUsage'
+                  - type: object
+                    properties:
+                      message:
+                        type: string
+
+  /skills/{name}/export:
+    get:
+      tags:
+        - Skills
+      summary: Export a skill as SKILL.md
+      description: Returns the rendered SKILL.md as a downloadable text/markdown file.
+      operationId: exportSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SKILL.md content
+          content:
+            text/markdown:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+
+  /skills/{name}/body:
+    patch:
+      tags:
+        - Skills
+      summary: Patch a skill's body with an exact string replacement
+      description: Fails 400 if `old_string` doesn't exist, or exists more than once, in the current body.
+      operationId: patchSkillBody
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillPatchBodyRequest'
+      responses:
+        '200':
+          description: Body patched
+        '400':
+          description: "old_string not found exactly once, or the skill doesn't exist"
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/{name}/deprecate:
+    post:
+      tags:
+        - Skills
+      summary: Deprecate a skill
+      description: Marks a skill deprecated (optionally pointing to a replacement) without deleting it — dependents that `requires` it keep resolving.
+      operationId: deprecateSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillDeprecateRequest'
+      responses:
+        '200':
+          description: Skill deprecated
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+
+  /skills/{name}/disable:
+    post:
+      tags:
+        - Skills
+      summary: Disable a skill
+      description: |
+        Reversible mute: the skill stays in the library but is hidden from
+        every agent-facing catalog/search surface and can no longer be
+        loaded or newly assigned. Unlike deprecate, this is not a lifecycle
+        judgment (no reason, no replacement) and is undone with `POST
+        /skills/{name}/enable`.
+
+        Custom skills: only the creator can disable (a non-owner gets 404,
+        matching GET). Builtin skills: only an organization admin; members
+        get 403. Content edits of builtins remain 403.
+      operationId: disableSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Skill disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization, or a non-admin tried to disable a builtin skill
+        '404':
+          description: Skill not found
+        '409':
+          description: Skill is not currently active (e.g. already disabled, or deprecated)
+
+  /skills/{name}/enable:
+    post:
+      tags:
+        - Skills
+      summary: Re-enable a disabled skill
+      description: |
+        Reverses `POST /skills/{name}/disable` — restores catalog/search
+        visibility and loadability. Only valid from `disabled`; does not
+        undeprecate a deprecated skill. Same authorization as disable:
+        creator for custom skills, organization admin for builtins.
+      operationId: enableSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Skill enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization, or a non-admin tried to enable a builtin skill
+        '404':
+          description: Skill not found
+        '409':
+          description: Skill is not currently disabled (e.g. already active, or deprecated)
+
+  /skills/{name}/usage:
+    get:
+      tags:
+        - Skills
+      summary: Get a skill's usage
+      description: Referential-integrity snapshot (agents it's assigned to, skills that require it) — call before a safe delete to show the user what will be affected.
+      operationId: getSkillUsage
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Usage retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillUsage'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/{name}/versions:
+    get:
+      tags:
+        - Skills
+      summary: List a skill's version history
+      operationId: listSkillVersions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Versions retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SkillVersionSummary'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+
+  /skills/{name}/versions/{version}:
+    get:
+      tags:
+        - Skills
+      summary: Get a specific skill version
+      operationId: getSkillVersion
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Version retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Skill'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill or version not found
+
+  /skills/{name}/rollback:
+    post:
+      tags:
+        - Skills
+      summary: Roll back a skill to a prior version
+      operationId: rollbackSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillRollbackRequest'
+      responses:
+        '200':
+          description: Skill rolled back
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill or version not found
+
+  /skills/{name}/resource:
+    get:
+      tags:
+        - Skills
+      summary: Get a bundled resource
+      description: Returns the raw text content of a bundled resource file (e.g. `scripts/run.py`).
+      operationId: getSkillResource
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Path relative to the skill's own root.
+      responses:
+        '200':
+          description: Resource content
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill or resource not found
+
+    put:
+      tags:
+        - Skills
+      summary: Write a bundled resource
+      description: |
+        Creates or overwrites a text resource file under the skill's directory.
+        Rejects (400) path traversal, absolute paths, `SKILL.md`, and payloads
+        that exceed the per-file/per-skill byte budget. Binary resources are
+        not yet supported (deferred to a blob-storage follow-up).
+      operationId: writeSkillResource
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillResourceWriteRequest'
+      responses:
+        '200':
+          description: Resource written
+        '400':
+          description: Invalid path, or resource exceeds the byte budget
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+
+    delete:
+      tags:
+        - Skills
+      summary: Remove a bundled resource
+      operationId: removeSkillResource
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Resource removed
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill or resource not found
+
   # -------------------- OAuth Configuration (Admin) --------------------
   /oauth/registry:
     get:
@@ -37132,6 +38339,10 @@ paths:
 
         **Available Feature Flags:**
         - ENABLE_BETA_CONNECTORS: Enable beta connector integrations (default: false)
+        - ENABLE_MCP: Enable MCP servers (default: false)
+        - ENABLE_ACTIONS: Enable toolset actions (default: true)
+        - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
+        - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
       operationId: setPlatformSettings
       security:
         - bearerAuth: []
@@ -37218,7 +38429,10 @@ paths:
       tags:
         - Platform Settings
       summary: Get available feature flags
-      description: List all available feature flags with their descriptions and default values.
+      description: |
+        List all user-toggleable feature flags with their descriptions and default values,
+        for the Labs admin UI. Admin-only — hidden flags (internal/legacy) are seeded with
+        their defaults but never returned here.
       operationId: getAvailableFeatureFlags
       security:
         - bearerAuth: []
@@ -37235,6 +38449,44 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/FeatureFlag'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+
+  /configurationManager/platform/feature-flags/effective:
+    get:
+      tags:
+        - Platform Settings
+      summary: Get effective feature flag values
+      description: |
+        Resolved boolean value of every platform feature flag (stored overrides merged
+        over `PLATFORM_FEATURE_FLAGS` defaults). Unlike `.../available`, this is callable
+        by every authenticated user, not just admins: flag values carry no secrets, and
+        non-admin UI (chat, agent builder, personal Skills/MCP/Actions pages) needs them
+        to decide whether to render flag-gated features.
+      operationId: getEffectivePlatformFeatureFlags
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Effective feature flag values retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  featureFlags:
+                    type: object
+                    additionalProperties:
+                      type: boolean
+                    description: Key-value map of every known feature flag to its resolved boolean value.
+                    example:
+                      ENABLE_BETA_CONNECTORS: false
+                      ENABLE_MCP: false
+                      ENABLE_ACTIONS: true
+                      ENABLE_VECTOR_STORE_REBUILD: false
+                      ENABLE_SKILLS: true
         '401':
           description: Unauthorized
 

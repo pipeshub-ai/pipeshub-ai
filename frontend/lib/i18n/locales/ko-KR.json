@@ -423,7 +423,11 @@
     "language": "언어",
     "english": "영어",
     "german": "독일어",
-    "rotateLandscape": "최적의 환경을 위해 기기를 가로로 돌려 주세요"
+    "rotateLandscape": "최적의 환경을 위해 기기를 가로로 돌려 주세요",
+    "beta": {
+      "label": "베타",
+      "tooltip": "이 기능은 베타 버전이며 변경될 수 있습니다."
+    }
   },
   "units": {
     "bytes": "바이트",
@@ -2401,7 +2405,10 @@
         "rollbackError": "롤백하지 못했습니다",
         "candidateApproved": "\"{{name}}\"이(가) 승인되었습니다",
         "candidateRejected": "\"{{name}}\"이(가) 거부되었습니다",
-        "candidateActionError": "후보를 업데이트하지 못했습니다"
+        "candidateActionError": "후보를 업데이트하지 못했습니다",
+        "conflict": "이 스킬이 다른 곳에서 변경되었습니다",
+        "conflictDescription": "최신 버전을 다시 불러온 다음 수정 사항을 적용하세요.",
+        "conflictReload": "다시 불러오기"
       },
       "builtinReadOnly": "기본 제공 스킬이므로 편집할 수 없습니다.",
       "editorPanel": {
@@ -3045,6 +3052,8 @@
     "noCollections": "사용 가능한 컬렉션이 없습니다",
     "noSkills": "아직 스킬이 없습니다 — 내 스킬에서 생성하거나 가져오세요",
     "skillNodeTemplateDescription": "에이전트가 호출할 수 있는 사용자 지정 스킬",
+    "skillDeprecated": "이 스킬은 더 이상 사용되지 않습니다",
+    "skillDeprecatedReplacedBy": "이 스킬은 더 이상 사용되지 않습니다. 대신 {{name}}을(를) 사용하세요.",
     "collapse": "접기",
     "expand": "펼치기",
     "serviceAccountCreated": "서비스 에이전트가 생성되었습니다. 팔레트의 열쇠 아이콘으로 각 툴셋을 구성하세요.",
@@ -3111,6 +3120,7 @@
     "toolsetsSection": "툴셋",
     "mcpServersSection": "MCP 서버",
     "skillsSection": "스킬",
+    "noSkillsAvailable": "사용 가능한 스킬이 없습니다",
     "inputSection": "입력",
     "responseSection": "응답",
     "connectModel": "모델 연결",

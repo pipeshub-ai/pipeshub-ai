@@ -424,7 +424,11 @@
     "english": "English",
     "german": "German",
     "rotateLandscape": "Rotate your device for the best experience",
-    "errorOccurred": "An error occurred. Please try again."
+    "errorOccurred": "An error occurred. Please try again.",
+    "beta": {
+      "label": "Beta",
+      "tooltip": "This feature is in beta and may change."
+    }
   },
   "units": {
     "bytes": "Bytes",
@@ -2385,7 +2389,13 @@
       "status": {
         "active": "Active",
         "deprecated": "Deprecated",
-        "candidate": "Candidate"
+        "candidate": "Candidate",
+        "disabled": "Disabled"
+      },
+      "availability": {
+        "label": "Available to agents",
+        "description": "When off, this skill stays in your library but agents cannot discover or load it.",
+        "descriptionBuiltin": "When off, this built-in skill stays in the library but agents across the organization cannot discover or load it."
       },
       "cta": {
         "manage": "Manage",
@@ -2403,6 +2413,9 @@
         "createError": "Failed to create skill",
         "deprecated": "Skill \"{{name}}\" deprecated",
         "deprecateError": "Failed to deprecate skill",
+        "disabled": "Skill \"{{name}}\" disabled",
+        "enabled": "Skill \"{{name}}\" enabled",
+        "toggleError": "Failed to update skill availability",
         "deleted": "Skill \"{{name}}\" deleted",
         "deleteError": "Failed to delete skill",
         "imported": "Skill \"{{name}}\" imported",
@@ -2413,7 +2426,10 @@
         "rollbackError": "Failed to roll back",
         "candidateApproved": "Approved \"{{name}}\"",
         "candidateRejected": "Rejected \"{{name}}\"",
-        "candidateActionError": "Failed to update candidate"
+        "candidateActionError": "Failed to update candidate",
+        "conflict": "This skill was changed elsewhere",
+        "conflictDescription": "Reload the latest version, then re-apply your edits.",
+        "conflictReload": "Reload"
       },
       "builtinReadOnly": "This is a built-in skill and cannot be edited.",
       "editorPanel": {
@@ -3065,6 +3081,9 @@
     "noCollections": "No collections available",
     "noSkills": "No skills yet — create or import one under Your Skills",
     "skillNodeTemplateDescription": "Custom skill your agent can invoke",
+    "skillDeprecated": "This skill has been deprecated",
+    "skillDeprecatedReplacedBy": "This skill has been deprecated. Use {{name}} instead.",
+    "skillDisabled": "This skill is disabled and won't be available to the agent until re-enabled",
     "collapse": "Collapse",
     "expand": "Expand",
     "serviceAccountCreated": "Service agent created. Configure each toolset with the key icon in the palette.",
@@ -3131,6 +3150,7 @@
     "toolsetsSection": "Toolsets",
     "mcpServersSection": "MCP Servers",
     "skillsSection": "Skills",
+    "noSkillsAvailable": "No skills available",
     "inputSection": "Input",
     "responseSection": "Response",
     "connectModel": "Connect a model",

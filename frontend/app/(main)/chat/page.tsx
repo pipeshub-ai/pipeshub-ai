@@ -524,7 +524,11 @@ function ChatContent() {
     if (!conversationId) {
       const activeSlot = store.activeSlotId ? store.slots[store.activeSlotId] : null;
       if (agentId) {
-        if (store.activeSlotId) {
+        const keepInFlight =
+          !!activeSlot &&
+          (activeSlot.isStreaming || activeSlot.stopping) &&
+          activeSlot.threadAgentId === agentId;
+        if (store.activeSlotId && !keepInFlight) {
           debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'agent-new-chat-url' });
           store.clearActiveSlot();
         }

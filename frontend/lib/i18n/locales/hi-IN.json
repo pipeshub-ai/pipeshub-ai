@@ -411,7 +411,11 @@
     "english": "अंग्रेज़ी",
     "german": "जर्मन",
     "rotateLandscape": "सर्वोत्तम अनुभव के लिए अपना डिवाइस घुमाएँ",
-    "errorOccurred": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।"
+    "errorOccurred": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।",
+    "beta": {
+      "label": "बीटा",
+      "tooltip": "यह सुविधा बीटा में है और इसमें बदलाव हो सकता है।"
+    }
   },
   "units": {
     "bytes": "बाइट",
@@ -2825,6 +2829,11 @@
     "modelSection": "मॉडल",
     "toolsetsSection": "टूलसेट",
     "mcpServersSection": "MCP सर्वर",
+    "skillsSection": "Skills",
+    "noSkillsAvailable": "कोई Skills उपलब्ध नहीं",
+    "skillNodeTemplateDescription": "कस्टम स्किल जिसे आपका एजेंट आह्वान कर सकता है",
+    "skillDeprecated": "यह स्किल बंद कर दी गई है",
+    "skillDeprecatedReplacedBy": "यह स्किल बंद कर दी गई है। इसके बजाय {{name}} का उपयोग करें।",
     "inputSection": "इनपुट",
     "responseSection": "प्रतिक्रिया",
     "connectModel": "मॉडल कनेक्ट करें",

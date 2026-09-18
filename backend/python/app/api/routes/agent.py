@@ -19,7 +19,6 @@ from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
-from app.utils.stage_timer import StageTimer
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
@@ -30,7 +29,10 @@ from app.api.routes.chatbot import (
     load_system_prompts,
 )
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.ai_models import REASONING_EFFORT_VALUES, validate_reasoning_effort
+from app.config.constants.ai_models import (
+    REASONING_EFFORT_VALUES,
+    validate_reasoning_effort,
+)
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
@@ -54,6 +56,7 @@ from app.telemetry.identity import domain_from_email
 from app.utils.attachment_utils import (
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
+from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # `RouteDecision`/`_build_agent_capability_context`/`_build_prior_routing_messages`/
@@ -1367,6 +1370,13 @@ async def _create_skill_edges(
             continue
         if skill_doc.get("source") != "builtin" and skill_doc.get("createdBy") != user_key:
             logger.warning(f"Skipping skill '{name}' not owned by user {user_key} for agent {agent_key}")
+            continue
+        if (skill_doc.get("status") or "active") != "active":
+            # Mirrors the picker (`GET /skills?status=active`, see
+            # `SkillsApi.listAssignableSkills`) — closes the gap where a
+            # direct API call could still newly assign a disabled or
+            # deprecated skill the UI never offers.
+            logger.warning(f"Skipping non-active skill '{name}' for agent {agent_key}")
             continue
         edges.append({
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
@@ -3356,7 +3366,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # loads an external toolset when it appears in `context.agent_toolsets`)
                 # loads none of them, regardless of what's attached.
                 if actions_enabled is None:
-                    from app.services.featureflag.platform_settings import is_actions_enabled
+                    from app.services.featureflag.platform_settings import (
+                        is_actions_enabled,
+                    )
 
                     actions_enabled = await is_actions_enabled(config_service)
                 agent_toolsets = agent.get("toolsets", []) if actions_enabled else []
@@ -3391,7 +3403,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     mcp_enabled = await is_mcp_enabled(config_service)
                 agent_mcp_servers = agent.get("mcpServers", []) if mcp_enabled else []
                 if chat_query.tools is not None:
-                    from app.agents.mcp.service import match_enabled_tools_for_mcp_server
+                    from app.agents.mcp.service import (
+                        match_enabled_tools_for_mcp_server,
+                    )
 
                     enabled_tools_set = set(chat_query.tools)
                     filtered_mcp_servers = []
@@ -3566,7 +3580,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 named_mcp_servers = [m for m in agent_mcp_servers if m.get("instanceId")]
                 if named_mcp_servers:
-                    import asyncio as _asyncio  # noqa: F401 — may not have run yet if named_toolsets was empty above
+                    import asyncio as _asyncio
 
                     from app.agents.mcp import service as mcp_service
                     from app.edition_config import get_mcp_instance_resolved
@@ -3898,8 +3912,8 @@ async def get_assistant_agent(
         chat handler can skip re-reading the identical etcd paths.
     """
     from app.agents.mcp.service import get_authenticated_mcp_servers, is_mcp_enabled
-    from app.edition_config import resolve_mcp_instances_with_inheritance
     from app.api.routes.toolsets import get_authenticated_toolsets, is_actions_enabled
+    from app.edition_config import resolve_mcp_instances_with_inheritance
 
     toolset_auth_by_instance: dict[str, dict[str, Any]] = {}
 

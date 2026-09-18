@@ -14,9 +14,12 @@ Two profiles, one assembly path (`_build_manager`):
 - `build_management_skill_manager` — the REST profile: creator-scoped
   reads (management endpoints only ever act on the caller's own skills;
   builtins stay visible), no extractor (`learn_from_execution` is a
-  runtime-only concern the REST surface never calls), no builtin seeding
-  (seeding is a per-turn runtime side effect, not something a management
-  read/write call should trigger).
+  runtime-only concern the REST surface never calls), and no *automatic*
+  builtin seeding baked into construction — `GET /api/v1/skills`
+  (`list_skills`) is the one management route that opts back in by
+  calling `sync_builtin_skills` itself, so a brand-new org sees builtin
+  skills in the UI without needing its first chat turn first. Every other
+  management route (create/update/delete/...) stays pure.
 
 Both profiles share the exact same store/index/tracker/governor stack, so
 governance, versioning, and audit behavior can never drift between "what

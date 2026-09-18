@@ -957,6 +957,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             width={AGENT_BUILDER_SIDEBAR_WIDTH}
             loading={loading}
             nodeTemplates={nodeTemplates}
+            availableSkills={availableSkills}
             configuredConnectors={configuredConnectors}
             toolsets={toolsets}
             activeToolsetTypeKeys={activeToolsetTypeKeys}

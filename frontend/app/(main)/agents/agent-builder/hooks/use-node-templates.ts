@@ -164,6 +164,20 @@ export function useAgentBuilderNodeTemplates(
         outputs: ['output'],
         category: 'tools' as const,
       })),
+      ...availableSkills.map((skill) => ({
+        type: `skill-${skill.name}`,
+        label: normalizeDisplayName(skill.name),
+        description: skill.description || t('agentBuilder.skillNodeTemplateDescription'),
+        icon: 'psychology',
+        defaultConfig: {
+          skillName: skill.name,
+          skillDescription: skill.description,
+          skillCategory: skill.category,
+        },
+        inputs: [],
+        outputs: ['output'],
+        category: 'skills' as const,
+      })),
       {
         type: 'app-group',
         label: t('agentBuilder.groupApps'),

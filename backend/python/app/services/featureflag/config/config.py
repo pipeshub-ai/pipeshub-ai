@@ -17,3 +17,7 @@ class CONFIG:
     # and reindex operations are available. Defaults to disabled;
     # admins opt in from Labs.
     ENABLE_VECTOR_STORE_REBUILD = "ENABLE_VECTOR_STORE_REBUILD"
+    # Controls whether users can create/import/manage Skills (SKILL.md
+    # packages) and whether agents can load skill tools. Defaults to
+    # enabled (Beta) — like ENABLE_ACTIONS, admins may opt out from Labs.
+    ENABLE_SKILLS = "ENABLE_SKILLS"

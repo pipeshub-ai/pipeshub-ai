@@ -172,7 +172,10 @@ describe('OAuthDeviceView', () => {
         { suppressErrorToast: true },
       );
     });
-    fireEvent.click(screen.getByRole('button', { name: en.oauthConsent.allow }));
+    const allow = await screen.findByRole('button', {
+      name: en.oauthConsent.allow,
+    });
+    fireEvent.click(allow);
     await waitFor(() => {
       expect(post).toHaveBeenCalledWith(
         '/api/v1/oauth2/device/consent',

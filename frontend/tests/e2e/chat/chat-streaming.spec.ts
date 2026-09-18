@@ -440,6 +440,7 @@ test.describe('Chat — stop streaming (assistant)', () => {
     });
     await sendMessage(page, 'First question');
     await expect(page.locator('text=First answer.').first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('[data-testid="chat-stop-button"]')).not.toBeVisible({ timeout: 5_000 });
 
     // Second turn: hangs with zero tokens streamed ("Thinking") until the
     // grace timer's hard-abort ends the (mocked) connection.
@@ -605,17 +606,17 @@ test.describe('Chat — stop streaming (assistant)', () => {
     await expect(page.locator('text=Original answer before regenerate.').first())
       .toBeVisible({ timeout: 20_000 });
 
-    // Hold the regenerate stream past the grace timeout so the client-side
-    // fallback (not a server RUN_FINISHED) is what replaces the message.
-    await page.route(`**/api/v1/conversations/${convId}/message/*/regenerate`, async (route) => {
+    // Hold the regenerate stream with a partial body (no RUN_FINISHED) so
+    // Stop's grace-timeout fallback — not a server confirmation — replaces
+    // the original message. Fulfill immediately: `route.fulfill` cannot
+    // keep SSE open, and delaying it only races the 10s text assertion.
+    await page.route(`**/api/v1/conversations/${convId}/message/*/regenerate`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
-      const partial = buildAguiPartialSseBody(convId, 'Regenerated partial answer…');
-      await new Promise<void>((resolve) => setTimeout(resolve, 8_000));
-      await route.fulfill({
+      return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: partial,
-      }).catch(() => {});
+        body: buildAguiPartialSseBody(convId, 'Regenerated partial answer…'),
+      });
     });
     await page.route(`**/api/v1/conversations/${convId}/cancel`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -633,7 +634,13 @@ test.describe('Chat — stop streaming (assistant)', () => {
       .first();
     await expect(regenBtn).toBeVisible({ timeout: 8_000 });
     await regenBtn.click();
-    await page.locator('textarea').last().press('Enter');
+    // Regenerating locks the textarea (`readOnly`); confirm via the send button
+    // so the keypress does not depend on focusing a non-editable field.
+    const sendBtn = page
+      .locator('button')
+      .filter({ has: page.locator('span.material-icons-outlined').filter({ hasText: 'arrow_upward' }) });
+    await expect(sendBtn.first()).toBeVisible({ timeout: 5_000 });
+    await sendBtn.first().click();
 
     const stopBtn = page.locator('[data-testid="chat-stop-button"]');
     await expect(stopBtn).toBeVisible({ timeout: 10_000 });

@@ -15,7 +15,7 @@ interface FeatureFlagsActions {
   fetchFlags: () => Promise<void>;
 }
 
-type FeatureFlagsStore = FeatureFlagsState & FeatureFlagsActions;
+export type FeatureFlagsStore = FeatureFlagsState & FeatureFlagsActions;
 
 const EFFECTIVE_FLAGS_URL =
   '/api/v1/configurationManager/platform/feature-flags/effective';
@@ -93,3 +93,7 @@ export const selectVectorStoreRebuildEnabled = (s: FeatureFlagsStore) =>
 /** Projects defaults to disabled; admins opt in from Labs. */
 export const selectProjectsEnabled = (s: FeatureFlagsStore) =>
   s.flags?.ENABLE_PROJECTS === true;
+/** Skills default to enabled (Beta); admins opt out from Labs. */
+export const selectSkillsEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_SKILLS !== false;
+
+export type FeatureFlagGate = 'mcp' | 'actions' | 'skills';

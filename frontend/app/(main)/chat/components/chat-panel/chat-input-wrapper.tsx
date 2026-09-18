@@ -159,7 +159,11 @@ export function ChatInputWrapper() {
     }
 
     // ── Chat mode ──
-    if (store.activeSlotId && store.slots[store.activeSlotId]?.isStreaming) {
+    // Block a second send while a run is in flight, but allow Enter after
+    // Stop (`stopping`) so a follow-up can start with a new runId before
+    // the old run's grace timer fires.
+    const active = store.activeSlotId ? store.slots[store.activeSlotId] : undefined;
+    if (active?.isStreaming && !active.stopping) {
       return;
     }
 

@@ -410,7 +410,11 @@
     "english": "Inglés",
     "german": "Alemán",
     "rotateLandscape": "Gire su dispositivo para una mejor experiencia",
-    "errorOccurred": "Se produjo un error. Inténtelo de nuevo."
+    "errorOccurred": "Se produjo un error. Inténtelo de nuevo.",
+    "beta": {
+      "label": "Beta",
+      "tooltip": "Esta función está en beta y puede cambiar."
+    }
   },
   "units": {
     "bytes": "Bytes",
@@ -2824,6 +2828,11 @@
     "modelSection": "Modelo",
     "toolsetsSection": "Conjuntos de herramientas",
     "mcpServersSection": "Servidores MCP",
+    "skillsSection": "Skills",
+    "noSkillsAvailable": "No hay Skills disponibles",
+    "skillNodeTemplateDescription": "Habilidad personalizada que su agente puede invocar",
+    "skillDeprecated": "Esta habilidad se ha marcado como obsoleta",
+    "skillDeprecatedReplacedBy": "Esta habilidad se ha marcado como obsoleta. Use {{name}} en su lugar.",
     "inputSection": "Entrada",
     "responseSection": "Respuesta",
     "connectModel": "Conectar un modelo",

@@ -423,7 +423,11 @@
     "language": "语言",
     "english": "英语",
     "german": "德语",
-    "rotateLandscape": "旋转您的设备以获得最佳体验"
+    "rotateLandscape": "旋转您的设备以获得最佳体验",
+    "beta": {
+      "label": "测试版",
+      "tooltip": "此功能处于测试阶段，可能会有变动。"
+    }
   },
   "units": {
     "bytes": "字节",
@@ -2401,7 +2405,10 @@
         "rollbackError": "回滚失败",
         "candidateApproved": "已批准“{{name}}”",
         "candidateRejected": "已拒绝“{{name}}”",
-        "candidateActionError": "更新候选技能失败"
+        "candidateActionError": "更新候选技能失败",
+        "conflict": "此技能已在其他位置被更改",
+        "conflictDescription": "请重新加载最新版本，然后再次应用您的编辑。",
+        "conflictReload": "重新加载"
       },
       "builtinReadOnly": "这是内置技能，无法编辑。",
       "editorPanel": {
@@ -3045,6 +3052,8 @@
     "noCollections": "没有可用的合集",
     "noSkills": "暂无技能——请在“您的技能”下创建或导入一个",
     "skillNodeTemplateDescription": "您的智能体可调用的自定义技能",
+    "skillDeprecated": "此技能已弃用",
+    "skillDeprecatedReplacedBy": "此技能已弃用。请改用 {{name}}。",
     "collapse": "收起",
     "expand": "展开",
     "serviceAccountCreated": "服务智能体已创建。请使用面板中的钥匙图标配置每个工具集。",
@@ -3111,6 +3120,7 @@
     "toolsetsSection": "工具集",
     "mcpServersSection": "MCP 服务器",
     "skillsSection": "技能",
+    "noSkillsAvailable": "没有可用的技能",
     "inputSection": "输入",
     "responseSection": "回复",
     "connectModel": "连接模型",

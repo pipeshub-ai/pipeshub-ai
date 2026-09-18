@@ -293,7 +293,8 @@ class TestGetAgent:
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge
                 [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
                 [{"name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
-                  "subcategory": None, "version": "1.0.0", "status": "active"}],  # skills
+                  "subcategory": None, "version": "1.0.0", "status": "active",
+                  "deprecatedReason": None, "replacedBy": None}],  # skills
                 [],  # mcp servers projection
                 [{"share_with_org": True}],  # org share query
             ]
@@ -312,6 +313,7 @@ class TestGetAgent:
         assert result["skills"] == [{
             "name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
             "subcategory": None, "version": "1.0.0", "status": "active",
+            "deprecatedReason": None, "replacedBy": None,
         }]
         assert result["shareWithOrg"] is True
 
@@ -397,6 +399,7 @@ class TestProjectAgentSkills:
                     "name": "csv-cleaner", "description": "Cleans CSV data",
                     "category": "docs", "subcategory": None,
                     "version": "2.0.0", "status": "deprecated",
+                    "deprecatedReason": "superseded", "replacedBy": "csv-cleaner-v2",
                 },
             ]
         )
@@ -408,14 +411,19 @@ class TestProjectAgentSkills:
                 "name": "pdf-extractor", "description": "Extracts tables",
                 "category": "docs", "subcategory": "tables",
                 "version": "1.2.0", "status": "active",
+                "deprecatedReason": None, "replacedBy": None,
             },
             {
                 "name": "csv-cleaner", "description": "Cleans CSV data",
                 "category": "docs", "subcategory": None,
                 "version": "2.0.0", "status": "deprecated",
+                "deprecatedReason": "superseded", "replacedBy": "csv-cleaner-v2",
             },
         ]
         call_args = neo4j_provider.client.execute_query.await_args
+        query = call_args.args[0]
+        assert "skill.deprecatedReason AS deprecatedReason" in query
+        assert "skill.replacedBy AS replacedBy" in query
         assert call_args.kwargs["parameters"] == {"agent_id": "agent-1"}
         assert call_args.kwargs["txn_id"] == "txn-1"
 

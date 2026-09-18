@@ -372,6 +372,28 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def update_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        node: dict,
+        match_field: str,
+        match_value: Any,
+        transaction: str | None = None,
+    ) -> bool:
+        """Write `node` over the existing document only while `match_field`
+        still equals `match_value`. One round-trip.
+
+        Used for optimistic concurrency: a caller that last observed
+        `updatedAtTimestamp=T` must not clobber a write that already moved
+        the timestamp. `batch_upsert_nodes` / `update_node` are unconditional
+        and cannot express that. Returns True iff the write applied; False
+        if the document is missing or the field no longer matches (the
+        document is left unchanged). Does not insert a new document.
+        """
+        pass
+
+    @abstractmethod
     async def batch_update_nodes(
         self,
         nodes: list[dict],

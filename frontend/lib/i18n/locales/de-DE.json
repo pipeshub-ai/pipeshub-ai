@@ -411,7 +411,11 @@
     "english": "Englisch",
     "german": "Deutsch",
     "rotateLandscape": "Drehen Sie Ihr Gerät für das beste Erlebnis",
-    "errorOccurred": "Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut."
+    "errorOccurred": "Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.",
+    "beta": {
+      "label": "Beta",
+      "tooltip": "Diese Funktion befindet sich in der Beta-Phase und kann sich noch ändern."
+    }
   },
   "units": {
     "bytes": "Bytes",
@@ -2827,6 +2831,11 @@
     "modelSection": "Modell",
     "toolsetsSection": "Toolsets",
     "mcpServersSection": "MCP-Server",
+    "skillsSection": "Skills",
+    "noSkillsAvailable": "Keine Skills verfügbar",
+    "skillNodeTemplateDescription": "Benutzerdefinierte Skill, die Ihr Agent aufrufen kann",
+    "skillDeprecated": "Diese Skill wurde als veraltet markiert",
+    "skillDeprecatedReplacedBy": "Diese Skill wurde als veraltet markiert. Verwenden Sie stattdessen {{name}}.",
     "inputSection": "Eingabe",
     "responseSection": "Antwort",
     "connectModel": "Modell verbinden",

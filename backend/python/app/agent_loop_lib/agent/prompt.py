@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from app.agent_loop_lib.core.types import Goal, Todo
+from app.agent_loop_lib.modules.providers.skills.bundle import SKILLS_MOUNT_ROOT
 from app.agent_loop_lib.roles.prompt_template import MODE_GUIDANCE, PromptTemplate
 
 if TYPE_CHECKING:
@@ -161,6 +162,14 @@ def _render_toolset_tree(entries: list[dict], lines: list[str], *, indent: int) 
             _render_toolset_tree(children, lines, indent=indent + 1)
 
 
+_SANDBOX_MOUNT_NOTE = (
+    f"When you load_skill, its SKILL.md and bundled files are staged into the coding "
+    f"sandbox under {SKILLS_MOUNT_ROOT}/<name>/. Relative paths resolve from the "
+    f"sandbox working directory, not that folder — prefix them with "
+    f"{SKILLS_MOUNT_ROOT}/<name>/ or cd there first."
+)
+
+
 def render_skills_overview(runtime: "AgentRuntime") -> str:
     """Level-1 progressive disclosure (agentskills.io spec): only name +
     description (or, above `catalog_render_limit`, just a category tree)
@@ -187,7 +196,7 @@ def render_skills_overview(runtime: "AgentRuntime") -> str:
             "before you execute the specific step the skill covers — after all prerequisite "
             "work (data gathering, tool calls, analysis) is complete. Think about what "
             "the task requires, do all the preparatory steps first, then load the skill "
-            "right before the step that needs it. "
+            "right before the step that needs it. " + _SANDBOX_MOUNT_NOTE
         ]
         for m in sorted(catalog, key=lambda m: m.name):
             desc = m.description or ""
@@ -211,7 +220,7 @@ def render_skills_overview(runtime: "AgentRuntime") -> str:
         f"{len(catalog)} skills are available, grouped by category — use skill_search(query) or "
         "skills_list(category=...) to find one. Do NOT load skills upfront or at the start of a "
         "conversation; call load_skill(name) only immediately before the step that needs it, "
-        "after all prerequisite work is done:",
+        "after all prerequisite work is done. " + _SANDBOX_MOUNT_NOTE + " Categories:",
     ]
     for category, count in sorted(categories.items()):
         lines.append(f"- {category} ({count})")

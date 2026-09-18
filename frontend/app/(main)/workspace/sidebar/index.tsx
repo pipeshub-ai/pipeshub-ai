@@ -11,8 +11,15 @@ import { WorkspaceSidebarItem } from './sidebar-item';
 import { SectionHeader } from './section-header';
 import { CollapsibleSection } from './collapsible-section';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
-import { useFeatureFlagsStore, selectMcpEnabled, selectActionsEnabled } from '@/lib/store/feature-flags-store';
+import {
+  useFeatureFlagsStore,
+  selectMcpEnabled,
+  selectActionsEnabled,
+  selectSkillsEnabled,
+  type FeatureFlagGate,
+} from '@/lib/store/feature-flags-store';
 import { YourConnectorsIcon } from '@/app/components/ui/your-connectors-icon';
+import { BetaBadge } from '@/app/components/ui/beta-badge';
 
 // ========================================
 // Route constants (labels resolved at render via i18n)
@@ -25,7 +32,9 @@ interface NavItem {
   adminOnly?: boolean;
   customIcon?: ReactNode;
   /** Only rendered when the named feature flag is enabled. */
-  requiresFlag?: 'mcp' | 'actions';
+  requiresFlag?: FeatureFlagGate;
+  /** Renders a Beta badge as the item's rightSlot. */
+  beta?: boolean;
 }
 
 const OVERVIEW_ITEMS: NavItem[] = [
@@ -71,6 +80,7 @@ const PERSONAL_ITEMS: NavItem[] = [
   { icon: '', labelKey: 'workspace.sidebar.nav.yourConnectors', route: '/workspace/connectors/personal', customIcon: <YourConnectorsIcon size={ICON_SIZE_DEFAULT} color="var(--slate-11)" /> },
   { icon: 'bolt', labelKey: 'workspace.sidebar.nav.yourActions', route: '/workspace/actions/personal', requiresFlag: 'actions' },
   { icon: 'device_hub', labelKey: 'workspace.sidebar.nav.yourMcpServers', route: '/workspace/mcp-servers/personal', requiresFlag: 'mcp' },
+  { icon: 'psychology', labelKey: 'workspace.sidebar.nav.yourSkills', route: '/workspace/skills/personal', requiresFlag: 'skills', beta: true },
   { icon: 'archive', labelKey: 'workspace.sidebar.nav.archivedChats', route: '/workspace/archived-chats' },
 ];
 
@@ -92,6 +102,7 @@ export default function WorkspaceSidebar() {
   const isAdmin = useUserStore(selectIsAdmin);
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
+  const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
 
   // Normalize trailing slash (trailingSlash: true in next.config)
   const pathname = rawPathname.endsWith('/') && rawPathname !== '/'
@@ -102,10 +113,14 @@ export default function WorkspaceSidebar() {
     PEOPLE_ROUTES.some((route) => pathname.startsWith(route))
   );
 
+  const flagEnabled: Record<FeatureFlagGate, boolean> = {
+    mcp: mcpEnabled,
+    actions: actionsEnabled,
+    skills: skillsEnabled,
+  };
   const isNavItemVisible = (item: NavItem) =>
     (isAdmin || !item.adminOnly) &&
-    (item.requiresFlag !== 'mcp' || mcpEnabled) &&
-    (item.requiresFlag !== 'actions' || actionsEnabled);
+    (item.requiresFlag === undefined || flagEnabled[item.requiresFlag]);
 
   const allRoutes = [
     ...OVERVIEW_ITEMS.map((item) => item.route),
@@ -227,6 +242,7 @@ export default function WorkspaceSidebar() {
               label={t(item.labelKey)}
               href={`${item.route}/`}
               isActive={isActive(item.route)}
+              rightSlot={item.beta ? <BetaBadge /> : undefined}
             />
           ))}
         </Flex>
