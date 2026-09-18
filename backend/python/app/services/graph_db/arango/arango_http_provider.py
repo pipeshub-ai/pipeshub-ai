@@ -14528,12 +14528,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
         // ========== KB APP-BASED SEED (paths 8-9) ==========
+        // Hidden collections (a project's linked file KB) must not seed records into
+        // Knowledge Hub search; they stay reachable when named by id.
         LET seed_apps_direct = (
             FOR perm IN permission
                 FILTER perm._from == user_from AND perm.type == "USER"
                 FILTER STARTS_WITH(perm._to, "apps/")
                 LET app = DOCUMENT(perm._to)
-                FILTER app != null AND app.orgId == @org_id AND app.type == "KB"
+                FILTER app != null AND app.orgId == @org_id AND app.type == "KB" AND app.isHidden != true
                 RETURN app
         )
 
@@ -14545,7 +14547,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER appPerm._from == teamPerm._to AND appPerm.type == "TEAM"
                     FILTER STARTS_WITH(appPerm._to, "apps/")
                     LET app = DOCUMENT(appPerm._to)
-                    FILTER app != null AND app.orgId == @org_id AND app.type == "KB"
+                    FILTER app != null AND app.orgId == @org_id AND app.type == "KB" AND app.isHidden != true
                     RETURN app
         )
 
