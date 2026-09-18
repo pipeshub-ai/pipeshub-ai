@@ -1,7 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { userActivitiesType } from '../../../src/libs/utils/userActivities.utils'
+import { SESSION_INVALIDATING_ACTIVITIES, userActivitiesType } from '../../../src/libs/utils/userActivities.utils'
 
 describe('userActivities.utils', () => {
   afterEach(() => {
@@ -51,6 +51,12 @@ describe('userActivities.utils', () => {
 
     it('should have exactly 10 activity types', () => {
       expect(Object.keys(userActivitiesType)).to.have.length(10)
+    })
+
+    it('should include ACCOUNT_BLOCKED in session-invalidating activities', () => {
+      expect(SESSION_INVALIDATING_ACTIVITIES).to.include(
+        userActivitiesType.ACCOUNT_BLOCKED,
+      )
     })
 
     it('should have unique values for all activity types', () => {

@@ -1,6 +1,8 @@
+import ipaddress
 import logging
 import os
 from typing import Any
+from urllib.parse import urlparse
 
 import gitlab
 from gitlab import Gitlab
@@ -62,6 +64,34 @@ class GitLabResponse(BaseModel):
         return self.model_dump()
 
 
+def _is_loopback_host(host: str) -> bool:
+    """True for a host that cannot be observed from the network."""
+    if host in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _require_secure_url(url: str) -> None:
+    """Refuse to hand a personal access token to a plaintext instance.
+
+    python-gitlab sends the token as a header on every request, so an ``http://``
+    instance URL exposes it to anything on the path. Only loopback, where there
+    is no network to observe, is allowed without TLS.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and _is_loopback_host((parsed.hostname or "").lower()):
+        return
+    raise ValueError(
+        f"Refusing to send the GitLab access token to {url!r}: the instance URL "
+        "must use https. http is allowed only for a loopback host."
+    )
+
+
 class GitLabClientViaToken:
     def __init__(
         self,
@@ -94,6 +124,11 @@ class GitLabClientViaToken:
         self._sdk: Gitlab | None = None
 
     def create_client(self) -> Gitlab:
+        # Scoped to personal access tokens, which this connector newly accepts:
+        # an OAuth instance reached over http on a private network keeps working
+        # exactly as before rather than failing after an upgrade.
+        if self.auth_type == "API_TOKEN":
+            _require_secure_url(self.url)
         kwargs: dict[str, Any] = {"url": self.url}
 
         # Use private_token for PAT-based auth, oauth_token for OAuth flows
@@ -279,11 +314,9 @@ class GitLabClient(IClient):
         auth_config = config.get("auth", {})
         if not auth_config:
             raise ValueError("Auth configuration missing for GitLab connector")
-        credentials_config = config.get("credentials", {})
-        if not credentials_config:
-            raise ValueError(
-                "Credentials configuration not found in Gitlab connector configuration"
-            )
+        # Credentials are written by the OAuth flow. A token-only (API_TOKEN)
+        # connector has none, so they are required only for OAUTH below.
+        credentials_config = config.get("credentials") or {}
         auth_type = auth_config.get(
             "authType", "OAUTH"
         )  # "OAUTH" or "API_TOKEN"; default is OAUTH
@@ -326,6 +359,10 @@ class GitLabClient(IClient):
             )
             client.create_client()
         elif auth_type == "OAUTH":
+            if not credentials_config:
+                raise ValueError(
+                    "Credentials configuration not found in Gitlab connector configuration"
+                )
             access_token = credentials_config.get("access_token", "")
             if not access_token:
                 raise ValueError("Access token required for OAuth auth type")

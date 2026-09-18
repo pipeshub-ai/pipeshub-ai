@@ -159,9 +159,26 @@ class KBClient(APIClient):
             Response body from the API
         """
         payload: dict[str, Any] = {"folderName": folder_name}
-        if parent_id:
-            payload["parentId"] = parent_id
-        resp = self.post(f"/{kb_id}/folders", json=payload)
+        # A parentId in the body is ignored — the create-folder endpoint reads
+        # only the name. Nesting is done with the ?folderId= query parameter,
+        # which the gateway routes to the connector's /folder/{id}/subfolder
+        # (kb_controllers.ts:511-518).
+        params = {"folderId": parent_id} if parent_id else None
+        resp = self.post(f"/{kb_id}/folder", json=payload, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_folder(self, kb_id: str, folder_id: str) -> dict[str, Any]:
+        """Delete a folder and everything beneath it.
+
+        Args:
+            kb_id: KB ID
+            folder_id: Folder ID
+
+        Returns:
+            Response body from the API
+        """
+        resp = self.delete(f"/{kb_id}/folder/{folder_id}")
         resp.raise_for_status()
         return resp.json()
 

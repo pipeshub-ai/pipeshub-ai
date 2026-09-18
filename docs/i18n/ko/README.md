@@ -210,16 +210,12 @@ PDF(스캔 포함), Microsoft Office(Word, Excel, PowerPoint), Google Docs/Sheet
 ### PipesHub는 어떻게 배포하나요?
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables (refer to env.template)
-# Start production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-참고: 클라우드 배포에는 HTTPS를 사용하세요. HTTP는 프런트엔드 보안 차단을 유발할 수 있습니다.
+이 명령은 Compose 파일을 `./pipeshub`에 작성하고 대화형 설치 관리자를 시작합니다. 완료되면 **http://localhost:3000**을 여세요. 클라우드 배포에는 HTTPS를 사용 — HTTP는 프런트엔드 보안 차단을 유발할 수 있습니다.
+
+소스에서 빌드하는 개발자는 저장소를 복제하고 저장소 루트에서 `./install.sh`(또는 `./install.sh --build`)를 실행하세요. [배포 가이드](#-배포-가이드)를 참고하세요.
 
 ### PipesHub는 어떤 LLM 제공업체를 지원하나요?
 
