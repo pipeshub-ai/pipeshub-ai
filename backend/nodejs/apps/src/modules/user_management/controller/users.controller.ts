@@ -1179,24 +1179,31 @@ export class UserController {
         }
       }
 
-      await this.eventService.start();
+      // Pending email verification must not write the current (old) address
+      // to the graph. The graph is updated from validateEmailChange instead.
+      if (
+        emailChangeRequested !== 'sent' &&
+        emailChangeRequested !== 'failed'
+      ) {
+        await this.eventService.start();
 
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId.toString(),
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
+        const event: Event = {
+          eventType: EventType.UpdateUserEvent,
+          timestamp: Date.now(),
+          payload: {
+            orgId: user.orgId.toString(),
+            userId: user._id,
+            fullName: user.fullName,
+            ...(user.firstName && { firstName: user.firstName }),
+            ...(user.lastName && { lastName: user.lastName }),
+            ...(user.designation && { designation: user.designation }),
+            email: user.email,
+          } as UserUpdatedEvent,
+        };
 
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+        await this.eventService.publishEvent(event);
+        await this.eventService.stop();
+      }
       // Save the updated user
       res.json({
         ...user.toObject(),

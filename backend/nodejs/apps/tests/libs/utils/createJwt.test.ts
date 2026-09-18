@@ -12,6 +12,7 @@ import {
   iamUserLookupJwtGenerator,
   authJwtGenerator,
   fetchConfigJwtGenerator,
+  entityUserWriteJwtGenerator,
   scopedStorageServiceJwtGenerator,
   jwtGeneratorForValidateEmailLink,
   jwtGeneratorForOrgEmailVerification,
@@ -330,6 +331,22 @@ describe('createJwt', () => {
       const token = fetchConfigJwtGenerator('user-1', 'org-1', secret)
       const decoded = jwt.verify(token, secret) as any
       expect(decoded.exp - decoded.iat).to.equal(3600)
+    })
+  })
+
+  describe('entityUserWriteJwtGenerator', () => {
+    it('should generate a token with userId, orgId, and ENTITY_USER_WRITE scope', () => {
+      const token = entityUserWriteJwtGenerator('user-1', 'org-1', secret)
+      const decoded = jwt.verify(token, secret) as any
+      expect(decoded.userId).to.equal('user-1')
+      expect(decoded.orgId).to.equal('org-1')
+      expect(decoded.scopes).to.deep.equal([TokenScopes.ENTITY_USER_WRITE])
+    })
+
+    it('should set expiry to 5 minutes', () => {
+      const token = entityUserWriteJwtGenerator('user-1', 'org-1', secret)
+      const decoded = jwt.verify(token, secret) as any
+      expect(decoded.exp - decoded.iat).to.equal(300)
     })
   })
 

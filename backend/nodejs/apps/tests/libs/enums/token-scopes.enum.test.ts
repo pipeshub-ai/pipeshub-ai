@@ -37,6 +37,10 @@ describe('TokenScopes', () => {
     expect(TokenScopes.VALIDATE_EMAIL).to.equal('email:validate');
   });
 
+  it('should have ENTITY_USER_WRITE as "entity:user:write"', () => {
+    expect(TokenScopes.ENTITY_USER_WRITE).to.equal('entity:user:write');
+  });
+
   it('should have ORG_EMAIL_VERIFY as "org:email:verify"', () => {
     expect(TokenScopes.ORG_EMAIL_VERIFY).to.equal('org:email:verify');
   });
@@ -59,6 +63,7 @@ describe('TokenScopes', () => {
       'STORAGE_TOKEN',
       'CONVERSATION_CREATE',
       'VALIDATE_EMAIL',
+      'ENTITY_USER_WRITE',
       'ORG_EMAIL_VERIFY',
       'EMAIL_VERIFIED',
       'DESKTOP_COMMAND',

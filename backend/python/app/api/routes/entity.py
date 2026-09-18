@@ -4,16 +4,22 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import require_scopes, require_service_token
 from app.config.constants.arangodb import CollectionNames
-from app.config.constants.service import OAuthScopes
+from app.config.constants.service import OAuthScopes, TokenScopes
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
 
 MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
+
+
+class UserEmailUpdateRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=320)
+
 
 async def get_services(request: Request) -> Dict[str, Any]:
     """Get all required services from the container"""
@@ -742,3 +748,54 @@ async def get_team_users(
     except Exception as e:
         logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team users")
+
+
+@router.patch(
+    "/user/email",
+    dependencies=[Depends(require_service_token(TokenScopes.ENTITY_USER_WRITE))],
+)
+async def update_user_email(
+    request: Request,
+    body: UserEmailUpdateRequest,
+) -> JSONResponse:
+    """Set the graph user's email after Mongo has already accepted a verified change."""
+    services = await get_services(request)
+    graph_provider = services["graph_provider"]
+    logger = services["logger"]
+
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    email = body.email.lower().strip()
+    if not user_id or not org_id:
+        raise HTTPException(status_code=400, detail="userId and orgId are required")
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    try:
+        existing_user = await graph_provider.get_user_by_user_id(user_id)
+        if not existing_user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        graph_key = existing_user.get("id") or existing_user.get("_key")
+        await graph_provider.batch_upsert_nodes(
+            [
+                {
+                    "id": graph_key,
+                    "userId": user_id,
+                    "orgId": org_id,
+                    "email": email,
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                }
+            ],
+            CollectionNames.USERS.value,
+        )
+        logger.info("Updated graph email for userId %s", user_id)
+        return JSONResponse(
+            status_code=200,
+            content={"status": "success", "email": email},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating graph user email: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update user email")
