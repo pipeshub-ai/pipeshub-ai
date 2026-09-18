@@ -72,4 +72,18 @@ export const UserAdminRepository = {
     }
     await Users.updateOne(filter, update);
   },
+
+  async restoreMemberRole(
+    userId: string,
+    orgId: string,
+    session?: ClientSession | null,
+  ): Promise<void> {
+    const filter = { _id: userId, orgId, isDeleted: { $ne: true } };
+    const update = { $set: { role: 'member' as const } };
+    if (session) {
+      await Users.updateOne(filter, update, { session });
+      return;
+    }
+    await Users.updateOne(filter, update);
+  },
 };

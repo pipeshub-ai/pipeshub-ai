@@ -26,6 +26,7 @@ import {
 } from '../types/oauth.types'
 import {
   ALLOWED_CUSTOM_REDIRECT_URIS,
+  FIRST_PARTY_DEVICE_CLIENT_ID,
   PAT_APP_CLIENT_ID_PREFIX,
 } from '../constants/constants'
 
@@ -45,16 +46,21 @@ export class OAuthAppService {
    * Matches compound index `{ orgId, createdBy, isDeleted, createdAt }` on `OAuthApp` for list queries.
    *
    * Excludes the per-org synthetic PAT app (`pat-system:<orgId>`, see
-   * {@link PatService}) — it's an internal pseudo-client, not something
-   * its creator should be able to view, edit, suspend, delete, or pull a
-   * working secret for through this CRUD surface.
+   * {@link PatService}) and the instance-wide first-party device app
+   * (`pipeshub-agent`) — internal clients, not something their creator
+   * should be able to view, edit, suspend, delete, or pull a working
+   * secret for through this CRUD surface.
    */
   private buildAppFilter(orgId: string, userId: string): Record<string, unknown> {
     return {
       orgId: new Types.ObjectId(orgId),
       isDeleted: false,
       createdBy: new Types.ObjectId(userId),
-      clientId: { $not: new RegExp(`^${PAT_APP_CLIENT_ID_PREFIX}`) },
+      clientId: {
+        $nin: [FIRST_PARTY_DEVICE_CLIENT_ID],
+        $not: new RegExp(`^${PAT_APP_CLIENT_ID_PREFIX}`),
+      },
+      isDynamic: { $ne: true },
     }
   }
 
@@ -111,6 +117,66 @@ export class OAuthAppService {
       clientId,
       orgId,
       name: data.name,
+    })
+
+    return {
+      ...this.toAppResponse(app),
+      clientSecret,
+    }
+  }
+
+  /**
+   * RFC 7591 Dynamic Client Registration.
+   * Never accepts `client_credentials` — that grant has no user identity.
+   */
+  async createDynamicClient(params: {
+    orgId: string
+    createdBy: string
+    name: string
+    redirectUris: string[]
+    allowedGrantTypes: OAuthGrantType[]
+    allowedScopes: string[]
+    isConfidential: boolean
+    homepageUrl?: string
+    privacyPolicyUrl?: string
+    termsOfServiceUrl?: string
+    logoUrl?: string
+  }): Promise<OAuthAppWithSecret> {
+    if (params.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS)) {
+      throw new BadRequestError(
+        'client_credentials is not allowed for dynamically registered clients',
+      )
+    }
+    this.validateGrantTypes(params.allowedGrantTypes)
+    this.validateDcrRedirectUris(params.redirectUris)
+
+    const clientId = randomUUID()
+    const clientSecret = this.generateClientSecret()
+    const clientSecretEncrypted = this.encryptionService.encrypt(clientSecret)
+
+    const app = await OAuthApp.create({
+      clientId,
+      clientSecretEncrypted,
+      name: params.name,
+      orgId: new Types.ObjectId(params.orgId),
+      createdBy: new Types.ObjectId(params.createdBy),
+      redirectUris: params.redirectUris,
+      allowedGrantTypes: params.allowedGrantTypes,
+      allowedScopes: params.allowedScopes,
+      homepageUrl: params.homepageUrl,
+      privacyPolicyUrl: params.privacyPolicyUrl,
+      termsOfServiceUrl: params.termsOfServiceUrl,
+      logoUrl: params.logoUrl,
+      isConfidential: params.isConfidential,
+      isDynamic: true,
+      accessTokenLifetime: 3600,
+      refreshTokenLifetime: 2592000,
+    })
+
+    this.logger.info('Dynamically registered OAuth client', {
+      clientId,
+      orgId: params.orgId,
+      isConfidential: params.isConfidential,
     })
 
     return {
@@ -486,6 +552,40 @@ export class OAuthAppService {
       } catch (error) {
         if (error instanceof InvalidRedirectUriError) throw error
         throw new InvalidRedirectUriError(`Invalid redirect URI: ${uri}`)
+      }
+    }
+  }
+
+  /**
+   * DCR redirect URIs: HTTPS, loopback HTTP, or private-use schemes (RFC 8252).
+   * `javascript:` / `data:` / `file:` / `vbscript:` are rejected.
+   */
+  validateDcrRedirectUris(uris: string[]): void {
+    const blocked = new Set(['javascript:', 'data:', 'file:', 'vbscript:'])
+    for (const uri of uris) {
+      let parsed: URL
+      try {
+        parsed = new URL(uri)
+      } catch {
+        throw new InvalidRedirectUriError(`Invalid redirect URI: ${uri}`)
+      }
+      if (parsed.hash) {
+        throw new InvalidRedirectUriError(
+          `Redirect URI must not contain a fragment: ${uri}`,
+        )
+      }
+      if (blocked.has(parsed.protocol)) {
+        throw new InvalidRedirectUriError(
+          `Redirect URI scheme is not allowed: ${uri}`,
+        )
+      }
+      if (parsed.protocol === 'http:') {
+        const host = parsed.hostname.toLowerCase()
+        if (host !== 'localhost' && host !== '127.0.0.1' && host !== '[::1]' && host !== '::1') {
+          throw new InvalidRedirectUriError(
+            `http redirect URIs are only allowed on loopback: ${uri}`,
+          )
+        }
       }
     }
   }

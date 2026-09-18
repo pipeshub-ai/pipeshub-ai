@@ -816,6 +816,8 @@
         "changeRoleSuccess": "Role updated",
         "changeRoleSuccessDescription": "{{name}} is now {{role}}",
         "changeRoleError": "Failed to change role",
+        "maxAdminsReachedTitle": "Cannot add another admin",
+        "maxAdminsReached": "An organization can have at most 5 admins.",
         "removeFromWorkspace": "Remove from Workplace",
         "removeUserTitle": "Remove user?",
         "removeUserMessage": "Are you sure you want to remove {{email}} from {{workspace}} workspace?",

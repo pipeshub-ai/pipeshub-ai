@@ -1401,6 +1401,106 @@ class TestFetchAndProcessUrlOrchestration:
         assert result.is_new is True
 
     @pytest.mark.asyncio
+    async def test_ancestor_placeholders_keep_their_stored_version(self):
+        """These placeholders are re-upserted on every crawl and never change.
+
+        Bumping them here would turn `version` into a count of crawls, and writing
+        0 would discard the version of an ancestor since crawled as a page.
+        """
+        c = _make_connector()
+        c.url = "https://example.com"
+        existing = MagicMock()
+        existing.id = "ancestor-1"
+        existing.version = 5
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+
+        await c._create_ancestor_placeholder_records("https://example.com/docs/web/page")
+
+        c.data_entities_processor.on_new_records.assert_awaited_once()
+        records = [record for record, _permissions in
+                   c.data_entities_processor.on_new_records.call_args[0][0]]
+        assert records, "expected at least one ancestor placeholder"
+        assert [r.version for r in records] == [5] * len(records)
+
+    @pytest.mark.asyncio
+    async def test_version_advances_only_when_the_page_changed(self):
+        """`version` marks a change, so a re-crawl that finds nothing new must not bump it."""
+        html = b"<html><head><title>Same</title></head><body>same body</body></html>"
+
+        async def crawl(existing=None, lookup=None):
+            c = _make_connector()
+            c.url = "https://example.com"
+            c.base_domain = "https://example.com"
+            c.session = MagicMock()
+            c.max_size_mb = 10
+            c.follow_external = False
+            c.retry_urls = {}
+            c.url_should_contain = []
+            c._normalize_url = MagicMock(return_value="https://example.com/page")
+            c._ensure_parent_records_exist = AsyncMock()
+            c._pass_extension_filter = MagicMock(return_value=True)
+            c.data_entities_processor.get_record_by_external_id = (
+                AsyncMock(side_effect=lookup) if lookup else AsyncMock(return_value=existing)
+            )
+            with patch(
+                "app.connectors.sources.web.connector.fetch_url_with_fallback",
+                new_callable=AsyncMock,
+            ) as mock_fetch:
+                mock_fetch.return_value = FetchResponse(
+                    status_code=200,
+                    content_bytes=html,
+                    headers={"Content-Type": "text/html"},
+                    final_url="https://example.com/page",
+                    strategy="aiohttp",
+                )
+                return await c._fetch_and_process_url("https://example.com/page", 0)
+
+        first = await crawl(None)
+        assert first.record.version == 0
+
+        # Re-crawled unchanged: same name, parent and content hash as what was stored.
+        unchanged = MagicMock()
+        unchanged.id = "rec-1"
+        unchanged.version = 7
+        unchanged.record_name = first.record.record_name
+        unchanged.parent_external_record_id = first.record.parent_external_record_id
+        unchanged.external_revision_id = first.record.external_revision_id
+        unchanged.indexing_status = ProgressStatus.COMPLETED.value
+        unchanged.extraction_status = "COMPLETED"
+        # Nothing changed, so no update is produced at all — there is no write,
+        # and therefore no version to advance.
+        assert await crawl(unchanged) is None
+
+        # Content changed: the stored hash no longer matches what was fetched.
+        changed = MagicMock()
+        changed.id = "rec-1"
+        changed.version = 7
+        changed.record_name = first.record.record_name
+        changed.parent_external_record_id = first.record.parent_external_record_id
+        changed.external_revision_id = "a-different-hash"
+        changed.indexing_status = ProgressStatus.COMPLETED.value
+        changed.extraction_status = "COMPLETED"
+        assert (await crawl(changed)).record.version == 8
+
+        # A record found only under its legacy id is re-emitted to migrate the id.
+        # That is a rewrite, not a change to the page, so the version is carried over.
+        legacy = MagicMock()
+        legacy.id = "rec-1"
+        legacy.version = 7
+        legacy.record_name = first.record.record_name
+        legacy.parent_external_record_id = first.record.parent_external_record_id
+        legacy.external_revision_id = first.record.external_revision_id
+        legacy.indexing_status = ProgressStatus.COMPLETED.value
+        legacy.extraction_status = "COMPLETED"
+
+        async def only_legacy_id(connector_id, external_record_id):
+            return None if external_record_id.endswith("/") else legacy
+
+        migrated = await crawl(lookup=only_legacy_id)
+        assert migrated.is_new is True
+        assert migrated.record.version == 7
+
+    @pytest.mark.asyncio
     async def test_existing_record_metadata_and_content_changes(self):
         c = _make_connector()
         c.url = "https://example.com"

@@ -10,7 +10,10 @@ import {
   isUserOrgAdmin,
   findOrgAdminUserIds,
   assertCanDemoteAdmin,
+  assertCanPromoteAdmin,
   saveUserEnsuringOrgRetainsAdmin,
+  saveUserEnsuringAdminCap,
+  MAX_ORG_ADMINS_MESSAGE,
 } from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
@@ -291,6 +294,35 @@ describe('user-admin.service', () => {
     });
   });
 
+  describe('assertCanPromoteAdmin', () => {
+    it('allows promotion when current count plus additional stays at 5', async () => {
+      const countStub = sinon.stub(Users, 'countDocuments').resolves(4);
+
+      await assertCanPromoteAdmin(orgId);
+
+      expect(countStub.calledOnce).to.equal(true);
+    });
+
+    it('rejects when promoting would exceed 5 admins', async () => {
+      sinon.stub(Users, 'countDocuments').resolves(5);
+
+      try {
+        await assertCanPromoteAdmin(orgId);
+        expect.fail('expected BadRequestError');
+      } catch (error: any) {
+        expect(error.message).to.equal(MAX_ORG_ADMINS_MESSAGE);
+      }
+    });
+
+    it('skips the count when additionalAdmins is 0', async () => {
+      const countStub = sinon.stub(Users, 'countDocuments');
+
+      await assertCanPromoteAdmin(orgId, 0);
+
+      expect(countStub.called).to.equal(false);
+    });
+  });
+
   describe('saveUserEnsuringOrgRetainsAdmin', () => {
     it('checks then saves when replica set is unavailable and admins remain', async () => {
       const save = sinon.stub().resolves();
@@ -400,6 +432,83 @@ describe('user-admin.service', () => {
         expect(error.message).to.equal(
           'Cannot demote the last admin. Promote another user to admin first.',
         );
+      }
+
+      expect(save.called).to.equal(false);
+    });
+  });
+
+  describe('saveUserEnsuringAdminCap', () => {
+    it('checks then saves when replica set is unavailable and the cap is not exceeded', async () => {
+      const save = sinon.stub().resolves();
+      const user = {
+        _id: userId,
+        orgId,
+        role: 'admin',
+        save,
+      };
+      const countStub = sinon.stub(Users, 'countDocuments');
+      countStub.onFirstCall().resolves(4);
+      countStub.onSecondCall().resolves(5);
+
+      await saveUserEnsuringAdminCap(user as any, false);
+
+      expect(save.calledOnce).to.equal(true);
+      expect(countStub.callCount).to.equal(2);
+    });
+
+    it('restores member when non-RS save leaves the org over the cap', async () => {
+      const save = sinon.stub().resolves();
+      const user = {
+        _id: userId,
+        orgId,
+        role: 'admin',
+        save,
+      };
+      const countStub = sinon.stub(Users, 'countDocuments');
+      countStub.onFirstCall().resolves(4);
+      countStub.onSecondCall().resolves(6);
+      const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
+
+      try {
+        await saveUserEnsuringAdminCap(user as any, false);
+        expect.fail('expected BadRequestError');
+      } catch (error: any) {
+        expect(error.message).to.equal(MAX_ORG_ADMINS_MESSAGE);
+      }
+
+      expect(save.calledOnce).to.equal(true);
+      expect(updateStub.calledOnce).to.equal(true);
+      expect(updateStub.firstCall.args[1]).to.deep.equal({
+        $set: { role: 'member' },
+      });
+      expect(user.role).to.equal('member');
+    });
+
+    it('does not save when pre-check finds the org is already at 5 admins', async () => {
+      const save = sinon.stub().resolves();
+      const user = {
+        _id: userId,
+        orgId,
+        save,
+      };
+      const withTransaction = sinon.stub().callsFake(async (fn: () => Promise<void>) => {
+        await fn();
+      });
+      sinon.stub(mongoose, 'startSession').resolves({
+        withTransaction,
+        endSession: sinon.stub().resolves(),
+      } as any);
+      sinon.stub(Org, 'updateOne').resolves({} as any);
+      sinon.stub(Users, 'countDocuments').returns({
+        session: sinon.stub().callsFake(() => Promise.resolve(5)),
+      } as any);
+
+      try {
+        await saveUserEnsuringAdminCap(user as any, true);
+        expect.fail('expected BadRequestError');
+      } catch (error: any) {
+        expect(error.message).to.equal(MAX_ORG_ADMINS_MESSAGE);
       }
 
       expect(save.called).to.equal(false);

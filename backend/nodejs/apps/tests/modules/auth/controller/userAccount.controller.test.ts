@@ -1538,7 +1538,7 @@ describe('UserAccountController', () => {
 
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
 
-      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const createStub = sinon.stub(UserActivities, 'create').resolves({} as any);
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
       sinon.stub(Users, 'findOne').resolves({ fullName: 'Test User' } as any);
       mockMailService.sendMail.resolves({ statusCode: 200 });
@@ -1552,6 +1552,9 @@ describe('UserAccountController', () => {
         expect(saveStub.calledOnce).to.be.true;
         expect(updatedCredential.isBlocked).to.equal(true);
         expect(updatedCredential.blockExpiresAt).to.be.instanceOf(Date);
+        expect(
+          createStub.calledWith(sinon.match({ activityType: 'ACCOUNT BLOCKED' })),
+        ).to.be.true;
       }
     });
   });
@@ -1819,7 +1822,7 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
-      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const createStub = sinon.stub(UserActivities, 'create').resolves({} as any);
       mockMailService.sendMail.resolves({ statusCode: 200 });
 
       try {
@@ -1831,6 +1834,9 @@ describe('UserAccountController', () => {
         expect(updatedCredential.isBlocked).to.equal(true);
         expect(updatedCredential.blockExpiresAt).to.be.instanceOf(Date);
         expect(mockMailService.sendMail.calledOnce).to.be.true;
+        expect(
+          createStub.calledWith(sinon.match({ activityType: 'ACCOUNT BLOCKED' })),
+        ).to.be.true;
       }
     });
   });

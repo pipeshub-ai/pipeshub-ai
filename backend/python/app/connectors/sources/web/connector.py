@@ -905,7 +905,11 @@ class WebConnector(BaseConnector):
                     record_group_type=RecordGroupType.WEB,
                     external_record_id=external_id,
                     external_record_group_id=self.url,
-                    version=0,
+                    # Placeholders carry no content of their own and this upsert runs
+                    # on every crawl, so the stored version is carried over rather than
+                    # bumped — and rather than reset to 0, which would discard the
+                    # version of an ancestor since crawled as a page in its own right.
+                    version=0 if not existing else (existing.version or 0),
                     origin=OriginTypes.CONNECTOR,
                     connector_name=self.connector_name,
                     connector_id=self.connector_id,
@@ -1722,7 +1726,14 @@ class WebConnector(BaseConnector):
                 external_record_id=external_id,
                 external_revision_id=content_md5_hash,
                 external_record_group_id=self.url,
-                version=0,
+                # Advance the version only when the page actually changed, so it stays
+                # a signal of change rather than a count of crawls. A re-crawl that
+                # finds nothing new is not persisted anyway.
+                version=(
+                    0
+                    if not existing_record
+                    else (existing_record.version or 0) + (1 if is_updated else 0)
+                ),
                 origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,

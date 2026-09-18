@@ -333,7 +333,11 @@ export interface AIServiceResponse<T> {
   msg?: string;
 }
 
-export type AnswerMatchType = 'Exact Match' | 'Partial Match' | 'No Match';
+export type AnswerMatchType =
+  | 'Exact Match'
+  | 'Partial Match'
+  | 'No Match'
+  | 'Error';
 
 export interface IAIResponse {
   answer: string;
@@ -360,6 +364,8 @@ export interface IAIResponse {
   reasoning?: IReasoningTurn[];
   /** Ordered agent-activity transcript (`agui` protocol only) — see IMessagePart. */
   parts?: IMessagePart[];
+  /** Set by Python `classify_error` on a graceful failure answer (`auth_error`, …). */
+  errorCode?: string;
 }
 
 export interface IAIModel {

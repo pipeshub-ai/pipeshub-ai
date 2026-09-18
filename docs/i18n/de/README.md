@@ -210,16 +210,12 @@ PDF (einschließlich Scans), Microsoft Office (Word, Excel, PowerPoint), Google 
 ### Wie stelle ich PipesHub bereit?
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables (refer to env.template)
-# Start production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-Hinweis: Verwende HTTPS für Cloud-Bereitstellungen. HTTP kann zu Sicherheitsblockaden im Frontend führen.
+Dies schreibt die Compose-Dateien in `./pipeshub` und startet das interaktive Installationsprogramm. Öffne **http://localhost:3000**, sobald es fertig ist. Verwende HTTPS für Cloud-Bereitstellungen — HTTP kann zu Frontend-Sicherheitsblockaden führen.
+
+Entwickler, die aus dem Quellcode erstellen, sollten das Repository klonen und `./install.sh` (oder `./install.sh --build`) aus dem Stammverzeichnis des Repositorys ausführen. Siehe die [Bereitstellungsanleitung](#-bereitstellungsanleitung).
 
 ### Welche LLM-Anbieter unterstützt PipesHub?
 

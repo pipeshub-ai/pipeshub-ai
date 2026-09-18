@@ -21,7 +21,7 @@
 #   ./install.sh --help
 #
 # Environment overrides for CI / scripted installs (all optional):
-#   PIPESHUB_DEPLOY_TYPE     full | slim
+#   PIPESHUB_DEPLOY_TYPE     full | slim | eval
 #   PIPESHUB_GRAPH_DB        arango | neo4j
 #   PIPESHUB_BROKER          kafka | redis
 #   PIPESHUB_KV_STORE        etcd | redis
@@ -126,7 +126,7 @@ Options:
   -h, --help           Show this help
 
 Environment overrides (bypass prompts in CI):
-  PIPESHUB_DEPLOY_TYPE   full | slim
+  PIPESHUB_DEPLOY_TYPE   full | slim | eval
   PIPESHUB_GRAPH_DB      arango | neo4j
   PIPESHUB_BROKER        kafka | redis
   PIPESHUB_KV_STORE      etcd | redis
@@ -256,6 +256,9 @@ derive_compose_profiles() {
   esac
   [[ "${KV_STORE_TYPE:-}"  == "etcd"  ]] && p+=("kv-etcd")
   [[ "${MESSAGE_BROKER:-}" == "kafka" ]] && p+=("broker-kafka")
+  # Coding sandbox image. Eval skips it: Neo4j stays (search ACLs live there);
+  # run_code is the cut. Slim/full keep the profile so SANDBOX_MODE=docker works.
+  [[ "${DEPLOY_TYPE:-}" != "eval" ]] && p+=("sandbox")
   # Guard the empty-array case: on bash 3.2 under `set -u`, "${p[*]}" on an empty
   # array is an unbound-variable error.
   if (( ${#p[@]} == 0 )); then echo ""; return; fi
@@ -637,7 +640,7 @@ if $FLAG_STOP; then
   # profile stays attached to the network and blocks its removal
   # ("Resource is still in use"). --remove-orphans clears containers left by a
   # previously-active profile too.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
   docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down --remove-orphans
   success "PipesHub stopped (project ${PROJECT_NAME}). Data volumes are preserved."
   info "To start again: ./install.sh"
@@ -660,7 +663,7 @@ if $FLAG_UNINSTALL; then
   # profile was active for this deployment.  Without this, volumes from a
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
   docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down -v --remove-orphans
   success "PipesHub stopped and all data volumes removed (project ${PROJECT_NAME})."
   exit 0
@@ -768,7 +771,11 @@ if ! $FLAG_UPGRADE && ! $FLAG_ROTATE_SIGNING_SECRETS; then
   # of MemTotal because firmware, the kernel, and (on iGPU systems) shared video
   # memory are reserved before user space sees it — commonly ~15.3–15.7 GiB. Use
   # a 16 GB-class floor (15000 MB) so genuine 16 GB machines are not warned.
-  if $IS_WSL; then
+  # Eval is an 8 GB-class laptop demo (Neo4j stays; coding sandbox is omitted).
+  if [[ "${PIPESHUB_DEPLOY_TYPE:-}" == "eval" ]]; then
+    _RAM_MIN_MB=7500
+    _RAM_MIN_LABEL="8 GB"
+  elif $IS_WSL; then
     _RAM_MIN_MB=10240
     _RAM_MIN_LABEL="10 GB"
   else
@@ -778,7 +785,7 @@ if ! $FLAG_UPGRADE && ! $FLAG_ROTATE_SIGNING_SECRETS; then
 
   if (( TOTAL_RAM_MB > 0 && TOTAL_RAM_MB < _RAM_MIN_MB )); then
     warn "Low RAM: ${TOTAL_RAM_MB} MB detected. PipesHub recommends a ${_RAM_MIN_LABEL}-class machine."
-    warn "The 'slim' deployment may still work on lower-memory machines, but performance may suffer."
+    warn "Slim and full want ~16 GB. Eval (PIPESHUB_DEPLOY_TYPE=eval) is the 8 GB-class laptop demo."
     if ! $FLAG_YES; then
       printf "\n  ${BOLD}Proceed with installation anyway?${RESET} [y/N]: "
       read -r _proceed
@@ -846,6 +853,43 @@ header "Configuration"
 ENV_EXISTS=false
 [[ -f "$ENV_FILE" ]] && ENV_EXISTS=true
 
+# --version / PIPESHUB_VERSION are normally applied inside the configuration
+# wizard, which --upgrade skips. Without this, `--upgrade --version X` sources
+# the old IMAGE_TAG back out of .env and restarts the very version the user was
+# trying to move off, reporting success.
+apply_requested_tag() {
+  local requested="${CLI_VERSION:-${PIPESHUB_VERSION:-}}"
+  [[ -n "$requested" ]] || return 0
+
+  if [[ "$requested" == "${IMAGE_TAG:-}" ]]; then
+    info "Already on image tag ${IMAGE_TAG}; re-pulling and restarting."
+    return 0
+  fi
+
+  info "Image tag: ${IMAGE_TAG:-latest} -> ${requested}"
+  IMAGE_TAG="$requested"
+
+  # Persist it so a later plain --upgrade, or a direct `docker compose up`,
+  # agrees with what is actually running.
+  if grep -qE '^IMAGE_TAG=' "$ENV_FILE"; then
+    sed -i.bak -E "s|^IMAGE_TAG=.*|IMAGE_TAG=${IMAGE_TAG}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+  else
+    printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" >>"$ENV_FILE"
+  fi
+
+  # Move the sandbox image to the new tag only when it is the default
+  # pipeshubai image tracking IMAGE_TAG. A value pointing anywhere else — an
+  # air-gapped mirror or a private registry — was set deliberately, and its
+  # tag is the operator's to manage, so it is left untouched. An empty value
+  # is also left alone: compose then derives the image from IMAGE_TAG.
+  if [[ "${SANDBOX_DOCKER_IMAGE:-}" == pipeshubai/pipeshub-sandbox:* ]]; then
+    SANDBOX_DOCKER_IMAGE="pipeshubai/pipeshub-sandbox:${IMAGE_TAG}"
+    if grep -qE '^SANDBOX_DOCKER_IMAGE=' "$ENV_FILE"; then
+      sed -i.bak -E "s|^SANDBOX_DOCKER_IMAGE=.*|SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+    fi
+  fi
+}
+
 # --upgrade always reuses the existing .env. --rotate-signing-secrets does too
 # unless --reconfigure was also passed (wizard still runs, then we rotate).
 if $FLAG_ROTATE_SIGNING_SECRETS && ! $ENV_EXISTS; then
@@ -856,6 +900,7 @@ if $FLAG_UPGRADE; then
   info "Upgrade mode — reusing existing .env."
   set -a; . "$ENV_FILE"; set +a
   SKIP_WIZARD=true
+  apply_requested_tag
 elif $ENV_EXISTS && ! $FLAG_RECONFIGURE && ! $INSTALL_SEPARATE; then
   # .env exists and --reconfigure was not requested: always reuse without prompting.
   # Use --reconfigure to overwrite. A newly chosen separate instance must not
@@ -901,21 +946,26 @@ if ! ${SKIP_WIZARD:-false}; then
 
   printf "\n  ${BOLD}Choose a deployment type:${RESET}\n\n"
   printf "  ${GREEN}[1] Slim${RESET}  — Smaller image (model downloads on first use), fewer containers.\n"
-  printf "         Broker: Redis Streams  |  KV store: Redis  |  Graph: Neo4j\n"
-  printf "         Recommended for: laptops, low-resource servers, quick evaluations.\n\n"
+  printf "         Broker: Redis Streams  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: yes\n"
+  printf "         Recommended for: laptops, low-resource servers.\n\n"
   printf "  [2] Full  — Larger image with the embedding model bundled; uses Kafka.\n"
-  printf "         Broker: Kafka  |  KV store: Redis  |  Graph: Neo4j\n"
+  printf "         Broker: Kafka  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: yes\n"
   printf "         Recommended for: production servers, air-gapped deployments.\n\n"
+  printf "  [3] Eval  — Slim image without the coding-sandbox pull or Slack bot.\n"
+  printf "         Broker: Redis Streams  |  KV store: Redis  |  Graph: Neo4j  |  Sandbox: no\n"
+  printf "         Neo4j stays (search ACLs live there). run_code is unavailable.\n"
+  printf "         Recommended for: 8 GB-class laptops, MCP search/ask demos.\n\n"
 
   if [[ -n "${PIPESHUB_DEPLOY_TYPE:-}" ]]; then
     DEPLOY_TYPE="$PIPESHUB_DEPLOY_TYPE"
     info "Using PIPESHUB_DEPLOY_TYPE=$DEPLOY_TYPE"
   else
-    prompt_choice DEPLOY_TYPE "Deployment type?" "slim" "slim" "full"
+    prompt_choice DEPLOY_TYPE "Deployment type?" "slim" "slim" "full" "eval"
   fi
 
   case "$DEPLOY_TYPE" in
     full) DEFAULT_IMAGE_TAG="latest"; DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="kafka"; DEFAULT_KV="redis" ;;
+    eval) DEFAULT_IMAGE_TAG="slim";   DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="redis"; DEFAULT_KV="redis" ;;
     *)    DEPLOY_TYPE="slim"
           DEFAULT_IMAGE_TAG="slim";   DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="redis"; DEFAULT_KV="redis" ;;
   esac
@@ -928,6 +978,11 @@ if ! ${SKIP_WIZARD:-false}; then
   fi
   if $DETECTED_ETCD; then
     DEFAULT_KV="etcd"; info "Defaulting KV store to etcd to reuse existing data volume."
+  fi
+
+  if [[ "$DEPLOY_TYPE" == "eval" && "$DEFAULT_GRAPH" != "neo4j" ]]; then
+    warn "Eval requires Neo4j (search ACLs live in the graph). Using neo4j instead of $DEFAULT_GRAPH."
+    DEFAULT_GRAPH="neo4j"
   fi
 
   # ── 7. IMAGE SOURCE & VERSION ───────────────────────────────────────────────
@@ -1050,6 +1105,7 @@ if ! ${SKIP_WIZARD:-false}; then
   esac
   [[ "$KV_STORE"  == "etcd"  ]] && PROFILES+=("kv-etcd")
   [[ "$BROKER"    == "kafka" ]] && PROFILES+=("broker-kafka")
+  [[ "$DEPLOY_TYPE" != "eval" ]] && PROFILES+=("sandbox")
   COMPOSE_PROFILES="$(IFS=','; echo "${PROFILES[*]}")"
 
   case "$GRAPH_DB" in
@@ -1194,12 +1250,14 @@ IMAGE_TAG=${IMAGE_TAG}
 IMAGE_SOURCE=${IMAGE_SOURCE}
 # Override sandbox image tag for local builds; leave blank to use compose default
 SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE}
+# Eval skips the in-container Slack bot. Slim/full leave this false.
+PIPESHUB_SKIP_SLACKBOT=$([ "${DEPLOY_TYPE}" = "eval" ] && echo true || echo false)
 
 # ── Compose project (isolates volumes/network from other copies on this host) ─
 COMPOSE_PROJECT_NAME=${PROJECT_NAME}
 
 # ── Compose profiles (controls which optional containers start) ──────────────
-# Values: graph-arango | graph-neo4j | kv-etcd | broker-kafka  (comma-separated)
+# Values: graph-arango | graph-neo4j | kv-etcd | broker-kafka | sandbox  (comma-separated)
 COMPOSE_PROFILES=${COMPOSE_PROFILES}
 
 # ── Core ─────────────────────────────────────────────────────────────────────
@@ -1450,7 +1508,10 @@ fi
 # On reuse/upgrade the wizard's interactive port scan was skipped. Confirm the
 # app port is free — or already held by our own stack (a restart) — and otherwise
 # fail clearly instead of letting docker emit a cryptic bind error mid-launch.
-if ${SKIP_WIZARD:-false}; then
+# Skipped under --print-env-only: that mode resolves and prints the config
+# without launching, so whether a port is free is not yet relevant and probing
+# it would make a non-launching command fail on the host's unrelated services.
+if ${SKIP_WIZARD:-false} && ! $FLAG_PRINT_ENV_ONLY; then
   if port_in_use "$APP_PORT" 2>/dev/null && ! port_owned_by_project "$APP_PORT"; then
     die "Port ${APP_PORT} is already in use by another process.
   Free it, stop the conflicting service, or change APP_PORT in:
@@ -1736,18 +1797,25 @@ if $_USE_BUILD; then
   fi
 else
   if [[ "$_DO_PULL" == true ]]; then
-    info "Refreshing the PipesHub images ($_APP_IMAGE, $_SANDBOX_IMAGE)... (pass --no-pull to keep cached images)"
+    info "Refreshing the PipesHub images ($_APP_IMAGE$([ "${DEPLOY_TYPE:-}" = "eval" ] || echo ", $_SANDBOX_IMAGE"))... (pass --no-pull to keep cached images)"
     # App and sandbox images share the moving IMAGE_TAG (often :latest). Infra
     # images use pinned tags and are fetched by `up -d` when absent.
     # A pull failure is non-fatal when an image is already cached, so a flaky
     # network or a temporary registry outage does not block a working install.
+    # Eval does not start the sandbox profile, so skip that pull.
+    _PULL_SERVICES=(pipeshub-ai)
+    [[ "${DEPLOY_TYPE:-}" != "eval" ]] && _PULL_SERVICES+=(sandbox-image)
     if ! docker compose "${_PROGRESS[@]}" \
         -f "$COMPOSE_FILE" \
         -p "$PROJECT_NAME" \
         --env-file "$ENV_FILE" \
-        pull pipeshub-ai sandbox-image 2>&1; then
-      if docker image inspect "$_APP_IMAGE" >/dev/null 2>&1 &&
-          docker image inspect "$_SANDBOX_IMAGE" >/dev/null 2>&1; then
+        pull "${_PULL_SERVICES[@]}" 2>&1; then
+      _cached=true
+      docker image inspect "$_APP_IMAGE" >/dev/null 2>&1 || _cached=false
+      if [[ "${DEPLOY_TYPE:-}" != "eval" ]]; then
+        docker image inspect "$_SANDBOX_IMAGE" >/dev/null 2>&1 || _cached=false
+      fi
+      if $_cached; then
         warn "Could not refresh images; continuing with cached copies if present."
       else
         warn "Could not pull a required image and it is not cached locally — the next step may fail."
