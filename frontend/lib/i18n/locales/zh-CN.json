@@ -393,6 +393,7 @@
       "subtitleExisting": "确认或更新您的 PipesHub 服务器 URL。",
       "label": "服务器 URL",
       "submit": "连接",
+      "changeServer": "更改服务器",
       "errors": {
         "empty": "请输入服务器 URL。",
         "invalid": "请输入有效的 URL（例如 http://localhost:3000）。",
@@ -2028,6 +2029,8 @@
         "additionalSettingsDescription": "配置连接器专属的同步选项",
         "nonEditableUrlFieldTooltip": "网站 URL 设置后无法更改。",
         "nonEditableLockedFieldTooltip": "此值设置后无法更改。",
+        "localFsDesktopOnlyBanner": "本地文件系统设置只能在 PipesHub 桌面应用中更改。此视图为只读。",
+        "localFsDesktopOnlySaveTooltip": "请打开 PipesHub 桌面应用以更改这些设置。",
         "importDate": "导入起始日期",
         "importDateDescription": "选择从哪个日期开始导入消息",
         "importAllTime": "导入全部历史数据",
@@ -2109,7 +2112,9 @@
           "needsAuth": "需要认证",
           "needsAuthTooltip": "配置已保存，但此实例仍需要认证。",
           "ready": "已完成",
-          "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。"
+          "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。",
+          "desktopOffline": "桌面端离线",
+          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。"
         },
         "sync": {
           "kind": "同步",
@@ -2120,6 +2125,14 @@
           "removing": "正在移除",
           "removingTooltip": "此实例正在被删除。"
         }
+      },
+      "localFsDesktop": {
+        "offlineToast": "请在拥有此文件夹的电脑上打开 PipesHub 桌面应用以进行同步。",
+        "offlineNamedToast": "拥有此文件夹的设备 {{deviceName}} 未连接。请在该设备上打开 PipesHub 桌面应用以进行同步。",
+        "unclaimedToast": "此连接器尚未在桌面端设置。请在拥有此文件夹的电脑上打开 PipesHub 桌面应用，并在其中启用一次同步。",
+        "ownedByOtherDeviceToast": "此连接器属于 {{deviceName}}。请在该设备上的 PipesHub 桌面应用中启用同步。",
+        "ownedByOtherDeviceUnknownToast": "此连接器属于另一台设备。请在该设备上的 PipesHub 桌面应用中启用同步。",
+        "deviceIdentityError": "无法识别此设备：{{error}}"
       },
       "schemaForm": {
         "tagsPlaceholder": "输入内容并按 Enter 添加标签",

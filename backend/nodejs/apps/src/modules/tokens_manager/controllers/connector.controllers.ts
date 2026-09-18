@@ -7,23 +7,26 @@
  */
 
 import { NextFunction, Response } from 'express';
-import axios from 'axios';
-import FormData from 'form-data';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   ConflictError,
   InternalServerError,
-  NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
+  annotateLocalFsDesktopPresence,
+  ConnectorInstanceSummary,
   executeConnectorCommand,
+  fetchConnectorInstanceSummary,
   handleBackendError,
   handleConnectorResponse,
+  localFsRefusalFromBackend,
+  localFsSyncRefusal,
+  respondLocalFsDesktopRefusal,
 } from '../utils/connector.utils';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import {
@@ -36,15 +39,6 @@ import { RecordRelationService } from '../../knowledge_base/services/kb.relation
 const logger = Logger.getInstance({
   service: 'Connector Controller',
 });
-
-type JsonPrimitive = string | number | boolean | null;
-type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
-type JsonObject = { [key: string]: JsonValue };
-
-type ProxyForwardError = {
-  message?: string;
-  response?: { status?: number; data?: JsonValue };
-};
 
 // Headers we forward to the Python connector backend. Authorization carries
 // the verified caller identity (orgId/userId/role); tracing headers preserve
@@ -78,69 +72,6 @@ export const buildProxyHeaders = (
     }
   }
   return headers;
-};
-
-// Defense-in-depth ownership check at the gateway. Connector instance
-// metadata lives in the Python backend, so we cannot do a local
-// `findOne({ _id, orgId })`. Instead we probe the connector via GET using
-// the caller's auth context — a 4xx means the caller cannot see it (or it
-// does not exist), and we refuse to proxy the write. Returns NotFoundError
-// (not Forbidden) so cross-tenant probing cannot enumerate IDs by status.
-const assertConnectorAccessible = async (
-  appConfig: AppConfig,
-  connectorId: string,
-  headers: Record<string, string>,
-): Promise<void> => {
-  const probe = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
-    HttpMethod.GET,
-    headers,
-  );
-  const status = probe?.statusCode;
-  if (typeof status !== 'number' || status < 200 || status >= 300) {
-    throw new NotFoundError('Connector not found');
-  }
-};
-
-const normalizeConnectorFileEventsBody = (
-  body: JsonValue | undefined,
-): JsonValue | undefined => {
-  let candidate: JsonValue | undefined = body;
-
-  for (let i = 0; i < 3; i += 1) {
-    if (typeof candidate === 'string') {
-      const trimmed = candidate.trim();
-      if (!trimmed) {
-        return candidate;
-      }
-      try {
-        candidate = JSON.parse(trimmed) as JsonValue;
-        continue;
-      } catch {
-        return candidate;
-      }
-    }
-
-    if (
-      candidate === null ||
-      candidate === undefined ||
-      typeof candidate !== 'object' ||
-      Array.isArray(candidate)
-    ) {
-      return candidate;
-    }
-
-    const obj = candidate as JsonObject;
-    const nested = obj.body ?? obj.payload ?? obj.data;
-
-    if (nested === undefined) {
-      return candidate;
-    }
-
-    candidate = nested;
-  }
-
-  return candidate;
 };
 
 /**
@@ -509,6 +440,7 @@ export const getConnectorInstances =
         headers,
       );
 
+      annotateLocalFsDesktopPresence(connectorResponse?.data, req.user?.orgId);
       handleConnectorResponse(
         connectorResponse,
         res,
@@ -773,6 +705,7 @@ export const getConnectorInstance =
         headers,
       );
 
+      annotateLocalFsDesktopPresence(connectorResponse?.data, req.user?.orgId);
       handleConnectorResponse(
         connectorResponse,
         res,
@@ -1460,7 +1393,7 @@ export const toggleConnectorInstance =
   ): Promise<void> => {
     try {
       const { connectorId } = req.params;
-      const { type, fullSync } = req.body;
+      const { type, fullSync, deviceId, deviceName } = req.body;
 
       if (!connectorId) {
         throw new BadRequestError('Connector ID is required');
@@ -1473,10 +1406,44 @@ export const toggleConnectorInstance =
       logger.info(`Toggling connector instance ${connectorId} with type ${type}`);
 
       const headers = buildProxyHeaders(req);
-      const body: { type: string; fullSync?: boolean } = { type };
+      let ownerDeviceName: string | null | undefined;
+      // Enabling sync publishes an immediate pull, so refuse up front when the
+      // owner device cannot serve it. Agent toggles and toggle-off skip the
+      // extra round-trip; Python re-checks the claim when it writes the owner.
+      if (type === 'sync') {
+        const instance = await fetchConnectorInstanceSummary(
+          connectorId,
+          appConfig,
+          headers,
+        );
+        ownerDeviceName = instance.ownerDeviceName;
+        if (instance.isActive === false) {
+          const refusal = localFsSyncRefusal(req.user?.orgId, instance, {
+            fallbackUserId: req.user?.userId,
+            requestDeviceId: deviceId,
+          });
+          if (refusal) {
+            respondLocalFsDesktopRefusal(
+              res,
+              connectorId,
+              refusal,
+              instance.ownerDeviceName,
+            );
+            return;
+          }
+        }
+      }
+      const body: {
+        type: string;
+        fullSync?: boolean;
+        deviceId?: string;
+        deviceName?: string;
+      } = { type };
       if (typeof fullSync === 'boolean') {
         body.fullSync = fullSync;
       }
+      if (typeof deviceId === 'string') body.deviceId = deviceId;
+      if (typeof deviceName === 'string') body.deviceName = deviceName;
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/toggle`,
         HttpMethod.POST,
@@ -1488,6 +1455,19 @@ export const toggleConnectorInstance =
         connectorResponse?.statusCode != null &&
         connectorResponse.statusCode >= 200 &&
         connectorResponse.statusCode < 300;
+
+      // Python's claim check is the backstop for a race with another device;
+      // keep its code in the refusal shape the client reads.
+      const backendRefusal = localFsRefusalFromBackend(connectorResponse);
+      if (backendRefusal) {
+        respondLocalFsDesktopRefusal(
+          res,
+          connectorId,
+          backendRefusal,
+          ownerDeviceName,
+        );
+        return;
+      }
 
       // Only the `sync` toggle affects crawling; agent toggles are a
       // separate concern and must not touch BullMQ jobs.
@@ -1512,124 +1492,6 @@ export const toggleConnectorInstance =
       const handledError = handleBackendError(
         error,
         'toggle connector instance',
-      );
-      next(handledError);
-    }
-  };
-
-export const submitConnectorFileEvents =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorId } = req.params;
-      const { userId } = req.user || {};
-
-      if (!userId) {
-        throw new UnauthorizedError('User authentication required');
-      }
-      if (!connectorId) {
-        throw new BadRequestError('Connector ID is required');
-      }
-
-      const headers = buildProxyHeaders(req);
-      await assertConnectorAccessible(appConfig, connectorId, headers);
-      const payload = normalizeConnectorFileEventsBody(req.body);
-
-      const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/file-events`,
-        HttpMethod.POST,
-        headers,
-        payload,
-      );
-
-      handleConnectorResponse(
-        connectorResponse,
-        res,
-        'Submitting connector file events',
-        'Failed to submit connector file events',
-      );
-    } catch (error) {
-      const err = error as ProxyForwardError;
-      logger.error('Error submitting connector file events', {
-        error: err.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: err.response?.status,
-        data: err.response?.data,
-      });
-      const handledError = handleBackendError(
-        error,
-        'submit connector file events',
-      );
-      next(handledError);
-    }
-  };
-
-export const submitConnectorFileEventUploads =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorId } = req.params;
-      const { userId } = req.user || {};
-
-      if (!userId) {
-        throw new UnauthorizedError('User authentication required');
-      }
-      if (!connectorId) {
-        throw new BadRequestError('Connector ID is required');
-      }
-      if (!req.body?.manifest) {
-        throw new BadRequestError("Multipart field 'manifest' is required");
-      }
-
-      const headers = buildProxyHeaders(req);
-      await assertConnectorAccessible(appConfig, connectorId, headers);
-
-      const form = new FormData();
-      form.append('manifest', String(req.body.manifest));
-
-      const files = ((req as AuthenticatedUserRequest & { files?: Express.Multer.File[] }).files || []);
-      for (const file of files) {
-        form.append(file.fieldname, file.buffer, {
-          filename: file.originalname || file.fieldname,
-          contentType: file.mimetype || 'application/octet-stream',
-          knownLength: file.size,
-        });
-      }
-
-      const response = await axios.post(
-        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/file-events/upload`,
-        form,
-        {
-          headers: { ...headers, ...form.getHeaders() },
-          timeout: 0,
-          maxBodyLength: Infinity,
-          maxContentLength: Infinity,
-          validateStatus: () => true,
-        },
-      );
-
-      res.status(response.status).json(response.data);
-    } catch (error) {
-      const err = error as ProxyForwardError;
-      logger.error('Error submitting connector file event uploads', {
-        error: err.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: err.response?.status,
-        data: err.response?.data,
-      });
-      const handledError = handleBackendError(
-        error,
-        'submit connector file event uploads',
       );
       next(handledError);
     }
@@ -1994,39 +1856,20 @@ const validateActiveConnector = async (
   });
 };
 
-interface ConnectorInstanceLock {
-  connector?: { isLocked?: boolean; status?: string };
-}
-
 const LOCK_MESSAGES: Record<string, string> = {
   FULL_SYNCING: 'A full sync is in progress. Please wait and try again.',
   SYNCING: 'A sync is already in progress. Please wait and try again.',
 };
 
-const validateConnectorNotLocked = async (
-  connectorId: string,
-  appConfig: AppConfig,
-  headers: Record<string, string>,
-): Promise<void> => {
-  const response = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
-    HttpMethod.GET,
-    headers,
-  );
-
-  const data = response.data as ConnectorInstanceLock | undefined;
-  if (response.statusCode !== 200 || !data?.connector) {
-    return;
-  }
-
-  const connector = data.connector;
-  if (connector.isLocked) {
-    const status = connector.status ?? '';
-    const message =
-      LOCK_MESSAGES[status] ??
-      'Another operation is in progress. Please wait and try again.';
-    throw new ConflictError(message);
-  }
+const assertConnectorNotLocked = (
+  instance: ConnectorInstanceSummary | null,
+): void => {
+  if (!instance?.isLocked) return;
+  const status = instance.status ?? '';
+  const message =
+    LOCK_MESSAGES[status] ??
+    'Another operation is in progress. Please wait and try again.';
+  throw new ConflictError(message);
 };
 
 const normalizeAppName = (value: string): string =>
@@ -2131,11 +1974,25 @@ export const resyncConnectorRecords =
         headers,
       );
 
-      await validateConnectorNotLocked(
+      const instance = await fetchConnectorInstanceSummary(
         connectorId,
         appConfig,
         headers,
       );
+      // Lock first: "already running" must win over "desktop offline".
+      assertConnectorNotLocked(instance);
+      const refusal = localFsSyncRefusal(orgId, instance, {
+        fallbackUserId: userId,
+      });
+      if (refusal) {
+        respondLocalFsDesktopRefusal(
+          res,
+          connectorId,
+          refusal,
+          instance.ownerDeviceName,
+        );
+        return;
+      }
 
       const resyncConnectorPayload = {
         userId,

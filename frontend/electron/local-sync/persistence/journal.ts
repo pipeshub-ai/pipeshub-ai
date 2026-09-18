@@ -19,12 +19,6 @@ export interface ConnectorMeta {
   includeSubfolders?: boolean;
   connectorDisplayType?: string;
   syncStrategy?: 'MANUAL' | 'SCHEDULED';
-  scheduledConfig?: ScheduledConfig | null;
-}
-
-export interface ScheduledConfig {
-  intervalMinutes?: number;
-  timezone?: string | null;
 }
 
 export interface JournalCursor {
@@ -76,8 +70,11 @@ function eventsFingerprint(events: WatchEvent[]): string {
     const pb = `${b.path}\0${b.type}`;
     return pa.localeCompare(pb);
   });
+  // sha256 is part of the identity: without it, an edit and its revert inside
+  // the dedup window fingerprint the same and the second batch is dropped,
+  // leaving the backend on the wrong revision until the next full run.
   return JSON.stringify(sorted.map((e) => ({
-    t: e.type, p: e.path, o: e.oldPath, s: e.size, d: e.isDirectory,
+    t: e.type, p: e.path, o: e.oldPath, s: e.size, d: e.isDirectory, h: e.sha256,
   })));
 }
 
@@ -122,6 +119,30 @@ export class LocalSyncJournal {
     // keep backward-compatible filename (non-segmented) since existing installs
     // have already written <connectorId>.meta.json
     return path.join(this.baseDir, `${connectorId}.meta.json`);
+  }
+
+  /**
+   * Erase every trace of a connector: meta, journal (and its rotations), and
+   * cursor. Meta is what `listConnectorIds` keys off, so leaving it behind
+   * after the connector is deleted means the next launch mounts a watcher for
+   * something that no longer exists — and that watcher holds the sync root
+   * against any new connector pointed at the same folder.
+   */
+  removeConnector(connectorId: string): void {
+    const journalPath = this.getJournalPath(connectorId);
+    const paths = [
+      this.getMetaPath(connectorId),
+      journalPath,
+      this.getCursorPath(connectorId),
+      ...Array.from({ length: MAX_ROTATIONS }, (_, i) => `${journalPath}.${i + 1}`),
+    ];
+    for (const p of paths) {
+      try {
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      } catch (error) {
+        console.warn(`[local-sync] could not remove ${p}:`, error);
+      }
+    }
   }
 
   listConnectorIds(): string[] {
@@ -203,6 +224,11 @@ export class LocalSyncJournal {
       last.fingerprint === fp &&
       Math.abs(now - (last.createdAt || 0)) <= DEDUP_WINDOW_MS
     ) {
+      // Callers ignore the return value, so say it out loud — a dropped batch
+      // is indistinguishable from a recorded one otherwise.
+      console.log(
+        `[local-sync:${connectorId}] dropped batch ${batch.batchId}: identical to ${last.batchId} within the dedup window`,
+      );
       return last;
     }
 
@@ -248,6 +274,30 @@ export class LocalSyncJournal {
     if (status === 'synced') {
       const cursor = this.readCursor(connectorId);
       this.writeCursor(connectorId, { ...cursor, lastAckBatchId: batchId });
+    }
+  }
+
+  /**
+   * Ack a run of batches in one rewrite. `updateBatchStatus` rewrites the whole
+   * journal per call, so acking a page batch-by-batch is O(batches^2) on the
+   * file — noticeable once a busy folder has thousands of them.
+   */
+  markBatchesSynced(connectorId: string, batchIds: string[]): void {
+    if (batchIds.length === 0) return;
+    const target = new Set(batchIds);
+    const p = this.getJournalPath(connectorId);
+    const now = Date.now();
+    let lastSynced: string | null = null;
+    const next = this.listBatches(connectorId).map((b): JournalRecord => {
+      if (!target.has(b.batchId)) return b;
+      lastSynced = b.batchId;
+      return { ...b, status: 'synced', updatedAt: now, lastError: null };
+    });
+    const text = next.map((b) => JSON.stringify(b)).join('\n');
+    writeFileAtomic(p, text ? `${text}\n` : '');
+    if (lastSynced) {
+      const cursor = this.readCursor(connectorId);
+      this.writeCursor(connectorId, { ...cursor, lastAckBatchId: lastSynced });
     }
   }
 
