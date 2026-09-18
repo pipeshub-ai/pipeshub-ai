@@ -1037,9 +1037,9 @@ class Neo4jProvider(IGraphDBProvider):
         match_value: Any,
         transaction: str | None = None,
     ) -> bool:
-        """SET the node only while `match_field` still equals `match_value`.
-        MATCH + WHERE + SET is one Cypher statement so a concurrent overwrite
-        cannot sneak in between the check and the write."""
+        """Replace node properties only while `match_field` still equals
+        `match_value`. MATCH + WHERE + SET is one Cypher statement so a
+        concurrent overwrite cannot sneak in between the check and the write."""
         try:
             label = collection_to_label(collection)
             neo4j_node = self._arango_to_neo4j_node(node, collection)
@@ -1049,7 +1049,7 @@ class Neo4jProvider(IGraphDBProvider):
             query = f"""
             MATCH (n:{label} {{id: $key}})
             WHERE n[$field] = $expected
-            SET n += $node
+            SET n = $node
             RETURN n.id AS id
             """
             results = await self.client.execute_query(

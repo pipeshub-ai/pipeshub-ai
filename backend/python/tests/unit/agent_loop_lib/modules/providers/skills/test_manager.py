@@ -150,9 +150,13 @@ class FakeStore(SkillStore):
         self._skills[name] = skill.model_copy(update={"metadata": updated})
         return True
 
-    async def set_skill_status(self, name: str, status: SkillStatus) -> bool:
+    async def set_skill_status(
+        self, name: str, status: SkillStatus, from_status: SkillStatus | None = None,
+    ) -> bool:
         skill = self._skills.get(name)
         if skill is None:
+            return False
+        if from_status is not None and skill.metadata.status != from_status:
             return False
         self._skills[name] = skill.model_copy(update={"metadata": skill.metadata.model_copy(update={"status": status})})
         return True
@@ -205,7 +209,7 @@ class _NoRefreshStore(SkillStore):
     async def deprecate_skill(self, name, reason, replaced_by=None) -> bool:
         raise NotImplementedError
 
-    async def set_skill_status(self, name, status) -> bool:
+    async def set_skill_status(self, name, status, from_status=None) -> bool:
         raise NotImplementedError
 
 
@@ -455,6 +459,29 @@ class TestActivateAndLoadResource:
         else:
             raise AssertionError("expected RegistryError")
 
+    async def test_get_skill_returns_disabled_without_recording_activation(self) -> None:
+        store = FakeStore({"s": _skill("s", status=SkillStatus.DISABLED)})
+        tracker = FakeTracker()
+        manager = _manager(store, tracker=tracker)
+
+        skill = await manager.get_skill("s")
+
+        assert skill.metadata.status == SkillStatus.DISABLED
+        assert tracker.activations == []
+
+    async def test_activate_skill_rejects_disabled_before_recording_activation(self) -> None:
+        store = FakeStore({"s": _skill("s", status=SkillStatus.DISABLED)})
+        tracker = FakeTracker()
+        manager = _manager(store, tracker=tracker)
+
+        try:
+            await manager.activate_skill("s", session_id="sess-1")
+        except RegistryError as e:
+            assert "disabled" in str(e)
+        else:
+            raise AssertionError("expected RegistryError")
+        assert tracker.activations == []
+
     async def test_load_resource_returns_content(self) -> None:
         class _ResourceStore(FakeStore):
             async def get_resource(self, skill_name: str, resource_path: str) -> str | None:
@@ -698,6 +725,26 @@ class TestEnableDisable:
         with pytest.raises(RegistryError):
             await manager.enable("s")
         # Still deprecated — the failed `enable` must not have mutated anything.
+        assert (await store.get_skill("s")).metadata.status == SkillStatus.DEPRECATED
+
+    async def test_disable_loses_to_concurrent_deprecate(self) -> None:
+        """`set_skill_status` must not overwrite a newer lifecycle state
+        that landed between the manager's source-status check and the write."""
+
+        class RacingStore(FakeStore):
+            async def set_skill_status(
+                self, name: str, status: SkillStatus, from_status: SkillStatus | None = None,
+            ) -> bool:
+                skill = self._skills[name]
+                self._skills[name] = skill.model_copy(update={
+                    "metadata": skill.metadata.model_copy(update={"status": SkillStatus.DEPRECATED}),
+                })
+                return await super().set_skill_status(name, status, from_status=from_status)
+
+        store = RacingStore({"s": _skill("s")})
+        manager = _manager(store)
+        with pytest.raises(RegistryError, match="deprecated"):
+            await manager.disable("s")
         assert (await store.get_skill("s")).metadata.status == SkillStatus.DEPRECATED
 
 

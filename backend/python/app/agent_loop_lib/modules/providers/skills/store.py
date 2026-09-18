@@ -101,8 +101,8 @@ class SkillWriter(ABC):
 
         `expected_updated_at`, when given, is the `updatedAtTimestamp` the
         caller last observed — a mismatch raises `SkillConflictError`.
-        `None` (the default) is last-write-wins (tools, seeder, CLI). A
-        store without mutation timestamps (filesystem) may ignore it."""
+        `None` (the default) is last-write-wins (tools, CLI). A store
+        without mutation timestamps (filesystem) may ignore it."""
 
     @abstractmethod
     async def patch_skill(
@@ -136,15 +136,23 @@ class SkillWriter(ABC):
         references degrade gracefully — see `SkillManager.activate_skill`."""
 
     @abstractmethod
-    async def set_skill_status(self, name: str, status: SkillStatus) -> bool:
+    async def set_skill_status(
+        self,
+        name: str,
+        status: SkillStatus,
+        from_status: SkillStatus | None = None,
+    ) -> bool:
         """Write `status` onto an existing skill in place — the enable/
         disable primitive. Deliberately NOT `update_skill`: a mute/unmute is
         not a content edit, so it must not snapshot a version revision or
         bump semver the way `deprecate_skill` (which reuses `update_skill`
-        for its content-carrying reason/replaced_by) does. Returns False if
-        the skill is unknown. Callers (see `SkillManager.enable`/`disable`)
-        are responsible for validating the FROM status; a store implementation
-        only needs to persist whatever `status` it's given."""
+        for its content-carrying reason/replaced_by) does.
+
+        When `from_status` is set, compare it to the persisted status and
+        write `status` only if they match, in one atomic operation where
+        the backend allows. Returns False if the skill is unknown or that
+        comparison fails (a transition conflict). `from_status=None` is
+        last-write-wins."""
 
     async def detach_from_agents(self, name: str) -> None:
         """Remove `AGENT_HAS_SKILL` edges pointing at `name`. No-op on

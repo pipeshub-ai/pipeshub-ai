@@ -369,7 +369,7 @@ class TestGetSkill:
     async def test_success(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
-        manager.activate_skill = AsyncMock(return_value=_mock_skill())
+        manager.get_skill = AsyncMock(return_value=_mock_skill())
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import get_skill
@@ -380,7 +380,7 @@ class TestGetSkill:
     async def test_not_found(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
-        manager.activate_skill = AsyncMock(side_effect=RegistryError("skill 'x' not found"))
+        manager.get_skill = AsyncMock(side_effect=RegistryError("skill 'x' not found"))
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import get_skill
@@ -398,7 +398,7 @@ class TestExportSkill:
     async def test_success(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
-        manager.activate_skill = AsyncMock(return_value=_mock_skill())
+        manager.get_skill = AsyncMock(return_value=_mock_skill())
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
              patch(f"{MODULE}.render_skill_md", return_value="---\nname: test\n---\nbody"):
@@ -411,7 +411,7 @@ class TestExportSkill:
     async def test_not_found(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
-        manager.activate_skill = AsyncMock(side_effect=RegistryError("not found"))
+        manager.get_skill = AsyncMock(side_effect=RegistryError("not found"))
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import export_skill

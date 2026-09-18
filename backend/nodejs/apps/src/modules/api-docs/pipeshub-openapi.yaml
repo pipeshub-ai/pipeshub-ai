@@ -9399,7 +9399,7 @@ components:
         status:
           type: string
           nullable: true
-          description: Lifecycle state of the skill — `active` or `deprecated`.
+          description: Lifecycle state of the skill — `active`, `deprecated`, or `disabled`. `candidate` is a learning-loop record state, not an assignable skill, and is not returned here.
 
     Agent:
       type: object

@@ -27,7 +27,7 @@ const SKILL_TOOL_LABELS: Record<string, { present: string; past: string }> = {
  * the magnifying-glass treatment) and to gate the raw SKILL.md/file
  * `resultPreview` fallback off for skill tool calls. */
 export function isSkillTool(toolName: string | undefined): boolean {
-  return !!toolName && toolName in SKILL_TOOL_LABELS;
+  return !!toolName && Object.prototype.hasOwnProperty.call(SKILL_TOOL_LABELS, toolName);
 }
 
 /** Drops any `{app}__` namespace prefix, splits on separators, title-cases. */

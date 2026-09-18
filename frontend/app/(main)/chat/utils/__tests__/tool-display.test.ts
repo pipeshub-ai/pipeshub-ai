@@ -26,6 +26,12 @@ describe('isSkillTool', () => {
     expect(isSkillTool('run_code')).toBe(false);
     expect(isSkillTool(undefined)).toBe(false);
   });
+
+  it('does not treat Object.prototype names as skill tools', () => {
+    expect(isSkillTool('constructor')).toBe(false);
+    expect(isSkillTool('toString')).toBe(false);
+    expect(isSkillTool('valueOf')).toBe(false);
+  });
 });
 
 describe('toolActivityLabel — old chat (toolName only, no displayName)', () => {

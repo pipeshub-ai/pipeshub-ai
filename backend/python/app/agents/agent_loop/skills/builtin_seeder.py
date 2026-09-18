@@ -31,10 +31,10 @@ from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.modules.providers.skills.base import (
     Skill,
+    SkillConflictError,
     SkillFilter,
     SkillMetadata,
     SkillSource,
-    SkillStatus,
 )
 from app.agent_loop_lib.modules.providers.skills.loader import (
     load_skills_from_dir,
@@ -136,17 +136,21 @@ class BuiltinSkillSeeder:
             )
             return
         try:
+            expected = int(current.updated_at) if current.updated_at is not None else None
             await store.update_skill(
-                skill.metadata.name, render_skill_md(skill), resources=self._pack_resources(skill),
+                skill.metadata.name,
+                render_skill_md(skill),
+                resources=self._pack_resources(skill),
+                expected_updated_at=expected,
+                status=current.status,
             )
-            # A mute is not an org content fork (`set_skill_status` does not
-            # stamp `updatedBy`), so unmodified packs still auto-upgrade —
-            # but the admin's disable must survive the rewrite from the
-            # upstream SKILL.md, which is always `active`.
-            if current.status == SkillStatus.DISABLED:
-                await store.set_skill_status(skill.metadata.name, SkillStatus.DISABLED)
             logger.info(
                 "builtin_seeder: upgraded %r from pack v%s to v%s",
+                skill.metadata.name, current.pack_version, skill.metadata.pack_version,
+            )
+        except SkillConflictError:
+            logger.info(
+                "builtin_seeder: %r changed during upgrade (pack v%s -> v%s) — skipping",
                 skill.metadata.name, current.pack_version, skill.metadata.pack_version,
             )
         except Exception:

@@ -24,6 +24,9 @@ from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
 from app.api.routes.agent import _create_skill_edges
 from app.api.routes.skills import (
     DeprecateRequest,
+    PatchBodyRequest,
+    ResourceWriteRequest,
+    RollbackRequest,
     SkillWriteRequest,
     create_skill,
     delete_skill,
@@ -33,7 +36,11 @@ from app.api.routes.skills import (
     get_skill,
     get_skill_usage,
     list_skills,
+    patch_skill_body,
+    remove_resource,
+    rollback_skill,
     update_skill,
+    write_resource,
 )
 from app.config.constants.arangodb import CollectionNames
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
@@ -326,8 +333,9 @@ class TestEnableDisable:
 
 class TestBuiltinSkillsRejectContentMutations:
     """Content mutations of an EXISTING builtin-sourced skill (update/
-    deprecate/delete) stay 403 even for an org admin. Enable/disable is
-    the exception — see `TestBuiltinAdminAvailability`."""
+    patch/rollback/deprecate/delete, resource write/delete) stay 403
+    even for an org admin. Enable/disable is the exception — see
+    `TestBuiltinAdminAvailability`."""
 
     async def test_update_rejects_403(self, graph: _LifecycleGraphProvider) -> None:
         req = _request("user-a", "org-1", graph)
@@ -335,6 +343,42 @@ class TestBuiltinSkillsRejectContentMutations:
         with _as_role("admin"):
             with pytest.raises(HTTPException) as exc:
                 await update_skill(req, "seeded-builtin", SkillWriteRequest(description="hijacked", body="new"))
+        assert exc.value.status_code == 403
+
+    async def test_patch_rejects_403(self, graph: _LifecycleGraphProvider) -> None:
+        req = _request("user-a", "org-1", graph)
+        await _seed_builtin(req)
+        with _as_role("admin"):
+            with pytest.raises(HTTPException) as exc:
+                await patch_skill_body(
+                    req, "seeded-builtin", PatchBodyRequest(old_string="body", new_string="hijacked"),
+                )
+        assert exc.value.status_code == 403
+
+    async def test_rollback_rejects_403(self, graph: _LifecycleGraphProvider) -> None:
+        req = _request("user-a", "org-1", graph)
+        await _seed_builtin(req)
+        with _as_role("admin"):
+            with pytest.raises(HTTPException) as exc:
+                await rollback_skill(req, "seeded-builtin", RollbackRequest(version="1.0.0"))
+        assert exc.value.status_code == 403
+
+    async def test_write_resource_rejects_403(self, graph: _LifecycleGraphProvider) -> None:
+        req = _request("user-a", "org-1", graph)
+        await _seed_builtin(req)
+        with _as_role("admin"):
+            with pytest.raises(HTTPException) as exc:
+                await write_resource(
+                    req, "seeded-builtin", ResourceWriteRequest(path="scripts/hijack.py", content="print(1)"),
+                )
+        assert exc.value.status_code == 403
+
+    async def test_remove_resource_rejects_403(self, graph: _LifecycleGraphProvider) -> None:
+        req = _request("user-a", "org-1", graph)
+        await _seed_builtin(req)
+        with _as_role("admin"):
+            with pytest.raises(HTTPException) as exc:
+                await remove_resource(req, "seeded-builtin", path="scripts/hijack.py")
         assert exc.value.status_code == 403
 
     async def test_deprecate_rejects_403(self, graph: _LifecycleGraphProvider) -> None:

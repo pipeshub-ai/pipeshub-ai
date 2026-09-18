@@ -682,6 +682,35 @@ class TestOptimisticConcurrency:
         assert skill.metadata.updated_at == str(token)
 
 
+class TestMonotonicUpdatedAt:
+    async def test_same_millisecond_updates_advance_if_match_token(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import app.agents.agent_loop.skills.graph_store as graph_store_module
+
+        monkeypatch.setattr(graph_store_module, "get_epoch_timestamp_in_ms", lambda: 1_000_000)
+
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        created = graph._col("agentSkills")["org-1_deploy-service"]["updatedAtTimestamp"]
+
+        await store.update_skill(
+            "deploy-service",
+            _SKILL_MD.replace("Push it.", "Push it now."),
+        )
+        first = graph._col("agentSkills")["org-1_deploy-service"]["updatedAtTimestamp"]
+        assert first > created
+
+        await store.update_skill(
+            "deploy-service",
+            _SKILL_MD.replace("Push it.", "Push it later."),
+            expected_updated_at=first,
+        )
+        second = graph._col("agentSkills")["org-1_deploy-service"]["updatedAtTimestamp"]
+        assert second > first
+
+
 class TestSetSkillStatus:
     """Enable/disable primitive — writes only the `status` column, unlike
     `deprecate_skill`'s `update_skill` round-trip: no version bump, no
@@ -718,6 +747,46 @@ class TestSetSkillStatus:
         assert ok is True
         skill = await store.get_skill("deploy-service")
         assert skill.metadata.status == SkillStatus.ACTIVE
+
+
+    async def test_from_status_mismatch_does_not_overwrite(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        await store.set_skill_status("deploy-service", SkillStatus.DISABLED)
+
+        ok = await store.set_skill_status(
+            "deploy-service", SkillStatus.ACTIVE, from_status=SkillStatus.ACTIVE,
+        )
+        assert ok is False
+        skill = await store.get_skill("deploy-service")
+        assert skill.metadata.status == SkillStatus.DISABLED
+
+    async def test_from_status_cas_loses_to_concurrent_lifecycle_change(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        inner = graph.update_node_if_match
+
+        async def concurrent_writer(
+            key: str,
+            collection: str,
+            node: dict[str, Any],
+            match_field: str,
+            match_value: object,
+            transaction: str | None = None,
+        ) -> bool:
+            graph._col(collection)[key][match_field] = int(match_value) + 1
+            graph._col(collection)[key]["status"] = "deprecated"
+            return await inner(key, collection, node, match_field, match_value, transaction)
+
+        graph.update_node_if_match = concurrent_writer  # type: ignore[method-assign]
+
+        ok = await store.set_skill_status(
+            "deploy-service", SkillStatus.DISABLED, from_status=SkillStatus.ACTIVE,
+        )
+        assert ok is False
+        assert graph._col("agentSkills")["org-1_deploy-service"]["status"] == "deprecated"
 
 
 class TestReferentialUsage:

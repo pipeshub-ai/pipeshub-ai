@@ -138,12 +138,24 @@ class SkillManager:
         `activate_skill`) and DISABLED (not loadable at all) skills."""
         return [m for m in self._catalog.values() if is_advertised(m)]
 
-    async def activate_skill(self, name: str, session_id: str | None = None) -> Skill:
-        """Tier 2 — full body, on demand. Records the activation (for the
-        usage tracker) whenever `session_id` is given."""
+    async def get_skill(self, name: str) -> Skill:
+        """Management lookup — returns the skill regardless of status,
+        without recording an activation. Agent-facing loads must go
+        through `activate_skill`, which refuses `DISABLED`."""
         skill = await self._store.get_skill(name)
         if skill is None:
             raise RegistryError(f"Skill {name!r} not found")
+        return skill
+
+    async def activate_skill(self, name: str, session_id: str | None = None) -> Skill:
+        """Tier 2 — full body, on demand. Records the activation (for the
+        usage tracker) whenever `session_id` is given. Refuses
+        `SkillStatus.DISABLED` (reversible mute: not advertised AND not
+        loadable) before tracking or returning; `DEPRECATED` stays
+        loadable by exact name."""
+        skill = await self.get_skill(name)
+        if skill.metadata.status == SkillStatus.DISABLED:
+            raise RegistryError(f"Skill {name!r} is disabled")
         if session_id is not None:
             await self._tracker.record_activation(name, session_id)
         return skill
@@ -288,9 +300,18 @@ class SkillManager:
             raise RegistryError(
                 f"Skill {name!r} is {skill.metadata.status.value!r}, not {from_status.value!r} — cannot transition to {to_status.value!r}"
             )
-        ok = await self._store.set_skill_status(name, to_status)
+        ok = await self._store.set_skill_status(name, to_status, from_status=from_status)
         if not ok:
-            raise RegistryError(f"Skill {name!r} not found")
+            latest = await self._store.get_skill(name)
+            if latest is None:
+                raise RegistryError(f"Skill {name!r} not found")
+            if latest.metadata.status != from_status:
+                raise RegistryError(
+                    f"Skill {name!r} is {latest.metadata.status.value!r}, not {from_status.value!r} — cannot transition to {to_status.value!r}"
+                )
+            raise RegistryError(
+                f"Skill {name!r} was modified — cannot transition to {to_status.value!r}"
+            )
         await self._resync_entry(name)
         return self._catalog[name]
 

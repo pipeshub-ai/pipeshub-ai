@@ -292,7 +292,13 @@ export function SkillEditorPanel() {
                   skillName={editingSkillName!}
                   status={skill.status}
                   builtin={skill.source === 'builtin'}
-                  onStatusChange={(status) => setSkill((s) => ({ ...s, status }))}
+                  onStatusChange={(status, updatedAt) =>
+                    setSkill((s) => ({
+                      ...s,
+                      status,
+                      ...(updatedAt !== undefined ? { updatedAt } : {}),
+                    }))
+                  }
                 />
               )}
               {isEditMode && !isReadOnly && (
@@ -444,7 +450,7 @@ function AvailabilityRow({
   skillName: string;
   status: SkillStatus;
   builtin: boolean;
-  onStatusChange: (status: SkillStatus) => void;
+  onStatusChange: (status: SkillStatus, updatedAt?: Skill['updatedAt']) => void;
 }) {
   const { t } = useTranslation();
   const { updateSkillMetadata } = useSkillsStore();
@@ -463,7 +469,7 @@ function AvailabilityRow({
         const updated = nextEnabled
           ? await SkillsApi.enableSkill(skillName)
           : await SkillsApi.disableSkill(skillName);
-        onStatusChange(updated.status);
+        onStatusChange(updated.status, updated.updatedAt);
         updateSkillMetadata(skillName, updated);
         toast.success(
           nextEnabled

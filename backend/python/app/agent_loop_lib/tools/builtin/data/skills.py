@@ -336,8 +336,10 @@ class LoadSkillTool(Tool):
     async def execute(self, name: str, **kwargs: Any) -> ToolOutput:
         try:
             skill = await self._manager.activate_skill(name)
-        except RegistryError:
-            return ToolOutput(success=True, data={"error": f"Unknown skill: {name!r}."})
+        except RegistryError as e:
+            message = str(e)
+            error = message if "is disabled" in message else f"Unknown skill: {name!r}."
+            return ToolOutput(success=True, data={"error": error})
 
         if skill.metadata.status == SkillStatus.DISABLED:
             # Unlike DEPRECATED (still loadable, just not advertised — see
@@ -587,7 +589,7 @@ class SkillManageTool(Tool):
                 return ToolOutput(success=True, data={"name": name, "created": True, "category": metadata.category})
 
             if action == "edit":
-                existing = await self._manager.activate_skill(name)
+                existing = await self._manager.get_skill(name)
                 content = _render_skill_md(
                     name,
                     description if description is not None else existing.description,

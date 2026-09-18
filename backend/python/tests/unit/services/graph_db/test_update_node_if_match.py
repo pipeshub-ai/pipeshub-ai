@@ -39,7 +39,8 @@ class TestNeo4jUpdateNodeIfMatch:
         assert applied is True
         query = provider.client.execute_query.await_args.args[0]
         assert "WHERE n[$field] = $expected" in query
-        assert "SET n += $node" in query
+        assert "SET n = $node" in query
+        assert "SET n += $node" not in query
         params = provider.client.execute_query.await_args.kwargs["parameters"]
         assert params["expected"] == 100
         assert params["field"] == "updatedAtTimestamp"

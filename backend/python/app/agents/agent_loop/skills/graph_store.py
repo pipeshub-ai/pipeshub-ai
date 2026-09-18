@@ -101,6 +101,15 @@ def _bump_patch(version: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
+def _next_updated_at(existing: Any, now: int | None = None) -> int:
+    """If-Match tokens are millisecond timestamps. Two writes in the same
+    millisecond must still advance the token, or a later CAS still matches
+    the prior value."""
+    clock = get_epoch_timestamp_in_ms() if now is None else now
+    prev = int(existing or 0)
+    return clock if clock > prev else prev + 1
+
+
 def _doc_id(doc: dict) -> str | None:
     """Backend-agnostic identifier read — see module docstring."""
     return doc.get("id") or doc.get("_key")
@@ -461,6 +470,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         content: str,
         resources: dict[str, str] | None = None,
         expected_updated_at: int | None = None,
+        status: SkillStatus | None = None,
     ) -> SkillMetadata:
         existing_doc = await self._get_org_doc(name)
         if existing_doc is None:
@@ -479,7 +489,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         resolved_resources = _resources_from_doc(existing_doc) if resources is None else resources
         self._validate_resources(resolved_resources)
 
-        now = get_epoch_timestamp_in_ms()
+        now = _next_updated_at(existing_doc.get("updatedAtTimestamp"))
         await self._snapshot_revision(existing_doc, now)
         bumped_metadata = skill.metadata.model_copy(update={"version": _bump_patch(existing_doc.get("version"))})
         skill = skill.model_copy(update={"metadata": bumped_metadata})
@@ -492,6 +502,11 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             updated_by=self._user_id,
             usage=_extract_usage(existing_doc),
         )
+        # Pack SKILL.md is always `active`; lifecycle (e.g. a builtin mute)
+        # lives on the graph column, so overlay it on this same CAS write
+        # rather than a follow-up `set_skill_status`.
+        if status is not None:
+            doc["status"] = status.value
         await self._commit_skill_update(name, doc, expected_updated_at)
         await self._sync_relation_edges(name, skill.metadata, now)
         return skill.metadata
@@ -579,18 +594,39 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         await self.update_skill(name, render_skill_md(updated_skill))
         return True
 
-    async def set_skill_status(self, name: str, status: SkillStatus) -> bool:
+    async def set_skill_status(
+        self,
+        name: str,
+        status: SkillStatus,
+        from_status: SkillStatus | None = None,
+    ) -> bool:
         """Enable/disable primitive — writes only the `status` graph column
         (+ `updatedAtTimestamp`), unlike `deprecate_skill`'s `update_skill`
         round-trip: `_doc_to_skill` already overlays this column onto
         metadata regardless of what's parsed from `content` (see that
         method's docstring), so there is nothing in the stored SKILL.md text
-        that needs to change and no revision/semver bump to make."""
-        if await self._get_org_doc(name) is None:
+        that needs to change and no revision/semver bump to make.
+
+        `from_status` is compare-and-swap: the write lands only if the
+        stored status still matches. `update_node_if_match` replaces the
+        whole document, so the CAS carries the read doc with status and
+        token overlaid — matching on `updatedAtTimestamp` so a concurrent
+        content edit cannot be clobbered by a mute."""
+        doc = await self._get_org_doc(name)
+        if doc is None:
             return False
-        return await self._graph.update_node(
-            self._key(name), _SKILLS,
-            {"status": status.value, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+        if from_status is not None and doc.get("status") != from_status.value:
+            return False
+        observed = int(doc.get("updatedAtTimestamp") or 0)
+        next_ts = _next_updated_at(observed)
+        if from_status is None:
+            return await self._graph.update_node(
+                self._key(name), _SKILLS,
+                {"status": status.value, "updatedAtTimestamp": next_ts},
+            )
+        merged = {**doc, "status": status.value, "updatedAtTimestamp": next_ts}
+        return await self._graph.update_node_if_match(
+            self._key(name), _SKILLS, merged, "updatedAtTimestamp", observed,
         )
 
     # ---- SkillHistoryReader ----------------------------------------------
@@ -659,7 +695,13 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
     ) -> None:
         """Last-write-wins when `expected_updated_at` is None; otherwise the
         timestamp check is the write itself (`update_node_if_match`), not a
-        prior read."""
+        prior read. The written token always advances past the matched
+        value so a same-millisecond clock cannot reuse If-Match."""
+        incoming = int(doc.get("updatedAtTimestamp") or 0)
+        if expected_updated_at is not None:
+            doc["updatedAtTimestamp"] = (
+                incoming if incoming > expected_updated_at else expected_updated_at + 1
+            )
         if expected_updated_at is None:
             await self._graph.batch_upsert_nodes([doc], _SKILLS)
             return

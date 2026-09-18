@@ -578,6 +578,17 @@ class TestSetSkillStatus:
 
         assert await store.set_skill_status("readonly", SkillStatus.DISABLED) is False
 
+    async def test_from_status_mismatch_returns_false(self, tmp_path) -> None:
+        store = FilesystemSkillStore(str(tmp_path / "skills"))
+        await store.create_skill("s", _skill_md("s"))
+        await store.set_skill_status("s", SkillStatus.DISABLED)
+
+        assert await store.set_skill_status(
+            "s", SkillStatus.ACTIVE, from_status=SkillStatus.ACTIVE,
+        ) is False
+        skill = await store.get_skill("s")
+        assert skill.metadata.status == SkillStatus.DISABLED
+
 
 class TestListSkillsFilter:
     async def test_filter_by_query_matches_name_description_and_tags(self, tmp_path) -> None:

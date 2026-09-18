@@ -320,7 +320,12 @@ class FilesystemSkillStore(SkillStore):
         self._persist(skill_dir, skill.model_copy(update={"metadata": updated_metadata}))
         return True
 
-    async def set_skill_status(self, name: str, status: SkillStatus) -> bool:
+    async def set_skill_status(
+        self,
+        name: str,
+        status: SkillStatus,
+        from_status: SkillStatus | None = None,
+    ) -> bool:
         """Enable/disable primitive — rewrites only frontmatter `status`,
         never `deprecated_reason`/`replaced_by` (those are deprecate-only)."""
         skill_dir = self._locations.get(name)
@@ -328,6 +333,8 @@ class FilesystemSkillStore(SkillStore):
             return False
         skill = self._load(skill_dir)
         if skill is None:
+            return False
+        if from_status is not None and skill.metadata.status != from_status:
             return False
         updated_metadata = skill.metadata.model_copy(update={"status": status})
         self._persist(skill_dir, skill.model_copy(update={"metadata": updated_metadata}))

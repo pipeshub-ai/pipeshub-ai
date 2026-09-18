@@ -12,7 +12,7 @@ import tempfile
 
 import pytest
 
-from app.agent_loop_lib.modules.providers.skills.base import SkillSource, SkillStatus
+from app.agent_loop_lib.modules.providers.skills.base import SkillSource, SkillStatus, SkillFilter
 from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY, BuiltinSkillSeeder
 from app.agents.agent_loop.skills.graph_store import GraphSkillStore
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
@@ -197,6 +197,37 @@ class TestDisableSurvivesUpgrade:
         assert skill.metadata.pack_version == "2.0.0"
         assert "version 2" in skill.body
         assert skill.metadata.status == SkillStatus.DISABLED
+
+    async def test_concurrent_enable_is_not_overwritten_by_upgrade(
+        self, packs_root_v1: str, packs_root_v2: str,
+    ) -> None:
+        """If an admin re-enables after the seeder listed the skill as
+        disabled, the upgrade CAS must miss rather than restore DISABLED
+        over the enable."""
+        graph = FakeGraphProvider()
+        seed_store = _seed_store(graph)
+        await BuiltinSkillSeeder(packs_root_v1).sync(seed_store)
+        assert await seed_store.set_skill_status("pack-a", SkillStatus.DISABLED) is True
+
+        class ListThenEnableStore:
+            def __init__(self, inner: GraphSkillStore) -> None:
+                self._inner = inner
+
+            def __getattr__(self, name: str):
+                return getattr(self._inner, name)
+
+            async def list_skills(self, filter: SkillFilter | None = None):
+                listed = await self._inner.list_skills(filter)
+                await self._inner.set_skill_status(
+                    "pack-a", SkillStatus.ACTIVE, from_status=SkillStatus.DISABLED,
+                )
+                return listed
+
+        await BuiltinSkillSeeder(packs_root_v2).sync(ListThenEnableStore(seed_store))  # type: ignore[arg-type]
+
+        skill = await seed_store.get_skill("pack-a")
+        assert skill.metadata.status == SkillStatus.ACTIVE
+        assert skill.metadata.pack_version == "1.0.0"
 
 
 class TestValidationOnLoad:
