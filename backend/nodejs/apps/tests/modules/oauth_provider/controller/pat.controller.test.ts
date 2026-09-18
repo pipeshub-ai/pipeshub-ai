@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { PatController } from '../../../../src/modules/oauth_provider/controller/pat.controller'
 import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
+import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend'
 
 describe('PatController', () => {
   let controller: PatController
@@ -86,6 +87,19 @@ describe('PatController', () => {
       })
       expect(JSON.stringify(events[0])).to.not.include('raw-secret')
       expect(JSON.stringify(events[0])).to.not.include('dev@example.com')
+    })
+
+    it('counts the token on the Grafana activity counter with org and domain only', async () => {
+      mockPatService.createToken.resolves({ id: 't', name: 'n', scopes: [], createdAt: new Date(), expiresAt: new Date(), accessToken: 'x' })
+      mockReq.user = { orgId: 'org-pat-metric', userId: 'user-1', email: 'dev@pat-metric.example' }
+      mockReq.body = { name: 'n' }
+
+      await controller.createToken(mockReq, mockRes, mockNext)
+
+      const text = await metricsBackend.serialize()
+      const line = text.split('\n').find((l) => l.includes('activity="pat_created"') && l.includes('org="org-pat-metric"'))
+      expect(line).to.include('domain="pat-metric.example"')
+      expect(text).to.not.include('dev@pat-metric.example')
     })
   })
 

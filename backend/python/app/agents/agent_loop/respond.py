@@ -75,6 +75,7 @@ from app.agents.agent_loop.reasoning_persistence import build_reasoning_payload,
 from app.modules.agents.qna.helpers import _tool_names_and_results_from_state
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.citations import normalize_citations_and_chunks
 from app.utils.streaming import parse_confidence_from_answer
 
@@ -604,5 +605,15 @@ def _record_answer_generated(
             "connectors": sorted(connectors),
             "demo_sources": demo_sources,
         })
+        # The Grafana counter for the same step: org and domain only. The
+        # connector label marks demo answers so the demo funnel has its own line.
+        record_service_activity(
+            "query_service",
+            "answer_generated",
+            connector="demo" if demo_sources else "none",
+            status="cited" if citations else "uncited",
+            org=str(context.org_id or "unknown"),
+            domain=domain_from_email(str(context.user_email or "")),
+        )
     except Exception as exc:  # telemetry must never break an answer
         logging.getLogger(__name__).debug("telemetry: answer_generated not recorded: %s", exc)

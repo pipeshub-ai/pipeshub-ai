@@ -98,3 +98,24 @@ def test_never_raises_on_malformed_input() -> None:
     _record_answer_generated(SimpleNamespace(), {"agent_knowledge": "not a list"}, [{"metadata": None}, "junk"])  # type: ignore[arg-type,list-item]
     # Either an event was recorded from what could be read, or nothing was — but no exception.
     assert len(_drain()) <= 1
+
+
+def test_answer_also_counts_on_the_grafana_activity_counter(monkeypatch) -> None:
+    """The same step is counted for dashboards with org/domain only — no user id or address."""
+    calls: list[dict] = []
+    import app.agents.agent_loop.respond as respond
+
+    monkeypatch.setattr(respond, "record_service_activity", lambda *a, **k: calls.append({"args": a, **k}))
+    _drain()
+    state = {"chat_mode": "internal_search", "available_connectors": [{"id": "demo-1", "type": "Demo"}]}
+    citations = [{"metadata": {"connector": "DRIVE", "connectorId": "demo-1"}}]
+    respond._record_answer_generated(_context(), state, citations)  # type: ignore[arg-type]
+
+    assert calls == [{
+        "args": ("query_service", "answer_generated"),
+        "connector": "demo",
+        "status": "cited",
+        "org": "org-1",
+        "domain": "example.com",
+    }]
+    assert "dev@example.com" not in str(calls)

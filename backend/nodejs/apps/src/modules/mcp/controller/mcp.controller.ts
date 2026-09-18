@@ -12,6 +12,7 @@ import { Logger, getLogLevel } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
 import { PAT_APP_CLIENT_ID_PREFIX } from '../../oauth_provider/constants/constants';
 
 const logger = Logger.getInstance({
@@ -84,6 +85,17 @@ function mcpToolCallProps(
   };
 }
 
+/** The Grafana counter for the same step: org and domain only. */
+function recordActivityFromProps(
+  activityName: string,
+  props: Record<string, unknown>,
+): void {
+  recordServiceActivity(activityName, {
+    org: typeof props.orgId === 'string' ? props.orgId : undefined,
+    domain: typeof props.domain === 'string' ? props.domain : undefined,
+  });
+}
+
 /**
  * Handle an MCP JSON-RPC request (initialize, tool calls, SSE, session termination).
  * Creates a stateless MCP server per request, connected to the PipeshubCore SDK
@@ -131,8 +143,10 @@ export const handleMCPRequest =
       // handshake completing, which is the only point that means "connected".
       const connectedProps = mcpConnectedProps(req);
       if (connectedProps) {
-        mcpServer.server.oninitialized = () =>
+        mcpServer.server.oninitialized = () => {
           recordEvent('mcp_connected', connectedProps);
+          recordActivityFromProps('mcp_connected', connectedProps);
+        };
       }
       const toolCallProps = mcpToolCallProps(req);
       await transport.handleRequest(req, res, req.body);
@@ -141,6 +155,7 @@ export const handleMCPRequest =
       // transport failure throws above and is not counted.
       if (toolCallProps && res.statusCode < 400) {
         recordEvent('mcp_tool_called', toolCallProps);
+        recordActivityFromProps('mcp_tool_called', toolCallProps);
       }
     } catch (error: any) {
       logger.error('MCP request failed', {

@@ -7,6 +7,7 @@ import { CreatePatRequest } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer'
 import { domainFromEmail } from '../../../libs/services/telemetry/identity'
+import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics'
 
 @injectable()
 export class PatController {
@@ -56,6 +57,10 @@ export class PatController {
         domain: domainFromEmail(email),
         scope_count: token.scopes.length,
         expiry_days: data.expiryDays ?? null,
+      })
+      recordServiceActivity('pat_created', {
+        org: orgId,
+        domain: domainFromEmail(email),
       })
 
       res.status(201).json({
