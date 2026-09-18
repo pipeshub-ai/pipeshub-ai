@@ -62,6 +62,7 @@ _SERVICE_TOKEN_ROUTES = {
     ("parsing", "POST", "/api/v1/parse"): {"document:parse"},
     ("parsing", "GET", "/api/v1/parse/providers"): {"document:parse"},
     ("extraction", "POST", "/api/v1/extract/classify"): {"document:classify"},
+    ("entity", "PATCH", "/api/v1/entity/user/email"): {"entity:user:write"},
 }
 
 

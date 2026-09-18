@@ -2532,6 +2532,7 @@ describe('UserController', () => {
             emailChangeMailStatus: 'sent',
           },
         });
+        expect(mockEventService.publishEvent.called).to.be.false;
       }
     });
 
