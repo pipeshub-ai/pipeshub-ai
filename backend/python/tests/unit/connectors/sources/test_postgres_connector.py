@@ -1,5 +1,6 @@
 """Tests for app.connectors.sources.postgres.connector."""
 
+import hashlib
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -11,6 +12,7 @@ from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, Re
 from app.connectors.core.registry.filters import FilterCollection, FilterOption
 from app.connectors.sources.postgres.connector import (
     MAX_ROWS_PER_TABLE_LIMIT,
+    MAX_TABLE_DOCUMENT_BYTES,
     SYNC_STATE_KEY,
     SYNC_STATE_VERSION,
     PostgreSQLConnector,
@@ -18,6 +20,9 @@ from app.connectors.sources.postgres.connector import (
     PostgresTable,
     PostgresTableState,
     SyncStats,
+    _column_hash,
+    split_table_fqn,
+    table_fqn,
 )
 from app.models.entities import (
     ProgressStatus,
@@ -264,6 +269,36 @@ class TestPostgresConnectorInitMethod:
         assert result is True
         assert connector.data_source is not None
         assert connector.database_name == "testdb"
+
+    @staticmethod
+    async def _init_with(connector, auth):
+        connector.config_service.get_config = AsyncMock(return_value={"auth": auth})
+        with patch(
+            "app.connectors.sources.postgres.connector.PostgreSQLConfig"
+        ) as mock_config_cls, patch(
+            "app.connectors.sources.postgres.connector.PostgreSQLDataSource"
+        ):
+            mock_client = MagicMock()
+            mock_client.connect = AsyncMock(return_value=mock_client)
+            mock_config_cls.return_value.create_client.return_value = mock_client
+            assert await connector.init() is True
+        return mock_config_cls.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_connection_string_sslmode_is_used(self):
+        # Ignoring it connected with "prefer": no certificate check, and a
+        # silent fallback to an unencrypted connection.
+        kwargs = await self._init_with(_make_connector(), {
+            "connectionString": "postgresql://u:p@db.example:5432/app?sslmode=verify-full",
+        })
+        assert kwargs["sslmode"] == "verify-full"
+
+    @pytest.mark.asyncio
+    async def test_sslmode_defaults_to_prefer(self):
+        kwargs = await self._init_with(_make_connector(), {
+            "connectionString": "postgresql://u:p@db.example:5432/app",
+        })
+        assert kwargs["sslmode"] == "prefer"
 
     @pytest.mark.asyncio
     async def test_returns_true_on_success_with_connection_string(self):
@@ -1151,6 +1186,8 @@ def _full_sync_connector(tables_by_schema, snapshot=None, synced=None):
         }
     )
     connector._remove_stale_tables = AsyncMock(return_value={})
+    connector._remove_stale_schema_groups = AsyncMock()
+    connector._remove_database_group_self_links = AsyncMock()
     connector._save_tables_sync_state = AsyncMock()
     return connector
 
@@ -1433,56 +1470,17 @@ class TestHasTableChanged:
 # ===========================================================================
 
 
-class TestComputeColumnHash:
+class TestColumnHash:
 
-    @pytest.mark.asyncio
-    async def test_returns_hash(self):
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector.data_source.get_table_info = AsyncMock(
-            return_value=_pg_response(True, {"columns": [{"name": "id", "type": "integer"}]})
+    def test_same_columns_produce_same_hash(self):
+        cols = [ColumnInfo(name="id", data_type="integer"), ColumnInfo(name="name", data_type="text")]
+        assert _column_hash(cols) == _column_hash([c.model_copy() for c in cols])
+        assert len(_column_hash(cols)) == 32
+
+    def test_different_columns_produce_different_hash(self):
+        assert _column_hash([ColumnInfo(name="id")]) != _column_hash(
+            [ColumnInfo(name="id"), ColumnInfo(name="extra")]
         )
-        result = await connector._compute_column_hash("public", "t1")
-        assert len(result) == 32
-
-    @pytest.mark.asyncio
-    async def test_returns_none_on_failure(self):
-        # "" would compare as a column change and re-index the table.
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector.data_source.get_table_info = AsyncMock(
-            return_value=_pg_response(False, error="Not found")
-        )
-        result = await connector._compute_column_hash("public", "t1")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_same_columns_produce_same_hash(self):
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        cols = [{"name": "id", "type": "integer"}, {"name": "name", "type": "text"}]
-        connector.data_source.get_table_info = AsyncMock(
-            return_value=_pg_response(True, {"columns": cols})
-        )
-        h1 = await connector._compute_column_hash("public", "t1")
-        h2 = await connector._compute_column_hash("public", "t1")
-        assert h1 == h2
-
-    @pytest.mark.asyncio
-    async def test_different_columns_produce_different_hash(self):
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-
-        connector.data_source.get_table_info = AsyncMock(
-            return_value=_pg_response(True, {"columns": [{"name": "id"}]})
-        )
-        h1 = await connector._compute_column_hash("public", "t1")
-
-        connector.data_source.get_table_info = AsyncMock(
-            return_value=_pg_response(True, {"columns": [{"name": "id"}, {"name": "extra"}]})
-        )
-        h2 = await connector._compute_column_hash("public", "t1")
-        assert h1 != h2
 
 
 # ===========================================================================
@@ -1533,6 +1531,7 @@ class TestRunIncrementalSync:
         connector._sync_new_tables = AsyncMock(side_effect=lambda fqns, states: set(fqns))
         connector._sync_changed_tables = AsyncMock(side_effect=lambda fqns, states: set(fqns))
         connector._handle_deleted_tables = AsyncMock(side_effect=lambda fqns: set(fqns))
+        connector._remove_stale_schema_groups = AsyncMock()
         connector._save_tables_sync_state = AsyncMock()
         return connector
 
@@ -2111,146 +2110,166 @@ class TestPopulateFilterCache:
 # ===========================================================================
 
 
+def _stat(schema, table, **counters):
+    return {"schema_name": schema, "table_name": table, "n_live_tup": 0,
+            "n_tup_ins": 0, "n_tup_upd": 0, "n_tup_del": 0, **counters}
+
+
+def _states_connector(stats, columns=None, standby=False):
+    connector = _make_connector()
+    connector.data_source = MagicMock()
+    connector.data_source.get_table_stats = AsyncMock(return_value=_pg_response(True, stats))
+    connector.data_source.get_columns = AsyncMock(return_value=_pg_response(True, columns or []))
+    connector.data_source.is_in_recovery = AsyncMock(
+        return_value=_pg_response(True, {"in_recovery": standby})
+    )
+    connector.data_source.get_primary_keys_by_table = AsyncMock(return_value=_pg_response(True, []))
+    connector.data_source.get_sample_hash = AsyncMock(
+        return_value=_pg_response(True, {"sample_hash": "s" * 32})
+    )
+    return connector
+
+
 class TestGetCurrentTableStates:
 
     @pytest.mark.asyncio
     async def test_returns_states(self):
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector.data_source.get_table_stats = AsyncMock(
-            return_value=_pg_response(True, [
-                {"schema_name": "public", "table_name": "users", "n_live_tup": 100, "n_tup_ins": 50, "n_tup_upd": 10, "n_tup_del": 2},
-            ])
-        )
-        connector.data_source.get_table_info = AsyncMock(
-            return_value=_pg_response(True, {"columns": [{"name": "id"}]})
+        connector = _states_connector(
+            [_stat("public", "users", n_live_tup=100, n_tup_ins=50, n_tup_upd=10, n_tup_del=2)],
+            [{"schema_name": "public", "table_name": "users", "name": "id"}],
         )
 
         states, unreadable = await connector._get_current_table_states(None)
+
         assert unreadable == set()
-        assert "public.users" in states
-        assert states["public.users"].n_live_tup == 100
-        assert states["public.users"].schema_name == "public"
-        assert states["public.users"].table_name == "users"
-        assert states["public.users"].n_tup_ins == 50
-        assert states["public.users"].n_tup_upd == 10
-        assert states["public.users"].n_tup_del == 2
-        assert len(states["public.users"].column_hash) == 32
+        state = states["public.users"]
+        assert (state.n_live_tup, state.n_tup_ins, state.n_tup_upd, state.n_tup_del) == (100, 50, 10, 2)
+        assert (state.schema_name, state.table_name) == ("public", "users")
+        assert state.column_hash == _column_hash([ColumnInfo(name="id")])
+        assert state.sample_hash == ""
+        connector.data_source.get_sample_hash.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reads_all_columns_in_one_query(self):
+        # One round trip for the whole catalog, not one per table.
+        connector = _states_connector(
+            [_stat("public", "a"), _stat("public", "b")],
+            [
+                {"schema_name": "public", "table_name": "a", "name": "id"},
+                {"schema_name": "public", "table_name": "b", "name": "id"},
+                {"schema_name": "public", "table_name": "b", "name": "extra"},
+            ],
+        )
+
+        states, _ = await connector._get_current_table_states(["public"])
+
+        connector.data_source.get_columns.assert_awaited_once_with(["public"])
+        assert states["public.a"].column_hash != states["public.b"].column_hash
 
     @pytest.mark.asyncio
     async def test_raises_on_stats_failure(self):
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector.data_source.get_table_stats = AsyncMock(
-            return_value=_pg_response(False, error="Error")
-        )
+        connector = _states_connector([])
+        connector.data_source.get_table_stats = AsyncMock(return_value=_pg_response(False, error="Error"))
         with pytest.raises(RuntimeError):
             await connector._get_current_table_states(None)
 
     @pytest.mark.asyncio
-    async def test_reports_tables_whose_columns_cannot_be_read(self):
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector.data_source.get_table_stats = AsyncMock(
-            return_value=_pg_response(True, [
-                {"schema_name": "public", "table_name": "ok", "n_tup_ins": 1},
-                {"schema_name": "public", "table_name": "locked", "n_tup_ins": 1},
-            ])
-        )
-        connector.data_source.get_table_info = AsyncMock(side_effect=[
-            _pg_response(True, {"columns": []}),
-            _pg_response(False, error="lock timeout"),
-        ])
-
-        states, unreadable = await connector._get_current_table_states(None)
-
-        assert set(states) == {"public.ok"}
-        assert unreadable == {"public.locked"}
+    async def test_raises_on_columns_failure(self):
+        connector = _states_connector([_stat("public", "t")])
+        connector.data_source.get_columns = AsyncMock(return_value=_pg_response(False, error="timeout"))
+        with pytest.raises(RuntimeError, match="timeout"):
+            await connector._get_current_table_states(None)
 
     @pytest.mark.asyncio
-    async def test_schema_with_a_dot_keeps_its_name(self):
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector.data_source.get_table_stats = AsyncMock(
-            return_value=_pg_response(True, [
-                {"schema_name": "my.schema", "table_name": "t", "n_tup_ins": 1},
-            ])
+    async def test_standby_hashes_each_sample_in_key_order(self):
+        # Replayed writes leave a standby's counters still; without the sample
+        # hash no change would ever be seen there.
+        connector = _states_connector(
+            [_stat("public", "t")],
+            [{"schema_name": "public", "table_name": "t", "name": "id"}],
+            standby=True,
         )
-        connector.data_source.get_table_info = AsyncMock(
-            return_value=_pg_response(True, {"columns": []})
-        )
+        connector.data_source.get_primary_keys_by_table = AsyncMock(return_value=_pg_response(True, [
+            {"schema_name": "public", "table_name": "t", "column_name": "a"},
+            {"schema_name": "public", "table_name": "t", "column_name": "b"},
+        ]))
 
         states, _ = await connector._get_current_table_states(None)
 
-        assert states["my.schema.t"].schema_name == "my.schema"
-        assert states["my.schema.t"].table_name == "t"
-        connector.data_source.get_table_info.assert_awaited_once_with("my.schema", "t")
+        assert states["public.t"].sample_hash == "s" * 32
+        connector.data_source.get_sample_hash.assert_awaited_once_with(
+            "public", "t", limit=1000, order_by=["a", "b"], max_bytes=MAX_TABLE_DOCUMENT_BYTES
+        )
+
+    @pytest.mark.asyncio
+    async def test_standby_table_without_a_key_is_still_hashed_by_the_data_source(self):
+        connector = _states_connector([_stat("public", "t")], standby=True)
+        connector.data_source.get_primary_keys_by_table = AsyncMock(return_value=_pg_response(True, []))
+
+        states, _ = await connector._get_current_table_states(None)
+
+        assert states["public.t"].sample_hash == "s" * 32
+        connector.data_source.get_sample_hash.assert_awaited_once_with(
+            "public", "t", limit=1000, order_by=None, max_bytes=MAX_TABLE_DOCUMENT_BYTES
+        )
+
+    @pytest.mark.asyncio
+    async def test_standby_table_that_cannot_be_sampled_is_unreadable(self):
+        connector = _states_connector([_stat("public", "t")], standby=True)
+        connector.data_source.get_sample_hash = AsyncMock(return_value=_pg_response(False, error="denied"))
+
+        states, unreadable = await connector._get_current_table_states(None)
+
+        assert states == {}
+        assert unreadable == {"public.t"}
+
+    def test_sample_hash_changes_revision_and_detection(self):
+        connector = _make_connector()
+        a = PostgresTableState(column_hash="h", sample_hash="x")
+        b = PostgresTableState(column_hash="h", sample_hash="y")
+        assert a.revision() != b.revision()
+        assert connector._has_table_changed(b, a) is True
+        # A primary's state has no sample hash; its revision is unchanged by the field.
+        plain = PostgresTableState(column_hash="h")
+        assert plain.revision() == hashlib.md5(b"h:0:0:0").hexdigest()
+
+    @pytest.mark.asyncio
+    async def test_schema_with_a_dot_keeps_its_name(self):
+        connector = _states_connector([_stat("my.schema", "t")])
+
+        states, _ = await connector._get_current_table_states(None)
+
+        assert states['"my.schema".t'].schema_name == "my.schema"
+        assert states['"my.schema".t'].table_name == "t"
 
     @pytest.mark.asyncio
     async def test_respects_selected_tables_filter(self):
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector.data_source.get_table_stats = AsyncMock(
-            return_value=_pg_response(True, [
-                {"schema_name": "public", "table_name": "users", "n_live_tup": 10, "n_tup_ins": 1, "n_tup_upd": 0, "n_tup_del": 0},
-                {"schema_name": "public", "table_name": "orders", "n_live_tup": 20, "n_tup_ins": 2, "n_tup_upd": 0, "n_tup_del": 0},
-            ])
-        )
-        connector.data_source.get_table_info = AsyncMock(
-            return_value=_pg_response(True, {"columns": []})
-        )
+        connector = _states_connector([_stat("public", "users"), _stat("public", "orders")])
 
-        states, _ = await connector._get_current_table_states(
-            None, selected_tables=["public.users"]
-        )
-        assert "public.users" in states
-        assert "public.orders" not in states
+        states, _ = await connector._get_current_table_states(None, selected_tables=["public.users"])
+
+        assert set(states) == {"public.users"}
 
     @pytest.mark.asyncio
     async def test_tables_not_in_filter_excludes_matches(self):
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector.data_source.get_table_stats = AsyncMock(
-            return_value=_pg_response(True, [
-                {"schema_name": "public", "table_name": "users", "n_live_tup": 10, "n_tup_ins": 1, "n_tup_upd": 0, "n_tup_del": 0},
-                {"schema_name": "public", "table_name": "orders", "n_live_tup": 20, "n_tup_ins": 2, "n_tup_upd": 0, "n_tup_del": 0},
-            ])
-        )
-        connector.data_source.get_table_info = AsyncMock(
-            return_value=_pg_response(True, {"columns": []})
-        )
+        connector = _states_connector([_stat("public", "users"), _stat("public", "orders")])
 
         states, _ = await connector._get_current_table_states(
             None, selected_tables=["public.orders"], tables_op="not_in"
         )
-        assert "public.users" in states
-        assert "public.orders" not in states
+
+        assert set(states) == {"public.users"}
 
     @pytest.mark.asyncio
     async def test_schemas_not_in_fetches_all_then_excludes_client_side(self):
         """NOT_IN cannot be pushed down through get_table_stats(schema_list); we must
-        fetch all and filter client-side. Verifies the stats_scope=None decision path."""
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        stats_mock = AsyncMock(
-            return_value=_pg_response(True, [
-                {"schema_name": "public", "table_name": "users", "n_live_tup": 10, "n_tup_ins": 1, "n_tup_upd": 0, "n_tup_del": 0},
-                {"schema_name": "pg_catalog", "table_name": "pg_class", "n_live_tup": 50, "n_tup_ins": 0, "n_tup_upd": 0, "n_tup_del": 0},
-            ])
-        )
-        connector.data_source.get_table_stats = stats_mock
-        connector.data_source.get_table_info = AsyncMock(
-            return_value=_pg_response(True, {"columns": []})
-        )
+        fetch all and filter client-side. Verifies the scope=None decision path."""
+        connector = _states_connector([_stat("public", "users"), _stat("pg_catalog", "pg_class")])
 
-        states, _ = await connector._get_current_table_states(
-            ["pg_catalog"], schemas_op="not_in"
-        )
+        states, _ = await connector._get_current_table_states(["pg_catalog"], schemas_op="not_in")
 
-        # Stats query was issued with no schema scope (fetch-all) so client-side exclude works.
-        stats_mock.assert_awaited_once_with(None)
-        assert "public.users" in states
-        assert "pg_catalog.pg_class" not in states
+        connector.data_source.get_table_stats.assert_awaited_once_with(None)
+        assert set(states) == {"public.users"}
 
 
 # ===========================================================================
@@ -2538,4 +2557,188 @@ class TestStreamRecordRowLimit:
             mock_load.return_value = (sync_filters, MagicMock())
             await connector.stream_record(record)
 
-        connector.data_source.fetch_table_rows.assert_awaited_once_with("public", "users", limit=1)
+        connector.data_source.fetch_table_rows.assert_awaited_once_with(
+            "public", "users", limit=1, order_by=["id"], max_bytes=MAX_TABLE_DOCUMENT_BYTES
+        )
+
+
+class TestStreamRecordRows:
+
+    @staticmethod
+    async def _stream(connector, record):
+        with patch(
+            "app.connectors.sources.postgres.connector.load_connector_filters",
+            new_callable=AsyncMock,
+        ) as mock_load:
+            sync_filters = MagicMock()
+            sync_filters.get_value.return_value = 100
+            mock_load.return_value = (sync_filters, MagicMock())
+            response = await connector.stream_record(record)
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        return json.loads(body)
+
+    @pytest.mark.asyncio
+    async def test_rows_are_ordered_by_primary_key_and_json_safe(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.database_name = "testdb"
+        record = MagicMock(record_type=RecordType.SQL_TABLE, external_record_id="public.docs",
+                           external_record_group_id="public")
+        _mock_table_metadata(
+            connector,
+            info=_pg_response(True, {"columns": [
+                {"name": "id", "data_type": "integer"},
+                {"name": "doc", "data_type": "jsonb"},
+                {"name": "blob", "data_type": "bytea"},
+            ]}),
+        )
+        connector.data_source.fetch_table_rows = AsyncMock(return_value=[
+            {"id": 1, "doc": '{"k": [1, 2]}', "blob": b"\x89PNG"},
+        ])
+        connector.data_source.get_table_ddl = AsyncMock(return_value=_pg_response(True, {"ddl": ""}))
+
+        data = await self._stream(connector, record)
+
+        connector.data_source.fetch_table_rows.assert_awaited_once_with(
+            "public", "docs", limit=100, order_by=["id"], max_bytes=MAX_TABLE_DOCUMENT_BYTES
+        )
+        # json arrives from asyncpg as text; left alone it was encoded twice.
+        assert data["rows"][0]["doc"] == {"k": [1, 2]}
+        # bytea in Postgres's hex form, not a Python bytes repr.
+        assert data["rows"][0]["blob"] == "\\x89504e47"
+
+
+class TestJsonDefault:
+
+    def test_range(self):
+        from app.connectors.sources.postgres.connector import _json_default
+
+        rng = MagicMock(lower=1, upper=5, lower_inc=True, upper_inc=False, isempty=False)
+        assert _json_default(rng) == {
+            "lower": 1, "upper": 5, "lower_inc": True, "upper_inc": False, "empty": False,
+        }
+
+    def test_composite_record(self):
+        from app.connectors.sources.postgres.connector import _json_default
+
+        class FakeRecord:
+            def items(self):
+                return [("street", "Main"), ("no", 5)]
+
+        assert _json_default(FakeRecord()) == {"street": "Main", "no": 5}
+
+    def test_other_values_fall_back_to_str(self):
+        from decimal import Decimal
+
+        from app.connectors.sources.postgres.connector import _json_default
+
+        assert _json_default(Decimal("1.50")) == "1.50"
+
+
+class TestTableIds:
+
+    def test_plain_names_are_unchanged(self):
+        # Existing ids must not move: every ordinary table keeps its id.
+        assert table_fqn("public", "users") == "public.users"
+        assert table_fqn("s", 'we"ird') == 's.we"ird'
+
+    def test_names_with_dots_no_longer_collide(self):
+        a = table_fqn("a.b", "c")
+        b = table_fqn("a", "b.c")
+        assert a == '"a.b".c'
+        assert b == 'a."b.c"'
+        assert a != b
+
+    @pytest.mark.parametrize("schema,table", [
+        ("public", "users"), ("a.b", "c"), ("a", "b.c"), ('"q', "t"), ("s", '"t"'), ('x"."y', "z.z"),
+    ])
+    def test_round_trip(self, schema, table):
+        assert split_table_fqn(table_fqn(schema, table)) == (schema, table)
+
+    def test_rejects_what_it_did_not_write(self):
+        with pytest.raises(ValueError):
+            split_table_fqn("my.schema.t")
+        with pytest.raises(ValueError):
+            split_table_fqn('"unterminated.t')
+
+    def test_legacy_dotted_id_is_split_by_its_group(self):
+        connector = _make_connector()
+        connector.database_name = "db"
+        record = MagicMock(external_record_id="my.schema.t", external_record_group_id="my.schema")
+        assert connector._split_table_fqn(record) == ("my.schema", "t")
+
+
+class _FakeTx:
+    def __init__(self, groups=None, group=None):
+        self.groups = groups or []
+        self.group = group
+        self.deleted_edges = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get_nodes_by_filters(self, collection, filters):
+        self.filters = (collection, filters)
+        return self.groups
+
+    async def get_record_group_by_external_id(self, connector_id, external_id):
+        return self.group
+
+    async def delete_edge(self, from_id, from_collection, to_id, to_collection, collection):
+        self.deleted_edges.append((from_id, to_id, collection))
+
+
+class TestSchemaGroupCleanup:
+
+    @pytest.mark.asyncio
+    async def test_groups_of_unsynced_schemas_are_deleted(self):
+        connector = _make_connector()
+        connector.database_name = "app"
+        connector.data_entities_processor.on_record_group_deleted = AsyncMock(return_value=True)
+        tx = _FakeTx(groups=[
+            {"externalGroupId": "public"},
+            {"externalGroupId": "excluded"},
+            {"externalGroupId": "app.app"},
+        ])
+        connector.data_store_provider.transaction = MagicMock(return_value=tx)
+
+        await connector._remove_stale_schema_groups(synced_schemas=["public", "app"])
+
+        assert tx.filters == ("recordGroups", {"connectorId": "conn-pg-1", "groupType": "SQL_NAMESPACE"})
+        connector.data_entities_processor.on_record_group_deleted.assert_awaited_once_with(
+            "excluded", "conn-pg-1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_failure_is_counted_not_raised(self):
+        connector = _make_connector()
+        connector.data_store_provider.transaction = MagicMock(side_effect=Exception("graph down"))
+
+        await connector._remove_stale_schema_groups(synced_schemas=["public"])
+
+        assert connector.sync_stats.errors == 1
+
+    @pytest.mark.asyncio
+    async def test_self_links_left_by_the_name_clash_are_removed(self):
+        connector = _make_connector()
+        connector.database_name = "app"
+        tx = _FakeTx(group=MagicMock(id="g1"))
+        connector.data_store_provider.transaction = MagicMock(return_value=tx)
+
+        await connector._remove_database_group_self_links()
+
+        assert tx.deleted_edges == [("g1", "g1", "belongsTo"), ("g1", "g1", "inheritPermissions")]
+
+    @pytest.mark.asyncio
+    async def test_full_sync_repairs_only_when_a_schema_is_named_after_the_database(self):
+        connector = _full_sync_connector({"public": []})
+        await connector._run_full_sync_internal()
+        connector._remove_database_group_self_links.assert_not_awaited()
+
+        connector = _full_sync_connector({"testdb": []})
+        await connector._run_full_sync_internal()
+        connector._remove_database_group_self_links.assert_awaited_once()
+        connector._remove_stale_schema_groups.assert_awaited_once_with(synced_schemas=["testdb"])

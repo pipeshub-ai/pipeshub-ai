@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -93,12 +94,61 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 MAX_ROWS_PER_TABLE_LIMIT = 10000
+# Cap on the rows' text in one table's document; Postgres stops sending rows
+# past it, so a table of wide rows can't exhaust the connector's memory.
+MAX_TABLE_DOCUMENT_BYTES = 8 * 1024 * 1024
 
 SYNC_STATE_KEY = "postgres_tables_state"
 # Bump when a saved state can no longer be trusted to describe what is indexed;
 # a state saved under another version sends the next run to a full sync.
 # 2: states saved before it could list tables that were never synced.
 SYNC_STATE_VERSION = 2
+
+
+def table_fqn(schema_name: str, table_name: str) -> str:
+    """A table's id, ``schema.table``.
+
+    A part containing a dot, or starting with a double quote, is written
+    quoted, so schema ``a.b`` with table ``c`` and schema ``a`` with table
+    ``b.c`` get different ids. Every other name is written as is.
+    """
+    return f"{_fqn_part(schema_name)}.{_fqn_part(table_name)}"
+
+
+def _fqn_part(name: str) -> str:
+    if "." in name or name.startswith('"'):
+        return '"' + name.replace('"', '""') + '"'
+    return name
+
+
+def split_table_fqn(fqn: str) -> Tuple[str, str]:
+    """Inverse of ``table_fqn``. Raises ValueError for anything it didn't write."""
+    schema_name, rest = _read_fqn_part(fqn)
+    if not rest.startswith("."):
+        raise ValueError(f"Not a table id: {fqn!r}")
+    table_name, rest = _read_fqn_part(rest[1:])
+    if rest:
+        raise ValueError(f"Not a table id: {fqn!r}")
+    return schema_name, table_name
+
+
+def _read_fqn_part(text: str) -> Tuple[str, str]:
+    """Read one part off the front of ``text``; returns it and what follows."""
+    if not text.startswith('"'):
+        dot = text.find(".")
+        return (text, "") if dot == -1 else (text[:dot], text[dot:])
+    chars: List[str] = []
+    i = 1
+    while i < len(text):
+        if text[i] == '"':
+            if text[i + 1:i + 2] == '"':
+                chars.append('"')
+                i += 2
+                continue
+            return "".join(chars), text[i + 1:]
+        chars.append(text[i])
+        i += 1
+    raise ValueError(f"Unterminated quoted name in {text!r}")
 
 
 @dataclass
@@ -116,9 +166,14 @@ class PostgresTableState(BaseModel):
     n_live_tup: int = 0
     schema_name: str = ""
     table_name: str = ""
+    # Hash of the sampled rows, set only on a standby, where replayed writes
+    # leave the counters above unchanged.
+    sample_hash: str = ""
 
     def revision(self) -> str:
         key = f"{self.column_hash}:{self.n_tup_ins}:{self.n_tup_upd}:{self.n_tup_del}"
+        if self.sample_hash:
+            key += f":{self.sample_hash}"
         return hashlib.md5(key.encode()).hexdigest()
 
 
@@ -143,7 +198,54 @@ class PostgresTable:
     
     @property
     def fqn(self) -> str:
-        return f"{self.schema_name}.{self.name}"
+        return table_fqn(self.schema_name, self.name)
+
+
+def _column_hash(columns: List[ColumnInfo]) -> str:
+    """MD5 of a table's column definitions, for spotting schema changes."""
+    column_str = json.dumps([col.model_dump() for col in columns], sort_keys=True, default=str)
+    return hashlib.md5(column_str.encode()).hexdigest()
+
+
+def _json_default(value: Any) -> Any:
+    """Serialize the row values asyncpg returns that json cannot."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        # bytea in Postgres's own hex text form, not a Python bytes repr.
+        return "\\x" + bytes(value).hex()
+    if all(hasattr(value, attr) for attr in ("lower", "upper", "lower_inc", "upper_inc", "isempty")):
+        return {
+            "lower": value.lower,
+            "upper": value.upper,
+            "lower_inc": value.lower_inc,
+            "upper_inc": value.upper_inc,
+            "empty": value.isempty,
+        }
+    if callable(getattr(value, "items", None)):
+        # Composite-type values arrive as asyncpg Records.
+        return dict(value.items())
+    return str(value)
+
+
+def _decode_json_columns(rows: List[Dict[str, Any]], columns: List[ColumnInfo]) -> List[Dict[str, Any]]:
+    """Parse json/jsonb values, which asyncpg returns as text.
+
+    Left as text they would be encoded a second time, as a quoted string.
+    """
+    json_columns = {c.name for c in columns if c.data_type in ("json", "jsonb")}
+    if not json_columns:
+        return rows
+
+    decoded = []
+    for row in rows:
+        row = dict(row)
+        for name in json_columns & row.keys():
+            if isinstance(row[name], str):
+                try:
+                    row[name] = json.loads(row[name])
+                except ValueError:
+                    pass
+        decoded.append(row)
+    return decoded
 
 
 @dataclass
@@ -403,11 +505,12 @@ class PostgreSQLConnector(BaseConnector):
 
             # Check if using connection string or individual fields
             connection_string = auth_config.get("connectionString")
-            
+            sslmode = auth_config.get("sslmode", "prefer")
+
             if connection_string:
                 # Parse connection string (postgresql://user:password@host:port/database)
                 try:
-                    from urllib.parse import urlparse, unquote
+                    from urllib.parse import parse_qs, unquote, urlparse
                     parsed = urlparse(connection_string)
 
                     if parsed.scheme not in ("postgresql", "postgres"):
@@ -421,6 +524,9 @@ class PostgreSQLConnector(BaseConnector):
                     database = unquote(parsed.path.lstrip('/')) if parsed.path else ""
                     user = unquote(parsed.username) if parsed.username else None
                     password = unquote(parsed.password) if parsed.password else ""
+                    # Dropping this silently would connect without the
+                    # certificate checks the string asked for.
+                    sslmode = parse_qs(parsed.query).get("sslmode", [sslmode])[0]
 
                     if not all([host, database, user]):
                         self.logger.error("Invalid PostgreSQL connection string")
@@ -453,7 +559,7 @@ class PostgreSQLConnector(BaseConnector):
                 "user": user,
                 "password": password,
                 "timeout": int(config.get("timeout", 30)),
-                "sslmode": auth_config.get("sslmode", "prefer"),
+                "sslmode": sslmode,
             }
             if config.get("min_pool_size") is not None:
                 pg_config_kwargs["min_pool_size"] = int(config["min_pool_size"])
@@ -568,22 +674,25 @@ class PostgreSQLConnector(BaseConnector):
 
             await self._sync_schemas(schemas)
             self.sync_stats.schemas_synced = len(schemas)
+            if any(s.name == self.database_name for s in schemas):
+                await self._remove_database_group_self_links()
 
             listed: Set[str] = set()
             synced: Set[str] = set()
             for schema in schemas:
                 table_names = [
                     n for n in await self._list_table_names(schema.name)
-                    if self._passes_filter(f"{schema.name}.{n}", selected_tables, tables_op)
+                    if self._passes_filter(table_fqn(schema.name, n), selected_tables, tables_op)
                 ]
 
-                listed.update(f"{schema.name}.{n}" for n in table_names)
+                listed.update(table_fqn(schema.name, n) for n in table_names)
                 tables = await self._load_tables(schema.name, table_names, snapshot)
                 synced |= await self._sync_tables(schema.name, tables)
 
             self.sync_stats.tables_new += len(synced)
 
             undeleted = await self._remove_stale_tables(listed)
+            await self._remove_stale_schema_groups(synced_schemas=[s.name for s in schemas])
 
             # Only tables that were synced: one left out is found as new next run.
             # A stale table whose delete failed stays in, so incremental sync finds
@@ -680,7 +789,7 @@ class PostgreSQLConnector(BaseConnector):
         for name in table_names:
             try:
                 tables.append(
-                    await self._load_table(schema_name, name, states.get(f"{schema_name}.{name}"))
+                    await self._load_table(schema_name, name, states.get(table_fqn(schema_name, name)))
                 )
             except Exception as e:
                 self.sync_stats.errors += 1
@@ -699,7 +808,7 @@ class PostgreSQLConnector(BaseConnector):
         table: PostgresTable,
     ) -> Tuple[SQLTableRecord, bool]:
         """Build the record for a table; the flag says whether one is already stored."""
-        fqn = f"{schema_name}.{table.name}"
+        fqn = table_fqn(schema_name, table.name)
         existing = await self.data_entities_processor.get_record_by_external_id(
             connector_id=self.connector_id,
             external_record_id=fqn,
@@ -738,7 +847,7 @@ class PostgreSQLConnector(BaseConnector):
             if not fk.foreign_table_name:
                 continue
             target_schema = fk.foreign_table_schema or schema_name
-            target_fqn = f"{target_schema}.{fk.foreign_table_name}"
+            target_fqn = table_fqn(target_schema, fk.foreign_table_name)
             record.related_external_records.append(
                 RelatedExternalRecord(
                     external_record_id=target_fqn,
@@ -827,7 +936,7 @@ class PostgreSQLConnector(BaseConnector):
         self.logger.info(f"Processing {len(tables)} updated tables in {schema_name}")
 
         for table in tables:
-            fqn = f"{schema_name}.{table.name}"
+            fqn = table_fqn(schema_name, table.name)
             try:
                 record, existed = await self._build_table_record(schema_name, table)
                 if existed:
@@ -896,12 +1005,12 @@ class PostgreSQLConnector(BaseConnector):
                 sync_filters, _ = await load_connector_filters(
                     self.config_service, "postgresql", self.connector_id, self.logger
                 )
-                max_rows = max(1, min(
-                    int(sync_filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000)),
-                    MAX_ROWS_PER_TABLE_LIMIT,
-                ))
+                max_rows = self._max_rows(sync_filters)
                 try:
-                    rows = await self.data_source.fetch_table_rows(schema, table, limit=max_rows)
+                    rows = await self.data_source.fetch_table_rows(
+                        schema, table, limit=max_rows, order_by=primary_keys or None,
+                        max_bytes=MAX_TABLE_DOCUMENT_BYTES,
+                    )
                 except Exception as e:
                     self.logger.error(f"❌ Failed to read rows for {schema}.{table}: {e}")
                     raise to_sql_stream_error(e, connector=self.display_name) from e
@@ -919,14 +1028,14 @@ class PostgreSQLConnector(BaseConnector):
                     "schema_name": schema,
                     "database_name": self.database_name,
                     "columns": [col.model_dump() for col in columns],
-                    "rows": rows,
+                    "rows": _decode_json_columns(rows, columns),
                     "foreign_keys": [fk.model_dump() for fk in foreign_keys],
                     "primary_keys": primary_keys,
                     "ddl": ddl,
                     "connector_name": self.connector_name.value if hasattr(self.connector_name, "value") else str(self.connector_name),
                 }
 
-                json_bytes = json.dumps(data, default=str).encode("utf-8")
+                json_bytes = json.dumps(data, default=_json_default).encode("utf-8")
 
                 async def json_iterator():
                     yield json_bytes
@@ -942,12 +1051,15 @@ class PostgreSQLConnector(BaseConnector):
             raise
 
     def _split_table_fqn(self, record: Record) -> Tuple[str, str]:
-        """Split a table record's `schema.table` id.
-
-        Uses the record's schema group to find where the schema name ends, since
-        a schema or table name can itself contain a dot.
-        """
+        """Schema and table of a table record."""
         fqn = record.external_record_id or ""
+        try:
+            return split_table_fqn(fqn)
+        except ValueError:
+            pass
+
+        # Ids written before dotted names were quoted: the record's schema
+        # group says where the schema name ends.
         group_id = record.external_record_group_id
         if group_id:
             schema = (
@@ -957,11 +1069,7 @@ class PostgreSQLConnector(BaseConnector):
             )
             if fqn.startswith(f"{schema}.") and len(fqn) > len(schema) + 1:
                 return schema, fqn[len(schema) + 1:]
-
-        parts = fqn.split(".", 1)
-        if len(parts) != 2:
-            raise HTTPException(status_code=500, detail="Invalid table FQN")
-        return parts[0], parts[1]
+        raise HTTPException(status_code=500, detail="Invalid table FQN")
 
     async def test_connection_and_access(self) -> bool:
         if not self.data_source:
@@ -1125,6 +1233,8 @@ class PostgreSQLConnector(BaseConnector):
             for fqn in deleted_tables:
                 if fqn not in removed:
                     next_state[fqn] = stored[fqn]
+            if removed:
+                await self._remove_stale_schema_groups(filters=filters)
 
             await self._save_tables_sync_state(next_state)
 
@@ -1153,15 +1263,17 @@ class PostgreSQLConnector(BaseConnector):
 
         for fqn in candidates:
             state = stored[fqn]
-            default_schema, _, default_table = fqn.partition(".")
-            schema_name = state.schema_name or default_schema
+            if state.schema_name:
+                schema_name, table_name = state.schema_name, state.table_name
+            else:
+                schema_name, table_name = split_table_fqn(fqn)
             if not (
                 self._passes_filter(schema_name, selected_schemas, schemas_op)
                 and self._passes_filter(fqn, selected_tables, tables_op)
             ):
                 dropped.append(fqn)
                 continue
-            to_check[schema_name].append((fqn, state.table_name or default_table))
+            to_check[schema_name].append((fqn, table_name))
 
         for schema_name, tables in to_check.items():
             listed = set(await self._list_table_names(schema_name))
@@ -1184,10 +1296,12 @@ class PostgreSQLConnector(BaseConnector):
         """Fetch current table states from PostgreSQL for comparison.
 
         Retrieves cumulative DML counters (n_tup_ins, n_tup_upd, n_tup_del) along with
-        column hash for reliable change detection that survives ANALYZE runs.
+        column hash for reliable change detection that survives ANALYZE runs. On a
+        standby, where replayed writes leave the counters still, each table's row
+        sample is hashed as well.
 
-        Returns the states and, separately, the tables whose columns could not be
-        read: those are unknown this run, not dropped. Raises if the stats can't
+        Returns the states and, separately, the tables that could not be read this
+        run: those are unknown, not dropped. Raises if the stats or columns can't
         be read at all, since an empty answer would read as every table dropped.
         """
         table_states: Dict[str, PostgresTableState] = {}
@@ -1195,15 +1309,15 @@ class PostgreSQLConnector(BaseConnector):
 
         # For IN, push schema filter down to SQL; for NOT_IN, fetch all and exclude client-side.
         schemas_exclude = schemas_op == MultiselectOperator.NOT_IN.value
-        stats_scope = None if schemas_exclude else selected_schemas
-        stats_response = await self.data_source.get_table_stats(stats_scope)
+        scope = None if schemas_exclude else selected_schemas
+        stats_response = await self.data_source.get_table_stats(scope)
         if not stats_response.success:
             raise RuntimeError(f"Failed to get table stats: {stats_response.error}")
 
         stats_by_fqn: Dict[str, TableStats] = {}
         for stat_dict in stats_response.data:
             stat = TableStats.model_validate(stat_dict)
-            fqn = f"{stat.schema_name}.{stat.table_name}"
+            fqn = table_fqn(stat.schema_name, stat.table_name)
             if not (
                 self._passes_filter(stat.schema_name, selected_schemas, schemas_op)
                 and self._passes_filter(fqn, selected_tables, tables_op)
@@ -1211,14 +1325,25 @@ class PostgreSQLConnector(BaseConnector):
                 continue
             stats_by_fqn[fqn] = stat
 
-        for fqn, stat in stats_by_fqn.items():
-            column_hash = await self._compute_column_hash(stat.schema_name, stat.table_name)
-            if column_hash is None:
-                unreadable.add(fqn)
-                continue
+        if not stats_by_fqn:
+            return table_states, unreadable
 
-            table_states[fqn] = PostgresTableState(
-                column_hash=column_hash,
+        columns_response = await self.data_source.get_columns(scope)
+        if not columns_response.success:
+            raise RuntimeError(f"Failed to get columns: {columns_response.error}")
+        columns_by_table: Dict[Tuple[str, str], List[ColumnInfo]] = defaultdict(list)
+        for row in columns_response.data:
+            row = dict(row)
+            key = (row.pop("schema_name"), row.pop("table_name"))
+            columns_by_table[key].append(ColumnInfo.model_validate(row))
+
+        primary_keys = await self._primary_keys_if_standby(scope)
+        max_rows = self._max_rows(self.sync_filters)
+
+        for fqn, stat in stats_by_fqn.items():
+            key = (stat.schema_name, stat.table_name)
+            state = PostgresTableState(
+                column_hash=_column_hash(columns_by_table.get(key, [])),
                 n_tup_ins=stat.n_tup_ins or 0,
                 n_tup_upd=stat.n_tup_upd or 0,
                 n_tup_del=stat.n_tup_del or 0,
@@ -1226,22 +1351,44 @@ class PostgreSQLConnector(BaseConnector):
                 schema_name=stat.schema_name,
                 table_name=stat.table_name,
             )
+            if primary_keys is not None:
+                sample = await self.data_source.get_sample_hash(
+                    stat.schema_name, stat.table_name,
+                    limit=max_rows, order_by=primary_keys.get(key) or None,
+                    max_bytes=MAX_TABLE_DOCUMENT_BYTES,
+                )
+                if not sample.success:
+                    self.logger.warning(f"Could not sample {fqn}: {sample.error}")
+                    unreadable.add(fqn)
+                    continue
+                state.sample_hash = sample.data["sample_hash"]
+            table_states[fqn] = state
 
         return table_states, unreadable
 
-    async def _compute_column_hash(self, schema: str, table: str) -> Optional[str]:
-        """MD5 of the column definitions, or None when they can't be read."""
-        table_info_response = await self.data_source.get_table_info(schema, table)
-        if not table_info_response.success:
-            self.logger.warning(
-                f"Could not read columns of {schema}.{table}: {table_info_response.error}"
-            )
+    async def _primary_keys_if_standby(
+        self,
+        scope: Optional[List[str]],
+    ) -> Optional[Dict[Tuple[str, str], List[str]]]:
+        """Primary keys per table when the server is a standby, else None."""
+        recovery = await self.data_source.is_in_recovery()
+        if not recovery.success:
+            raise RuntimeError(f"Failed to read recovery state: {recovery.error}")
+        if not recovery.data["in_recovery"]:
             return None
 
-        detail = TableDetail.model_validate(table_info_response.data)
-        columns_dicts = [col.model_dump() for col in detail.columns]
-        column_str = json.dumps(columns_dicts, sort_keys=True, default=str)
-        return hashlib.md5(column_str.encode()).hexdigest()
+        response = await self.data_source.get_primary_keys_by_table(scope)
+        if not response.success:
+            raise RuntimeError(f"Failed to get primary keys: {response.error}")
+        keys: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+        for row in response.data:
+            keys[(row["schema_name"], row["table_name"])].append(row["column_name"])
+        return keys
+
+    @staticmethod
+    def _max_rows(sync_filters: FilterCollection) -> int:
+        value = sync_filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000)
+        return max(1, min(int(value), MAX_ROWS_PER_TABLE_LIMIT))
 
     def _has_table_changed(
         self,
@@ -1270,7 +1417,8 @@ class PostgreSQLConnector(BaseConnector):
         return (
             current.n_tup_ins != stored.n_tup_ins or
             current.n_tup_upd != stored.n_tup_upd or
-            current.n_tup_del != stored.n_tup_del
+            current.n_tup_del != stored.n_tup_del or
+            current.sample_hash != stored.sample_hash
         )
 
     async def _sync_new_tables(
@@ -1381,6 +1529,63 @@ class PostgreSQLConnector(BaseConnector):
                 )
         return undeleted
 
+    async def _remove_stale_schema_groups(
+        self,
+        synced_schemas: Optional[List[str]] = None,
+        filters: Optional[Tuple[Optional[List[str]], str, Optional[List[str]], str]] = None,
+    ) -> None:
+        """Delete the groups of schemas that were dropped or are now filtered out.
+
+        Pass the schemas just synced, or the filters to list them with. Best
+        effort: their tables are already gone, so a leftover group is empty and
+        makes nothing searchable.
+        """
+        try:
+            if synced_schemas is None:
+                selected_schemas, schemas_op, _, _ = filters or self._get_filter_values()
+                synced_schemas = [
+                    schema.name for schema in await self._fetch_schemas()
+                    if self._passes_filter(schema.name, selected_schemas, schemas_op)
+                ]
+            keep = {self._schema_group_id(name) for name in synced_schemas}
+            async with self.data_store_provider.transaction() as tx_store:
+                groups = await tx_store.get_nodes_by_filters(
+                    collection=CollectionNames.RECORD_GROUPS.value,
+                    filters={
+                        "connectorId": self.connector_id,
+                        "groupType": RecordGroupType.SQL_NAMESPACE.value,
+                    },
+                )
+            stale = sorted({g.get("externalGroupId") for g in groups} - keep - {None})
+            for external_group_id in stale:
+                await self.data_entities_processor.on_record_group_deleted(
+                    external_group_id, self.connector_id
+                )
+            if stale:
+                self.logger.info(f"Removed {len(stale)} schema groups that are no longer synced")
+        except Exception as e:
+            self.sync_stats.errors += 1
+            self.logger.warning(f"Failed to remove stale schema groups: {e}")
+
+    async def _remove_database_group_self_links(self) -> None:
+        """Remove links from the database group to itself.
+
+        Left by versions that gave a schema named after its database the
+        database's group id, which linked that group to itself as its own parent.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            group = await tx_store.get_record_group_by_external_id(
+                connector_id=self.connector_id, external_id=self.database_name
+            )
+            if not group:
+                return
+            for edge_collection in (CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value):
+                await tx_store.delete_edge(
+                    group.id, CollectionNames.RECORD_GROUPS.value,
+                    group.id, CollectionNames.RECORD_GROUPS.value,
+                    edge_collection,
+                )
+
     async def _save_tables_sync_state(self, states: Dict[str, PostgresTableState]) -> None:
         """Save table states for the next incremental sync to compare against."""
         serialized_states = json.dumps(
@@ -1430,7 +1635,7 @@ class PostgreSQLConnector(BaseConnector):
                         table_entry = TableListEntry.model_validate(table_dict)
                         if not table_entry.name:
                             continue
-                        fqn = f"{schema_info.name}.{table_entry.name}"
+                        fqn = table_fqn(schema_info.name, table_entry.name)
                         table_cache.append(FilterOption(id=fqn, label=fqn))
 
             # Atomic swap so readers never see a partially-built cache
