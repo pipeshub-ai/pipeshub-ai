@@ -2434,6 +2434,112 @@ class TestToggleConnectorInstance:
         mock_existing_connector.cleanup.assert_called_once()
 
 
+class TestToggleLocalFsOwnerClaim:
+    """Enabling Local FS sync claims the owner device or refuses another one."""
+
+    async def _enable(
+        self, body: dict, owner: dict | None = None, init: AsyncMock | None = None
+    ):
+        from app.connectors.api.router import toggle_connector_instance
+
+        req = _make_request(user_id="u1", body={"type": "sync", **body})
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "o1", "accountType": "individual"}
+        )
+        instance = _make_instance(
+            connector_type="Local FS",
+            scope="personal",
+            created_by="u1",
+            auth_type="NONE",
+            is_active=False,
+            is_configured=True,
+            extra=owner,
+        )
+        registry = req.app.state.connector_registry
+        registry.get_connector_instance = AsyncMock(return_value=instance)
+        registry.update_connector_instance = AsyncMock(return_value=True)
+        init = init or AsyncMock()
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router._ensure_connector_initialized", new=init), \
+             patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=1000):
+            await toggle_connector_instance("c1", req, graph_provider=graph_provider)
+        return registry.update_connector_instance.await_args.kwargs["updates"], init
+
+    async def test_unclaimed_without_device_is_refused(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await self._enable({})
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail.startswith("DESKTOP_UNCLAIMED:")
+
+    async def test_unclaimed_with_device_claims_ownership(self):
+        updates, init = await self._enable({"deviceId": "dev-a", "deviceName": "Laptop A"})
+
+        assert updates["isActive"] is True
+        assert updates["ownerDeviceId"] == "dev-a"
+        assert updates["ownerDeviceName"] == "Laptop A"
+        init.assert_awaited_once()
+
+    async def test_other_device_is_refused_before_initializing(self):
+        init = AsyncMock()
+        with pytest.raises(HTTPException) as exc_info:
+            await self._enable(
+                {"deviceId": "dev-b", "deviceName": "Laptop B"},
+                owner={"ownerDeviceId": "dev-a", "ownerDeviceName": "Laptop A"},
+                init=init,
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail.startswith("DESKTOP_OWNED_BY_OTHER_DEVICE:")
+        assert "Laptop A" in exc_info.value.detail
+        init.assert_not_awaited()
+
+    async def test_owned_connector_without_device_is_refused(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await self._enable(
+                {}, owner={"ownerDeviceId": "dev-a", "ownerDeviceName": "Laptop A"}
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail.startswith("DESKTOP_OWNED_BY_OTHER_DEVICE:")
+
+    async def test_owner_device_refreshes_a_changed_name_only(self):
+        owner = {"ownerDeviceId": "dev-a", "ownerDeviceName": "Old name"}
+
+        renamed, _ = await self._enable(
+            {"deviceId": "dev-a", "deviceName": "New name"}, owner=owner
+        )
+        unchanged, _ = await self._enable(
+            {"deviceId": "dev-a", "deviceName": "Old name"}, owner=owner
+        )
+
+        assert renamed["ownerDeviceName"] == "New name"
+        assert "ownerDeviceId" not in renamed
+        assert "ownerDeviceName" not in unchanged
+
+    async def test_other_connectors_ignore_device_fields(self):
+        from app.connectors.api.router import toggle_connector_instance
+
+        req = _make_request(user_id="u1", is_admin=True, body={"type": "sync"})
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "o1", "accountType": "individual"}
+        )
+        instance = _make_instance(
+            connector_type="Web", auth_type="NONE", is_active=False, is_configured=True
+        )
+        registry = req.app.state.connector_registry
+        registry.get_connector_instance = AsyncMock(return_value=instance)
+        registry.update_connector_instance = AsyncMock(return_value=True)
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router._ensure_connector_initialized", new=AsyncMock()), \
+             patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=1000):
+            await toggle_connector_instance("c1", req, graph_provider=graph_provider)
+
+        updates = registry.update_connector_instance.await_args.kwargs["updates"]
+        assert "ownerDeviceId" not in updates
+
+
 # ===========================================================================
 # Route handler tests: delete_connector_instance
 # ===========================================================================

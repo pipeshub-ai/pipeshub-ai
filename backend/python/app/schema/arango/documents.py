@@ -169,6 +169,8 @@ app_schema = {
             "updatedAtTimestamp": {"type": "number"},
             "status": {"type": ["string", "null"]},
             "isLocked": {"type": ["boolean", "null"]},
+            "ownerDeviceId": {"type": ["string", "null"]},
+            "ownerDeviceName": {"type": ["string", "null"]},
             "permissionModel": {
                 "type": ["string", "null"],
                 "enum": [m.value for m in PermissionModel] + [None],

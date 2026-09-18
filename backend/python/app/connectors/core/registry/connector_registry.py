@@ -782,6 +782,8 @@ class ConnectorRegistry:
                 'createdBy': instance_data.get('createdBy'),
                 'updatedBy': instance_data.get('updatedBy'),
                 'isLocked': instance_data.get('isLocked', False),
+                'ownerDeviceId': instance_data.get('ownerDeviceId'),
+                'ownerDeviceName': instance_data.get('ownerDeviceName'),
             })
 
         return connector_info

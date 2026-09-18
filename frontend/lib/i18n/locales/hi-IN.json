@@ -380,6 +380,7 @@
       "subtitleExisting": "अपने PipesHub सर्वर URL की पुष्टि करें या उसे अपडेट करें।",
       "label": "सर्वर URL",
       "submit": "कनेक्ट करें",
+      "changeServer": "सर्वर बदलें",
       "errors": {
         "empty": "कृपया एक सर्वर URL दर्ज करें।",
         "invalid": "कृपया एक मान्य URL दर्ज करें (जैसे http://localhost:3000)।",
@@ -1935,6 +1936,8 @@
         "additionalSettingsDescription": "Configure connector-specific sync options",
         "nonEditableUrlFieldTooltip": "सेट करने के बाद वेबसाइट URL नहीं बदला जा सकता।",
         "nonEditableLockedFieldTooltip": "सेट करने के बाद यह मान नहीं बदला जा सकता।",
+        "localFsDesktopOnlyBanner": "लोकल फ़ाइलसिस्टम सेटिंग्स केवल PipesHub डेस्कटॉप ऐप में बदली जा सकती हैं। यह व्यू केवल पढ़ने के लिए है।",
+        "localFsDesktopOnlySaveTooltip": "इन सेटिंग्स को बदलने के लिए PipesHub डेस्कटॉप ऐप खोलें।",
         "importDate": "Import start date",
         "importDateDescription": "Choose the date from which messages are imported",
         "importAllTime": "Import All Time Data",
@@ -2016,7 +2019,9 @@
           "needsAuth": "Auth आवश्यक",
           "needsAuthTooltip": "कॉन्फ़िगरेशन सहेजी गई है, लेकिन इस इंस्टेंस को अभी भी प्रमाणीकरण चाहिए।",
           "ready": "पूर्ण",
-          "readyTooltip": "कॉन्फ़िगरेशन पूर्ण और प्रमाणित है। सक्षम होने पर सिंक चल सकता है।"
+          "readyTooltip": "कॉन्फ़िगरेशन पूर्ण और प्रमाणित है। सक्षम होने पर सिंक चल सकता है।",
+          "desktopOffline": "डेस्कटॉप ऑफ़लाइन",
+          "desktopOfflineTooltip": "इस फ़ोल्डर की डेस्कटॉप ऐप कनेक्ट नहीं है। सिंक करने के लिए उसे उस मशीन पर खोलें।"
         },
         "sync": {
           "kind": "Sync",
@@ -2027,6 +2032,14 @@
           "removing": "हटाया जा रहा है",
           "removingTooltip": "यह इंस्टेंस हटाई जा रही है।"
         }
+      },
+      "localFsDesktop": {
+        "offlineToast": "सिंक करने के लिए उस मशीन पर PipesHub डेस्कटॉप ऐप खोलें जिसका यह फ़ोल्डर है।",
+        "offlineNamedToast": "इस फ़ोल्डर का डिवाइस {{deviceName}} कनेक्ट नहीं है। सिंक करने के लिए उस डिवाइस पर PipesHub डेस्कटॉप ऐप खोलें।",
+        "unclaimedToast": "यह कनेक्टर अभी तक किसी डेस्कटॉप पर सेट अप नहीं किया गया है। उस मशीन पर PipesHub डेस्कटॉप ऐप खोलें जिसका यह फ़ोल्डर है और वहाँ एक बार सिंक चालू करें।",
+        "ownedByOtherDeviceToast": "यह कनेक्टर {{deviceName}} का है। उस डिवाइस पर PipesHub डेस्कटॉप ऐप से सिंक चालू करें।",
+        "ownedByOtherDeviceUnknownToast": "यह कनेक्टर किसी दूसरे डिवाइस का है। उस डिवाइस पर PipesHub डेस्कटॉप ऐप से सिंक चालू करें।",
+        "deviceIdentityError": "इस डिवाइस की पहचान नहीं हो सकी: {{error}}"
       },
       "schemaForm": {
         "tagsPlaceholder": "टैग जोड़ने के लिए टाइप करें और एंटर दबाएँ",

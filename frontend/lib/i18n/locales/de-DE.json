@@ -380,6 +380,7 @@
       "subtitleExisting": "Bestätigen oder aktualisieren Sie Ihre PipesHub-Server-URL.",
       "label": "Server-URL",
       "submit": "Verbinden",
+      "changeServer": "Server ändern",
       "errors": {
         "empty": "Bitte geben Sie eine Server-URL ein.",
         "invalid": "Bitte geben Sie eine gültige URL ein (z. B. http://localhost:3000).",
@@ -1937,6 +1938,8 @@
         "additionalSettingsDescription": "Konnektorspezifische Synchronisierungsoptionen konfigurieren",
         "nonEditableUrlFieldTooltip": "Die Website-URL kann nach dem Festlegen nicht mehr geändert werden.",
         "nonEditableLockedFieldTooltip": "Dieser Wert kann nach dem Festlegen nicht mehr geändert werden.",
+        "localFsDesktopOnlyBanner": "Einstellungen für das lokale Dateisystem können nur in der PipesHub-Desktop-App geändert werden. Diese Ansicht ist schreibgeschützt.",
+        "localFsDesktopOnlySaveTooltip": "Öffnen Sie die PipesHub-Desktop-App, um diese Einstellungen zu ändern.",
         "importDate": "Importstartdatum",
         "importDateDescription": "Wählen Sie das Datum, ab dem Nachrichten importiert werden",
         "importAllTime": "Alle Daten importieren",
@@ -2018,7 +2021,9 @@
           "needsAuth": "Auth nötig",
           "needsAuthTooltip": "Die Konfiguration ist gespeichert, aber diese Instanz muss noch authentifiziert werden.",
           "ready": "Abgeschlossen",
-          "readyTooltip": "Konfiguration ist abgeschlossen und authentifiziert. Sync kann bei Aktivierung laufen."
+          "readyTooltip": "Konfiguration ist abgeschlossen und authentifiziert. Sync kann bei Aktivierung laufen.",
+          "desktopOffline": "Desktop offline",
+          "desktopOfflineTooltip": "Die Desktop-App, der dieser Ordner gehört, ist nicht verbunden. Öffnen Sie sie auf diesem Rechner, um zu synchronisieren."
         },
         "sync": {
           "kind": "Sync",
@@ -2029,6 +2034,14 @@
           "removing": "Entfernen",
           "removingTooltip": "Diese Instanz wird gelöscht."
         }
+      },
+      "localFsDesktop": {
+        "offlineToast": "Öffnen Sie die PipesHub-Desktop-App auf dem Rechner, dem dieser Ordner gehört, um zu synchronisieren.",
+        "offlineNamedToast": "Das Gerät {{deviceName}}, dem dieser Ordner gehört, ist nicht verbunden. Öffnen Sie dort die PipesHub-Desktop-App, um zu synchronisieren.",
+        "unclaimedToast": "Dieser Connector wurde noch auf keinem Desktop eingerichtet. Öffnen Sie die PipesHub-Desktop-App auf dem Rechner, dem dieser Ordner gehört, und aktivieren Sie dort einmalig die Synchronisierung.",
+        "ownedByOtherDeviceToast": "Dieser Connector gehört zum Gerät {{deviceName}}. Aktivieren Sie die Synchronisierung dort in der PipesHub-Desktop-App.",
+        "ownedByOtherDeviceUnknownToast": "Dieser Connector gehört zu einem anderen Gerät. Aktivieren Sie die Synchronisierung dort in der PipesHub-Desktop-App.",
+        "deviceIdentityError": "Dieses Gerät konnte nicht identifiziert werden: {{error}}"
       },
       "schemaForm": {
         "tagsPlaceholder": "Tippen und Enter drücken, um Tags hinzuzufügen",
