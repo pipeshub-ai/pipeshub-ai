@@ -1,5 +1,6 @@
 """Unit tests for app.api.routes.entity module."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,6 +9,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from app.api.routes.entity import (
+    UserEmailUpdateRequest,
     _validate_and_filter_owner_updates,
     _validate_owner_removal,
     create_team,
@@ -18,6 +20,7 @@ from app.api.routes.entity import (
     get_user_teams,
     get_users,
     update_team,
+    update_user_email,
 )
 
 
@@ -1227,4 +1230,45 @@ class TestGetTeamUsers:
             await get_team_users(req, "team-1")
         assert exc.value.status_code == 403
 
+
+class TestUpdateUserEmail:
+    def test_updates_graph_email(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.get_user_by_user_id.return_value = {"id": "graph-key"}
+            body = UserEmailUpdateRequest(email="New@Example.com")
+
+            resp = await update_user_email(req, body)
+
+            assert resp.status_code == 200
+            gp.batch_upsert_nodes.assert_awaited_once()
+            payload = gp.batch_upsert_nodes.await_args.args[0][0]
+            assert payload["email"] == "new@example.com"
+            assert payload["userId"] == "user-1"
+            assert payload["orgId"] == "org-1"
+            assert payload["id"] == "graph-key"
+
+        asyncio.run(_run())
+
+    def test_404_when_graph_user_missing(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.get_user_by_user_id.return_value = None
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+            assert exc.value.status_code == 404
+
+        asyncio.run(_run())
+
+    def test_400_when_email_invalid(self):
+        async def _run() -> None:
+            req = _make_request()
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="not-an-email"))
+            assert exc.value.status_code == 400
+
+        asyncio.run(_run())
 

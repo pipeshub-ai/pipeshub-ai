@@ -28,6 +28,7 @@ class TestAcceptedServiceScopes:
                 "conversation:create",
                 "conversation:permissions",
                 "fetch:config",
+                "entity:user:write",
             }
         )
 
