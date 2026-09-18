@@ -7372,9 +7372,6 @@ components:
         name:
           type: string
           description: Display name, falling back to email or the user id
-        email:
-          type: string
-          format: email
 
 
     ConversationListItem:

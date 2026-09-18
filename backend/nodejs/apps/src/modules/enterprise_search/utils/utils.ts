@@ -717,7 +717,6 @@ export const addComputedFields = <
 export type SharedByInfo = {
   userId: string;
   name: string;
-  email?: string;
 };
 
 function sharedByDisplayName(user: {
@@ -736,12 +735,20 @@ function sharedByDisplayName(user: {
   return user.email?.trim() || '';
 }
 
-/**
- * Resolve conversation `initiator` IDs to display names for recipients.
- * Only the initiator can share a chat, so initiator is the sharer.
- */
+function conversationIsOwnedByCaller(conversation: {
+  isOwner?: boolean;
+  access?: { isOwner?: boolean };
+}): boolean {
+  return conversation.isOwner === true || conversation.access?.isOwner === true;
+}
+
+/** Resolve initiator IDs to display names for recipients (initiator is the sharer). */
 export const attachSharedBy = async <
-  T extends { initiator?: { toString(): string } },
+  T extends {
+    initiator?: { toString(): string };
+    isOwner?: boolean;
+    access?: { isOwner?: boolean };
+  },
 >(
   conversations: T[],
   orgId: string,
@@ -750,9 +757,13 @@ export const attachSharedBy = async <
     return conversations;
   }
 
+  const recipientConversations = conversations.filter(
+    (conversation) => !conversationIsOwnedByCaller(conversation),
+  );
+
   const initiatorIds = [
     ...new Set(
-      conversations
+      recipientConversations
         .map((conversation) => conversation.initiator?.toString())
         .filter((id): id is string => {
           if (!id) return false;
@@ -783,12 +794,14 @@ export const attachSharedBy = async <
     if (!initiatorId) {
       return conversation;
     }
+    if (conversationIsOwnedByCaller(conversation)) {
+      return conversation;
+    }
     const user = userById.get(initiatorId);
     const name = user ? sharedByDisplayName(user) : '';
     const sharedBy: SharedByInfo = {
       userId: initiatorId,
       name: name || initiatorId,
-      ...(user?.email ? { email: user.email } : {}),
     };
     return { ...conversation, sharedBy };
   });

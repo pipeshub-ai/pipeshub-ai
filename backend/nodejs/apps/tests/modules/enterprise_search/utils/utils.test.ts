@@ -824,8 +824,17 @@ describe('Enterprise Search Utils', () => {
       expect(result[0].sharedBy).to.deep.equal({
         userId: VALID_OID,
         name: 'Ada Lovelace',
-        email: 'ada@example.com',
       })
+    })
+
+    it('skips enrichment for conversations the caller owns', async () => {
+      const findStub = sinon.stub(Users, 'find')
+      const result = await attachSharedBy(
+        [{ initiator: new mongoose.Types.ObjectId(VALID_OID), isOwner: true }],
+        VALID_OID2,
+      )
+      expect(findStub.called).to.be.false
+      expect(result[0]).to.not.have.property('sharedBy')
     })
   })
 

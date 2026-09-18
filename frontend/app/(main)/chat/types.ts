@@ -104,7 +104,6 @@ export interface SharedWithEntry {
 export interface SharedByInfo {
   userId: string;
   name: string;
-  email?: string;
 }
 
 /**

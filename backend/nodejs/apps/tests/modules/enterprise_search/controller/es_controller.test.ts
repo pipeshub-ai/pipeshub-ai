@@ -4044,7 +4044,6 @@ describe('Enterprise Search Controller', () => {
         expect(response.conversations[0].sharedBy).to.deep.equal({
           userId: VALID_OID3,
           name: 'Priya Sharma',
-          email: 'priya@test.com',
         })
         // shared branch strips the sharedWith field from the projection
         expect(findChain.select.getCalls().some((c: any) => c.args[0] === '-sharedWith')).to.be.true
