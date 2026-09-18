@@ -344,7 +344,18 @@ function ScrollableList({ children }: ScrollableListProps) {
   }, [updateFades]);
 
   return (
-    <Box style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+    <Box
+      style={{
+        position: 'relative',
+        flex: 1,
+        minHeight: 0,
+        minWidth: 0,
+        width: '100%',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
       {showTopFade && (
         <Box
           style={{
@@ -361,16 +372,17 @@ function ScrollableList({ children }: ScrollableListProps) {
       )}
       <Box
         ref={scrollRef}
-        className="no-scrollbar"
+        data-upload-scroll-area=""
         style={{
           flex: 1,
           minHeight: 0,
+          minWidth: 0,
+          width: '100%',
           maxHeight: '100%',
-          overflowY: 'auto',
-          overflowX: 'hidden',
+          overflow: 'auto',
         }}
       >
-        {children}
+        <Box style={{ minWidth: '100%', width: 'max-content' }}>{children}</Box>
       </Box>
       {showBottomFade && (
         <>
@@ -437,6 +449,8 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
         background: 'var(--olive-3)',
         borderRadius: 'var(--radius-2)',
         border: '1px solid var(--olive-4)',
+        minWidth: '100%',
+        width: 'max-content',
       }}
     >
       <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
@@ -458,13 +472,11 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
             <FileIcon filename={item.name} size={16} />
           )}
         </Box>
-        <Flex direction="column" gap="0" style={{ minWidth: 0 }}>
+        <Flex direction="column" gap="0" style={{ minWidth: 0, flex: 1 }}>
           <Text
             size="2"
             style={{
               color: 'var(--slate-12)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
             }}
             title={item.name}
@@ -590,6 +602,8 @@ function FolderTreeRow({ node, depth, onRemovePath }: FolderTreeRowProps) {
           borderRadius: 'var(--radius-1)',
           background: isHovered ? 'var(--olive-4)' : 'transparent',
           gap: 'var(--space-1)',
+          minWidth: '100%',
+          width: 'max-content',
         }}
       >
         <Flex align="center" gap="1" style={{ minWidth: 0, flex: 1 }}>
@@ -621,14 +635,14 @@ function FolderTreeRow({ node, depth, onRemovePath }: FolderTreeRowProps) {
           {isFolder ? (
             <MaterialIcon name="folder" size={16} color="var(--accent-9)" style={{ flexShrink: 0 }} />
           ) : (
-            <FileIcon filename={node.name} size={16} />
+            <Box style={{ flexShrink: 0, display: 'inline-flex' }}>
+              <FileIcon filename={node.name} size={16} />
+            </Box>
           )}
           <Text
             size="2"
             style={{
               color: 'var(--slate-12)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
             }}
             title={node.name}
@@ -685,7 +699,8 @@ function UploadedFolderItem({ item, onRemoveFolder, onRemovePath }: UploadedFold
         borderRadius: 'var(--radius-2)',
         border: '1px solid var(--olive-4)',
         padding: 'var(--space-1) 0',
-        overflow: 'hidden',
+        minWidth: '100%',
+        width: 'max-content',
       }}
     >
       <Flex
@@ -801,6 +816,7 @@ export function UploadDataSidebar({
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Content
+        data-upload-data-dialog=""
         onInteractOutside={(event) => event.preventDefault()}
         style={{
           position: 'fixed',
@@ -820,6 +836,7 @@ export function UploadDataSidebar({
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
+          minWidth: 0,
           transform: 'none',
           animation: 'slideInFromRight 0.2s ease-out',
         }}
@@ -836,6 +853,9 @@ export function UploadDataSidebar({
             borderBottom: '1px solid var(--olive-3)',
             backdropFilter: 'blur(8px)',
             backgroundColor: 'var(--effects-translucent)',
+            minWidth: 0,
+            overflow: 'hidden',
+            flexShrink: 0,
           }}
         >
           <Flex align="center" gap="2">
@@ -872,7 +892,9 @@ export function UploadDataSidebar({
             display: 'grid',
             gridTemplateRows: '1fr auto 1fr',
             gap: '16px',
-            overflowY: 'hidden',
+            overflow: 'hidden',
+            minWidth: 0,
+            width: '100%',
             padding: 'var(--space-4)',
             backgroundColor: 'var(--effects-translucent)',
             backdropFilter: 'blur(8px)',
@@ -885,6 +907,8 @@ export function UploadDataSidebar({
             style={{
               height: '100%',
               minHeight: 0,
+              minWidth: 0,
+              overflow: 'hidden',
               padding: 'var(--space-4)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-2)',
@@ -923,7 +947,7 @@ export function UploadDataSidebar({
 
             {fileItems.length > 0 && (
               <ScrollableList>
-                <Flex direction="column" gap="2" style={{ paddingBottom: '4px' }}>
+                <Flex direction="column" gap="2" align="start" style={{ paddingBottom: '4px', minWidth: '100%' }}>
                   {fileItems.map((item) => (
                     <UploadedItem key={item.id} item={item} onRemove={handleRemoveFile} />
                   ))}
@@ -953,6 +977,8 @@ export function UploadDataSidebar({
             style={{
               height: '100%',
               minHeight: 0,
+              minWidth: 0,
+              overflow: 'hidden',
               padding: 'var(--space-4)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-2)',
@@ -991,7 +1017,7 @@ export function UploadDataSidebar({
 
             {folderItems.length > 0 && (
               <ScrollableList>
-                <Flex direction="column" gap="2" style={{ paddingBottom: '4px' }}>
+                <Flex direction="column" gap="2" align="start" style={{ paddingBottom: '4px', minWidth: '100%' }}>
                   {folderItems.map((item) => (
                     <UploadedFolderItem
                       key={item.id}
@@ -1021,6 +1047,9 @@ export function UploadDataSidebar({
             padding: 'var(--space-3) var(--space-4)',
             borderTop: '1px solid var(--olive-3)',
             backgroundColor: 'var(--effects-translucent)',
+            minWidth: 0,
+            overflow: 'hidden',
+            flexShrink: 0,
           }}
         >
           <Button

@@ -210,16 +210,12 @@ PDF (incluindo digitalizações), Microsoft Office (Word, Excel, PowerPoint), Go
 ### Como eu implanto o PipesHub?
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables (refer to env.template)
-# Start production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-Observação: Use HTTPS para implantações na nuvem. O HTTP pode causar bloqueios de segurança no frontend.
+Isso escreve os arquivos do Compose em `./pipeshub` e inicia o instalador interativo. Abra **http://localhost:3000** quando terminar. Use HTTPS para implantações na nuvem — HTTP pode causar bloqueios de segurança no frontend.
+
+Desenvolvedores que constroem a partir do código-fonte devem clonar o repositório e executar `./install.sh` (ou `./install.sh --build`) a partir da raiz do repositório. Veja o [Guia de Implantação](#-guia-de-implantação).
 
 ### Quais provedores de LLM o PipesHub suporta?
 

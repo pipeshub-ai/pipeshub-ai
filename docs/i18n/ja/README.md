@@ -210,16 +210,12 @@ PDF（スキャンを含む）、Microsoft Office（Word、Excel、PowerPoint）
 ### PipesHub はどうやってデプロイしますか？
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables (refer to env.template)
-# Start production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-注意：クラウドへのデプロイには HTTPS を使用してください。HTTP ではフロントエンドのセキュリティブロックが発生する場合があります。
+これにより Compose ファイルが `./pipeshub` に書き込まれ、対話式インストーラーが起動します。完了したら **http://localhost:3000** を開いてください。クラウドへのデプロイには HTTPS を使用 — HTTP ではフロントエンドのセキュリティブロックが発生する場合があります。
+
+ソースからビルドする開発者は、リポジトリをクローンしてリポジトリのルートから `./install.sh`（または `./install.sh --build`）を実行してください。詳しくは[デプロイメントガイド](#-デプロイガイド)を参照してください。
 
 ### PipesHub はどの LLM プロバイダーに対応していますか？
 

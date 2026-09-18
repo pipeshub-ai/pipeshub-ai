@@ -816,6 +816,8 @@
         "changeRoleSuccess": "भूमिका अपडेट की गई",
         "changeRoleSuccessDescription": "{{name}} अब {{role}} हैं",
         "changeRoleError": "भूमिका बदलने में विफल",
+        "maxAdminsReachedTitle": "एक और एडमिन नहीं जोड़ सकते",
+        "maxAdminsReached": "एक संगठन में अधिकतम 5 एडमिन हो सकते हैं।",
         "removeFromWorkspace": "कार्यक्षेत्र से हटाएं",
         "removeUserTitle": "उपयोगकर्ता हटाएं?",
         "removeUserMessage": "क्या आप वाकई {{email}} को {{workspace}} कार्यक्षेत्र से हटाना चाहते हैं?",

@@ -830,6 +830,8 @@
         "changeRoleSuccess": "角色已更新",
         "changeRoleSuccessDescription": "{{name}} 现在是 {{role}}",
         "changeRoleError": "更改角色失败",
+        "maxAdminsReachedTitle": "无法再添加管理员",
+        "maxAdminsReached": "一个组织最多可以有 5 位管理员。",
         "removeFromWorkspace": "从工作区移除",
         "demoteAdminBeforeRemoveTitle": "无法移除管理员",
         "demoteAdminBeforeRemove": "请先将该管理员降级为成员，然后再移除。",

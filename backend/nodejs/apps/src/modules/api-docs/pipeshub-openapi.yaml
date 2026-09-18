@@ -17578,6 +17578,10 @@ paths:
         new address. The response includes a `meta.emailChangeMailStatus` field:
         `notNeeded` | `sent` | `failed`.
 
+        **Role:** Only org admins can set `role`. Promoting a member to `admin` is rejected
+        with `400` when the change would exceed 5 non-deleted admins (including pending
+        admin invites). Demoting the last remaining admin is also rejected.
+
         **Authorization:** Admin can update any user; non-admin can only update themselves
         (`userAdminOrSelfCheck` middleware, throws `400` not `403`).
       operationId: updateUser
@@ -17663,6 +17667,8 @@ paths:
             - Restricted fields (`_id`, `orgId`, `slug`, `__v`) included
             - Email already in use by another user
             - Requester is not admin and is trying to update a different user
+            - Promoting to admin would exceed the organization limit of 5 admins
+            - Demoting the last remaining admin
           content:  
             application/json:
               schema:
@@ -18122,6 +18128,10 @@ paths:
 
         If mail sending fails for any email, the loop continues and the final response reflects
         the mail service's HTTP status code.
+
+        Optional `role` (`admin` | `member`, default `member`) is applied to new invites and
+        to restored/pending users when promoting to admin. Inviting as `admin` is rejected
+        with `400` when the batch would take the organization past 5 non-deleted admins.
       operationId: bulkInviteUsers
       security:
         - bearerAuth: []
@@ -18152,6 +18162,11 @@ paths:
                     pattern: '^[a-fA-F0-9]{24}$'
                   description: Optional group IDs to add invited users to
                   example: ["507f1f77bcf86cd799439011"]
+                role:
+                  type: string
+                  enum: [admin, member]
+                  description: Organization role for invited users. Only org admins may invite as admin.
+                  example: member
       responses:
         '200':
           description: Invitations processed (including all-skipped case)
@@ -18176,6 +18191,7 @@ paths:
             - Invalid email format in array
             - Requester does not have admin privileges (`userAdminCheck`)
             - Organization is an individual account (`accountTypeCheck`)
+            - Inviting as admin would exceed the organization limit of 5 admins
           content:
             application/json:
               schema:

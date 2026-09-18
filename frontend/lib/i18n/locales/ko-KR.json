@@ -830,6 +830,8 @@
         "changeRoleSuccess": "역할이 업데이트되었습니다",
         "changeRoleSuccessDescription": "{{name}}은(는) 이제 {{role}}입니다",
         "changeRoleError": "역할을 변경하지 못했습니다",
+        "maxAdminsReachedTitle": "관리자를 더 추가할 수 없습니다",
+        "maxAdminsReached": "조직에는 관리자를 최대 5명까지 둘 수 있습니다.",
         "removeFromWorkspace": "워크스페이스에서 제거",
         "demoteAdminBeforeRemoveTitle": "관리자를 제거할 수 없습니다",
         "demoteAdminBeforeRemove": "관리자를 멤버로 강등한 후 제거하세요.",

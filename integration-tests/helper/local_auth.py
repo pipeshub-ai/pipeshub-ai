@@ -112,7 +112,7 @@ def _authenticate(
     email: str,
     password: str,
     timeout: int,
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """Return ``(accessToken, orgId)``; ``orgId`` is empty on the open-source backend."""
     resp = requests.post(
         f"{base_url}/api/v1/userAccount/authenticate",

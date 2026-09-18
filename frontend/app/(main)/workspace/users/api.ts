@@ -84,9 +84,10 @@ export const UsersApi = {
    */
   async updateUser(
     userId: string,
-    payload: { role?: string; fullName?: string; [key: string]: unknown }
+    payload: { role?: string; fullName?: string; [key: string]: unknown },
+    config?: { suppressErrorToast?: boolean },
   ): Promise<void> {
-    await apiClient.put(`${BASE_URL}/${userId}`, payload);
+    await apiClient.put(`${BASE_URL}/${userId}`, payload, config);
   },
 
   /**
@@ -148,7 +149,9 @@ export const UsersApi = {
       payload.role =
         role === USER_ROLES.ADMIN || role === 'admin' ? 'admin' : 'member';
     }
-    await apiClient.post(`${BASE_URL}/bulk/invite`, payload);
+    await apiClient.post(`${BASE_URL}/bulk/invite`, payload, {
+      suppressErrorToast: true,
+    });
   },
 
   /**
