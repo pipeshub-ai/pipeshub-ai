@@ -3,6 +3,7 @@
 import json
 
 import pytest
+import yaml
 
 from app.models.blocks import BlockType, DataFormat, GroupType
 from app.modules.parsers.json.json_parser import JSONParser
@@ -100,7 +101,7 @@ class TestLocalTagsAreKept:
         )
 
     def test_python_object_tags_are_still_rejected(self):
-        with pytest.raises(Exception, match="python/object"):
+        with pytest.raises(yaml.constructor.ConstructorError, match="python/object"):
             YAMLParser._load_documents("!!python/object/apply:os.system ['id']")
 
 
