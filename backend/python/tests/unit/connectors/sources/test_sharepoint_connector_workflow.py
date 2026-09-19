@@ -2347,3 +2347,283 @@ class TestHandleRecordUpdatesDeep:
         dep.on_updated_record_permissions.assert_called_once_with(mock_record, new_perms)
         dep.on_record_metadata_update.assert_not_called()
         dep.on_record_content_update.assert_not_called()
+
+
+# ===========================================================================
+# RecordGroup PERMISSION edges (sites and drives)
+#
+# The knowledge-hub traversal walks App -> Site -> Drive -> Record and gates
+# every hop on a PERMISSION edge. A RecordGroup created with an empty
+# permission list is therefore never descended into, so browse and the
+# knowledge-graph agent tool show an empty connector even when the records
+# underneath are correctly permissioned and searchable.
+# ===========================================================================
+
+
+def _stub_site_scoped_drive_builder():
+    """A double for `sites/{id}/drives/{id}`.
+
+    msgraph ships two classes named `DriveItemRequestBuilder`. The site-scoped
+    one exposes only `get` / `to_get_request_information` / `with_url` — it has
+    no `.root` and no `.items`. `spec=` reproduces that, so any code reaching
+    for `.root` through the site chain raises AttributeError here exactly as it
+    does against the real SDK.
+    """
+    return MagicMock(spec=["get", "to_get_request_information", "with_url"])
+
+
+def _root_ace(*, inherited: bool, link: bool = False):
+    """One entry from a drive root's `permissions` collection.
+
+    `inherited_from` is set by Graph on an ACE the root received from the site
+    above it; a grant made on the library itself has none. `link` marks a
+    sharing link. Both facets are what separate a site-scoped ACE from a
+    library-scoped one.
+    """
+    perm = MagicMock()
+    perm.link = MagicMock() if link else None
+    perm.inherited_from = MagicMock() if inherited else None
+    return perm
+
+
+class TestDriveRecordGroupPermissions:
+
+    @pytest.mark.asyncio
+    async def test_drive_permissions_use_top_level_drives_builder(self):
+        connector, *_ = _make_connector()
+        connector.rate_limiter = AsyncMock()
+        connector.rate_limiter.__aenter__ = AsyncMock()
+        connector.rate_limiter.__aexit__ = AsyncMock()
+
+        connector.client = MagicMock()
+        connector.client.sites.by_site_id.return_value.drives.by_drive_id.return_value = (
+            _stub_site_scoped_drive_builder()
+        )
+
+        root_item = MagicMock()
+        root_item.id = "root-item-1"
+        perms_response = MagicMock()
+        perms_response.value = [MagicMock()]
+        connector._safe_api_call = AsyncMock(side_effect=[root_item, perms_response])
+
+        expected = [Permission(external_id="g-1", email=None,
+                               type=PermissionType.READ, entity_type=EntityType.GROUP)]
+        connector._convert_to_permissions = AsyncMock(return_value=expected)
+
+        result = await connector._get_drive_permissions("site-1", "drive-1")
+
+        assert result == expected
+        connector.client.drives.by_drive_id.assert_called_once_with("drive-1")
+
+    @pytest.mark.asyncio
+    async def test_drive_record_groups_are_created_with_their_permissions(self):
+        connector, dep, *_ = _make_connector()
+        connector.connector_name = Connectors.SHAREPOINT_ONLINE
+        connector.client = MagicMock()
+        connector.rate_limiter = AsyncMock()
+        connector.rate_limiter.__aenter__ = AsyncMock()
+        connector.rate_limiter.__aexit__ = AsyncMock()
+        connector.sync_filters = FilterCollection()
+
+        drive = _make_mock_drive("d1", "Shared Documents")
+        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[drive]))
+        connector._pass_drive_key_filters = MagicMock(return_value=True)
+        connector._normalize_document_library_url = MagicMock(return_value="/docs")
+
+        drive_permissions = [Permission(external_id="site-1-owners", email=None,
+                                        type=PermissionType.OWNER,
+                                        entity_type=EntityType.GROUP)]
+        connector._get_drive_permissions = AsyncMock(return_value=drive_permissions)
+
+        async def fake_delta(*args, **kwargs):
+            return
+            yield
+
+        connector._process_drive_delta = fake_delta
+
+        async for _ in connector._process_site_drives("site-1", "internal-1"):
+            pass
+
+        connector._get_drive_permissions.assert_awaited_once_with("site-1", "d1")
+        groups_with_permissions = dep.on_new_record_groups.call_args[0][0]
+        assert len(groups_with_permissions) == 1
+        assert groups_with_permissions[0][1] == drive_permissions
+
+
+class TestSitePermissionGraphFallback:
+
+    @staticmethod
+    def _connector_with_cached_site():
+        connector, *_ = _make_connector()
+        connector.site_cache["site-1"] = SiteMetadata(
+            site_id="site-1",
+            site_url="https://contoso.sharepoint.com/sites/test",
+            site_name="Test Site",
+            is_root=False,
+        )
+        connector._get_sharepoint_access_token = AsyncMock(return_value="token")
+        connector._get_custom_sharepoint_groups = AsyncMock(return_value=[])
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_graph_when_rest_resolves_nothing(self):
+        """Graph-only app credentials get 401 on /_api/web/sitegroups; the
+        helpers fail soft, so the REST path yields an empty ACL rather than an
+        error."""
+        connector = self._connector_with_cached_site()
+        connector._get_sharepoint_group_users = AsyncMock(return_value=[])
+
+        graph_permissions = [Permission(external_id="owners-1", email=None,
+                                        type=PermissionType.OWNER,
+                                        entity_type=EntityType.GROUP)]
+        connector._get_site_permissions_via_graph = AsyncMock(return_value=graph_permissions)
+
+        result = await connector._get_site_permissions("site-1")
+
+        assert result == graph_permissions
+        connector._get_site_permissions_via_graph.assert_awaited_once_with("site-1")
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_graph_when_rest_raises(self):
+        connector = self._connector_with_cached_site()
+        connector._get_sharepoint_group_users = AsyncMock(side_effect=Exception("401"))
+
+        graph_permissions = [Permission(external_id="owners-1", email=None,
+                                        type=PermissionType.OWNER,
+                                        entity_type=EntityType.GROUP)]
+        connector._get_site_permissions_via_graph = AsyncMock(return_value=graph_permissions)
+
+        result = await connector._get_site_permissions("site-1")
+
+        assert result == graph_permissions
+
+    @pytest.mark.asyncio
+    async def test_rest_result_is_kept_when_non_empty(self):
+        """A deployment that does hold the SharePoint REST grant keeps the
+        richer native-group result; the fallback must not run."""
+        connector = self._connector_with_cached_site()
+        connector._get_sharepoint_group_users = AsyncMock(side_effect=[
+            [{"LoginName": "c:0o.c|federateddirectoryclaimprovider|abcdefab-1234-5678-9012-abcdefabcdef",
+              "Title": "Team", "PrincipalType": 4}],
+            [],
+            [],
+        ])
+        connector._get_site_permissions_via_graph = AsyncMock(return_value=[])
+
+        result = await connector._get_site_permissions("site-1")
+
+        assert result
+        connector._get_site_permissions_via_graph.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_reads_default_drive_root(self):
+        connector, *_ = _make_connector()
+        connector.rate_limiter = AsyncMock()
+        connector.rate_limiter.__aenter__ = AsyncMock()
+        connector.rate_limiter.__aexit__ = AsyncMock()
+
+        connector.client = MagicMock()
+        connector.client.sites.by_site_id.return_value.drives.by_drive_id.return_value = (
+            _stub_site_scoped_drive_builder()
+        )
+
+        default_drive = MagicMock()
+        default_drive.id = "default-drive-1"
+        root_item = MagicMock()
+        root_item.id = "root-item-1"
+        perms_response = MagicMock()
+        perms_response.value = [_root_ace(inherited=True)]
+        connector._safe_api_call = AsyncMock(
+            side_effect=[default_drive, root_item, perms_response]
+        )
+
+        expected = [Permission(external_id="owners-1", email=None,
+                               type=PermissionType.OWNER, entity_type=EntityType.GROUP)]
+        connector._convert_to_permissions = AsyncMock(return_value=expected)
+
+        result = await connector._get_site_permissions_via_graph("site-1")
+
+        assert result == expected
+        connector.client.drives.by_drive_id.assert_called_once_with("default-drive-1")
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_keeps_only_inherited_aces(self):
+        """A drive root's permission collection mixes site-inherited ACEs with
+        grants scoped to that one library. Promoting the latter to the site
+        RecordGroup would let a principal with access to the default document
+        library reach every sibling library through the traversal."""
+        connector, *_ = _make_connector()
+        connector.rate_limiter = AsyncMock()
+        connector.rate_limiter.__aenter__ = AsyncMock()
+        connector.rate_limiter.__aexit__ = AsyncMock()
+        connector.client = MagicMock()
+
+        inherited_group_ace = _root_ace(inherited=True)
+        direct_grant = _root_ace(inherited=False)
+        sharing_link = _root_ace(inherited=True, link=True)
+
+        default_drive = MagicMock()
+        default_drive.id = "default-drive-1"
+        root_item = MagicMock()
+        root_item.id = "root-item-1"
+        perms_response = MagicMock()
+        perms_response.value = [inherited_group_ace, direct_grant, sharing_link]
+        connector._safe_api_call = AsyncMock(
+            side_effect=[default_drive, root_item, perms_response]
+        )
+        connector._convert_to_permissions = AsyncMock(return_value=[])
+
+        await connector._get_site_permissions_via_graph("site-1")
+
+        converted = connector._convert_to_permissions.await_args[0][0]
+        assert converted == [inherited_group_ace]
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_returns_empty_when_nothing_is_inherited(self):
+        """A 200 carrying only library-scoped grants must resolve to no site
+        ACL at all — an empty ACL is safer than a wrong one, on a success as
+        much as on an exception."""
+        connector, *_ = _make_connector()
+        connector.rate_limiter = AsyncMock()
+        connector.rate_limiter.__aenter__ = AsyncMock()
+        connector.rate_limiter.__aexit__ = AsyncMock()
+        connector.client = MagicMock()
+
+        default_drive = MagicMock()
+        default_drive.id = "default-drive-1"
+        root_item = MagicMock()
+        root_item.id = "root-item-1"
+        perms_response = MagicMock()
+        perms_response.value = [
+            _root_ace(inherited=False),
+            _root_ace(inherited=True, link=True),
+        ]
+        connector._safe_api_call = AsyncMock(
+            side_effect=[default_drive, root_item, perms_response]
+        )
+        connector._convert_to_permissions = AsyncMock(return_value=[])
+
+        assert await connector._get_site_permissions_via_graph("site-1") == []
+        connector._convert_to_permissions.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_returns_empty_when_no_default_drive(self):
+        connector, *_ = _make_connector()
+        connector.rate_limiter = AsyncMock()
+        connector.rate_limiter.__aenter__ = AsyncMock()
+        connector.rate_limiter.__aexit__ = AsyncMock()
+        connector.client = MagicMock()
+        connector._safe_api_call = AsyncMock(return_value=None)
+
+        assert await connector._get_site_permissions_via_graph("site-1") == []
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_returns_empty_on_error(self):
+        connector, *_ = _make_connector()
+        connector.rate_limiter = AsyncMock()
+        connector.rate_limiter.__aenter__ = AsyncMock()
+        connector.rate_limiter.__aexit__ = AsyncMock()
+        connector.client = MagicMock()
+        connector._safe_api_call = AsyncMock(side_effect=Exception("graph down"))
+
+        assert await connector._get_site_permissions_via_graph("site-1") == []
