@@ -3713,3 +3713,6 @@ class TestUpdateConnectorInstanceAuthConfig:
             with patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=999):
                 result = await update_connector_instance_auth_config("c1", request, gp)
         assert result["success"] is True
+        # saving credentials records who supplied them
+        updates = registry.update_connector_instance.await_args.kwargs["updates"]
+        assert updates["authenticatedBy"] == "user-1"

@@ -442,6 +442,30 @@ class ConfluenceDataCenterConnector(BaseConnector):
             self.logger.error(f"Connection test failed: {e}", exc_info=True)
             return False
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        if not self.data_source:
+            return
+        email, source_user_id = "", None
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_current_user_v1()
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                return
+            data = response.json() or {}
+            source_user_id = data.get("userKey") or data.get("key")
+            email = (data.get("email") or "").strip()
+            if not email and data.get("username"):
+                # Data Center usually omits email on /user/current; the profile call carries it
+                detail = await datasource.get_user_v1(username=data["username"])
+                if detail and detail.status == HttpStatusCode.SUCCESS.value:
+                    email = ((detail.json() or {}).get("email") or "").strip()
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated Confluence account: %s", e)
+            return
+        await self.register_authenticated_source_user(email or None, source_user_id)
+
     async def run_sync(self) -> None:
         """
         Run full synchronization of Confluence Data Center data.
@@ -466,6 +490,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
             # Ensure client is initialized
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
+
+            await self._register_authenticated_identity()
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(

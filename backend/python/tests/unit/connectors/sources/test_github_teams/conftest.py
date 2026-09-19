@@ -20,6 +20,7 @@ def make_mock_connector() -> MagicMock:
     passing this mock as the constructor argument.
     """
     c = MagicMock()
+    c._register_authenticated_identity = AsyncMock()
     from app.config.constants.arangodb import Connectors
 
     c.connector_id = "github-conn-1"

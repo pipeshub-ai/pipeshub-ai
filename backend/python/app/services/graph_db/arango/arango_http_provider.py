@@ -105,6 +105,7 @@ from app.schema.arango.edges import (
     agent_has_skill_schema,
     agent_has_toolset_schema,
     agent_skill_relation_schema,
+    authenticated_as_schema,
     basic_edge_schema,
     belongs_to_schema,
     contact_schema,
@@ -221,6 +222,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.INHERIT_PERMISSIONS.value, inherit_permissions_schema),
     (CollectionNames.ORG_APP_RELATION.value, basic_edge_schema),
     (CollectionNames.USER_APP_RELATION.value, user_app_relation_schema),
+    (CollectionNames.AUTHENTICATED_AS.value, authenticated_as_schema),
     (CollectionNames.BELONGS_TO_CATEGORY.value, basic_edge_schema),
     (CollectionNames.BELONGS_TO_LANGUAGE.value, basic_edge_schema),
     (CollectionNames.BELONGS_TO_TOPIC.value, basic_edge_schema),
@@ -1044,7 +1046,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER IS_SAME_COLLECTION("records", top)
                             FOR v, e, p IN 1..{record_depth} OUTBOUND top {CollectionNames.RECORD_RELATIONS.value}
                                 OPTIONS {{bfs: true, uniqueVertices: "global"}}
-                                FILTER ALL(edge IN p.edges, edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"])
+                                FILTER p.edges[*].relationshipType ALL IN ["PARENT_CHILD", "ATTACHMENT"]
                                 FILTER v._key IN @node_ids
                                 RETURN {{id: v._key, level: LENGTH(p.edges) + 1}}
                 )
@@ -1072,7 +1074,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER IS_SAME_COLLECTION("records", top)
                         FOR v, e, p IN 1..{record_depth} OUTBOUND top {CollectionNames.RECORD_RELATIONS.value}
                             OPTIONS {{bfs: true, uniqueVertices: "global"}}
-                            FILTER ALL(edge IN p.edges, edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"])
+                            FILTER p.edges[*].relationshipType ALL IN ["PARENT_CHILD", "ATTACHMENT"]
                             FILTER v._key IN @node_ids
                             RETURN {{id: v._key, level: LENGTH(p.edges) + 1}}
                 )
@@ -1091,7 +1093,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER parent != null
                 FOR v, e, p IN 1..{safe_depth} OUTBOUND parent {CollectionNames.RECORD_RELATIONS.value}
                     OPTIONS {{bfs: true, uniqueVertices: "global"}}
-                    FILTER ALL(edge IN p.edges, edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"])
+                    FILTER p.edges[*].relationshipType ALL IN ["PARENT_CHILD", "ATTACHMENT"]
                     FILTER v._key IN @node_ids
                     RETURN {{id: v._key, level: LENGTH(p.edges)}}
                 """
@@ -1122,11 +1124,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         try:
             query = """
-            LET userDoc = DOCUMENT(@@user_collection, @user_key)
-            FILTER userDoc != null
+            LET caller = DOCUMENT(@@user_collection, @user_key)
+            FILTER caller != null
+
             LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
             FILTER recordGroup != null
             FILTER recordGroup.orgId == @org_id
+
+            // Principals: the user, plus the source account the user authenticated this
+            // record group's connector as. One result per principal; the best one wins.
+            LET principals = APPEND([caller], (
+                FOR linked IN @@authenticated_as
+                    FILTER linked._from == caller._id AND linked.connectorId == recordGroup.connectorId
+                    RETURN DOCUMENT(linked._to)
+            ))
+            FOR userDoc IN principals
+            FILTER userDoc != null
             LET directPermission = (
                 FOR rg IN 0..10 OUTBOUND recordGroup @@inherit_permissions
                     FOR perm IN @@permission
@@ -1162,6 +1175,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET userRole = LENGTH(allPermissions) > 0 ? (
                 FIRST(FOR perm IN allPermissions SORT rolePriority[perm] DESC LIMIT 1 RETURN perm)
             ) : null
+            SORT hasPermission DESC, rolePriority[userRole] DESC
+            LIMIT 1
             RETURN { allowed: hasPermission, role: userRole }
             """
             bind_vars = {
@@ -1170,6 +1185,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "@authenticated_as": CollectionNames.AUTHENTICATED_AS.value,
                 "user_key": user_key,
                 "record_group_id": record_group_id,
                 "org_id": org_id,
@@ -1755,8 +1771,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             user_from = f"{CollectionNames.USERS.value}/{user_key}"
             record_from = f"{CollectionNames.RECORDS.value}/{record_id}"
             permission_query = """
-            LET user_from = @user_from
             LET record_from = @record_from
+
+            // Principals: the user, plus the source account the user authenticated this
+            // record's connector as. One result per principal; the best one wins.
+            LET principal_ids = APPEND([@user_from], (
+                FOR linked IN @@authenticated_as
+                    FILTER linked._from == @user_from AND linked.connectorId == DOCUMENT(record_from).connectorId
+                    RETURN linked._to
+            ))
+            FOR user_from IN principal_ids
 
             // 1. Check direct user permissions on the record
             LET direct_permission = FIRST(
@@ -1946,6 +1970,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 drive_access ? drive_access :
                 null
             )
+            SORT {"OWNER": 6, "ADMIN": 5, "EDITOR": 4, "WRITER": 3, "COMMENTER": 2, "READER": 1}[final_permission] DESC
+            LIMIT 1
             RETURN {
                 permission: final_permission,
                 source: (
@@ -1972,6 +1998,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "@authenticated_as": CollectionNames.AUTHENTICATED_AS.value,
                 "@anyone": CollectionNames.ANYONE.value,
                 "@records": CollectionNames.RECORDS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
@@ -4953,7 +4980,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
                         RETURN app
             )
-            LET combined = APPEND(user_apps, team_apps)
+            // Connectors the user authenticated as another source account
+            LET linked_apps = (
+                FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
+                    FILTER linked._from == @user_from
+                    LET app = DOCUMENT("{CollectionNames.APPS.value}", linked.connectorId)
+                    FILTER app != null
+                    RETURN app
+            )
+            LET combined = APPEND(APPEND(user_apps, team_apps), linked_apps)
             FOR app IN combined
                 COLLECT key = app._key INTO grouped KEEP app
                 RETURN grouped[0].app
@@ -6986,6 +7021,52 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"ensure_team_app_edge failed: {e}", exc_info=True)
             raise
 
+    async def upsert_authenticated_as(
+        self,
+        creator_key: str,
+        source_user_key: str,
+        connector_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> None:
+        # _key = connector_id keeps exactly one link per connector instance; UPSERT repoints on re-auth.
+        ts = get_epoch_timestamp_in_ms()
+        query = f"""
+        UPSERT {{ _key: @connectorId }}
+        INSERT {{
+            _key: @connectorId, _from: @from, _to: @to,
+            connectorId: @connectorId, orgId: @orgId,
+            createdAtTimestamp: @ts, updatedAtTimestamp: @ts
+        }}
+        UPDATE {{ _from: @from, _to: @to, orgId: @orgId, updatedAtTimestamp: @ts }}
+        IN {CollectionNames.AUTHENTICATED_AS.value}
+        """
+        await self.execute_query(
+            query,
+            bind_vars={
+                "connectorId": connector_id,
+                "from": f"{CollectionNames.USERS.value}/{creator_key}",
+                "to": f"{CollectionNames.USERS.value}/{source_user_key}",
+                "orgId": org_id,
+                "ts": ts,
+            },
+            transaction=transaction,
+        )
+
+    async def remove_authenticated_as(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        query = f"""
+        FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
+            FILTER link._key == @connectorId
+            REMOVE link IN {CollectionNames.AUTHENTICATED_AS.value}
+            RETURN OLD._key
+        """
+        removed = await self.execute_query(query, bind_vars={"connectorId": connector_id}, transaction=transaction)
+        return bool(removed)
+
     async def batch_upsert_user_groups(
         self,
         user_groups: list[AppUserGroup],
@@ -8526,6 +8607,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     f"⚠️ Failed to delete edges from {len(failed_edge_collections)} collections: {failed_edge_collections}. "
                     f"Continuing with node deletion - orphan edges are acceptable."
                 )
+            # User -> User link: not reachable via the connector's nodes above
+            await self.remove_authenticated_as(connector_id)
 
             # Step 6: Define all node collections that might have documents to delete
             node_collections = [
@@ -14467,12 +14550,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         // ========== SEED RECORDGROUPS (paths 1-4) ==========
 
         LET path1_seed_rgs = (
+            FOR principal IN principals
             FOR perm IN permission
-                FILTER perm._from == user_from AND perm.type == "USER"
+                FILTER perm._from == principal.id AND perm.type == "USER"
                 FILTER STARTS_WITH(perm._to, "recordGroups/")
                 LET rg = DOCUMENT(perm._to)
                 LET rg_parent_app = DOCUMENT(CONCAT("apps/", rg.connectorId))
                 FILTER rg != null AND rg.orgId == @org_id
+                FILTER principal.connectorId == null OR rg.connectorId == principal.connectorId
                 FILTER (rg_parent_app != null AND rg_parent_app.type == "KB") OR rg.connectorId IN user_accessible_apps
                 {scope_filter_rg}
                 {rg_seed_prefilter}
@@ -14480,7 +14565,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
         LET path2_seed_rgs = (
-            FOR group, userEdge IN 1..1 ANY user_from permission
+            FOR principal IN principals
+            FOR group, userEdge IN 1..1 ANY principal.id permission
                 FILTER userEdge.type == "USER"
                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                 FOR rg, groupEdge IN 1..1 ANY group._id permission
@@ -14488,6 +14574,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER IS_SAME_COLLECTION("recordGroups", rg)
                     LET rg_parent_app = DOCUMENT(CONCAT("apps/", rg.connectorId))
                     FILTER rg.orgId == @org_id
+                    FILTER principal.connectorId == null OR rg.connectorId == principal.connectorId
                     FILTER (rg_parent_app != null AND rg_parent_app.type == "KB") OR rg.connectorId IN user_accessible_apps
                     {scope_filter_rg}
                     {rg_seed_prefilter}
@@ -14495,13 +14582,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
         LET path3_seed_rgs = (
-            FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
+            FOR principal IN principals
+            FOR org, belongsEdge IN 1..1 ANY principal.id belongsTo
                 FILTER belongsEdge.entityType == "ORGANIZATION"
                 FOR rg, orgPerm IN 1..1 ANY org._id permission
                     FILTER orgPerm.type == "ORG"
                     FILTER IS_SAME_COLLECTION("recordGroups", rg)
                     LET rg_parent_app = DOCUMENT(CONCAT("apps/", rg.connectorId))
                     FILTER rg.orgId == @org_id
+                    FILTER principal.connectorId == null OR rg.connectorId == principal.connectorId
                     FILTER (rg_parent_app != null AND rg_parent_app.type == "KB") OR rg.connectorId IN user_accessible_apps
                     {scope_filter_rg}
                     {rg_seed_prefilter}
@@ -14509,14 +14598,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
         LET path4_seed_rgs = (
+            FOR principal IN principals
             FOR teamPerm IN permission
-                FILTER teamPerm._from == user_from AND teamPerm.type == "USER"
+                FILTER teamPerm._from == principal.id AND teamPerm.type == "USER"
                 FILTER STARTS_WITH(teamPerm._to, "teams/")
                 FOR rgPerm IN permission
                     FILTER rgPerm._from == teamPerm._to AND rgPerm.type == "TEAM"
                     FILTER STARTS_WITH(rgPerm._to, "recordGroups/")
                     LET rg = DOCUMENT(rgPerm._to)
                     FILTER rg != null AND rg.orgId == @org_id
+                    FILTER principal.connectorId == null OR rg.connectorId == principal.connectorId
                     FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
                     {scope_filter_rg}
                     {rg_seed_prefilter}
@@ -14565,11 +14656,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         // ========== DIRECT RECORD ACCESS (paths 5-7) ==========
 
         LET user_direct_records = (
+            FOR principal IN principals
             FOR perm IN permission
-                FILTER perm._from == user_from AND perm.type == "USER"
+                FILTER perm._from == principal.id AND perm.type == "USER"
                 FILTER STARTS_WITH(perm._to, "records/")
                 LET record = DOCUMENT(perm._to)
                 FILTER record != null AND record.orgId == @org_id
+                FILTER principal.connectorId == null OR record.connectorId == principal.connectorId
                 LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                 LET record_parent_app = record_app
                 LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
@@ -14583,13 +14676,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
         LET user_group_records = (
-            FOR group, userEdge IN 1..1 ANY user_from permission
+            FOR principal IN principals
+            FOR group, userEdge IN 1..1 ANY principal.id permission
                 FILTER userEdge.type == "USER"
                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                 FOR record, groupEdge IN 1..1 ANY group._id permission
                     FILTER groupEdge.type == "GROUP" OR groupEdge.type == "ROLE"
                     FILTER IS_SAME_COLLECTION("records", record)
                     FILTER record.orgId == @org_id
+                    FILTER principal.connectorId == null OR record.connectorId == principal.connectorId
                     LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                     LET record_parent_app = record_app
                     LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
@@ -14603,12 +14698,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
         LET user_org_records = (
-            FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
+            FOR principal IN principals
+            FOR org, belongsEdge IN 1..1 ANY principal.id belongsTo
                 FILTER belongsEdge.entityType == "ORGANIZATION"
                 FOR record, orgPerm IN 1..1 ANY org._id permission
                     FILTER orgPerm.type == "ORG"
                     FILTER IS_SAME_COLLECTION("records", record)
                     FILTER record.orgId == @org_id
+                    FILTER principal.connectorId == null OR record.connectorId == principal.connectorId
                     LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                     LET record_parent_app = record_app
                     LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
@@ -14710,6 +14807,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
         return f"""
         LET user_from = CONCAT("users/", @user_key)
+        // Principals: the user everywhere, plus each source account the user authenticated a
+        // connector as, counted for that connector only
+        LET principals = APPEND([{{ id: user_from, connectorId: null }}], (
+            FOR linked IN authenticatedAs
+                FILTER linked._from == user_from
+                RETURN {{ id: linked._to, connectorId: linked.connectorId }}
+        ))
         LET user_accessible_apps = @user_accessible_apps
 
         {permission_aql}
@@ -16362,12 +16466,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # First check access and get permission paths
             access_query = f"""
-            LET userDoc = FIRST(
+            LET caller = FIRST(
                 FOR user IN @@users
                 FILTER user.userId == @userId
                 RETURN user
             )
             LET recordDoc = DOCUMENT(CONCAT(@records, '/', @recordId))
+
+            // Principals: the user, plus the source account the user authenticated this record's
+            // connector as. Their access paths are merged; the highest role is picked below.
+            LET principals = APPEND([caller], (
+                FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
+                    FILTER caller != null AND linked._from == caller._id
+                    FILTER linked.connectorId == recordDoc.connectorId
+                    RETURN DOCUMENT(linked._to)
+            ))
+            LET accessByPrincipal = (
+            FOR userDoc IN principals
             LET kb = FIRST(
                 FOR k IN 1..1 OUTBOUND recordDoc._id @@belongs_to
                 RETURN k
@@ -16574,7 +16689,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 kbAccess,
                 anyoneAccess
             )
-            RETURN LENGTH(allAccess) > 0 ? allAccess : null
+            RETURN allAccess
+            )
+            LET mergedAccess = FLATTEN(accessByPrincipal)
+            RETURN LENGTH(mergedAccess) > 0 ? mergedAccess : null
             """
 
             bind_vars = {
@@ -17850,6 +17968,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET permission_role = (
             LET role_priority = {role_priority_map}
 
+            // Principals: the user, plus the source account the user authenticated this node's
+            // connector as. The link is per connector, so it never grants outside that connector.
+            LET principal_ids = APPEND([{user_var}._id], (
+                FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
+                    FILTER linked._from == {user_var}._id AND linked.connectorId == {node_var}.connectorId
+                    RETURN linked._to
+            ), true)
+
             // All 10 Permission Paths:
             // Direct paths (1, 3, 5, 7, 9): User -> target (via direct, group, role, team, org)
             // Inherited paths (2, 4, 6, 8, 10): User -> RecordGroup (via inheritPermissions) -> target
@@ -17895,7 +18021,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET path1_roles = (
                 FOR target_id IN permission_targets
                     FOR perm IN permission
-                        FILTER perm._from == {user_var}._id
+                        FILTER perm._from IN principal_ids
                         AND perm._to == target_id
                         AND perm.type == "USER"
                         AND perm.role != null
@@ -17907,7 +18033,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET path3_roles = (
                 FOR target_id IN permission_targets
                     FOR user_group_perm IN permission
-                        FILTER user_group_perm._from == {user_var}._id
+                        FILTER user_group_perm._from IN principal_ids
                         AND user_group_perm.type == "USER"
                         AND STARTS_WITH(user_group_perm._to, "groups/")
                         AND user_group_perm.role != null
@@ -17928,7 +18054,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET path5_roles = (
                 FOR target_id IN permission_targets
                     FOR user_role_perm IN permission
-                        FILTER user_role_perm._from == {user_var}._id
+                        FILTER user_role_perm._from IN principal_ids
                         AND user_role_perm.type == "USER"
                         AND STARTS_WITH(user_role_perm._to, "roles/")
                         AND user_role_perm.role != null
@@ -17949,7 +18075,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET path7_roles = (
                 FOR target_id IN permission_targets
                     FOR user_team_perm IN permission
-                        FILTER user_team_perm._from == {user_var}._id
+                        FILTER user_team_perm._from IN principal_ids
                         AND user_team_perm.type == "USER"
                         AND STARTS_WITH(user_team_perm._to, "teams/")
                         AND user_team_perm.role != null
@@ -17965,7 +18091,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET path9_roles = (
                 FOR target_id IN permission_targets
                     FOR belongs_edge IN belongsTo
-                        FILTER belongs_edge._from == {user_var}._id
+                        FILTER belongs_edge._from IN principal_ids
                         AND belongs_edge.entityType == "ORGANIZATION"
                         LET org_id = belongs_edge._to
                         FOR org_target_perm IN permission
@@ -18028,6 +18154,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET permission_role = (
             LET role_priority = {role_priority_map}
 
+            // Principals: the user, plus the source account the user authenticated this node's
+            // connector as. The link is per connector, so it never grants outside that connector.
+            LET principal_ids = APPEND([{user_var}._id], (
+                FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
+                    FILTER linked._from == {user_var}._id AND linked.connectorId == {node_var}.connectorId
+                    RETURN linked._to
+            ), true)
+
             // Step 1: Get all permission targets (this RG + ancestor RGs via INHERIT_PERMISSIONS)
             LET parent_rgs = (
                 FOR ancestor_rg, inherit_edge, path IN 1..20 OUTBOUND {node_var}._id inheritPermissions
@@ -18044,7 +18178,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET path1_roles = (
                 FOR target_id IN permission_targets
                     FOR perm IN permission
-                        FILTER perm._from == {user_var}._id
+                        FILTER perm._from IN principal_ids
                         AND perm._to == target_id
                         AND perm.type == "USER"
                         AND perm.role != null
@@ -18056,7 +18190,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET path2_roles = (
                 FOR target_id IN permission_targets
                     FOR user_group_perm IN permission
-                        FILTER user_group_perm._from == {user_var}._id
+                        FILTER user_group_perm._from IN principal_ids
                         AND user_group_perm.type == "USER"
                         AND STARTS_WITH(user_group_perm._to, "groups/")
                         AND user_group_perm.role != null
@@ -18077,7 +18211,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET path3_roles = (
                 FOR target_id IN permission_targets
                     FOR user_role_perm IN permission
-                        FILTER user_role_perm._from == {user_var}._id
+                        FILTER user_role_perm._from IN principal_ids
                         AND user_role_perm.type == "USER"
                         AND STARTS_WITH(user_role_perm._to, "roles/")
                         AND user_role_perm.role != null
@@ -18098,7 +18232,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET path4_roles = (
                 FOR target_id IN permission_targets
                     FOR user_team_perm IN permission
-                        FILTER user_team_perm._from == {user_var}._id
+                        FILTER user_team_perm._from IN principal_ids
                         AND user_team_perm.type == "USER"
                         AND STARTS_WITH(user_team_perm._to, "teams/")
                         AND user_team_perm.role != null
@@ -18114,7 +18248,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET path5_roles = (
                 FOR target_id IN permission_targets
                     FOR belongs_edge IN belongsTo
-                        FILTER belongs_edge._from == {user_var}._id
+                        FILTER belongs_edge._from IN principal_ids
                         AND belongs_edge.entityType == "ORGANIZATION"
                         LET org_id = belongs_edge._to
                         FOR org_target_perm IN permission
@@ -18179,12 +18313,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
         return f"""
         LET permission_role = (
             // Check if user has USER_APP_RELATION to app
-            LET user_app_rel = FIRST(
+            LET own_app_rel = FIRST(
                 FOR rel IN userAppRelation
                     FILTER rel._from == {user_var}._id
                     AND rel._to == {node_var}._id
                     RETURN rel
             )
+
+            // A connector the user authenticated as another source account is the user's app too
+            LET linked_app_rel = FIRST(
+                FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
+                    FILTER linked._from == {user_var}._id AND linked.connectorId == {node_var}._key
+                    RETURN linked
+            )
+            LET user_app_rel = own_app_rel != null ? own_app_rel : linked_app_rel
 
             // Check if user has path User->Team->App (user in team, team has userAppRelation to app)
             LET team_app_rel = FIRST(
@@ -19131,8 +19273,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN user
             )
 
+            // Principals: the user, plus the source account the user authenticated this
+            // connector as, reached through the link and never by its userId
+            LET principal_ids = APPEND([userDoc._id], (
+                FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
+                    FILTER linked._from == userDoc._id AND linked.connectorId == @connectorId
+                    RETURN linked._to
+            ))
+
             LET directRecords = (
-                FOR record IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FOR principal_id IN principal_ids
+                FOR record IN 1..1 ANY principal_id {CollectionNames.PERMISSION.value}
                     FILTER IS_SAME_COLLECTION("records", record)
                     FILTER record.connectorId == @connectorId
                     FILTER record.indexingStatus == @completedStatus
@@ -19141,7 +19292,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             LET groupRecords = (
-                FOR group IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FOR principal_id IN principal_ids
+                FOR group IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
                     FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
@@ -19151,7 +19303,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             LET groupRecordsPermissionEdge = (
-                FOR group IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FOR principal_id IN principal_ids
+                FOR group IN 1..1 ANY principal_id {CollectionNames.PERMISSION.value}
                     FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
@@ -19161,7 +19314,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             LET orgRecords = (
-                FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FOR principal_id IN principal_ids
+                FOR org IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
                     FOR record IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
@@ -19171,7 +19325,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             LET orgRecordGroupRecords = (
-                FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FOR principal_id IN principal_ids
+                FOR org IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
                     FOR recordGroup IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
                         FOR record IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -19183,7 +19338,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             LET recordGroupRecords = (
-                FOR group IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FOR principal_id IN principal_ids
+                FOR group IN 1..1 ANY principal_id {CollectionNames.PERMISSION.value}
                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                     FOR recordGroup IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                         FOR record IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
@@ -19195,7 +19351,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             LET inheritedRecordGroupRecords = (
-                FOR recordGroup IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FOR principal_id IN principal_ids
+                FOR recordGroup IN 1..1 ANY principal_id {CollectionNames.PERMISSION.value}
                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
                     FOR record IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                         FILTER IS_SAME_COLLECTION("records", record)

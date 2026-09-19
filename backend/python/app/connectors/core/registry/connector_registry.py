@@ -549,6 +549,8 @@ class ConnectorRegistry:
                 ),
                 'createdBy': created_by,
                 'updatedBy': created_by,
+                # Whoever supplies the credentials; restamped when someone else re-authenticates
+                'authenticatedBy': created_by,
                 'createdAtTimestamp': current_timestamp,
                 'updatedAtTimestamp': current_timestamp
             }

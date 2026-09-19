@@ -112,6 +112,7 @@ class ConnectorStateKeys:
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"
     CREATED_BY = "createdBy"
+    AUTHENTICATED_BY = "authenticatedBy"
 
 
 CONNECTOR_EMAIL_IDENTITY_INFO = (

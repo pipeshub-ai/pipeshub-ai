@@ -82,6 +82,11 @@ EDGE_DEFINITIONS = [
         "to_vertex_collections": [CollectionNames.APPS.value],
     },
     {
+        "edge_collection": CollectionNames.AUTHENTICATED_AS.value,
+        "from_vertex_collections": [CollectionNames.USERS.value],
+        "to_vertex_collections": [CollectionNames.USERS.value],
+    },
+    {
         "edge_collection": CollectionNames.ORG_APP_RELATION.value,
         "from_vertex_collections": [CollectionNames.ORGS.value],
         "to_vertex_collections": [CollectionNames.APPS.value],
