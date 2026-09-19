@@ -566,6 +566,26 @@ class JiraDataCenterConnector(BaseConnector):
     # Sync Orchestration
     # ============================================================================
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        if not self.data_source:
+            return
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_current_user_v2()
+            if not response or response.status != HttpStatusCode.OK.value:
+                return
+            data = self._safe_json_parse(response, "GET /rest/api/2/myself") or {}
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated Jira account: %s", e)
+            return
+        email = data.get("emailAddress")
+        await self.register_authenticated_source_user(
+            email.strip() if isinstance(email, str) else None,
+            data.get("accountId") or data.get("key") or data.get("name"),
+        )
+
     async def run_sync(self) -> None:
         """
         Run sync of Jira projects and issues - only new/updated tickets
@@ -583,6 +603,8 @@ class JiraDataCenterConnector(BaseConnector):
                         f"Jira Data Center connector {self.connector_id} init failed; "
                         "check auth configuration (authType / baseUrl / credentials)"
                     )
+
+            await self._register_authenticated_identity()
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
             self.sync_filters, self.indexing_filters = await load_connector_filters(

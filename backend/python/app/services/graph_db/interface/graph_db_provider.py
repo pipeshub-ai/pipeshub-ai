@@ -3042,6 +3042,34 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    # ==================== Authenticated-as (creator -> source account) ====================
+
+    @abstractmethod
+    async def upsert_authenticated_as(
+        self,
+        creator_key: str,
+        source_user_key: str,
+        connector_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Link a connector creator to the source-account user the connector is authenticated as.
+
+        Exactly one link exists per connector instance: re-linking with a different
+        source user repoints the existing link.
+        """
+        pass
+
+    @abstractmethod
+    async def remove_authenticated_as(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Remove the authenticated-as link for a connector instance. True if one existed."""
+        pass
+
     @abstractmethod
     async def ensure_all_team_with_users(self, org_id: str) -> None:
         """
