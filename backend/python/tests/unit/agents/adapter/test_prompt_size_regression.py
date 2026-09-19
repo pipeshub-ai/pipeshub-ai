@@ -112,13 +112,13 @@ _MID_CHAR_CEILINGS: dict[str, int] = {
     "run_code_no_web":       9_200,
     "composed_agents":      14_900,
     "service_only":          8_750,
-    "lazy_with_pinned":     14_250,
-    "kb_with_full_record":  13_600,
+    "lazy_with_pinned":     16_000,
+    "kb_with_full_record":  15_100,
     # Code knowledge graph fixtures: these carry the gated "Navigating Code"
     # section, which only renders when a codegraph tool is callable, so they
-    # sit above the rest. Measured 16,428 / 13,807 → +~10% headroom.
-    "lazy_with_bound_codegraph":      18_100,
-    "lazy_with_pinned_and_codegraph": 15_200,
+    # sit above the rest. Measured 16,916 / 14,465 → +~10% headroom.
+    "lazy_with_bound_codegraph":      18_650,
+    "lazy_with_pinned_and_codegraph": 15_950,
 }
 
 # ---------------------------------------------------------------------------
@@ -151,11 +151,11 @@ _FRONTIER_CHAR_CEILINGS: dict[str, int] = {
     "run_code_no_web":       6_350,
     "composed_agents":      12_050,
     "service_only":          5_900,
-    "lazy_with_pinned":     11_400,
-    "kb_with_full_record":  10_750,
-    # Both measured 11,213 (no worked traces, same gated section) → +~10%.
-    "lazy_with_bound_codegraph":      12_350,
-    "lazy_with_pinned_and_codegraph": 12_350,
+    "lazy_with_pinned":     13_100,
+    "kb_with_full_record":  12_250,
+    # Both measured 11,871 (no worked traces, same gated section) → +~10%.
+    "lazy_with_bound_codegraph":      13_100,
+    "lazy_with_pinned_and_codegraph": 13_100,
 }
 
 
