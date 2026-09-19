@@ -243,19 +243,26 @@ export class UserAccountController {
         const org = await Org.findOne({ _id: orgId, isDeleted: false });
         const user = await Users.findOne({ _id: userId, orgId, isDeleted: false });
 
-        await this.mailService.sendMail({
-          emailTemplateType: 'suspiciousLoginAttempt',
-          initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-            orgId: orgId?.toString(),
-          },
-          usersMails: [email],
-          subject: 'Alert : Suspicious Login Attempt Detected',
-          templateData: {
-            orgName: org?.shortName || org?.registeredName,
-            name: user?.fullName,
-          },
-        });
+        try {
+          await this.mailService.sendMail({
+            emailTemplateType: 'suspiciousLoginAttempt',
+            initiator: {
+              jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+              orgId: orgId?.toString(),
+            },
+            usersMails: [email],
+            subject: 'Alert : Suspicious Login Attempt Detected',
+            templateData: {
+              orgName: org?.shortName || org?.registeredName,
+              name: user?.fullName,
+            },
+          });
+        } catch (mailError) {
+          this.logger.error('Failed to send suspicious login alert', {
+            error:
+              mailError instanceof Error ? mailError.message : String(mailError),
+          });
+        }
         throw new UnauthorizedError(
           'Too many login attempts. Account Blocked.',
         );
@@ -1150,19 +1157,26 @@ export class UserAccountController {
           loginMode: 'PASSWORD',
         });
 
-        await this.mailService.sendMail({
-          emailTemplateType: 'suspiciousLoginAttempt',
-          initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-            orgId: orgId?.toString(),
-          },
-          usersMails: [email],
-          subject: 'Alert : Suspicious Login Attempt Detected',
-          templateData: {
-            orgName: org?.shortName || org?.registeredName,
-            name: user.fullName,
-          },
-        });
+        try {
+          await this.mailService.sendMail({
+            emailTemplateType: 'suspiciousLoginAttempt',
+            initiator: {
+              jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+              orgId: orgId?.toString(),
+            },
+            usersMails: [email],
+            subject: 'Alert : Suspicious Login Attempt Detected',
+            templateData: {
+              orgName: org?.shortName || org?.registeredName,
+              name: user.fullName,
+            },
+          });
+        } catch (mailError) {
+          this.logger.error('Failed to send suspicious login alert', {
+            error:
+              mailError instanceof Error ? mailError.message : String(mailError),
+          });
+        }
       }
       throw new BadRequestError(
         "Incorrect password, please try again."

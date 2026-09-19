@@ -77,6 +77,7 @@ import { ProjectService } from '../../projects/services/project.service';
 import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
 
 export const MAX_BULK_INVITE = 1000;
+export const ASYNC_INVITE_THRESHOLD = 20;
 
 // Linear-time email check: each segment excludes its following separator
 // (`@`/`.`), so there is no ambiguous backtracking (avoids ReDoS).
@@ -94,6 +95,7 @@ export interface InviteResult {
   mailFailed: string[];
   mailErrorCode?: number;
   limitExceededRestorations?: string[];
+  queued: boolean;
 }
 
 @injectable()
@@ -1716,7 +1718,15 @@ export class UserController {
         return;
       }
 
-      res.status(200).json({ message: 'Invite sent successfully' });
+      res.status(200).json(
+        result.queued
+          ? {
+            message:
+              'Invites queued. Emails are being sent in the background and may take a few minutes.',
+            queued: true,
+          }
+          : { message: 'Invite sent successfully', queued: false },
+      );
     } catch (error) {
       next(error);
     }
@@ -2035,6 +2045,11 @@ export class UserController {
       ...emailsForNewAccounts,
       ...emailsForPendingAccounts,
     ];
+    // Restored accounts are mailed in their own loop below, so they count
+    // toward the batch size too — otherwise a large restore-only invite would
+    // still send every message inline.
+    const deliverAsync =
+      emailsForInvites.length + restoredUsers.length > ASYNC_INVITE_THRESHOLD;
 
     for (let i = 0; i < emailsForInvites.length; ++i) {
       const email = emailsForInvites[i];
@@ -2082,6 +2097,7 @@ export class UserController {
         org,
         false,
         isPasswordAuthEnabled,
+        deliverAsync,
       );
       if (statusCode !== 200) {
         mailFailed.push(email);
@@ -2121,6 +2137,7 @@ export class UserController {
         org,
         true,
         isPasswordAuthEnabled,
+        deliverAsync,
       );
       if (statusCode !== 200) {
         mailFailed.push(email);
@@ -2134,6 +2151,7 @@ export class UserController {
       reinvited: pendingUsersToReinvite.length,
       alreadyActive: activeUsers.length - pendingUsersToReinvite.length,
       mailFailed,
+      queued: deliverAsync,
       mailErrorCode,
     };
   }
@@ -2146,6 +2164,7 @@ export class UserController {
     org: { registeredName?: string; shortName?: string } | null,
     rejoin: boolean,
     isPasswordAuthEnabled: boolean,
+    deliverAsync: boolean,
   ): Promise<number> {
     const subject = `You are invited to ${rejoin ? 're-join' : 'join'} ${org?.registeredName} `;
     const invitee = inviterName;
@@ -2173,6 +2192,7 @@ export class UserController {
             orgName,
             link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
           },
+          deliverAsync,
         });
       } else {
         result = await this.mailService.sendMail({
@@ -2188,6 +2208,7 @@ export class UserController {
             orgName,
             link: `${this.config.frontendUrl}/sign-in`,
           },
+          deliverAsync,
         });
       }
       return result.statusCode;

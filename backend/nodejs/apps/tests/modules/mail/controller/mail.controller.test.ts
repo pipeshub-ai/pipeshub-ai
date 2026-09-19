@@ -8,6 +8,7 @@ describe('mail/controller/mail.controller', () => {
   let controller: MailController
   let mockConfig: any
   let mockLogger: any
+  let mockSender: any
 
   beforeEach(() => {
     mockConfig = {
@@ -19,22 +20,95 @@ describe('mail/controller/mail.controller', () => {
         fromEmail: 'noreply@test.com',
       },
     }
+    mockSender = { send: sinon.stub().resolves({ status: 'sent' }) }
     mockLogger = {
       info: sinon.stub(),
       error: sinon.stub(),
       warn: sinon.stub(),
       debug: sinon.stub(),
     }
-    controller = new MailController(mockConfig, mockLogger)
+    controller = new MailController(mockConfig, mockLogger, mockSender)
   })
 
   afterEach(() => {
     sinon.restore()
   })
 
+  describe('emailSender', () => {
+    it('sends with a deadline below the caller HTTP timeout', async () => {
+      // auth/services/mail.service.ts waits this long on the route below.
+      const CALLER_HTTP_TIMEOUT_MS = 30_000
+      const send = sinon.stub().resolves({ status: 'sent' })
+      const c = new MailController(mockConfig, mockLogger, { send } as any)
+
+      await c.emailSender(
+        { emailTemplateType: 'appuserInvite', templateData: {} } as any,
+        mockConfig.smtp,
+      )
+
+      expect(send.firstCall.args[2])
+        .to.be.a('number')
+        .and.to.be.below(CALLER_HTTP_TIMEOUT_MS)
+    })
+
+    it('should return success when the sender delivers', async () => {
+      mockSender.send.resolves({ status: 'sent' })
+
+      const result = await controller.emailSender(
+        {
+          emailTemplateType: 'loginWithOTP',
+          templateData: { otp: '1234' },
+          sendEmailTo: ['test@test.com'],
+          subject: 'Test',
+        } as any,
+        mockConfig.smtp,
+      )
+
+      expect(result.status).to.be.true
+      expect(result.data).to.equal('Email sent')
+    })
+
+    it('should return failure when the sender reports an error', async () => {
+      mockSender.send.resolves({
+        status: 'transient',
+        error: 'Connection refused',
+      })
+
+      const result = await controller.emailSender(
+        {
+          emailTemplateType: 'loginWithOTP',
+          templateData: { otp: '1234' },
+          sendEmailTo: ['test@test.com'],
+          subject: 'Test',
+        } as any,
+        mockConfig.smtp,
+      )
+
+      expect(result.status).to.be.false
+      expect(result.data).to.equal('Connection refused')
+    })
+
+    it('should surface a non-string sender error as-is', async () => {
+      mockSender.send.resolves({ status: 'permanent', error: 'string error' })
+
+      const result = await controller.emailSender(
+        {
+          emailTemplateType: 'loginWithOTP',
+          templateData: { otp: '1234' },
+          sendEmailTo: ['test@test.com'],
+          subject: 'Test',
+        } as any,
+        mockConfig.smtp,
+      )
+
+      expect(result.status).to.be.false
+      expect(result.data).to.equal('string error')
+    })
+  })
+
   describe('sendMail', () => {
     it('should throw NotFoundError when smtp is not configured', async () => {
-      controller = new MailController({ smtp: null }, mockLogger)
+      controller = new MailController({ smtp: null }, mockLogger, mockSender)
       const req: any = { body: {} }
       const res: any = { status: sinon.stub().returnsThis(), json: sinon.stub() }
       const next = sinon.stub()
@@ -148,114 +222,6 @@ describe('mail/controller/mail.controller', () => {
 
     it('should throw for unknown template type', () => {
       expect(() => controller.getEmailContent('unknown-template', {})).to.throw('Unknown Template')
-    })
-  })
-
-  describe('emailSender', () => {
-    it('should return success when transporter sends mail', async () => {
-      const nodemailer = require('nodemailer')
-      const mockTransporter = {
-        sendMail: sinon.stub().resolves({ messageId: '123' }),
-      }
-      sinon.stub(nodemailer, 'createTransport').returns(mockTransporter)
-
-      const { MailModel } = require('../../../../src/modules/mail/schema/mailInfo.schema')
-      const saveStub = sinon.stub(MailModel.prototype, 'save').resolves()
-
-      const smtpConfig = {
-        host: 'smtp.test.com',
-        port: 587,
-        username: 'user',
-        password: 'pass',
-        fromEmail: 'noreply@test.com',
-      }
-
-      const body = {
-        emailTemplateType: 'loginWithOTP',
-        templateData: { otp: '1234' },
-        sendEmailTo: ['test@test.com'],
-        subject: 'Test',
-      }
-
-      const result = await controller.emailSender(body as any, smtpConfig)
-      expect(result.status).to.be.true
-      expect(result.data).to.equal('Email sent')
-
-      saveStub.restore()
-    })
-
-    it('should return failure when transporter throws', async () => {
-      const nodemailer = require('nodemailer')
-      sinon.stub(nodemailer, 'createTransport').returns({
-        sendMail: sinon.stub().rejects(new Error('Connection refused')),
-      })
-
-      const smtpConfig = {
-        host: 'smtp.test.com',
-        port: 587,
-        username: 'user',
-        fromEmail: 'noreply@test.com',
-      }
-
-      const body = {
-        emailTemplateType: 'loginWithOTP',
-        templateData: { otp: '1234' },
-        sendEmailTo: ['test@test.com'],
-        subject: 'Test',
-      }
-
-      const result = await controller.emailSender(body as any, smtpConfig)
-      expect(result.status).to.be.false
-      expect(result.data).to.equal('Connection refused')
-    })
-
-    it('should handle non-Error throw and return string data', async () => {
-      const nodemailer = require('nodemailer')
-      sinon.stub(nodemailer, 'createTransport').returns({
-        sendMail: sinon.stub().rejects('string error'),
-      })
-
-      const smtpConfig = {
-        host: 'smtp.test.com',
-        port: 587,
-        username: 'user',
-        fromEmail: 'noreply@test.com',
-      }
-
-      const body = {
-        emailTemplateType: 'loginWithOTP',
-        templateData: { otp: '1234' },
-        sendEmailTo: ['test@test.com'],
-        subject: 'Test',
-      }
-
-      const result = await controller.emailSender(body as any, smtpConfig)
-      expect(result.status).to.be.false
-    })
-
-    it('should create transporter without auth password field when password is absent', async () => {
-      const nodemailer = require('nodemailer')
-      const createTransportStub = sinon.stub(nodemailer, 'createTransport').returns({
-        sendMail: sinon.stub().rejects(new Error('Expected')),
-      })
-
-      const smtpConfig = {
-        host: 'smtp.test.com',
-        port: 587,
-        username: 'user',
-        fromEmail: 'noreply@test.com',
-      }
-
-      const body = {
-        emailTemplateType: 'loginWithOTP',
-        templateData: { otp: '1234' },
-        sendEmailTo: ['test@test.com'],
-        subject: 'Test',
-      }
-
-      await controller.emailSender(body as any, smtpConfig)
-      const transporterConfig = createTransportStub.firstCall.args[0]
-      expect(transporterConfig.auth).to.not.have.property('pass')
     })
   })
 
