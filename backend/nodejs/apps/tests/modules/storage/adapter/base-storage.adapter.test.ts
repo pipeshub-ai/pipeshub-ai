@@ -113,4 +113,111 @@ describe('storage/adapter/base-storage.adapter', () => {
       }
     })
   })
+
+  describe('deleteObject', () => {
+    it('should delegate to the underlying adapter', async () => {
+      const deleteStub = sinon.stub().resolves({ statusCode: 200, data: undefined })
+      const adapterWithDelete = new StorageServiceAdapter({
+        ...mockStorageService,
+        deleteObject: deleteStub,
+      })
+
+      const result = await adapterWithDelete.deleteObject('records/conn-1/file')
+
+      expect(result.statusCode).to.equal(200)
+      expect(deleteStub.calledOnceWith('records/conn-1/file')).to.be.true
+    })
+
+    it('should reject with error message when deleteObject is not implemented', async () => {
+      const adapterNoDelete = new StorageServiceAdapter({
+        ...mockStorageService,
+        deleteObject: undefined,
+      })
+
+      try {
+        await adapterNoDelete.deleteObject('records/conn-1/file')
+        expect.fail('Should have rejected')
+      } catch (error: any) {
+        expect(error.message).to.equal('deleteObject not implemented for this storage provider')
+      }
+    })
+  })
+
+  describe('copyObject', () => {
+    it('should delegate to the underlying adapter', async () => {
+      const copyStub = sinon.stub().resolves({ statusCode: 200, data: 'https://dest.url' })
+      const adapterWithCopy = new StorageServiceAdapter({
+        ...mockStorageService,
+        copyObject: copyStub,
+      })
+
+      const result = await adapterWithCopy.copyObject('records/src/file', 'records/dst/file')
+
+      expect(result.statusCode).to.equal(200)
+      expect(copyStub.calledOnceWith('records/src/file', 'records/dst/file')).to.be.true
+    })
+
+    it('should reject with error message when copyObject is not implemented', async () => {
+      const adapterNoCopy = new StorageServiceAdapter({
+        ...mockStorageService,
+        copyObject: undefined,
+      })
+
+      try {
+        await adapterNoCopy.copyObject('records/src/file', 'records/dst/file')
+        expect.fail('Should have rejected')
+      } catch (error: any) {
+        expect(error.message).to.equal('copyObject not implemented for this storage provider')
+      }
+    })
+  })
+
+  describe('copyTree', () => {
+    it('should delegate to the underlying adapter', async () => {
+      const copyTreeStub = sinon.stub().resolves({ statusCode: 200, data: undefined })
+      const adapterWithCopyTree = new StorageServiceAdapter({
+        ...mockStorageService,
+        copyTree: copyTreeStub,
+      })
+
+      const result = await adapterWithCopyTree.copyTree('records/src', 'records/dst')
+
+      expect(result.statusCode).to.equal(200)
+      expect(copyTreeStub.calledOnceWith('records/src', 'records/dst')).to.be.true
+    })
+
+    it('should reject with error message when copyTree is not implemented', async () => {
+      const adapterNoCopyTree = new StorageServiceAdapter({
+        ...mockStorageService,
+        copyTree: undefined,
+      })
+
+      try {
+        await adapterNoCopyTree.copyTree('records/src', 'records/dst')
+        expect.fail('Should have rejected')
+      } catch (error: any) {
+        expect(error.message).to.equal('copyTree not implemented for this storage provider')
+      }
+    })
+  })
+
+  describe('renameTree', () => {
+    it('should delegate to the underlying provider', async () => {
+      const inner = { renameTree: sinon.stub().resolves({ statusCode: 200, data: undefined }) }
+      const adapter = new StorageServiceAdapter(inner as any)
+      const result = await adapter.renameTree('a', 'b')
+      expect(result.statusCode).to.equal(200)
+      expect(inner.renameTree.calledWith('a', 'b')).to.be.true
+    })
+
+    it('rejects when the provider has no native implementation', async () => {
+      const adapter = new StorageServiceAdapter({} as any)
+      try {
+        await adapter.renameTree('a', 'b')
+        expect.fail('Should have rejected')
+      } catch (error: any) {
+        expect(error.message).to.equal('renameTree not implemented for this storage provider')
+      }
+    })
+  })
 })

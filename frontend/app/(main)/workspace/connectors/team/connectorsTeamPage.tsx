@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { useFeatureFlagsStore, selectVectorStoreRebuildEnabled } from '@/lib/store/feature-flags-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api';
 import { ServiceGate } from '@/app/components/ui/service-gate';
@@ -60,6 +61,7 @@ function TeamConnectorsPageContent() {
   const searchParams = useSearchParams();
   const addToast = useToastStore((s) => s.addToast);
   const { t } = useTranslation();
+  const vectorStoreRebuildEnabled = useFeatureFlagsStore(selectVectorStoreRebuildEnabled);
 
   const teamTabs = [
     { value: 'all', label: t('workspace.actions.tabs.all') },

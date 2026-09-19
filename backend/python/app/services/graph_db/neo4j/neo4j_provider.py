@@ -51,6 +51,7 @@ from app.config.constants.neo4j import (
     parse_node_id,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -79,10 +80,22 @@ from app.models.entities import (
 from app.models.permission import EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
-from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
+from app.services.graph_db.common.utils import (
+    CONTAINER_INHERIT_MAX_DEPTH,
+    MAX_DIRECT_GRANT_RECORDS,
+    ROOT_SCOPED_CONNECTOR_TYPES,
+    build_connector_stats_response,
+    dedupe_agents_by_id,
+)
 from app.services.graph_db.interface.graph_db_provider import (
+    CONTAINER_SCOPE_FILTER_KEYS,
+    STRICT_SCOPE_FILTER_KEY,
+    AccessibleContainers,
     IGraphDBProvider,
+    _containers_from_row,
     _distinct_connector_types,
+    _unsupported_container_filters,
+    requested_scope_ids,
 )
 from app.services.graph_db.neo4j.neo4j_client import (
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
@@ -91,6 +104,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
     build_page_records_for_vector_membership_backfill_cypher,
+    can_use_membership_cleanup,
 )
 from app.utils.env_config import env_int
 from app.utils.env_utils import env_bool
@@ -131,6 +145,7 @@ class Neo4jProvider(IGraphDBProvider):
         self.client: Neo4jClient | None = None
         self.validator = NodeSchemaValidator()
         self.accessible_records_cache = accessible_records_cache
+
 
     # ==================== Connection Management ====================
 
@@ -405,6 +420,20 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_web_url IF NOT EXISTS "
             "FOR (n:Record) ON (n.webUrl, n.orgId)"
+        )
+
+        # SINGLE: virtualRecordId. Every search adjudicates the VRIDs the vector
+        # DB returned with MATCH (r:Record {virtualRecordId, orgId}), once per
+        # VRID; unindexed that is a label scan per VRID, measured at 867 ms for
+        # 47 VRIDs over 12.8k records. Deliberately NOT composite with orgId:
+        # Neo4j only uses a composite when every indexed property is in the
+        # predicate, and get_records_by_virtual_record_id filters on
+        # virtualRecordId alone, so a composite leaves that path (the orphan
+        # sweeper, per-record ingest and delete) on a label scan. A VRID seek
+        # returns one or two rows, so filtering orgId afterwards is free.
+        indexes.append(
+            "CREATE INDEX record_virtual_record_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.virtualRecordId)"
         )
 
         # SINGLE: connectorId (queried independently in many patterns)
@@ -3103,12 +3132,13 @@ class Neo4jProvider(IGraphDBProvider):
             // PROFILE
             MATCH path = (start_record:Record {id: $record_id})<-[:RECORD_RELATION*0..100]-(ancestor)
 
-            // 1. Edge Filter: Ensure the edge acts as a parent-child link
-            WHERE all(r IN relationships(path) WHERE r.relationshipType = 'PARENT_CHILD')
+            // 1. Edge Filter: Follow PARENT_CHILD and ATTACHMENT edges for hierarchical paths
+            WHERE all(r IN relationships(path) WHERE r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
 
             // 2. Node Filter: Ensure it follows the strict canonical path
-            AND all(i IN range(0, length(path)-1) 
-                    WHERE nodes(path)[i].externalParentId = nodes(path)[i+1].externalRecordId)
+            AND all(i IN range(0, length(path)-1)
+                    WHERE nodes(path)[i].externalParentId = nodes(path)[i+1].externalRecordId
+                       OR nodes(path)[i].externalParentId = nodes(path)[i+1].id)
 
             // 3. Grab the longest valid path up to the root as above query returns all path lengths incrementally from 0,1,2,3 .....
             WITH nodes(path) AS path_nodes
@@ -3135,6 +3165,40 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get record path failed: {str(e)}")
             return None
+
+    async def get_record_group_path(
+        self,
+        record_group_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        try:
+            query = """
+            MATCH (start_rg:RecordGroup {id: $record_group_id})
+            OPTIONAL MATCH path = (start_rg)-[:BELONGS_TO*1..50]->(ancestor:RecordGroup)
+            WITH start_rg, path
+            ORDER BY CASE WHEN path IS NULL THEN 0 ELSE length(path) END DESC
+            LIMIT 1
+            WITH CASE
+                WHEN path IS NULL THEN [start_rg]
+                ELSE nodes(path)
+            END AS path_nodes
+            RETURN [node IN REVERSE(path_nodes)
+                WHERE COALESCE(node.groupName, node.name) IS NOT NULL
+                  AND COALESCE(node.groupName, node.name) <> ''
+                | COALESCE(node.groupName, node.name)] AS group_path
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_group_id": record_group_id},
+                txn_id=transaction
+            )
+            if results and results[0].get("group_path"):
+                return results[0]["group_path"]
+            return []
+        except Exception as e:
+            self.logger.error(f"❌ Get record group path failed: {str(e)}")
+            return []
+
     # ==================== Record Group Operations ====================
 
     async def get_record_group_by_external_id(
@@ -4423,7 +4487,10 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (user:User {id: $user_id})
             OPTIONAL MATCH (user)-[:USER_APP_RELATION]->(app1:App)
             OPTIONAL MATCH (user)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
-            WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
+            // Connectors the user authenticated as another source account
+            OPTIONAL MATCH (user)-[linked:AUTHENTICATED_AS]->(:User)
+            OPTIONAL MATCH (app3:App {id: linked.connectorId})
+            WITH collect(DISTINCT app1) + collect(DISTINCT app2) + collect(DISTINCT app3) AS app_list
             UNWIND app_list AS app
             WITH app WHERE app IS NOT NULL
             RETURN DISTINCT app
@@ -4588,7 +4655,13 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Build the comprehensive Cypher query for this connector
             query = f"""
-            MATCH (userDoc:User {{userId: $userId}})
+            MATCH (caller:User {{userId: $userId}})
+
+            // Principals: the user, plus the source account the user authenticated this
+            // connector as, reached through the link and never by its userId
+            OPTIONAL MATCH (caller)-[:AUTHENTICATED_AS {{connectorId: $connectorId}}]->(source_account:User)
+            WITH caller, collect(DISTINCT source_account) AS source_accounts
+            UNWIND [caller] + source_accounts AS userDoc
 
             // Collect all accessible records from different permission paths
             CALL {{
@@ -5004,6 +5077,7 @@ class Neo4jProvider(IGraphDBProvider):
         query = """
         MATCH (r:Record {connectorId: $connectorId})
         WHERE r.indexingStatus = $completedStatus
+          AND (r.isDeleted IS NULL OR r.isDeleted = false)
           AND r.virtualRecordId IS NOT NULL
           AND r.id IS NOT NULL
         RETURN DISTINCT r.virtualRecordId AS virtualId, r.id AS recordId
@@ -5118,6 +5192,281 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.warning("Could not resolve accessible connector types: %s", e)
             return []
 
+    async def get_accessible_containers(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
+    ) -> AccessibleContainers:
+        """Containers this user may search. See the interface for the contract.
+
+        The four seed paths mirror paths 5-7 of ``_get_virtual_ids_for_connector``
+        — same grants, same graph — but stop at the record *group* rather than
+        walking on to records, which is the entire saving.
+
+        Depth is ``CONTAINER_INHERIT_MAX_DEPTH``, not the ``0..2`` / ``0..5`` that
+        method uses per path. Those are shallower than the verifier's ``1..20``,
+        so they are pre-existing recall bugs; inheriting them here would omit
+        containers the verifier would then have admitted.
+
+        ``$scope_ids`` narrows every result set and never the traversal:
+        ``reachable_apps``, ``root_scoped_apps`` and the seed groups stay whole,
+        so scoping can only remove containers. The seeds are walked unscoped
+        because inheritance can cross apps — a group of an in-scope app that
+        inherits from a grant on another app is still in scope.
+        """
+        unsupported = _unsupported_container_filters(filters, time_range)
+        if unsupported:
+            return AccessibleContainers(fallback_reason=unsupported)
+        scope = requested_scope_ids(filters)
+        scope_set = frozenset(scope) if scope is not None else None
+        if scope_set is not None and not scope_set:
+            return AccessibleContainers(scope_connector_ids=scope_set)
+        # A project-scoped chat that selected nothing reaches nothing — the
+        # record-id path says the same (`get_accessible_virtual_record_ids`).
+        if scope_set is None and bool((filters or {}).get(STRICT_SCOPE_FILTER_KEY)):
+            return AccessibleContainers(scope_connector_ids=None)
+        if not user_id or not self.client:
+            return AccessibleContainers(fallback_reason="no_user_or_client")
+        query = """
+        MATCH (u:User {userId: $user_id})
+
+        // Every way a user reaches an app: ownership/instance membership
+        // (USER_APP_RELATION, direct and via team) and sharing (PERMISSION,
+        // direct and via team). Both halves are needed — a Collection shared
+        // with a user has a PERMISSION edge and no USER_APP_RELATION, and
+        // leaving it out of app_docs would exempt it from the backfill gate
+        // below while still admitting it as a container.
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(directApp:App)
+            RETURN collect(DISTINCT directApp) AS da
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:USER_APP_RELATION]->(teamApp:App)
+            RETURN collect(DISTINCT teamApp) AS ta
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(permApp:App)
+            RETURN collect(DISTINCT permApp) AS pa
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:PERMISSION {type: 'TEAM'}]->(teamPermApp:App)
+            RETURN collect(DISTINCT teamPermApp) AS tpa
+        }
+        // Duplicates across the four are harmless — every list below is turned
+        // into a set by the caller — but a null id would poison `IN`, which is
+        // three-valued in Cypher and would silently drop rows.
+        WITH u, [a IN da + ta + pa + tpa WHERE a.id IS NOT NULL] AS app_docs
+        WITH u, app_docs,
+             [a IN app_docs | a.id] AS reachable_apps,
+             // `$scope_ids IS NOT NULL` is what admits a hidden Collection: a
+             // scoped request can only reach one by naming it, and the scope
+             // clause beside this has already required that. Unscoped, a
+             // project's linked Collection stays out of search entirely —
+             // same rule the record-id path applies.
+             [a IN app_docs
+                WHERE a.permissionModel = $app_level AND a.orgId = $org_id
+                  AND ($scope_ids IS NULL OR a.id IN $scope_ids)
+                  AND (coalesce(a.isHidden, false) = false OR $scope_ids IS NOT NULL)
+                | a.id] AS app_level_ids,
+             [a IN app_docs
+                WHERE a.type = $kb_type AND a.orgId = $org_id
+                  AND ($scope_ids IS NULL OR a.id IN $scope_ids)
+                  AND (coalesce(a.isHidden, false) = false OR $scope_ids IS NOT NULL)
+                | a.id] AS kb_app_ids,
+             // Scoped like the rest: an un-backfilled app the request excludes
+             // cannot hide anything from it.
+             [a IN app_docs
+                WHERE (coalesce(a.vectorMembershipBackfilled, false) = false
+                       OR coalesce(a.vectorMembershipBackfillExhausted, false) = true)
+                  AND ($scope_ids IS NULL OR a.id IN $scope_ids)
+                | a.id] AS unsafe_app_ids,
+             [a IN app_docs
+                WHERE toUpper(coalesce(a.type, '')) IN $root_scoped_types
+                | a.id] AS root_scoped_apps
+
+        CALL {
+            WITH u, reachable_apps
+            OPTIONAL MATCH (u)-[:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
+            OPTIONAL MATCH (rgApp:App {id: rg.connectorId})
+            WITH rg, rgApp, reachable_apps
+            WHERE rg IS NOT NULL
+              AND ((rgApp IS NOT NULL AND rgApp.type = $kb_type)
+                   OR rg.connectorId IN reachable_apps)
+            RETURN collect(DISTINCT rg) AS s1
+        }
+        CALL {
+            WITH u, reachable_apps
+            OPTIONAL MATCH (u)-[:PERMISSION]->(gr)-[:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
+            WHERE (gr:Group OR gr:Role)
+            OPTIONAL MATCH (rgApp:App {id: rg.connectorId})
+            WITH rg, rgApp, reachable_apps
+            WHERE rg IS NOT NULL
+              AND ((rgApp IS NOT NULL AND rgApp.type = $kb_type)
+                   OR rg.connectorId IN reachable_apps)
+            RETURN collect(DISTINCT rg) AS s2
+        }
+        CALL {
+            WITH u, reachable_apps
+            OPTIONAL MATCH (u)-[:BELONGS_TO]->(:Organization)
+                           -[:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
+            OPTIONAL MATCH (rgApp:App {id: rg.connectorId})
+            WITH rg, rgApp, reachable_apps
+            WHERE rg IS NOT NULL
+              AND ((rgApp IS NOT NULL AND rgApp.type = $kb_type)
+                   OR rg.connectorId IN reachable_apps)
+            RETURN collect(DISTINCT rg) AS s3
+        }
+        CALL {
+            WITH u, reachable_apps
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:PERMISSION {type: 'TEAM'}]->(rg:RecordGroup {orgId: $org_id})
+            WITH rg, reachable_apps
+            WHERE rg IS NOT NULL
+              AND (rg.connectorName = $kb_type OR rg.connectorId IN reachable_apps)
+            RETURN collect(DISTINCT rg) AS s4
+        }
+        WITH u, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids,
+             root_scoped_apps, s1 + s2 + s3 + s4 AS seed_rgs
+
+        // Unlike the AQL twin this has no `uniqueVertices: global` or `PRUNE`
+        // equivalent, so a group DAG enumerates paths rather than vertices.
+        // Safe because group hierarchies are trees in practice —
+        // `parentExternalGroupId` is scalar and the sync writes one parent edge
+        // — but a genuine diamond at this depth would be costly. If one ever
+        // appears, replace this with a bounded iterative fixed point.
+        CALL {
+            WITH seed_rgs
+            UNWIND seed_rgs AS seed
+            OPTIONAL MATCH (descendant:RecordGroup {orgId: $org_id})
+                           -[:INHERIT_PERMISSIONS*1..__INHERIT_DEPTH__]->(seed)
+            // No grouping key beside the aggregate: with one, a user holding no
+            // seed groups yields zero rows here and the whole query returns
+            // nothing, which reads as "user not found". Filter after the CALL.
+            WITH collect(DISTINCT descendant) AS descendants
+            RETURN descendants
+        }
+        // Root-scoped connectors match on the record's root instead, so
+        // enumerating their descendants would only inflate the filter.
+        WITH u, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids,
+             root_scoped_apps, seed_rgs,
+             [rg IN seed_rgs
+                WHERE $scope_ids IS NULL OR rg.connectorId IN $scope_ids]
+             + [d IN descendants
+                  WHERE d IS NOT NULL
+                    AND NOT d.connectorId IN root_scoped_apps
+                    AND ($scope_ids IS NULL OR d.connectorId IN $scope_ids)] AS all_rgs
+        WITH u, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids, all_rgs,
+             [rg IN seed_rgs
+                WHERE rg.id IS NOT NULL AND rg.connectorId IN root_scoped_apps
+                  AND ($scope_ids IS NULL OR rg.connectorId IN $scope_ids)
+                | rg.id] AS root_group_ids,
+             [rg IN all_rgs WHERE rg.id IS NOT NULL | rg.id] AS all_rg_ids
+
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION]->(r1:Record {orgId: $org_id})
+            WHERE $scope_ids IS NULL OR r1.connectorId IN $scope_ids
+            RETURN collect(DISTINCT r1) AS d1
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION]->(gr2)-[:PERMISSION]->(r2:Record {orgId: $org_id})
+            WHERE (gr2:Group OR gr2:Role)
+              AND ($scope_ids IS NULL OR r2.connectorId IN $scope_ids)
+            RETURN collect(DISTINCT r2) AS d2
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:BELONGS_TO]->(:Organization)
+                           -[:PERMISSION]->(r3:Record {orgId: $org_id})
+            WHERE $scope_ids IS NULL OR r3.connectorId IN $scope_ids
+            RETURN collect(DISTINCT r3) AS d3
+        }
+        WITH reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids, all_rgs,
+             all_rg_ids, root_group_ids, d1 + d2 + d3 AS direct_records
+
+        CALL {
+            WITH direct_records, all_rg_ids, app_level_ids, kb_app_ids, reachable_apps
+            UNWIND direct_records AS rec
+            // Carry covered_app_ids through the projection: a WITH is a scope
+            // boundary, and its attached WHERE can only see what it projected.
+            WITH rec, all_rg_ids, reachable_apps,
+                 app_level_ids + kb_app_ids AS covered_app_ids
+            WHERE rec.virtualRecordId IS NOT NULL
+              AND (rec.isDeleted IS NULL OR rec.isDeleted = false)
+              AND rec.indexingStatus = $completed
+              AND NOT rec.connectorId IN covered_app_ids
+              // The verifier's reachability gate, applied early: a grant that
+              // outlived the user's access to its connector would enter the
+              // filter only to be denied, and a scope holding nothing but such
+              // grants would then return no results at all.
+              AND (rec.origin <> $connector_origin
+                   OR rec.connectorId IN reachable_apps)
+            OPTIONAL MATCH (rec)-[:BELONGS_TO]->(rgOfRec:RecordGroup)
+            WITH rec, all_rg_ids, collect(DISTINCT rgOfRec.id) AS rec_group_ids
+            WHERE none(g IN rec_group_ids WHERE g IN all_rg_ids)
+            RETURN collect(DISTINCT {vid: rec.virtualRecordId, rid: rec.id})[0..$direct_probe_limit] AS residual_direct
+        }
+
+        RETURN
+            app_level_ids + kb_app_ids AS appIds,
+            // Only what declared APP_LEVEL. kb_app_ids is a wider set, admitted
+            // on type alone so records carrying no recordGroupIds still have a
+            // term to match on; a KB app that has not been backfilled with its
+            // permissionModel yet is in appIds but not here, and falls through
+            // to full adjudication.
+            app_level_ids AS trustedApps,
+            [rg IN all_rgs
+               WHERE rg.id IS NOT NULL AND rg.permissionModel = $group_level
+               | rg.id] AS trusted,
+            [rg IN all_rgs
+               WHERE rg.id IS NOT NULL
+                 AND (rg.permissionModel IS NULL
+                      OR rg.permissionModel <> $group_level)
+               | rg.id] AS verify,
+            root_group_ids AS rootGroups,
+            residual_direct AS direct,
+            unsafe_app_ids AS unsafeApps
+        """
+        # Cypher cannot parameterise a variable-length path bound, and an
+        # f-string here would mean doubling every brace in the map literals
+        # above. Substitution keeps the depth tied to the shared constant.
+        query = query.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH))
+        try:
+            rows = await self.client.execute_query(
+                query,
+                {
+                    "user_id": user_id,
+                    "org_id": org_id,
+                    "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                    "app_level": PermissionModel.APP_LEVEL.value,
+                    "group_level": PermissionModel.RECORD_GROUP_LEVEL.value,
+                    "root_scoped_types": sorted(ROOT_SCOPED_CONNECTOR_TYPES),
+                    "completed": ProgressStatus.COMPLETED.value,
+                    "connector_origin": OriginTypes.CONNECTOR.value,
+                    # +1 so overflow is detectable without a second query.
+                    "direct_probe_limit": MAX_DIRECT_GRANT_RECORDS + 1,
+                    # Always bound: the query references it unconditionally.
+                    "scope_ids": sorted(scope_set) if scope_set is not None else None,
+                },
+            )
+            row = rows[0] if rows else None
+        except Exception as exc:
+            self.logger.error("get_accessible_containers: Cypher failed — %s", exc)
+            return AccessibleContainers(fallback_reason="query_failed")
+
+        return _containers_from_row(
+            row, logger=self.logger, scope_connector_ids=scope_set
+        )
+
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
@@ -5189,56 +5538,33 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.warning(f"User {user_id} has no accessible apps")
                 # Still need to check KB access even without apps
 
-            # Step 2: Extract filters and determine which connectors to query
+            # Step 2: Extract filters and determine which apps to query
             filters = filters or {}
-            kb_ids = filters.get("kb")
-            connector_ids_filter = filters.get("apps")
+            # `apps` and `kb` are one scope: a Collection id is honoured under
+            # either key, and so is a connector id.
+            scope = requested_scope_ids(filters)
             # Threaded through from ChatQuery.strictScope by the caller — a
             # project-scoped chat sets this so an empty effective scope stays
-            # empty (Scenario 3's implicit "search everything the user can
-            # access" must never apply), instead of quietly widening back out.
-            strict_scope = bool(filters.get("strictScope"))
+            # empty ("search everything the user can access" must never
+            # apply), instead of quietly widening back out.
+            strict_scope = bool(filters.get(STRICT_SCOPE_FILTER_KEY))
 
             # Extract metadata filters (departments, categories, etc.)
             metadata_filters = {
                 k: v for k, v in filters.items()
-                if k not in ["kb", "apps", "strictScope"] and v
+                if k not in CONTAINER_SCOPE_FILTER_KEYS
+                and k != STRICT_SCOPE_FILTER_KEY and v
             }
 
-            # Reclassify KB app IDs that arrived in the apps filter.
-            # MCP and some API clients send all source IDs (connectors + KB
-            # collections) in a single `apps` array; the backend must route
-            # KB IDs to the KB query path so Scenario 4 does not silently
-            # drop them.  Only IDs the user can actually access are moved.
-            if connector_ids_filter and kb_app_ids_set:
-                kb_in_apps = [
-                    cid for cid in connector_ids_filter
-                    if cid in kb_app_ids_set
-                ]
-                if kb_in_apps:
-                    self.logger.debug(
-                        f"Reclassifying {len(kb_in_apps)} KB app ID(s) "
-                        f"from apps to kb filter: {kb_in_apps}"
-                    )
-                    connector_ids_filter = [
-                        cid for cid in connector_ids_filter
-                        if cid not in kb_app_ids_set
-                    ]
-                    kb_ids = list(dict.fromkeys((kb_ids or []) + kb_in_apps))
-
-            has_kb_filter = kb_ids is not None and len(kb_ids) > 0
-            has_app_filter = connector_ids_filter is not None and len(connector_ids_filter) > 0
-
             self.logger.debug(
-                f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
-                f"App filter: {has_app_filter} (Connector IDs: {connector_ids_filter}), "
+                f"🔍 Filter analysis - scope: {scope}, "
                 f"Metadata filters: {list(metadata_filters.keys())}"
             )
 
-            if strict_scope and not has_kb_filter and not has_app_filter:
+            if strict_scope and scope is None:
                 self.logger.info(
                     "🔒 Strict scope with an empty effective apps/kb selection — "
-                    "returning no accessible records instead of Scenario 3's "
+                    "returning no accessible records instead of the implicit "
                     "'search everything'"
                 )
                 return {}
@@ -5272,59 +5598,40 @@ class Neo4jProvider(IGraphDBProvider):
                     user_id, org_id, kb_filter, metadata_filters, time_range=time_range
                 )
 
-            # Step 3: Determine tasks based on 4 scenarios
+            # Step 3: Determine tasks
             tasks = []
 
-            # Scenario 1: C=true, KB=true (both filters present)
-            if has_app_filter and has_kb_filter:
-                self.logger.info("🔍 Scenario 1: Both connector and KB filters applied")
-
-                # Query only filtered regular connectors (exclude KB apps)
-                connectors_to_query = [
-                    cid for cid in connector_ids_filter
-                    if cid in connector_app_ids_set
-                ]
-                self.logger.debug(f"Querying {len(connectors_to_query)} filtered connectors")
-
-                tasks.extend(connector_task(cid) for cid in connectors_to_query)
-
-                # Query only filtered KBs
-                self.logger.debug(f"Querying {len(kb_ids)} filtered KBs")
-                tasks.append(kb_task(kb_ids))
-
-            # Scenario 2: C=false, KB=true (only KB filter)
-            elif not has_app_filter and has_kb_filter:
-                self.logger.info("🔍 Scenario 2: Only KB filter applied")
-
-                # Query only filtered KBs (skip connector queries)
-                self.logger.debug(f"Querying {len(kb_ids)} filtered KBs only")
-                tasks.append(kb_task(kb_ids))
-
-            # Scenario 3: C=false, KB=false (no filters)
-            elif not has_app_filter and not has_kb_filter:
-                self.logger.info("🔍 Scenario 3: No filters - querying all connectors and KBs")
-
-                # Query all regular connector apps
-                self.logger.debug(f"Querying all {len(connector_app_ids_set)} accessible connectors")
+            if scope is None:
+                self.logger.info("🔍 No scope - querying all connectors and KBs")
                 tasks.extend(connector_task(cid) for cid in connector_app_ids_set)
-
-                # Query all KBs
-                self.logger.debug("Querying all KBs")
                 tasks.append(kb_task(None))
-
-            # Scenario 4: C=true, KB=false (only connector filter)
-            else:  # has_app_filter and not has_kb_filter
-                self.logger.info("🔍 Scenario 4: Only connector filter applied - skipping KB")
-
-                # Query only filtered regular connectors (skip KB entirely)
-                # Preserve the order from the filter list
-                connectors_to_query = [
-                    cid for cid in connector_ids_filter
-                    if cid in connector_app_ids_set
-                ]
-                self.logger.debug(f"Querying {len(connectors_to_query)} filtered connectors only")
-
+            else:
+                # Scope order, so a virtualRecordId shared by two scoped apps
+                # resolves to the one named first.
+                connectors_to_query = [cid for cid in scope if cid in connector_app_ids_set]
                 tasks.extend(connector_task(cid) for cid in connectors_to_query)
+                # Every other id may be a Collection. The KB query matches only
+                # KB apps the user holds a permission on, so connector ids, ids
+                # the user cannot reach and NO_KB_SELECTED add nothing.
+                # An id that arrived under `kb` is always offered to it, even
+                # when it looks like one of the user's connectors: the caller
+                # named it as a Collection, and only this query can confirm
+                # that (app types can be missing or unreadable).
+                kb_key_ids = {
+                    v for v in (filters.get("kb") or [])
+                    if isinstance(v, str) and v
+                }
+                remaining = [
+                    cid for cid in scope
+                    if cid not in connector_app_ids_set or cid in kb_key_ids
+                ]
+                if remaining:
+                    tasks.append(kb_task(remaining))
+                self.logger.info(
+                    "🔍 Scoped - querying %d connectors, %d candidate KB ids",
+                    len(connectors_to_query),
+                    len(remaining),
+                )
 
             # Step 5: Execute all tasks in parallel
             if not tasks:
@@ -5358,6 +5665,242 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get accessible virtual record IDs failed: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return {}
+
+    async def check_vrids_accessible(
+        self,
+        user_id: str,
+        org_id: str,
+        virtual_record_ids: list[str],
+    ) -> dict[str, str]:
+        """Targeted permission check for specific virtualRecordIds.
+
+        Instead of scanning all records for a connector, checks only the
+        specified vrids via EXISTS subqueries that short-circuit on first
+        match — orders of magnitude cheaper for large connectors.
+        """
+        if not virtual_record_ids:
+            return {}
+
+        start_time = time.time()
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return {}
+
+            user_key = user.get("id") or user.get("_key")
+            user_app_ids = await self._get_user_app_ids(user_key)
+
+            query = """
+            MATCH (u:User {id: $userKey})
+
+            // Find candidate records by virtualRecordId
+            UNWIND $vrids AS targetVrid
+            OPTIONAL MATCH (r:Record {virtualRecordId: targetVrid, orgId: $orgId})
+            WHERE r.indexingStatus = $completedStatus
+              AND (r.isDeleted IS NULL OR r.isDeleted <> true)
+              AND (r.origin <> "CONNECTOR" OR r.connectorId IN $userAppIds)
+            WITH u, r, targetVrid
+            WHERE r IS NOT NULL
+
+            // Check all permission paths via EXISTS (short-circuits on first match)
+            WITH u, r, targetVrid
+            WHERE
+                // Path 1: Direct user → record permission
+                EXISTS { MATCH (u)-[:PERMISSION]->(r) }
+                OR
+                // Path 2: User → group (BELONGS_TO) → record
+                EXISTS { MATCH (u)-[:BELONGS_TO]->(:Group)-[:PERMISSION]->(r) }
+                OR
+                // Path 3: User → group/role (PERMISSION) → record
+                EXISTS {
+                    MATCH (u)-[:PERMISSION]->(g)-[:PERMISSION]->(r)
+                    WHERE g:Group OR g:Role
+                }
+                OR
+                // Path 4: User → organization → record
+                EXISTS {
+                    MATCH (u)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(r)
+                }
+                OR
+                // Path 5: User → organization → recordGroup → record (inherit 0..20)
+                EXISTS {
+                    MATCH (u)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(rg:RecordGroup),
+                          (r)-[:INHERIT_PERMISSIONS*0..20]->(rg)
+                }
+                OR
+                // Path 6: User → group/role → recordGroup → record (inherit 0..20)
+                EXISTS {
+                    MATCH (u)-[:PERMISSION]->(g)-[:PERMISSION]->(rg:RecordGroup),
+                          (r)-[:INHERIT_PERMISSIONS*0..20]->(rg)
+                    WHERE g:Group OR g:Role
+                }
+                OR
+                // Path 7: User → recordGroup (direct) → record (inherit 0..20)
+                EXISTS {
+                    MATCH (u)-[:PERMISSION]->(rg:RecordGroup),
+                          (r)-[:INHERIT_PERMISSIONS*0..20]->(rg)
+                }
+                OR
+                // Path 8: KB direct access (KB is an App node, not RecordGroup)
+                EXISTS {
+                    MATCH (r)-[:BELONGS_TO]->(kb:App),
+                          (u)-[:PERMISSION {type: "USER"}]->(kb)
+                    WHERE kb.type = "KB" AND r.connectorName = $kbConnectorName
+                }
+                OR
+                // Path 9: KB team access
+                EXISTS {
+                    MATCH (r)-[:BELONGS_TO]->(kb:App),
+                          (team:Teams)-[:PERMISSION {type: "TEAM"}]->(kb),
+                          (u)-[:PERMISSION {type: "USER"}]->(team)
+                    WHERE kb.type = "KB" AND r.connectorName = $kbConnectorName
+                }
+                OR
+                // Path 10: Anyone access
+                EXISTS {
+                    MATCH (a:Anyone {organization: $orgId, file_key: r.id})
+                }
+
+            RETURN r.virtualRecordId AS virtualRecordId, r.id AS recordId
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "userKey": user_key,
+                    "orgId": org_id,
+                    "vrids": virtual_record_ids,
+                    "userAppIds": user_app_ids or [],
+                    "completedStatus": ProgressStatus.COMPLETED.value,
+                    "kbConnectorName": Connectors.KNOWLEDGE_BASE.value,
+                },
+            )
+
+            virtual_id_to_record_id: dict[str, str] = {}
+            if results:
+                for row in results:
+                    vid = row.get("virtualRecordId")
+                    rid = row.get("recordId")
+                    if vid and rid and vid not in virtual_id_to_record_id:
+                        virtual_id_to_record_id[vid] = rid
+
+            total_time = time.time() - start_time
+            self.logger.debug(
+                "check_vrids_accessible: %d/%d accessible in %.3fs",
+                len(virtual_id_to_record_id), len(virtual_record_ids), total_time,
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(f"check_vrids_accessible failed: {e}", exc_info=True)
+            return {}
+
+    async def resolve_vrids_to_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        org_id: str,
+    ) -> dict[str, str]:
+        if not virtual_record_ids:
+            return {}
+        try:
+            query = """
+            UNWIND $vrids AS targetVrid
+            MATCH (r:Record {virtualRecordId: targetVrid, orgId: $orgId})
+            WHERE r.indexingStatus = $completedStatus
+              AND (r.isDeleted IS NULL OR r.isDeleted <> true)
+            RETURN r.virtualRecordId AS virtualRecordId, r.id AS recordId
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "vrids": virtual_record_ids,
+                    "orgId": org_id,
+                    "completedStatus": ProgressStatus.COMPLETED.value,
+                },
+            )
+            mapping: dict[str, str] = {}
+            if results:
+                for row in results:
+                    vid = row.get("virtualRecordId")
+                    rid = row.get("recordId")
+                    if vid and rid and vid not in mapping:
+                        mapping[vid] = rid
+            return mapping
+        except Exception as e:
+            self.logger.error(f"resolve_vrids_to_record_ids failed: {e}", exc_info=True)
+            return {}
+
+    async def get_accessible_record_groups_for_connector(
+        self,
+        user_id: str,
+        org_id: str,
+        connector_id: str,
+    ) -> list[dict[str, str]]:
+        if not user_id or not org_id or not connector_id:
+            return []
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return []
+            user_key = user.get("id") or user.get("_key")
+
+            query = """
+            MATCH (userDoc:User {id: $userKey})
+
+            CALL {
+                WITH userDoc
+                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(:Organization)
+                               -[:PERMISSION]->(rg:RecordGroup)
+                WHERE rg.orgId = $orgId AND rg.connectorId = $connectorId
+                RETURN collect(DISTINCT {id: rg.id, groupName: rg.groupName}) AS rgs5
+            }
+
+            CALL {
+                WITH userDoc
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(gr)
+                WHERE gr:Group OR gr:Role
+                OPTIONAL MATCH (gr)-[:PERMISSION]->(rg:RecordGroup)
+                WHERE rg.orgId = $orgId AND rg.connectorId = $connectorId
+                RETURN collect(DISTINCT {id: rg.id, groupName: rg.groupName}) AS rgs6
+            }
+
+            CALL {
+                WITH userDoc
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(rg:RecordGroup)
+                WHERE rg.orgId = $orgId AND rg.connectorId = $connectorId
+                RETURN collect(DISTINCT {id: rg.id, groupName: rg.groupName}) AS rgs7
+            }
+
+            WITH rgs5 + rgs6 + rgs7 AS allRgs
+            UNWIND allRgs AS rg
+            WITH rg WHERE rg.id IS NOT NULL
+            RETURN DISTINCT rg.id AS rgId, rg.groupName AS groupName
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "userKey": user_key,
+                    "orgId": org_id,
+                    "connectorId": connector_id,
+                },
+            )
+            seen: set[str] = set()
+            out: list[dict[str, str]] = []
+            for row in results or []:
+                rg_id = row.get("rgId")
+                gname = row.get("groupName")
+                if rg_id and gname and rg_id not in seen:
+                    seen.add(rg_id)
+                    out.append({"id": rg_id, "group_name": gname})
+            return out
+        except Exception:
+            self.logger.warning(
+                "get_accessible_record_groups_for_connector failed for user=%s connector=%s",
+                user_id, connector_id, exc_info=True,
+            )
+            return []
 
     async def get_records_by_record_ids(
         self,
@@ -6444,6 +6987,55 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"ensure_team_app_edge failed: {e}", exc_info=True)
             raise
 
+    async def upsert_authenticated_as(
+        self,
+        creator_key: str,
+        source_user_key: str,
+        connector_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> None:
+        # A relationship cannot be repointed, so a stale link for this connector is
+        # dropped in the same statement before MERGE keeps exactly one per connector.
+        ts = get_epoch_timestamp_in_ms()
+        query = """
+        MATCH (c:User {id: $creator_key})
+        MATCH (s:User {id: $source_user_key})
+        OPTIONAL MATCH (x:User)-[old:AUTHENTICATED_AS {connectorId: $connector_id}]->(y:User)
+        WHERE x <> c OR y <> s
+        DELETE old
+        WITH c, s
+        MERGE (c)-[r:AUTHENTICATED_AS {connectorId: $connector_id}]->(s)
+        ON CREATE SET r.orgId = $org_id, r.createdAtTimestamp = $ts, r.updatedAtTimestamp = $ts
+        ON MATCH SET r.orgId = $org_id, r.updatedAtTimestamp = $ts
+        """
+        await self.client.execute_query(
+            query,
+            parameters={
+                "creator_key": creator_key,
+                "source_user_key": source_user_key,
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "ts": ts,
+            },
+            txn_id=transaction,
+        )
+
+    async def remove_authenticated_as(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        query = """
+        MATCH ()-[r:AUTHENTICATED_AS {connectorId: $connector_id}]->()
+        DELETE r
+        RETURN count(*) AS deleted
+        """
+        rows = await self.client.execute_query(
+            query, parameters={"connector_id": connector_id}, txn_id=transaction
+        )
+        return bool(rows and rows[0].get("deleted"))
+
     async def batch_upsert_user_groups(
         self,
         user_groups: list[AppUserGroup],
@@ -7015,29 +7607,59 @@ class Neo4jProvider(IGraphDBProvider):
 
     # ==================== Connector Deletion Helper Methods ====================
 
-    async def _collect_connector_entities(self, connector_id: str, transaction: str | None = None) -> dict:
-        """Collect all entity IDs for a connector."""
+    async def _collect_connector_entities(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+        *,
+        include_virtual_record_ids: bool = False,
+    ) -> dict:
+        """Collect all entity IDs for a connector.
+
+        ``include_virtual_record_ids`` is off by default: the VRID list is only
+        consumed by the legacy id-shipping cleanup path, and materialising one
+        entry per distinct VRID is wasted memory and payload on a connector with
+        millions of records when nothing will read it.
+        """
         if not self.client:
             raise RuntimeError("Neo4j client not connected")
 
+        # The first WITH must contain *only* aggregates. Any non-aggregate
+        # expression there — a bare `[]` included — becomes a grouping key, and a
+        # grouped aggregation over zero matched records yields zero rows instead
+        # of one row of empty collections. That would make a connector with
+        # record groups but no records look entirely empty, and its groups,
+        # roles and edges would survive the delete. So the projection is either
+        # bound as an aggregate or left out of the pipeline altogether.
+        if include_virtual_record_ids:
+            vrid_bind = (
+                ",\n             [vid IN collect(DISTINCT r.virtualRecordId) "
+                "WHERE vid IS NOT NULL] AS virtual_record_ids"
+            )
+            vrid_carry = "virtual_record_ids, "
+            vrid_result = "virtual_record_ids"
+        else:
+            vrid_bind = ""
+            vrid_carry = ""
+            vrid_result = "[]"
+
         query = """
         MATCH (r:Record {connectorId: $connector_id})
-        WITH collect(r.id) AS record_ids,
-             [vid IN collect(r.virtualRecordId) WHERE vid IS NOT NULL] AS virtual_record_ids
+        WITH collect(r.id) AS record_ids__VRID_BIND__
 
         OPTIONAL MATCH (rg:RecordGroup {connectorId: $connector_id})
-        WITH record_ids, virtual_record_ids, collect(rg.id) AS record_group_ids
+        WITH record_ids, __VRID_CARRY__collect(rg.id) AS record_group_ids
 
         OPTIONAL MATCH (role:Role {connectorId: $connector_id})
-        WITH record_ids, virtual_record_ids, record_group_ids, collect(role.id) AS role_ids
+        WITH record_ids, __VRID_CARRY__record_group_ids, collect(role.id) AS role_ids
 
         OPTIONAL MATCH (grp:Group {connectorId: $connector_id})
-        WITH record_ids, virtual_record_ids, record_group_ids, role_ids, collect(grp.id) AS group_ids
+        WITH record_ids, __VRID_CARRY__record_group_ids, role_ids, collect(grp.id) AS group_ids
 
         RETURN {
           record_keys: record_ids,
           record_ids: record_ids,
-          virtual_record_ids: virtual_record_ids,
+          virtual_record_ids: __VRID_RESULT__,
           record_group_keys: record_group_ids,
           role_keys: role_ids,
           group_keys: group_ids,
@@ -7049,6 +7671,11 @@ class Neo4jProvider(IGraphDBProvider):
             ['apps/' + $connector_id]
         } AS result
         """
+        query = (
+            query.replace("__VRID_BIND__", vrid_bind)
+            .replace("__VRID_CARRY__", vrid_carry)
+            .replace("__VRID_RESULT__", vrid_result)
+        )
 
         results = await self.client.execute_query(
             query,
@@ -7401,8 +8028,18 @@ class Neo4jProvider(IGraphDBProvider):
                     "error": f"Connector instance {connector_id} not found"
                 }
 
+            # Whether the vector cleanup will need an explicit VRID list at all.
+            # Membership-based cleanup finds the points itself, so on that path
+            # the list is never read and collecting it is pure cost — which is
+            # the whole point on a connector with millions of records.
+            needs_virtual_record_ids = not can_use_membership_cleanup(connector)
+
             # Phase 1: Collect data needed for return values (outside transaction)
-            collected = await self._collect_connector_entities(connector_id, transaction)
+            collected = await self._collect_connector_entities(
+                connector_id,
+                transaction,
+                include_virtual_record_ids=needs_virtual_record_ids,
+            )
             edge_collections = await self._get_all_edge_collections()
 
             # Collect isOfType targets before opening write transaction
@@ -7492,6 +8129,9 @@ class Neo4jProvider(IGraphDBProvider):
                 if not sync_success:
                     raise Exception("CRITICAL: Failed to delete sync points.")
 
+                # User -> User link is not attached to any node deleted above
+                await self.remove_authenticated_as(connector_id, transaction=transaction)
+
                 # Step 7: Delete the app itself
                 deleted_app, _ = await self._delete_nodes_by_keys(
                     transaction,
@@ -7521,6 +8161,16 @@ class Neo4jProvider(IGraphDBProvider):
                     "deleted_roles_count": deleted_roles,
                     "deleted_groups_count": deleted_groups,
                     "virtual_record_ids": collected["virtual_record_ids"],
+                    # The connector's own record groups went with it. A point
+                    # shared with a live connector survives the purge, so the
+                    # cleanup needs these to strip them from recordGroupIds.
+                    "record_group_ids": collected["record_group_keys"],
+                    "vector_membership_backfilled": bool(
+                        connector.get("vectorMembershipBackfilled", False)
+                    ),
+                    "vector_membership_backfill_exhausted": bool(
+                        connector.get("vectorMembershipBackfillExhausted", False)
+                    ),
                     "connector_id": connector_id,
                     "connector_name": connector.get("type"),
                 }
@@ -8311,9 +8961,16 @@ class Neo4jProvider(IGraphDBProvider):
             # Build comprehensive access query
             # Check all access paths: direct, group, record group, nested record groups, org, KB, anyone
             access_query = """
-            MATCH (u:User {id: $user_key})
+            MATCH (caller:User {id: $user_key})
             MATCH (rec:Record {id: $record_id})
             WHERE rec.origin <> "CONNECTOR" OR rec.connectorId IN $user_apps_ids
+
+            // Principals: the user, plus the source account the user authenticated this record's
+            // connector as. One row per principal; their access paths are merged after the query.
+            OPTIONAL MATCH (caller)-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = rec.connectorId
+            WITH caller, rec, collect(DISTINCT source_account) AS source_accounts
+            UNWIND [caller] + source_accounts AS u
 
             // Direct access
             OPTIONAL MATCH (u)-[directPerm:PERMISSION {type: "USER"}]->(rec)
@@ -8432,7 +9089,7 @@ class Neo4jProvider(IGraphDBProvider):
             if not access_results or not access_results[0].get("allAccess"):
                 return None
 
-            access_result = access_results[0]["allAccess"]
+            access_result = [access for row in access_results for access in (row.get("allAccess") or [])]
             # Filter out None entries
             access_result = [a for a in access_result if a.get("source") is not None or a.get("type") == "ANYONE"]
 
@@ -8938,9 +9595,16 @@ class Neo4jProvider(IGraphDBProvider):
             # Check multiple paths: direct, via groups, via org
             # This matches the ArangoDB implementation logic
             query = """
-            MATCH (userDoc:User {id: $user_key})
+            MATCH (caller:User {id: $user_key})
             MATCH (recordGroup:RecordGroup {id: $record_group_id})
             WHERE recordGroup.orgId = $org_id
+
+            // Principals: the user, plus the source account the user authenticated this
+            // record group's connector as. One result row per principal; the best one wins.
+            OPTIONAL MATCH (caller)-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = recordGroup.connectorId
+            WITH caller, recordGroup, collect(DISTINCT source_account) AS source_accounts
+            UNWIND [caller] + source_accounts AS userDoc
 
             // Direct user -> record group permission (including parent hierarchy 0-10 levels)
             OPTIONAL MATCH (recordGroup)-[:INHERIT_PERMISSIONS*0..10]->(rg:RecordGroup)
@@ -8990,6 +9654,8 @@ class Neo4jProvider(IGraphDBProvider):
                 allowed: hasPermission,
                 role: userRole
             } AS result
+            ORDER BY result.allowed DESC, CASE result.role WHEN 'OWNER' THEN 6 WHEN 'ADMIN' THEN 5 WHEN 'EDITOR' THEN 4 WHEN 'WRITER' THEN 3 WHEN 'COMMENTER' THEN 2 WHEN 'READER' THEN 1 ELSE 0 END DESC
+            LIMIT 1
             """
 
             results = await self.client.execute_query(
@@ -9149,8 +9815,15 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             query = """
-            MATCH (user:User {id: $user_key})
+            MATCH (caller:User {id: $user_key})
             MATCH (record:Record {id: $record_id})
+
+            // Principals: the user, plus the source account the user authenticated this
+            // record's connector as. One result row per principal; the best one wins.
+            OPTIONAL MATCH (caller)-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = record.connectorId
+            WITH caller, record, collect(DISTINCT source_account) AS source_accounts
+            UNWIND [caller] + source_accounts AS user
 
             // 1. Check direct user permissions on the record
             OPTIONAL MATCH (user)-[direct_perm:PERMISSION {type: "USER"}]->(record)
@@ -9282,6 +9955,8 @@ class Neo4jProvider(IGraphDBProvider):
             END AS source
 
             RETURN final_permission AS permission, source
+            ORDER BY CASE permission WHEN 'OWNER' THEN 6 WHEN 'ADMIN' THEN 5 WHEN 'EDITOR' THEN 4 WHEN 'WRITER' THEN 3 WHEN 'COMMENTER' THEN 2 WHEN 'READER' THEN 1 ELSE 0 END DESC
+            LIMIT 1
             """
 
             parameters = {
@@ -10828,12 +11503,16 @@ class Neo4jProvider(IGraphDBProvider):
                 return {"valid": False, "success": False, "code": 500, "reason": "Internal error: user record is malformed"}
 
             if not await self.kb_exists(kb_id):
+                self.logger.warning(f"❌ kb_exists returned false for KB {kb_id} during folder creation by user {user_id}")
                 return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
 
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
                 if user_role is None:
-                    # No role at all → hide existence (404), same as the read path.
+                    self.logger.warning(
+                        f"❌ Permission check returned None for user {user_key} on KB {kb_id} "
+                        f"(KB exists but no permission found or permission query failed)"
+                    )
                     return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
                 kb_name = await self._fetch_kb_name(kb_id)
                 kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
@@ -10851,6 +11530,7 @@ class Neo4jProvider(IGraphDBProvider):
             }
 
         except Exception as e:
+            self.logger.error(f"❌ Unexpected error in folder creation validation for KB {kb_id}: {e}")
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
 
 
@@ -14224,6 +14904,205 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return set()
 
+    async def filter_accessible_virtual_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        user_id: str,
+        org_id: str,
+        *,
+        trusted_app_ids: frozenset[str] | None = None,
+        trusted_group_ids: frozenset[str] | None = None,
+        scope_connector_ids: frozenset[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, str]:
+        """Which of ``virtual_record_ids`` the user may read, and which record to cite.
+
+        Same ``{virtualRecordId: recordId}`` shape as
+        ``get_accessible_virtual_record_ids``, so a caller that swaps one for the
+        other keeps every downstream mapping intact. The difference is direction:
+        that method enumerates the corpus up front, this one adjudicates an
+        already-retrieved handful.
+
+        Not ``filter_nodes_with_permission_role``: that takes record ids rather
+        than VRIDs so it cannot pick one record per VRID — the cross-connector
+        disambiguation the old intersection did for free — and its contract omits
+        the app-reachability gate, which over-shares a record whose connector the
+        user has since lost.
+
+        One round trip, unlike its two-query sibling: there is only one node
+        label here, so the reachable-app set and the adjudication share a query.
+        """
+        if not self.client:
+            raise PermissionVerificationUnavailableError("graph client not connected")
+        if not virtual_record_ids or not user_id:
+            return {}
+        if scope_connector_ids is not None and not scope_connector_ids:
+            return {}
+
+        record_perm = self._get_permission_role_cypher("record", "record", "u")
+
+        # `reachable_apps` needs both halves — ownership/instance membership
+        # (USER_APP_RELATION) and sharing (PERMISSION). This gate can only
+        # narrow, so a missing half is a wrongly-denied record.
+        # Each leg is its own CALL: folding an accumulator into the same
+        # projection as its collect() ("WITH u, a1 + collect(...) AS a2") makes
+        # a1 an implicit grouping key alongside an aggregate, which Neo4j
+        # rejects at parse time. Same four legs, same shape as
+        # get_accessible_containers.
+        reachable_apps_cypher = """
+        MATCH (u:User {userId: $user_id})
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(directApp:App)
+            RETURN collect(DISTINCT directApp.id) AS a1
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:USER_APP_RELATION]->(teamApp:App)
+            RETURN collect(DISTINCT teamApp.id) AS a2
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(permApp:App)
+            RETURN collect(DISTINCT permApp.id) AS a3
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:PERMISSION {type: 'TEAM'}]->(teamPermApp:App)
+            RETURN collect(DISTINCT teamPermApp.id) AS a4
+        }
+        WITH u, a1 + a2 + a3 + a4 AS reachable_apps
+        """
+
+        trusted_apps = frozenset(trusted_app_ids or ())
+        trusted_groups = frozenset(trusted_group_ids or ())
+
+        # Membership of a container the user wholly owns is itself the proof, so
+        # these records skip the 10-path role resolution. Deliberately keyed on
+        # INHERIT_PERMISSIONS and not on recordGroupId/BELONGS_TO: group
+        # membership is always written, inheritance is conditional, so a record
+        # with inherit_permissions=False sits in a trusted group without
+        # inheriting from it and must still be adjudicated.
+        # coalesce because Cypher's IN is three-valued: a null connectorId makes
+        # the predicate NULL, and the two legs are `AND p` / `AND NOT p`, so
+        # NULL drops the row from BOTH and the record is silently denied —
+        # while Arango's two-valued IN grants it.
+        trusted_app_clause = (
+            "coalesce(candidate.connectorId, '') IN $trusted_app_ids"
+            if trusted_apps
+            else "false"
+        )
+        # Only build the ancestor walk when there is something to find: the plan
+        # is cached per parameterised form, so an empty list still expands
+        # INHERIT_PERMISSIONS*1..20 for every candidate on the adjudicated leg.
+        trusted_group_clause = (
+            """
+               OR EXISTS {
+                   MATCH (candidate)-[:INHERIT_PERMISSIONS*1..__INHERIT_DEPTH__]->(anc:RecordGroup)
+                   WHERE anc.id IN $trusted_group_ids
+               }"""
+            if trusted_groups
+            else ""
+        )
+        trusted_predicate = f"""
+              ({trusted_app_clause}{trusted_group_clause})
+        """
+
+        def candidates_cypher(extra: str = "") -> str:
+            # Every gate except permission stays here: orgId is a tenant
+            # boundary (a VRID is content identity and is not unique across
+            # orgs), and soft-delete, indexing state and app reachability are
+            # not things container membership can vouch for.
+            return f"""
+        UNWIND $virtual_record_ids AS vid
+        CALL {{
+            WITH vid, reachable_apps
+            MATCH (candidate:Record {{virtualRecordId: vid, orgId: $org_id}})
+            WHERE (candidate.isDeleted IS NULL OR candidate.isDeleted = false)
+              AND candidate.indexingStatus = $completed
+              AND (candidate.origin <> $connector_origin
+                   OR candidate.connectorId IN reachable_apps)
+              // Scope is re-checked per record, not trusted from the search:
+              // membership arrays are unioned per VRID, so content shared with
+              // an out-of-scope app matches too. Both legs share this block. A
+              // null connectorId makes the predicate NULL, which drops the
+              // record — right for a scoped request, and what Arango does.
+              AND ($scope_ids IS NULL OR candidate.connectorId IN $scope_ids)
+              {extra}
+            RETURN candidate AS record
+        }}
+        """
+
+        adjudicated_leg = f"""
+        {reachable_apps_cypher}
+        {candidates_cypher("AND NOT " + trusted_predicate if (trusted_apps or trusted_groups) else "")}
+        {record_perm}
+        WITH vid, record, permission_role
+        WHERE permission_role IS NOT NULL AND permission_role <> ''
+        WITH vid, min(record.id) AS rid
+        RETURN vid AS vid, rid AS rid, 'adjudicated' AS via
+        """
+
+        if trusted_apps or trusted_groups:
+            # Two legs rather than one pass: a CALL subquery runs per row, so the
+            # only way to actually not pay for the role resolution is to keep
+            # trusted candidates out of the leg that performs it.
+            query = f"""
+        {reachable_apps_cypher}
+        {candidates_cypher("AND " + trusted_predicate)}
+        WITH vid, min(record.id) AS rid
+        RETURN vid AS vid, rid AS rid, 'trusted' AS via
+        UNION
+        {adjudicated_leg}
+        """
+        else:
+            # No trusted sets: one leg, the pre-shortcut query plus the scope gate.
+            query = adjudicated_leg
+        query = query.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH))
+        params = {
+            "user_id": user_id,
+            "org_id": org_id,
+            "virtual_record_ids": list(virtual_record_ids),
+            "completed": ProgressStatus.COMPLETED.value,
+            "connector_origin": OriginTypes.CONNECTOR.value,
+            "trusted_app_ids": sorted(trusted_apps),
+            "trusted_group_ids": sorted(trusted_groups),
+            "scope_ids": (
+                sorted(scope_connector_ids) if scope_connector_ids is not None else None
+            ),
+        }
+        try:
+            rows = await self.client.execute_query(query, params, txn_id=transaction)
+            # A VRID with one candidate in a trusted container and another that
+            # had to be adjudicated returns a row on each leg, and UNION does not
+            # order them. Both rows cite a record the user may read, but picking
+            # by arrival makes the citation vary run to run; preferring the
+            # trusted row makes it deterministic and matches Arango, whose
+            # ternary resolves the same tie the same way.
+            granted: dict[str, str] = {}
+            trusted_vids: set[str] = set()
+            for row in rows or []:
+                if not row or not row.get("vid") or not row.get("rid"):
+                    continue
+                vid = str(row["vid"])
+                if vid in trusted_vids:
+                    continue
+                granted[vid] = str(row["rid"])
+                if row.get("via") == "trusted":
+                    trusted_vids.add(vid)
+            return granted
+        except Exception as exc:
+            # Raised, not {}: an empty map is also what total denial looks like,
+            # and the caller answers the two differently (503 vs no results).
+            self.logger.error(
+                "filter_accessible_virtual_record_ids: Cypher failed for %d vrids — %s",
+                len(virtual_record_ids),
+                exc,
+            )
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+
     async def get_record_parent_adjacency(
         self,
         record_ids: list[str],
@@ -14352,7 +15231,10 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (u:User {id: $user_key})
             OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(app1:App)
             OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
-            WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
+            // Connectors the user authenticated as another source account
+            OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(:User)
+            OPTIONAL MATCH (app3:App {id: linked.connectorId})
+            WITH collect(DISTINCT app1) + collect(DISTINCT app2) + collect(DISTINCT app3) AS app_list
             UNWIND app_list AS app
             WITH app WHERE app IS NOT NULL AND coalesce(app.isHidden, false) = false
             RETURN DISTINCT app.id AS app_id
@@ -14725,14 +15607,21 @@ class Neo4jProvider(IGraphDBProvider):
               AND (v.orgId = $org_id)
               AND (v.isDeleted IS NULL OR v.isDeleted = false)
 
+            // Principals: the user, plus the source account the user authenticated the linked
+            // record's own connector as, so a link never reaches into another connector.
             WITH u, v, e
+            OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = v.connectorId
+            WITH u, v, e, collect(DISTINCT source_account) AS source_accounts
+            UNWIND [u] + source_accounts AS principal
+            WITH v, e, principal
             WHERE (
-                EXISTS { (u)-[:PERMISSION]->(v) }
-                OR EXISTS { (u)-[:PERMISSION]->(:RecordGroup)<-[:INHERIT_PERMISSIONS*1..20]-(v) }
-                OR EXISTS { (u)-[:BELONGS_TO]->(:Organization)-[:PERMISSION]->(v) }
+                EXISTS { (principal)-[:PERMISSION]->(v) }
+                OR EXISTS { (principal)-[:PERMISSION]->(:RecordGroup)<-[:INHERIT_PERMISSIONS*1..20]-(v) }
+                OR EXISTS { (principal)-[:BELONGS_TO]->(:Organization)-[:PERMISSION]->(v) }
             )
 
-            WITH v, e
+            WITH DISTINCT v, e
             OPTIONAL MATCH (v)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record)
             WITH v, e, count(*) > 0 AS has_child_pc
             OPTIONAL MATCH (v)-[:RECORD_RELATION {relationshipType: 'ATTACHMENT'}]->(:Record)
@@ -15631,29 +16520,37 @@ class Neo4jProvider(IGraphDBProvider):
             WITH {node_var}, {user_var}, role_priority,
                  [t IN permission_targets_raw WHERE t IS NOT NULL] AS permission_targets
 
+            // Principals: the user, plus the source account the user authenticated this node's
+            // connector as. The link is per connector, so it never grants outside that connector.
+            OPTIONAL MATCH ({user_var})-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = {node_var}.connectorId
+            WITH {node_var}, {user_var}, role_priority, permission_targets,
+                 [{user_var}] + collect(DISTINCT source_account) AS principals
+
             // Step 2: Check all 10 permission paths across all targets
             // Unwind targets to check each one
             UNWIND permission_targets AS target
+            UNWIND principals AS principal
 
             // Path 1: Direct user permission on target
-            OPTIONAL MATCH ({user_var})-[p1:PERMISSION {{type: 'USER'}}]->(target)
+            OPTIONAL MATCH (principal)-[p1:PERMISSION {{type: 'USER'}}]->(target)
             WHERE p1.role IS NOT NULL AND p1.role <> ''
 
             // Path 3: User -> Group -> target
-            OPTIONAL MATCH ({user_var})-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
+            OPTIONAL MATCH (principal)-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
             WHERE p3.role IS NOT NULL AND p3.role <> ''
 
             // Path 5: User -> Role -> target
-            OPTIONAL MATCH ({user_var})-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
+            OPTIONAL MATCH (principal)-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
             WHERE p5.role IS NOT NULL AND p5.role <> ''
 
             // Path 7: User -> Team -> target
             // Use role from User->Team permission edge (ut.role), not Team->target edge
-            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
+            OPTIONAL MATCH (principal)-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
             WHERE ut.role IS NOT NULL AND ut.role <> ''
 
             // Path 9: User -> Org -> target
-            OPTIONAL MATCH ({user_var})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
+            OPTIONAL MATCH (principal)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
             WHERE p9.role IS NOT NULL AND p9.role <> ''
 
             // Collect all found permissions for this target
@@ -15724,28 +16621,36 @@ class Neo4jProvider(IGraphDBProvider):
             WITH {node_var}, {user_var}, role_priority,
                  [t IN permission_targets_raw WHERE t IS NOT NULL] AS permission_targets
 
+            // Principals: the user, plus the source account the user authenticated this node's
+            // connector as. The link is per connector, so it never grants outside that connector.
+            OPTIONAL MATCH ({user_var})-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = {node_var}.connectorId
+            WITH {node_var}, {user_var}, role_priority, permission_targets,
+                 [{user_var}] + collect(DISTINCT source_account) AS principals
+
             // Step 2: Check all permission paths across all targets
             UNWIND permission_targets AS target
+            UNWIND principals AS principal
 
             // Path 1: Direct user permission on target
-            OPTIONAL MATCH ({user_var})-[p1:PERMISSION {{type: 'USER'}}]->(target)
+            OPTIONAL MATCH (principal)-[p1:PERMISSION {{type: 'USER'}}]->(target)
             WHERE p1.role IS NOT NULL AND p1.role <> ''
 
             // Path 2: User -> Group -> target
-            OPTIONAL MATCH ({user_var})-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
+            OPTIONAL MATCH (principal)-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
             WHERE p3.role IS NOT NULL AND p3.role <> ''
 
             // Path 3: User -> Role -> target
-            OPTIONAL MATCH ({user_var})-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
+            OPTIONAL MATCH (principal)-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
             WHERE p5.role IS NOT NULL AND p5.role <> ''
 
             // Path 4: User -> Team -> target
             // Use role from User->Team permission edge (ut.role), not Team->target edge
-            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
+            OPTIONAL MATCH (principal)-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
             WHERE ut.role IS NOT NULL AND ut.role <> ''
 
             // Path 5: User -> Org -> target
-            OPTIONAL MATCH ({user_var})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
+            OPTIONAL MATCH (principal)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
             WHERE p9.role IS NOT NULL AND p9.role <> ''
 
             // Collect all found permissions for this target
@@ -15804,7 +16709,10 @@ class Neo4jProvider(IGraphDBProvider):
             WITH {node_var}, {user_var}
 
             // Check if user has USER_APP_RELATION to app
-            OPTIONAL MATCH ({user_var})-[user_app_rel:USER_APP_RELATION]->({node_var})
+            OPTIONAL MATCH ({user_var})-[own_app_rel:USER_APP_RELATION]->({node_var})
+
+            // A connector the user authenticated as another source account is the user's app too
+            OPTIONAL MATCH ({user_var})-[linked_app:AUTHENTICATED_AS {{connectorId: {node_var}.id}}]->(:User)
 
             // Check if user has path User->Team->App (user in team, team has USER_APP_RELATION to app)
             OPTIONAL MATCH ({user_var})-[:PERMISSION {{type: 'USER'}}]->(team:Teams)-[team_app_rel:USER_APP_RELATION]->({node_var})
@@ -15820,7 +16728,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(kb_team:Teams)-[tb:PERMISSION {{type: 'TEAM'}}]->({node_var})
 
             // Collect team KB roles and find highest priority
-            WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm,
+            WITH {node_var}, {user_var}, coalesce(own_app_rel, linked_app) AS user_app_rel, team_app_rel, direct_perm,
                 collect(DISTINCT ut.role) AS team_kb_roles_list
 
             WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm,
@@ -16180,18 +17088,26 @@ class Neo4jProvider(IGraphDBProvider):
         """
         cypher = """
         MATCH (u:User {id: $user_key})
-        WITH u
+
+        // Principals: the user everywhere, plus each source account the user authenticated a
+        // connector as, counted for that connector only
+        OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User)
+        WITH u, [{user: u, connectorId: null}] +
+                [p IN collect({user: source_account, connectorId: linked.connectorId}) WHERE p.user IS NOT NULL] AS principals
 
         // Get user's accessible apps
-        WITH u, $user_accessible_app_ids AS user_accessible_app_ids
+        WITH u, principals, $user_accessible_app_ids AS user_accessible_app_ids
 
         // ========== RECORDGROUP-BASED ACCESS (Paths 1-4) for external connectors ==========
 
         // Path 1: User -> RecordGroup (external connectors only)
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:PERMISSION {type: 'USER'}]->(rg:RecordGroup)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:PERMISSION {type: 'USER'}]->(rg:RecordGroup)
             WHERE rg.orgId = $org_id
+              AND (linked_connector IS NULL OR rg.connectorId = linked_connector)
               AND rg.connectorId IN user_accessible_app_ids
               {scope_filter_rg}
             RETURN collect(rg) AS path1_rgs
@@ -16199,11 +17115,14 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 2: User -> Group/Role -> RecordGroup
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:PERMISSION {type: 'USER'}]->(grp)
             WHERE grp:Group OR grp:Role
             MATCH (grp)-[:PERMISSION]->(rg:RecordGroup)
             WHERE rg.orgId = $org_id
+              AND (linked_connector IS NULL OR rg.connectorId = linked_connector)
               AND rg.connectorId IN user_accessible_app_ids
               {scope_filter_rg}
             RETURN collect(rg) AS path2_rgs
@@ -16211,10 +17130,13 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 3: User -> Org -> RecordGroup
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
             MATCH (org)-[:PERMISSION {type: 'ORG'}]->(rg:RecordGroup)
             WHERE rg.orgId = $org_id
+              AND (linked_connector IS NULL OR rg.connectorId = linked_connector)
               AND rg.connectorId IN user_accessible_app_ids
               {scope_filter_rg}
             RETURN collect(rg) AS path3_rgs
@@ -16222,17 +17144,20 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 4: User -> Team -> RecordGroup
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:PERMISSION {type: 'USER'}]->(team:Teams)
             MATCH (team)-[:PERMISSION {type: 'TEAM'}]->(rg:RecordGroup)
             WHERE rg.orgId = $org_id
+              AND (linked_connector IS NULL OR rg.connectorId = linked_connector)
               AND rg.connectorId IN user_accessible_app_ids
               {scope_filter_rg}
             RETURN collect(rg) AS path4_rgs
         }
 
         // Combine all accessible RecordGroups (parent level)
-        WITH u, user_accessible_app_ids,
+        WITH u, principals, user_accessible_app_ids,
              path1_rgs + path2_rgs + path3_rgs + path4_rgs AS all_parent_rgs
 
         // Find nested RecordGroups via INHERIT_PERMISSIONS (skip parents with hideChildren)
@@ -16249,11 +17174,11 @@ class Neo4jProvider(IGraphDBProvider):
         }
 
         // Combine parent and nested RecordGroups
-        WITH u, user_accessible_app_ids,
+        WITH u, principals, user_accessible_app_ids,
              all_parent_rgs + (CASE WHEN nested_rgs IS NOT NULL THEN nested_rgs ELSE [] END) AS all_accessible_rgs
 
         // Find all Records that inherit from accessible RecordGroups (skip hideChildren parents)
-        WITH u, user_accessible_app_ids, all_accessible_rgs,
+        WITH u, principals, user_accessible_app_ids, all_accessible_rgs,
              [rg IN all_accessible_rgs |
                CASE WHEN coalesce(rg.hideChildren, false) = true THEN []
                ELSE [(record:Record)-[:INHERIT_PERMISSIONS]->(rg)
@@ -16263,7 +17188,7 @@ class Neo4jProvider(IGraphDBProvider):
              ] AS records_lists
 
         // Flatten and deduplicate records from RecordGroups
-        WITH u, user_accessible_app_ids,
+        WITH u, principals, user_accessible_app_ids,
              all_accessible_rgs AS accessible_rgs,
              reduce(acc = [], list IN records_lists | acc + list) AS rg_inherited_records
 
@@ -16271,7 +17196,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         // KB Path 1: User -> KB App (direct permission)
         CALL {
-            WITH u, user_accessible_app_ids
+            WITH u, principals, user_accessible_app_ids
             MATCH (u)-[:PERMISSION {type: 'USER'}]->(kb_app:App {type: 'KB'})
             WHERE kb_app.orgId = $org_id
               AND kb_app.id IN user_accessible_app_ids
@@ -16280,7 +17205,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         // KB Path 2: User -> Team -> KB App
         CALL {
-            WITH u, user_accessible_app_ids
+            WITH u, principals, user_accessible_app_ids
             MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)
             MATCH (team)-[:PERMISSION {type: 'TEAM'}]->(kb_app:App {type: 'KB'})
             WHERE kb_app.orgId = $org_id
@@ -16289,11 +17214,11 @@ class Neo4jProvider(IGraphDBProvider):
         }
 
         // Combine accessible KB apps
-        WITH u, user_accessible_app_ids, accessible_rgs, rg_inherited_records,
+        WITH u, principals, user_accessible_app_ids, accessible_rgs, rg_inherited_records,
              kb_path1_apps + kb_path2_apps AS all_kb_apps
 
         // Find records with INHERIT_PERMISSIONS edges to accessible KB apps
-        WITH u, user_accessible_app_ids, accessible_rgs, rg_inherited_records, all_kb_apps,
+        WITH u, principals, user_accessible_app_ids, accessible_rgs, rg_inherited_records, all_kb_apps,
              [kb_app IN all_kb_apps |
                [(record:Record)-[:INHERIT_PERMISSIONS]->(kb_app)
                 WHERE record.orgId = $org_id
@@ -16301,7 +17226,7 @@ class Neo4jProvider(IGraphDBProvider):
                | record]
              ] AS kb_records_lists
 
-        WITH u, user_accessible_app_ids, accessible_rgs,
+        WITH u, principals, user_accessible_app_ids, accessible_rgs,
              rg_inherited_records +
              reduce(acc = [], list IN kb_records_lists | acc + list) AS all_rg_inherited_records
 
@@ -16309,9 +17234,12 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 5: User -> Record (direct)
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:PERMISSION {type: 'USER'}]->(record:Record)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:PERMISSION {type: 'USER'}]->(record:Record)
             WHERE record.orgId = $org_id
+              AND (linked_connector IS NULL OR record.connectorId = linked_connector)
               {scope_filter_record}
 
             OPTIONAL MATCH (record_app:App {id: record.connectorId})
@@ -16323,11 +17251,14 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 6: User -> Group/Role -> Record (direct)
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:PERMISSION {type: 'USER'}]->(grp)
             WHERE grp:Group OR grp:Role
             MATCH (grp)-[:PERMISSION]->(record:Record)
             WHERE record.orgId = $org_id
+              AND (linked_connector IS NULL OR record.connectorId = linked_connector)
               {scope_filter_record}
 
             OPTIONAL MATCH (record_app:App {id: record.connectorId})
@@ -16339,10 +17270,13 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 7: User -> Org -> Record (direct)
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
             MATCH (org)-[:PERMISSION {type: 'ORG'}]->(record:Record)
             WHERE record.orgId = $org_id
+              AND (linked_connector IS NULL OR record.connectorId = linked_connector)
               {scope_filter_record}
 
             OPTIONAL MATCH (record_app:App {id: record.connectorId})

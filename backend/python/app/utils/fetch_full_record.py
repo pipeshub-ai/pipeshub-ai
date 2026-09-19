@@ -191,7 +191,20 @@ class _RecordResolver:
     async def resolve(self, record_id: str) -> tuple[str, dict[str, Any] | None, str | None]:
         cached = self._from_map(record_id)
         if cached is not None:
-            return record_id, await self._enrich(cached), None
+            if "record_name" in cached:
+                return record_id, await self._enrich(cached), None
+            # Raw graph metadata (e.g. from pattern match) — fetch blob content.
+            # ACL was already verified when the entry was added to the map.
+            if not cached.get("virtualRecordId"):
+                cached["virtualRecordId"] = cached.get("virtual_record_id")
+            try:
+                record = await self._download(cached)
+            except Exception:
+                logger.warning("Blob read failed for map entry %s", record_id, exc_info=True)
+                return record_id, None, STORAGE_ERROR
+            if record is None:
+                return record_id, None, UNAVAILABLE
+            return record_id, await self._enrich(record), None
 
         # An id that is not already in the (ACL-filtered) map is unverified.
         # Without a user to check against, it is never served.
@@ -218,8 +231,6 @@ class _RecordResolver:
         if not graph_record:
             return record_id, None, UNAVAILABLE
         if graph_record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
-            # Actionable: "try again shortly" is a different instruction from
-            # "this record does not exist".
             return record_id, None, NOT_INDEXED_YET
 
         try:

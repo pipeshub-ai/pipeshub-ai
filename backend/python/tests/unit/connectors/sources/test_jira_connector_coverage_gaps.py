@@ -111,18 +111,16 @@ class TestCloudInitCoverageGaps:
                 await connector.init()
 
     @pytest.mark.asyncio
-    async def test_init_resolves_creator_email_and_caches_myself(self):
+    async def test_init_caches_myself_without_resolving_creator(self):
         connector = _make_cloud_connector()
-        creator = MagicMock()
-        creator.email = "creator@example.com"
-        connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=creator)
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
             mock_client = MagicMock()
             mock_ds = MagicMock()
             mock_ds.get_current_user = AsyncMock(return_value=MagicMock(
                 status=200,
-                json=MagicMock(return_value={"emailAddress": "creator@example.com"}),
+                json=MagicMock(return_value={"emailAddress": "jira@example.com"}),
             ))
             mock_client.get_client = MagicMock(return_value=MagicMock())
             MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
@@ -138,7 +136,8 @@ class TestCloudInitCoverageGaps:
                 result = await connector.init()
 
         assert result is True
-        assert connector.creator_email == "creator@example.com"
+        assert connector._authenticated_jira_email == "jira@example.com"
+        connector.data_entities_processor.get_user_by_user_id.assert_not_awaited()
 
 
 class TestCloudHandleDeletedIssueGaps:

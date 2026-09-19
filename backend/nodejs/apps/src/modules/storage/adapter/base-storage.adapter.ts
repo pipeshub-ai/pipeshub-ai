@@ -143,4 +143,58 @@ export class StorageServiceAdapter {
       ? this.adapter.generatePresignedUrlForDirectUpload(documentPath)
       : Promise.reject(new Error('Method not implemented'));
   }
+
+  deleteObject(storagePath: string): Promise<StorageServiceResponse<void>> {
+    return this.adapter.deleteObject
+      ? this.adapter.deleteObject(storagePath)
+      : Promise.reject(new Error('deleteObject not implemented for this storage provider'));
+  }
+
+  copyObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    return this.adapter.copyObject
+      ? this.adapter.copyObject(sourcePath, destinationPath)
+      : Promise.reject(new Error('copyObject not implemented for this storage provider'));
+  }
+
+  copyTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    return this.adapter.copyTree
+      ? this.adapter.copyTree(sourcePrefix, destinationPrefix)
+      : Promise.reject(new Error('copyTree not implemented for this storage provider'));
+  }
+
+  renameTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    return this.adapter.renameTree
+      ? this.adapter.renameTree(sourcePrefix, destinationPrefix)
+      : Promise.reject(new Error('renameTree not implemented for this storage provider'));
+  }
+
+  /**
+   * Falls back to copyObject (the pre-existing behavior) for any provider
+   * that hasn't implemented a native move -- callers can always call
+   * renameObject unconditionally regardless of storage vendor.
+   */
+  renameObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    return this.adapter.renameObject
+      ? this.adapter.renameObject(sourcePath, destinationPath)
+      : this.copyObject(sourcePath, destinationPath);
+  }
+
+  getObjectUrl(storageKey: string): string {
+    if (!this.adapter.getObjectUrl) {
+      throw new Error('getObjectUrl not implemented for this storage provider');
+    }
+    return this.adapter.getObjectUrl(storageKey);
+  }
 }
