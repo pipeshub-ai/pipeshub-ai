@@ -2034,8 +2034,11 @@ class TestRunSync:
             await folder_connector.run_sync()
 
         folder_connector.notify.assert_awaited_once()
-        payload = folder_connector.notify.await_args.kwargs["payload"]
-        assert payload["error_code"] == "ROOT_MISSING"
+        kwargs = folder_connector.notify.await_args.kwargs
+        assert kwargs["payload"]["error_code"] == "ROOT_MISSING"
+        assert "was moved, renamed or deleted" in kwargs["message"]
+        assert "Indexed files are kept" in kwargs["message"]
+        assert "update the folder path in connector" in kwargs["message"]
         folder_connector.record_sync_point.update_sync_point.assert_not_awaited()
         folder_connector._prune_unseen_records.assert_not_awaited()
 

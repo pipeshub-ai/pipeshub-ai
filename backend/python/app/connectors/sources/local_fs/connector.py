@@ -1964,8 +1964,8 @@ class LocalFsConnector(BaseConnector):
             ),
             message=(
                 (
-                    f"'{self.sync_root_path}' was moved or deleted on this machine. "
-                    "Indexed files are kept. If it was moved, update the folder path in connector "
+                    f"'{self.sync_root_path}' was moved, renamed or deleted on this machine. "
+                    "Indexed files are kept. If it was moved or renamed, update the folder path in connector "
                     "settings to resume sync."
                 )
                 if missing

@@ -589,6 +589,68 @@ test('A moved-away sync root answers ROOT_MISSING, not a retryable unread', asyn
   await manager.shutdown();
 });
 
+test('A sync root moved while watching reports ROOT_MISSING, never deletes', async () => {
+  const { manager, syncRoot, userData } = setup();
+  await fsp.writeFile(path.join(syncRoot, 'keep-a.txt'), 'a');
+  await fsp.writeFile(path.join(syncRoot, 'keep-b.txt'), 'b');
+  await manager.start({ connectorId: 'c-1', connectorName: 'Live move', rootPath: syncRoot });
+  await sleep(700);
+
+  // Moved out from under a live watcher, which is the case the old code could
+  // only see as every file being unlinked.
+  fs.renameSync(syncRoot, path.join(userData, 'elsewhere'));
+  // Past the 2s unlink correlation window and the 1s dispatcher flush, so a
+  // delete storm would have reached the journal by now if one were coming.
+  await sleep(4000);
+
+  const journalled = manager.journal
+    .listBatches('c-1')
+    .flatMap((b) => b.events || []);
+  assert.ok(
+    !journalled.some((e) => e.type === 'DELETED' || e.type === 'DIR_DELETED'),
+    `a moved root must not be journalled as deletions, got ${JSON.stringify(journalled)}`,
+  );
+
+  const response = await manager.servePull(pullArgs({ connectorId: 'c-1' }));
+  assert.equal(response.ok, false);
+  assert.equal((response as { error: { code: string } }).error.code, 'ROOT_MISSING');
+
+  await manager.shutdown();
+});
+
+test('A sync root that comes back resumes on the next pull', async () => {
+  const { manager, syncRoot, userData } = setup();
+  await fsp.writeFile(path.join(syncRoot, 'keep.txt'), 'keep');
+  await manager.start({ connectorId: 'c-1', connectorName: 'Restored', rootPath: syncRoot });
+  await sleep(700);
+
+  const parked = path.join(userData, 'parked');
+  fs.renameSync(syncRoot, parked);
+  await sleep(1500);
+  assert.equal(
+    (await manager.servePull(pullArgs({ connectorId: 'c-1' }))).ok,
+    false,
+    'a pull while the root is away must fail',
+  );
+
+  fs.renameSync(parked, syncRoot);
+  await fsp.writeFile(path.join(syncRoot, 'while-away.txt'), 'new');
+
+  // The watcher held at the point of loss is bound to the directory that moved,
+  // so resuming depends on it being remounted rather than reused.
+  const { events } = await drainRun(manager, 'c-1', 'run-2');
+  assert.ok(
+    events.some((e) => e.type === 'CREATED' && e.path === 'while-away.txt'),
+    `expected the remounted watcher to reconcile while-away.txt, got ${JSON.stringify(events)}`,
+  );
+  assert.ok(
+    !events.some((e) => e.type === 'DELETED' && e.path === 'keep.txt'),
+    `the file that never moved must survive, got ${JSON.stringify(events)}`,
+  );
+
+  await manager.shutdown();
+});
+
 test('start() called twice with unchanged config is a no-op', async () => {
   const { manager, syncRoot } = setup();
   await fsp.writeFile(path.join(syncRoot, 'existing.txt'), 'hello');

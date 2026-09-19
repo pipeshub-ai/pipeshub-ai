@@ -117,6 +117,7 @@ from app.connectors.sources.local_fs.connector import (
     LocalFsDesktopOfflineError,
     LocalFsDeviceMismatchError,
     LocalFsDeviceUnclaimedError,
+    LocalFsRootUnavailableError,
     _client_path_for_display,
 )
 from app.connectors.sources.local_fs.models import LocalFsFileEvent, LocalFsPullBatch
@@ -778,6 +779,40 @@ class TestRunSync:
         assert connector.record_sync_point.update_sync_point.await_count == 0
         # Only the user can resolve this, so it must not fail silently.
         connector.notify.assert_awaited_once()
+
+    async def test_missing_root_keeps_records_and_tells_the_user_to_update_the_path(
+        self, connector: LocalFsConnector, graph_store
+    ) -> None:
+        # A moved, renamed, or deleted folder must not prune the index, and
+        # the user has to be pointed at connector settings to retarget it.
+        await _seed_files(connector, "kept.txt")
+        before = copy.deepcopy(_records_snapshot(graph_store))
+        connector.notify = AsyncMock()
+        connector._pull_with_retry = AsyncMock(
+            side_effect=LocalFsRootUnavailableError(
+                "ROOT_MISSING", "Local sync root folder does not exist"
+            )
+        )
+        connector.record_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_sync_time": PRIOR_SYNC_TIME_MS, "cursor": RESUME_CURSOR}
+        )
+        connector.record_sync_point.update_sync_point = AsyncMock()
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(
+                return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))
+            ),
+        ):
+            with pytest.raises(LocalFsRootUnavailableError):
+                await connector.run_sync()
+
+        assert _records_snapshot(graph_store) == before
+        connector.record_sync_point.update_sync_point.assert_not_awaited()
+        kwargs = connector.notify.await_args.kwargs
+        assert kwargs["payload"]["error_code"] == "ROOT_MISSING"
+        assert "was moved, renamed or deleted" in kwargs["message"]
+        assert "Indexed files are kept" in kwargs["message"]
+        assert "update the folder path in connector" in kwargs["message"]
 
     async def test_offline_desktop_leaves_existing_records_untouched(
         self, connector: LocalFsConnector, graph_store

@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { normalizeRelKey, contentFileHash, toEpochMs, type FileSnapshotEntry } from '../persistence/watcher-state-store';
+import { normalizeRelKey, contentFileHash, toEpochMs, isValidInode, type FileSnapshotEntry } from '../persistence/watcher-state-store';
 import type { WatchEvent } from './replay-event-expander';
 
 const MAX_PENDING_UNLINK_ENTRIES = 10000;
@@ -39,10 +39,6 @@ export interface EventCorrelatorOptions {
 }
 
 export type EventListener = (events: WatchEvent[]) => void;
-
-function isValidInode(ino: unknown): boolean {
-  return ino !== undefined && Number.isFinite(ino as number) && (ino as number) > 0;
-}
 
 function dirnamePosix(p: string): string {
   const i = p.lastIndexOf('/');
@@ -285,6 +281,24 @@ export class EventCorrelator {
    * (stop()) may force; a drain that merely wants the journal current before a
    * pull must not, and lets those unlinks correlate into the next page.
    */
+  /**
+   * Throw away everything buffered without emitting any of it.
+   *
+   * For the one case where the buffer cannot be trusted: the sync root itself
+   * has gone, so the pending unlinks are describing that disappearance rather
+   * than anything the user deleted, and flushing them would report the whole
+   * tree as deleted.
+   */
+  discardPending(): void {
+    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; this.flushTimerDueAt = null; }
+    for (const t of this.changeTimers.values()) clearTimeout(t);
+    this.changeTimers.clear();
+    this.pendingChanges.clear();
+    this.pendingUnlinks.clear();
+    this.pendingAdds.clear();
+    this.unlinkInodes.clear();
+  }
+
   async drain(forceUnlinks = true): Promise<void> {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; this.flushTimerDueAt = null; }
     for (const t of this.changeTimers.values()) clearTimeout(t);

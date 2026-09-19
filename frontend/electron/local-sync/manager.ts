@@ -360,6 +360,15 @@ export class LocalSyncManager {
         if (rt) rt.lastError = `watcher error: ${err.message}`;
         this.emitStatus(connectorId);
       },
+      onRootUnavailable: (liveness) => {
+        const rt = this.runtimes.get(connectorId);
+        if (rt) {
+          rt.lastError = liveness === 'unreadable'
+            ? `sync folder could not be read: ${rootPath}`
+            : `sync folder was moved or deleted: ${rootPath}`;
+        }
+        this.emitStatus(connectorId);
+      },
     });
 
     try {
@@ -757,7 +766,14 @@ export class LocalSyncManager {
     meta: ConnectorMeta,
   ): Promise<ConnectorFsWatcher | null> {
     const runtime = this.runtimes.get(connectorId);
-    if (runtime?.watcher && runtime.watcherState === 'watching') return runtime.watcher;
+    if (runtime?.watcher && runtime.watcherState === 'watching') {
+      if (runtime.watcher.getStatus().rootLiveness === 'alive') return runtime.watcher;
+      // Its chokidar handles still point at the directory the user moved, so
+      // they can never see the folder come back. Dropping it means start()
+      // below either reconciles a restored folder against the preserved
+      // snapshot, or throws ROOT_MISSING while it is still gone.
+      await this.stop(connectorId);
+    }
     if (!meta.rootPath) return null;
     await this.start({
       connectorId,

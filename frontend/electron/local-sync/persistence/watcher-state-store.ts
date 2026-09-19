@@ -89,7 +89,7 @@ function dirnamePosix(p: string): string {
   return i <= 0 ? '' : p.slice(0, i);
 }
 
-function isValidInode(ino: unknown): boolean {
+export function isValidInode(ino: unknown): boolean {
   if (ino === undefined || ino === null) return false;
   const n = typeof ino === 'bigint' ? Number(ino) : (ino as number);
   return Number.isFinite(n) && n > 0;
@@ -153,11 +153,15 @@ export async function scanSyncRoot(
   const root = path.resolve(syncRootAbs);
   const out = new Map<string, FileSnapshotEntry>();
 
-  async function visit(dirAbs: string): Promise<void> {
+  async function visit(dirAbs: string, isRoot = false): Promise<void> {
     let entries: fs.Dirent[];
     try {
       entries = await fsp.readdir(dirAbs, { withFileTypes: true });
-    } catch {
+    } catch (err) {
+      // An unreadable child is skipped, but the root failing means the sync
+      // folder itself is gone. Returning an empty scan there reads as "every
+      // file was deleted" to both applyScan and reconcile.
+      if (isRoot) throw err;
       return;
     }
     for (const ent of entries) {
@@ -193,7 +197,7 @@ export async function scanSyncRoot(
     }
   }
 
-  await visit(root);
+  await visit(root, true);
   return out;
 }
 
