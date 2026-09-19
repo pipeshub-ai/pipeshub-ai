@@ -32,6 +32,7 @@ describe('Storage Routes', () => {
       uploadNextVersionDocument: sinon.stub().resolves(),
       rollBackToPreviousVersion: sinon.stub().resolves(),
       uploadDirectDocument: sinon.stub().resolves(),
+      abortDirectUpload: sinon.stub().resolves(),
       documentDiffChecker: sinon.stub().resolves(),
       watchStorageType: sinon.stub(),
     }
@@ -683,6 +684,25 @@ describe('Storage Routes', () => {
       await handler(mockReq, mockRes, mockNext)
 
       expect(mockStorageController.uploadDirectDocument.calledOnce).to.be.true
+    })
+
+    it('POST /internal/:documentId/abortDirectUpload is service-only and calls storageController.abortDirectUpload', async () => {
+      const router = createStorageRouter(container)
+      const layer: any = (router as any).stack.find(
+        (l: any) => l.route && l.route.path === '/internal/:documentId/abortDirectUpload' && l.route.methods.post,
+      )
+      expect(layer).to.not.be.undefined
+      // Guarded by the storage service token, never by a user's session.
+      const guard = layer.route.stack[0].handle
+      expect(guard).to.equal(mockAuthMiddleware.scopedTokenValidator.firstCall.returnValue)
+      expect(layer.route.stack.map((h: any) => h.handle)).to.not.include(mockAuthMiddleware.authenticate)
+      expect((router as any).stack.some((l: any) => l.route && /abortDirectUpload/.test(l.route.path) && !l.route.path.startsWith('/internal/'))).to.be.false
+
+      const handler = findRouteHandler(router, '/internal/:documentId/abortDirectUpload', 'post')
+      const { mockReq, mockRes, mockNext } = createMockReqRes()
+      await handler(mockReq, mockRes, mockNext)
+
+      expect(mockStorageController.abortDirectUpload.calledOnce).to.be.true
     })
 
     it('GET /:documentId/isModified handler should call storageController.documentDiffChecker', async () => {

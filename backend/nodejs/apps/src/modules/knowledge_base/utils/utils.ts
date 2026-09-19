@@ -4,7 +4,10 @@ import { Logger } from '../../../libs/services/logger.service';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import axios from 'axios';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import { endpoint } from '../../storage/constants/constants';
+import {
+  endpoint,
+  STORAGE_WRITE_FAILED_MESSAGE,
+} from '../../storage/constants/constants';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { RecordRelationService } from '../services/kb.relation.service';
@@ -164,14 +167,39 @@ export const createPlaceholderDocument = async (
         documentId,
         documentName,
         redirectUrl,
-        upload: () =>
-          uploadFileToSignedUrl(
-            file.buffer,
-            file.mimetype,
-            redirectUrl,
-            documentId,
-            documentName,
-          ),
+        upload: async () => {
+          try {
+            await uploadFileToSignedUrl(
+              file.buffer,
+              file.mimetype,
+              redirectUrl,
+              documentId,
+              documentName,
+            );
+          } catch {
+            // Storage removes the placeholder only if it confirms the file never arrived.
+            await axiosInstance
+              .post(
+                `${storageUrl}/api/v1/document/internal/${documentId}/abortDirectUpload`,
+                {},
+                { headers: { Authorization: `Bearer ${storageToken}` } },
+              )
+              .catch((cleanupError: unknown) => {
+                logger.warn(
+                  'Could not remove the placeholder of a failed upload',
+                  {
+                    documentId: String(documentId),
+                    error:
+                      cleanupError instanceof Error
+                        ? cleanupError.message
+                        : String(cleanupError),
+                  },
+                );
+              });
+            // uploadFileToSignedUrl logged the storage vendor's own response.
+            throw new Error(STORAGE_WRITE_FAILED_MESSAGE);
+          }
+        },
       };
     } else {
       logger.error('Error creating placeholder document', {

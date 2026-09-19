@@ -258,6 +258,29 @@ describe('Storage adapters against a real storage server', function () {
     expect((await download(documentFor(target, directUrl))).equals(body)).to.equal(true);
   });
 
+  it('tells a direct upload that never arrived from one that did', async () => {
+    const documentPath = pathFor('maybe.bin');
+    const res = await target.adapter.generatePresignedUrlForDirectUpload!(documentPath);
+    const stored = await target.adapter.uploadDocumentToStorageService({
+      documentPath: `${documentPath}.probe`,
+      buffer: Buffer.from('x'),
+      mimeType: 'application/octet-stream',
+      isVersioned: false,
+    });
+    const doc = documentFor(target, (stored.data as string).replace(/\.probe$/, ''));
+
+    // The placeholder records this URL before the browser sends anything.
+    expect(await target.adapter.objectExists!(doc)).to.equal(false);
+
+    const put = await fetch(res.data!.url, {
+      method: 'PUT',
+      body: randomBytes(1024),
+      headers: target.directUploadHeaders,
+    });
+    expect(put.status, await put.text()).to.be.oneOf([200, 201]);
+    expect(await target.adapter.objectExists!(doc)).to.equal(true);
+  });
+
   it('uploads straight away to a container that does not exist yet', async function () {
     if (backend !== 'azure') {
       this.skip();

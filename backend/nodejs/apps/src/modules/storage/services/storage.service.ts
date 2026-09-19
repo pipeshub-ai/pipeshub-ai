@@ -95,4 +95,10 @@ export interface StorageServiceInterface {
   generatePresignedUrlForDirectUpload?(
     documentPath: string,
   ): Promise<StorageServiceResponse<{ url: string }>>;
+
+  /**
+   * Whether the document's current file is in storage. Resolves false only
+   * when storage confirms the file is absent; any other failure rejects.
+   */
+  objectExists?(document: Document): Promise<boolean>;
 }

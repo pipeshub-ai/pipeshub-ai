@@ -143,4 +143,15 @@ export class StorageServiceAdapter {
       ? this.adapter.generatePresignedUrlForDirectUpload(documentPath)
       : Promise.reject(new Error('Method not implemented'));
   }
+
+  /**
+   * Whether the document's current file is in storage.
+   * @param document - Metadata of the document.
+   * @returns A promise resolving to false only when storage confirms the file is absent.
+   */
+  objectExists(document: Document): Promise<boolean> {
+    return this.adapter.objectExists
+      ? this.adapter.objectExists(document)
+      : Promise.reject(new Error('Method not implemented'));
+  }
 }

@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { randomUUID } from 'crypto';
 import { injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { StorageServiceInterface } from '../services/storage.service';
@@ -112,6 +113,24 @@ class LocalStorageAdapter implements StorageServiceInterface {
   }
 
   /**
+   * Writes beside the target and renames over it, so a write that fails part
+   * way (disk full, storage gone) leaves the previous file whole instead of cut short.
+   */
+  private async writeFileAtomically(
+    fullPath: string,
+    data: Buffer,
+  ): Promise<void> {
+    const tempPath = `${fullPath}.${randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(tempPath, data, { mode: 0o600 });
+      await fs.rename(tempPath, fullPath);
+    } catch (error) {
+      await fs.rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
    * Uploads a document to local storage
    */
   async uploadDocumentToStorageService(
@@ -135,8 +154,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       // Ensure directory exists
       await fs.mkdir(dirPath, { recursive: true });
 
-      // Write file with proper permissions
-      await fs.writeFile(fullPath, documentInPayload.buffer, { mode: 0o600 });
+      await this.writeFileAtomically(fullPath, documentInPayload.buffer);
 
       const fileUrl = this.getFileUrl(relativePath);
 
@@ -177,8 +195,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
         path.join(this.mountPath, localPath),
       );
 
-      // Write updated content
-      await fs.writeFile(fullPath, bufferDataInPayLoad, { mode: 0o600 });
+      await this.writeFileAtomically(fullPath, bufferDataInPayLoad);
 
       const fileUrl = this.getFileUrl(localPath);
       if (process.env.NODE_ENV == 'development') {

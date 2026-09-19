@@ -7,7 +7,11 @@ import {
 } from '../../../libs/middlewares/types';
 import { Response, NextFunction } from 'express';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import { endpoint, storageEtcdPaths } from '../constants/constants';
+import {
+  endpoint,
+  storageEtcdPaths,
+  STORAGE_WRITE_FAILED_MESSAGE,
+} from '../constants/constants';
 import {
   AzureBlobStorageConfig,
   LocalStorageConfig,
@@ -19,8 +23,10 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
 import {
   BadRequestError,
+  ConflictError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import {
   Document,
@@ -50,6 +56,7 @@ import {
   isValidStorageVendor,
   normalizeExtension,
   serveFileFromLocalStorage,
+  writeToStorage,
 } from '../utils/utils';
 import { UploadDocumentService } from './storage.upload.service';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
@@ -110,22 +117,21 @@ export class StorageController {
     document: mongoose.Document<unknown, {}, DocumentModel> & DocumentModel,
     buffer: Buffer,
     newDocumentFilePath: string,
-    next: NextFunction,
+    _next: NextFunction,
     adapter: StorageServiceAdapter,
   ): Promise<StorageServiceResponse<string> | undefined> {
-    try {
-      const mimetype = getMimeType(document.extension);
-      const cloneFilePayload: FilePayload = {
-        buffer: buffer,
-        mimeType: mimetype,
-        documentPath: newDocumentFilePath,
-        isVersioned: document.isVersionedFile,
-      };
-      return await adapter.uploadDocumentToStorageService(cloneFilePayload);
-    } catch (error) {
-      next(error);
-      return undefined;
-    }
+    const mimetype = getMimeType(document.extension);
+    const cloneFilePayload: FilePayload = {
+      buffer: buffer,
+      mimeType: mimetype,
+      documentPath: newDocumentFilePath,
+      isVersioned: document.isVersionedFile,
+    };
+    // Throws rather than calling next: every caller is inside its own try, and
+    // answering here as well would send a second response.
+    return writeToStorage(adapter, cloneFilePayload, {
+      documentId: String(document._id),
+    });
   }
 
   async compareDocuments(
@@ -350,6 +356,63 @@ export class StorageController {
       next(error);
     }
   }
+  /**
+   * Removes a new document whose direct upload never arrived. Refused unless a
+   * signed URL was issued for it and storage confirms its file is absent, so a
+   * stored file never loses its document.
+   */
+  async abortDirectUpload(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
+      const { documentId } = req.params;
+      const document = await DocumentModel.findOne({ _id: documentId, orgId });
+      if (!document) {
+        throw new NotFoundError('Document does not exist');
+      }
+      if (document.awaitingDirectUpload !== true) {
+        throw new ConflictError(
+          'This document is not an unfinished direct upload',
+        );
+      }
+
+      const adapter = await this.initializeStorageAdapter(req);
+      let exists: boolean;
+      try {
+        exists = await adapter.objectExists(document);
+      } catch (error) {
+        this.logger.error('Could not check whether a direct upload arrived', {
+          documentId: String(document._id),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw new ServiceUnavailableError(
+          'Could not confirm the file is absent from storage; the document was kept',
+        );
+      }
+      if (exists) {
+        await DocumentModel.updateOne(
+          { _id: document._id, orgId },
+          { $unset: { awaitingDirectUpload: '' } },
+        );
+        throw new ConflictError(
+          'The file arrived in storage; the document was kept',
+        );
+      }
+
+      const { deletedCount } = await DocumentModel.deleteOne({
+        _id: document._id,
+        orgId,
+        awaitingDirectUpload: true,
+      });
+      res.status(HTTP_STATUS.OK).json({ deleted: deletedCount === 1 });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async downloadDocument(
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -475,7 +538,16 @@ export class StorageController {
       const document = docResult.document;
 
       const adapter = await this.initializeStorageAdapter(req);
-      const uploadResult = await adapter.updateBuffer(buffer, document);
+      let uploadResult: StorageServiceResponse<string>;
+      try {
+        uploadResult = await adapter.updateBuffer(buffer, document);
+      } catch (error) {
+        this.logger.error('Failed to upload buffer', {
+          documentId: String(document._id),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+      }
 
       if (uploadResult.statusCode === 200) {
         document.mutationCount = (document.mutationCount ?? 0) + 1;
@@ -483,10 +555,12 @@ export class StorageController {
         await document.save();
         res.status(200).json(uploadResult.data);
       } else {
-        this.logger.error(`Failed to upload buffer: ${uploadResult.msg}`);
-        throw new InternalServerError(
-          `Failed to upload buffer: ${uploadResult.msg}`,
-        );
+        this.logger.error('Failed to upload buffer', {
+          documentId: String(document._id),
+          statusCode: uploadResult.statusCode,
+          error: uploadResult.msg,
+        });
+        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
       }
     } catch (error) {
       next(error);
@@ -676,23 +750,20 @@ export class StorageController {
         isVersioned: document.isVersionedFile,
       };
 
-      // OPTIMIZATION: Upload to both locations in parallel
-      const [versionResponse, currentResponse] = await Promise.all([
-        adapter.uploadDocumentToStorageService(nextVersionPayload),
-        adapter.uploadDocumentToStorageService(currentPayload),
-      ]);
-
-      if (versionResponse.statusCode !== 200) {
-        throw new InternalServerError(
-          `Failed to upload version file: ${versionResponse.msg}`,
-        );
-      }
-
-      if (currentResponse.statusCode !== 200) {
-        throw new InternalServerError(
-          `Failed to upload current file: ${currentResponse.msg}`,
-        );
-      }
+      // The version file first, then the current file. Written together, a
+      // failed version write could still replace the current file while the
+      // document keeps describing the previous one.
+      const logContext = { documentId: String(document._id) };
+      const versionResponse = await writeToStorage(
+        adapter,
+        nextVersionPayload,
+        logContext,
+      );
+      const currentResponse = await writeToStorage(
+        adapter,
+        currentPayload,
+        logContext,
+      );
 
       const fileExtension = path.extname(originalname);
 

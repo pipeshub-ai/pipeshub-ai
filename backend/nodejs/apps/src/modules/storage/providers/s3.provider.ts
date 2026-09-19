@@ -199,6 +199,30 @@ class AmazonS3Adapter implements StorageServiceInterface {
     }
   }
 
+  async objectExists(document: Document): Promise<boolean> {
+    if (!document.s3?.url) {
+      return false;
+    }
+    try {
+      await this.s3
+        .headObject({
+          Bucket: this.bucketName,
+          Key: this.extractKeyFromUrl(document.s3.url),
+        })
+        .promise();
+      return true;
+    } catch (error) {
+      const { code, statusCode } = error as {
+        code?: string;
+        statusCode?: number;
+      };
+      if (code === 'NotFound' || code === 'NoSuchKey' || statusCode === 404) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   /**
    * Retrieves the buffer content of a document from S3.
    * @param document - Metadata of the document to retrieve.

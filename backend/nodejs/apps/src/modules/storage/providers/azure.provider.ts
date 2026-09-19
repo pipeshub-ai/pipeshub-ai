@@ -258,6 +258,16 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     }
   }
 
+  async objectExists(document: Document): Promise<boolean> {
+    if (!document.azureBlob?.url) {
+      return false;
+    }
+    await this.waitForContainer();
+    return this.containerClient
+      .getBlockBlobClient(this.getBlobPath(document.azureBlob.url))
+      .exists();
+  }
+
   /**
    * Retrieve document content
    * @param document Document metadata

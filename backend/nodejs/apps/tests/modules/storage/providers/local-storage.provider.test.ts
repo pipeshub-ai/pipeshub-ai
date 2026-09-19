@@ -62,6 +62,70 @@ describe('LocalStorageAdapter', () => {
   })
 
   // -------------------------------------------------------------------------
+  // writes on a real folder: a failed write never damages the stored file
+  // -------------------------------------------------------------------------
+  describe('atomic writes', () => {
+    let mount: string
+
+    beforeEach(async () => {
+      mount = await fs.mkdtemp(path.join(os.tmpdir(), 'local-storage-test-'))
+    })
+
+    afterEach(async () => {
+      sinon.restore()
+      await fs.rm(mount, { recursive: true, force: true })
+    })
+
+    const adapterOn = (dir: string): LocalStorageAdapter => {
+      const adapter = createAdapter()
+      ;(adapter as any).mountPath = dir
+      return adapter
+    }
+
+    it('stores the bytes and leaves no temporary file behind', async () => {
+      const adapter = adapterOn(mount)
+      const result = await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from('version one'),
+        mimeType: 'text/plain',
+        documentPath: 'org/doc/current/notes.txt',
+        isVersioned: false,
+      } as any)
+
+      expect(result.statusCode).to.equal(200)
+      const folder = path.join(mount, 'org/doc/current')
+      expect(await fs.readFile(path.join(folder, 'notes.txt'), 'utf8')).to.equal('version one')
+      expect(await fs.readdir(folder)).to.deep.equal(['notes.txt'])
+    })
+
+    it('keeps the previous file whole when a later write fails part way', async () => {
+      const adapter = adapterOn(mount)
+      const payload = (text: string) => ({
+        buffer: Buffer.from(text),
+        mimeType: 'text/plain',
+        documentPath: 'org/doc/current/notes.txt',
+        isVersioned: false,
+      }) as any
+      await adapter.uploadDocumentToStorageService(payload('version one'))
+
+      const realWrite = fs.writeFile.bind(fs)
+      sinon.stub(fs, 'writeFile').callsFake(async (target: any, data: any, options: any) => {
+        await realWrite(target, Buffer.from(data).subarray(0, 3), options)
+        throw new Error('ENOSPC: no space left on device')
+      })
+
+      try {
+        await adapter.uploadDocumentToStorageService(payload('version two, much longer'))
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(StorageUploadError)
+      }
+      const folder = path.join(mount, 'org/doc/current')
+      expect(await fs.readFile(path.join(folder, 'notes.txt'), 'utf8')).to.equal('version one')
+      expect(await fs.readdir(folder)).to.deep.equal(['notes.txt'])
+    })
+  })
+
+  // -------------------------------------------------------------------------
   // multipart upload methods (not implemented)
   // -------------------------------------------------------------------------
   describe('multipart upload methods', () => {
@@ -260,6 +324,7 @@ describe('LocalStorageAdapter', () => {
       const adapter = createAdapter()
       sinon.stub(fs, 'mkdir').resolves(undefined)
       sinon.stub(fs, 'writeFile').resolves(undefined)
+      sinon.stub(fs, 'rename').resolves(undefined)
 
       const result = await adapter.uploadDocumentToStorageService({
         buffer: Buffer.from('test content'),
@@ -276,6 +341,7 @@ describe('LocalStorageAdapter', () => {
       const adapter = createAdapter()
       const mkdirStub = sinon.stub(fs, 'mkdir').resolves(undefined)
       sinon.stub(fs, 'writeFile').resolves(undefined)
+      sinon.stub(fs, 'rename').resolves(undefined)
 
       await adapter.uploadDocumentToStorageService({
         buffer: Buffer.from('test'),
@@ -573,6 +639,7 @@ describe('LocalStorageAdapter - branch coverage', () => {
       const adapter = createAdapter()
       sinon.stub(fs, 'mkdir').resolves(undefined)
       sinon.stub(fs, 'writeFile').resolves(undefined)
+      sinon.stub(fs, 'rename').resolves(undefined)
       process.env.NODE_ENV = 'development'
 
       const result = await adapter.uploadDocumentToStorageService({
@@ -647,6 +714,7 @@ describe('LocalStorageAdapter - branch coverage', () => {
     it('should log in development mode on success', async () => {
       const adapter = createAdapter()
       sinon.stub(fs, 'writeFile').resolves(undefined)
+      sinon.stub(fs, 'rename').resolves(undefined)
       process.env.NODE_ENV = 'development'
 
       try {

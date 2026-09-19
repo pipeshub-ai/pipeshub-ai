@@ -491,6 +491,23 @@ export function createStorageRouter(container: Container): Router {
   );
 
   router.post(
+    '/internal/:documentId/abortDirectUpload',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(DocumentIdParams),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        return await storageController.abortDirectUpload(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
     '/internal/:documentId/directUpload',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
     ValidationMiddleware.validate(DirectUploadSchema),
