@@ -90,6 +90,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.core.constants import (
     AuthFieldKeys,
+    ConnectorErrorCodes,
     ConnectorRegistryAuthMetadataKeys,
     ConnectorRequestKeys,
     ConnectorStateKeys,
@@ -102,17 +103,6 @@ from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.filters import sync_filter_selection_problems
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
-from app.connectors.sources.local_fs.connector import LocalFsConnector
-from app.connectors.sources.local_fs.file_events import (
-    _normalize_connector_type_value,
-    _parse_local_fs_file_event_batch_request,
-    _parse_local_fs_uploaded_file_event_batch_request,
-    _update_connector_status,
-)
-from app.connectors.sources.local_fs.models import (
-    LocalFsFileEventBatchStats,
-    LocalFsFileEventSubmissionResponse,
-)
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_store_rebuild import (
     VectorStoreRebuildBusyError,
@@ -723,6 +713,52 @@ def _check_connector_not_locked(instance: dict[str, Any]) -> None:
             status_code=HttpStatusCode.CONFLICT.value,
             detail=detail,
         )
+
+
+def _is_local_fs_connector_type(connector_type: str) -> bool:
+    return (connector_type or "").strip().upper().replace(" ", "_") == Connectors.LOCAL_FS.value
+
+
+def _local_fs_owner_claim(
+    connector_id: str, instance: dict[str, Any], body: dict[str, Any]
+) -> dict[str, Any]:
+    """Owner-device fields to write when enabling a Local FS connector.
+
+    Raises 409 when the caller is not the owner device. The code leads the
+    detail string because Node forwards Python's ``detail`` only as a message.
+    """
+    device_id = str(body.get("deviceId") or "").strip()
+    device_name = str(body.get("deviceName") or "").strip()
+    owner_id = instance.get(ConnectorStateKeys.OWNER_DEVICE_ID)
+    owner_name = instance.get(ConnectorStateKeys.OWNER_DEVICE_NAME)
+
+    if not owner_id:
+        if not device_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.CONFLICT.value,
+                detail=(
+                    f"{ConnectorErrorCodes.DESKTOP_UNCLAIMED}: Connector {connector_id} has no "
+                    "owner device yet. Enable sync from the desktop app on the machine that "
+                    "owns the folder."
+                ),
+            )
+        return {
+            ConnectorStateKeys.OWNER_DEVICE_ID: device_id,
+            ConnectorStateKeys.OWNER_DEVICE_NAME: device_name or None,
+        }
+
+    if device_id != owner_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=(
+                f"{ConnectorErrorCodes.DESKTOP_OWNED_BY_OTHER_DEVICE}: Connector {connector_id} "
+                f"is owned by device '{owner_name or owner_id}'. Enable sync from the desktop "
+                "app on that machine."
+            ),
+        )
+    if device_name and device_name != owner_name:
+        return {ConnectorStateKeys.OWNER_DEVICE_NAME: device_name}
+    return {}
 
 
 async def require_connector_not_locked(
@@ -4243,224 +4279,6 @@ async def get_connector_instance_config(
         ) from e
 
 
-@router.post(
-    "/api/v1/connectors/{connector_id}/file-events/upload",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))],
-    response_model=LocalFsFileEventSubmissionResponse,
-)
-async def submit_connector_file_event_uploads(
-    connector_id: str,
-    request: Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-) -> LocalFsFileEventSubmissionResponse:
-    """
-    Submit Local FS file events with uploaded file bytes.
-
-    Request format:
-    - Content-Type: multipart/form-data
-    - Required `manifest` part containing JSON for `LocalFsFileEventBatchRequest`
-    - Optional file parts keyed by each event's `contentField`
-
-    Response:
-    - `LocalFsFileEventSubmissionResponse` with submission metadata and stats.
-
-    Raises:
-    - 401: user is not authenticated
-    - 404: connector instance not found / not accessible
-    - 400: connector is not Local FS
-    - 422/413: invalid manifest or oversized payload
-    - 500: connector processing failed
-    """
-    container = request.app.container
-    logger = container.logger()
-    connector_registry = request.app.state.connector_registry
-    user_id = request.state.user.get("userId")
-    org_id = request.state.user.get("orgId")
-    is_admin = is_request_admin(request)
-    payload, files_by_field = await _parse_local_fs_uploaded_file_event_batch_request(request)
-
-    if not user_id or not org_id:
-        raise HTTPException(
-            status_code=HttpStatusCode.UNAUTHORIZED.value,
-            detail="User not authenticated",
-        )
-
-    instance = await connector_registry.get_connector_instance(
-        connector_id=connector_id,
-        user_id=user_id,
-        org_id=org_id,
-        is_admin=is_admin,
-    )
-    if not instance:
-        raise HTTPException(
-            status_code=HttpStatusCode.NOT_FOUND.value,
-            detail=f"Connector instance {connector_id} not found or access denied",
-        )
-
-    connector_type = str(instance.get("type", ""))
-    _ct_norm = _normalize_connector_type_value(connector_type)
-    if _ct_norm != "localfs":
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="File event replay is only supported for Local FS connectors",
-        )
-
-    await _update_connector_status(graph_provider, connector_id, AppStatus.SYNCING.value)
-    try:
-        connector = await _ensure_connector_initialized(
-            container,
-            connector_id,
-            connector_type,
-            connector_registry,
-            graph_provider,
-            user_id,
-            org_id,
-            is_admin=is_admin,
-            logger=logger,
-        )
-        if not isinstance(connector, LocalFsConnector):
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Initialized connector is not a Local FS connector",
-            )
-
-        try:
-            stats = await connector.apply_uploaded_file_event_batch(
-                payload.events,
-                files_by_field,
-                reset_before_apply=payload.resetBeforeApply,
-            )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.exception(
-                "Local FS uploaded file-event batch failed: connector=%s batch=%s",
-                connector_id,
-                payload.batchId,
-            )
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Local FS file-event batch failed: {exc}",
-            ) from exc
-        return LocalFsFileEventSubmissionResponse(
-            success=True,
-            connectorId=connector_id,
-            batchId=payload.batchId,
-            stats=stats,
-        )
-    finally:
-        with contextlib.suppress(Exception):
-            await _update_connector_status(graph_provider, connector_id, AppStatus.IDLE.value)
-
-
-@router.post(
-    "/api/v1/connectors/{connector_id}/file-events",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))],
-    response_model=LocalFsFileEventSubmissionResponse,
-)
-async def submit_connector_file_events(
-    connector_id: str,
-    request: Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-) -> LocalFsFileEventSubmissionResponse:
-    """
-    Submit Local FS file events as JSON metadata only.
-
-    Request format:
-    - Content-Type: application/json
-    - Body must match `LocalFsFileEventBatchRequest` (directly or wrapped payload)
-
-    Response:
-    - `LocalFsFileEventSubmissionResponse` with submission metadata and stats.
-
-    Raises:
-    - 401: user is not authenticated
-    - 404: connector instance not found / not accessible
-    - 400: connector is not Local FS
-    - 422/413: invalid batch payload or oversized event batch
-    - 500: connector processing failed
-    """
-    container = request.app.container
-    logger = container.logger()
-    connector_registry = request.app.state.connector_registry
-    user_id = request.state.user.get("userId")
-    org_id = request.state.user.get("orgId")
-    is_admin = is_request_admin(request)
-    payload = await _parse_local_fs_file_event_batch_request(request)
-
-    if not user_id or not org_id:
-        raise HTTPException(
-            status_code=HttpStatusCode.UNAUTHORIZED.value,
-            detail="User not authenticated",
-        )
-
-    instance = await connector_registry.get_connector_instance(
-        connector_id=connector_id,
-        user_id=user_id,
-        org_id=org_id,
-        is_admin=is_admin,
-    )
-    if not instance:
-        raise HTTPException(
-            status_code=HttpStatusCode.NOT_FOUND.value,
-            detail=f"Connector instance {connector_id} not found or access denied",
-        )
-
-    connector_type = str(instance.get("type", ""))
-    _ct_norm = _normalize_connector_type_value(connector_type)
-    if _ct_norm != "localfs":
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="File event replay is only supported for Local FS connectors",
-        )
-
-    await _update_connector_status(graph_provider, connector_id, AppStatus.SYNCING.value)
-    try:
-        connector = await _ensure_connector_initialized(
-            container,
-            connector_id,
-            connector_type,
-            connector_registry,
-            graph_provider,
-            user_id,
-            org_id,
-            is_admin=is_admin,
-            logger=logger,
-        )
-        if not isinstance(connector, LocalFsConnector):
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Initialized connector is not a Local FS connector",
-            )
-
-        try:
-            stats = await connector.apply_file_event_batch(
-                payload.events,
-                reset_before_apply=payload.resetBeforeApply,
-            )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.exception(
-                "Local FS file-event batch failed: connector=%s batch=%s",
-                connector_id,
-                payload.batchId,
-            )
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Local FS file-event batch failed: {exc}",
-            ) from exc
-        return LocalFsFileEventSubmissionResponse(
-            success=True,
-            connectorId=connector_id,
-            batchId=payload.batchId,
-            stats=stats,
-        )
-    finally:
-        with contextlib.suppress(Exception):
-            await _update_connector_status(graph_provider, connector_id, AppStatus.IDLE.value)
-
-
 @router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_auth_config(
     connector_id: str,
@@ -7325,6 +7143,7 @@ async def toggle_connector_instance(
             target_status = not current_agent_status
             status_field = "isAgentActive"
 
+        owner_updates: dict[str, Any] = {}
         # Validate prerequisites when enabling
         if toggle_type == "sync" and not current_sync_status:
             auth_type = (instance.get("authType") or "").upper()
@@ -7371,6 +7190,10 @@ async def toggle_connector_instance(
                 connector_registry, instance.get("type", ""), config or {}, "enabling this connector"
             )
 
+            # add owner fields to the instance if local fs connector
+            if _is_local_fs_connector_type(connector_type):
+                owner_updates = _local_fs_owner_claim(connector_id, instance, body)
+
             # Initialize connector when enabling (if not already initialized)
             await _ensure_connector_initialized(
                 container=container,
@@ -7404,7 +7227,8 @@ async def toggle_connector_instance(
         updates = {
             status_field: target_status,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            "updatedBy": user_id
+            "updatedBy": user_id,
+            **owner_updates,
         }
 
         success = await connector_registry.update_connector_instance(

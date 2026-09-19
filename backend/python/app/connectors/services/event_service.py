@@ -17,6 +17,10 @@ from app.config.constants.arangodb import (
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorSyncSkippedError,
+)
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
@@ -306,6 +310,7 @@ class EventService:
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
 
             await self._store_connector(connector_id, connector)
+
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
@@ -444,7 +449,10 @@ class EventService:
         else:
             # --- Normal sync: set status only, no lock ---
             try:
-                await self._update_app_status(connector_id, status=AppStatus.SYNCING.value)
+                await self._update_app_status(
+                    connector_id,
+                    status=AppStatus.SYNCING.value,
+                )
                 self.logger.info(f"Set status=SYNCING for connector {connector_id}")
             except Exception as status_err:
                 self.logger.error(f"❌ Failed to set SYNCING status for connector {connector_id}: {status_err}")
@@ -480,6 +488,8 @@ class EventService:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
         start = time.monotonic()
         cancelled = False
+        failed = False
+        skipped_code: str | None = None
         try:
             await connector.run_sync()
         except asyncio.CancelledError:
@@ -487,6 +497,13 @@ class EventService:
             # so a pre-empted sync used to read in the logs exactly like one that
             # finished its work.
             cancelled = True
+            raise
+        except ConnectorSyncSkippedError as exc:
+            # Not a crash: the connector declined to run (e.g. Local FS with no
+            # desktop connected). Logged only; the UI reads live presence.
+            skipped_code = exc.code
+        except Exception:
+            failed = True
             raise
         finally:
             elapsed = time.monotonic() - start
@@ -496,12 +513,24 @@ class EventService:
                 self.logger.warning(
                     f"⚠️ Sync cancelled for connector {connector_id} after {elapsed_str}"
                 )
+            elif failed:
+                self.logger.error(
+                    f"❌ Sync failed for connector {connector_id} after {elapsed_str}"
+                )
+            elif skipped_code:
+                self.logger.info(
+                    f"Sync skipped for connector {connector_id} "
+                    f"({skipped_code}, {elapsed_str})"
+                )
             else:
                 self.logger.info(
                     f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
                 )
             try:
-                await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
+                await self._update_app_status(
+                    connector_id,
+                    status=AppStatus.IDLE.value,
+                )
                 self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")
             except Exception as clear_err:
                 self.logger.error(f"❌ Failed to clear status for connector {connector_id}: {clear_err}")
@@ -806,6 +835,29 @@ class EventService:
                     f"❌ Failed to delete etcd config for connector {connector_id}: {config_err}. "
                     f"Orphaned configuration may remain."
                 )
+
+            # Remove connector-scoped entities from the entity vector store.
+            # This is a single filtered delete on (orgId, connectorId) — entities
+            # not scoped to a specific connector (e.g. cross-connector taxonomy
+            # entities) are untouched. The graph DB remains the source of truth;
+            # a subsequent entity-sync/trigger will restore anything still valid.
+            if hasattr(self.app_container, "entity_vector_store"):
+                try:
+                    entity_vector_store = await self.app_container.entity_vector_store()
+                    if entity_vector_store is not None:
+                        await entity_vector_store.delete_entities_by_connector(
+                            org_id=org_id,
+                            connector_id=connector_id,
+                        )
+                        self.logger.info(
+                            f"✅ Entity vector store entries removed for connector {connector_id}"
+                        )
+                except Exception as evt_err:
+                    self.logger.error(
+                        f"❌ Failed to remove entity vector store entries for "
+                        f"connector {connector_id}: {evt_err}. "
+                        f"Orphaned entity vectors may remain — use entity-sync/trigger to repair."
+                    )
 
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
             return True

@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.neo4j.neo4j_provider import BLOCK_DELETE_BATCH_SIZE, Neo4jProvider
 
 
 @pytest.fixture
@@ -10,6 +10,49 @@ def neo4j_provider() -> Neo4jProvider:
     provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
     provider.client = AsyncMock()
     return provider
+
+
+class TestDeleteBlocksForRecords:
+    @pytest.mark.asyncio
+    async def test_empty_record_ids_is_a_noop(self, neo4j_provider) -> None:
+        assert await neo4j_provider.delete_blocks_for_records([]) == 0
+        neo4j_provider.client.execute_query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_detaches_blocks_by_record_id(self, neo4j_provider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"deleted": 3}])
+
+        removed = await neo4j_provider.delete_blocks_for_records(["r1"], transaction="txn1")
+
+        assert removed == 3
+        query = neo4j_provider.client.execute_query.call_args.args[0]
+        # DETACH so the cross-file CALLS/IMPORTS edges other files point in with
+        # go too -- those name a block, never its record.
+        assert "DETACH DELETE block" in query
+        assert "block.recordId IN $record_ids" in query
+        assert "LIMIT $limit" in query
+        assert neo4j_provider.client.execute_query.call_args.kwargs["parameters"] == {
+            "record_ids": ["r1"],
+            "limit": BLOCK_DELETE_BATCH_SIZE,
+        }
+
+    @pytest.mark.asyncio
+    async def test_pages_until_a_short_batch(self, neo4j_provider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"deleted": BLOCK_DELETE_BATCH_SIZE}],
+                [{"deleted": BLOCK_DELETE_BATCH_SIZE}],
+                [{"deleted": 12}],
+            ]
+        )
+
+        removed = await neo4j_provider.delete_blocks_by_connector_id("c1")
+
+        assert removed == BLOCK_DELETE_BATCH_SIZE * 2 + 12
+        assert neo4j_provider.client.execute_query.await_count == 3
+        assert "block.connectorId = $connector_id" in (
+            neo4j_provider.client.execute_query.call_args_list[0].args[0]
+        )
 
 
 class TestConnectionManagement:
@@ -1017,6 +1060,26 @@ class TestNodeOperations:
             await neo4j_provider.update_node("k1", "apps", {"name": "Updated"})
 
 
+class TestArangoToNeo4jNode:
+    def test_keeps_none_so_updates_can_clear_properties(self, neo4j_provider: Neo4jProvider) -> None:
+        converted = neo4j_provider._arango_to_neo4j_node(
+            {
+                "_key": "rec-1",
+                "_id": "records/rec-1",
+                "virtualRecordId": None,
+                "metadata": {"k": "v"},
+                "tags": [{"name": "a"}],
+            },
+            "records",
+        )
+
+        assert converted["id"] == "rec-1"
+        assert "_id" not in converted
+        assert converted["virtualRecordId"] is None
+        assert converted["metadata"] == '{"k": "v"}'
+        assert converted["tags"] == '[{"name": "a"}]'
+
+
 class TestEdgeOperations:
     @pytest.mark.asyncio
     async def test_batch_create_edges_returns_true_for_empty_input(self, neo4j_provider: Neo4jProvider):
@@ -1403,6 +1466,24 @@ class TestQueryAndFilterHelpers:
         kwargs = neo4j_provider.client.execute_query.await_args.kwargs
         assert kwargs["parameters"] == {"status": "ACTIVE"}
         assert kwargs["txn_id"] == "txn-f1"
+
+    @pytest.mark.asyncio
+    async def test_get_nodes_by_filters_projects_key_from_id(self, neo4j_provider: Neo4jProvider) -> None:
+        """`_key` is stored as `id` on Neo4j nodes.
+
+        Projecting it verbatim yields null for every row, which silently empties
+        any caller that reads keys back -- block reconciliation among them.
+        """
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"_key": "b1"}])
+
+        result = await neo4j_provider.get_nodes_by_filters(
+            "blocks", {"recordId": "rec-a"}, return_fields=["_key"]
+        )
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "n.id AS _key" in query
+        assert "n._key AS _key" not in query
+        assert result == [{"_key": "b1"}]
 
     @pytest.mark.asyncio
     async def test_get_nodes_by_filters_without_filters_returns_all(self, neo4j_provider: Neo4jProvider):
@@ -2501,6 +2582,133 @@ class TestDuplicateAndSyncOperations:
         assert await neo4j_provider.copy_document_relationships("src-1", "dst-1") is False
 
     @pytest.mark.asyncio
+    async def test_copy_document_relationships_preserves_subcategory_label(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """A BELONGS_TO_CATEGORY edge pointing at a Subcategory1 node must be
+        copied into the subcategories1 collection, not silently promoted to
+        'categories' -- batch_create_edges MATCHes on the label, so getting
+        this wrong makes the MATCH miss the real node and silently drop the
+        edge (the regression this fixes).
+        """
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [],  # department
+                [{"target_id": "sub-1", "target_labels": ["Subcategories1"]}],  # category
+                [],  # language
+                [],  # topic
+            ]
+        )
+        neo4j_provider.batch_create_edges = AsyncMock()  # type: ignore[method-assign]
+
+        ok = await neo4j_provider.copy_document_relationships("src-1", "dst-1")
+
+        assert ok is True
+        neo4j_provider.batch_create_edges.assert_awaited_once()
+        edges = neo4j_provider.batch_create_edges.await_args.args[0]
+        assert edges[0]["to_id"] == "sub-1"
+        assert edges[0]["to_collection"] == "subcategories1"
+
+    @pytest.mark.asyncio
+    async def test_copy_document_relationships_deeper_subcategory_level(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """Same regression, one level deeper: Subcategory3 must resolve to
+        subcategories3, not categories or subcategories1."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [],  # department
+                [{"target_id": "sub-3", "target_labels": ["Subcategories3"]}],  # category
+                [],  # language
+                [],  # topic
+            ]
+        )
+        neo4j_provider.batch_create_edges = AsyncMock()  # type: ignore[method-assign]
+
+        ok = await neo4j_provider.copy_document_relationships("src-1", "dst-1")
+
+        assert ok is True
+        edges = neo4j_provider.batch_create_edges.await_args.args[0]
+        assert edges[0]["to_collection"] == "subcategories3"
+
+    @pytest.mark.asyncio
+    async def test_copy_document_relationships_unrecognised_label_falls_back(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """An unrecognised label must not drop the edge outright -- it falls
+        back to the group's first collection rather than raising."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [],  # department
+                [{"target_id": "c-mystery", "target_labels": ["SomeUnknownLabel"]}],  # category
+                [],  # language
+                [],  # topic
+            ]
+        )
+        neo4j_provider.batch_create_edges = AsyncMock()  # type: ignore[method-assign]
+
+        ok = await neo4j_provider.copy_document_relationships("src-1", "dst-1")
+
+        assert ok is True
+        edges = neo4j_provider.batch_create_edges.await_args.args[0]
+        assert edges[0]["to_collection"] == "categories"
+
+    @pytest.mark.asyncio
+    async def test_get_taxonomy_entities_for_record_empty_key_returns_empty(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.client.execute_query = AsyncMock()
+        result = await neo4j_provider.get_taxonomy_entities_for_record("")
+        assert result == []
+        neo4j_provider.client.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_taxonomy_entities_for_record_resolves_subcategory_level(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """A Subcategory1-labelled node under BELONGS_TO_CATEGORY must resolve
+        to entityType=subcategory, mirroring the edge-copy fix above."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [
+                    {"entityId": "cat-1", "name": "Finance", "nodeLabels": ["Categories"]},
+                    {"entityId": "sub-1", "name": "Budgets", "nodeLabels": ["Subcategories1"]},
+                ],  # category_group
+                [{"entityId": "dept-1", "name": "Engineering", "nodeLabels": ["Departments"]}],
+                [{"entityId": "topic-1", "name": "OKRs", "nodeLabels": ["Topics"]}],
+                [{"entityId": "lang-1", "name": "English", "nodeLabels": ["Languages"]}],
+            ]
+        )
+
+        result = await neo4j_provider.get_taxonomy_entities_for_record("rec-1")
+
+        by_id = {row["entityId"]: row for row in result}
+        assert by_id["cat-1"]["entityType"] == "category"
+        assert by_id["sub-1"]["entityType"] == "subcategory"
+        assert by_id["dept-1"]["entityType"] == "department"
+        assert by_id["topic-1"]["entityType"] == "topic"
+        assert by_id["lang-1"]["entityType"] == "language"
+        assert all("nodeLabels" not in row for row in result)
+
+    @pytest.mark.asyncio
+    async def test_get_taxonomy_entities_for_record_group_failure_is_isolated(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                RuntimeError("category query failed"),
+                [{"entityId": "dept-1", "name": "Engineering", "nodeLabels": ["Departments"]}],
+                [],
+                [],
+            ]
+        )
+
+        result = await neo4j_provider.get_taxonomy_entities_for_record("rec-1")
+
+        assert len(result) == 1
+        assert result[0]["entityId"] == "dept-1"
+
+    @pytest.mark.asyncio
     async def test_get_user_apps_success_and_error(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"app": {"id": "app-1"}}, {"app": None}])
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "app-1"})  # type: ignore[method-assign]
@@ -2904,6 +3112,27 @@ class TestRecordRelationOperations:
         assert payload[1]["to_key"] == "r4"
         assert payload[1]["constraintName"] == ""
         assert payload[1]["props"]["targetColumn"] == "id"
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_record_relations_seeks_endpoints_by_label(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"upserted": 1}])
+
+        await neo4j_provider.batch_upsert_record_relations([{"from_id": "r1", "to_id": "b2"}])
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        # Unlabelled endpoint matches cannot use the per-label id indexes.
+        assert "MATCH (from)" not in query
+        assert "MATCH (to)" not in query
+        for pattern in (
+            "OPTIONAL MATCH (fromRecord:Record {id: edge.from_key})",
+            "OPTIONAL MATCH (fromBlock:Block {id: edge.from_key})",
+            "OPTIONAL MATCH (toRecord:Record {id: edge.to_key})",
+            "OPTIONAL MATCH (toBlock:Block {id: edge.to_key})",
+        ):
+            assert pattern in query
+        assert "WHERE from IS NOT NULL AND to IS NOT NULL" in query
 
     @pytest.mark.asyncio
     async def test_batch_upsert_record_relations_raises_on_exception(self, neo4j_provider: Neo4jProvider):
@@ -4523,3 +4752,80 @@ class TestTeamQueriesExcludeInactiveUsers:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.get_team_users("t1", "org1", "uk1")
         self._assert_guarded(self._member_query(neo4j_provider))
+
+
+class TestBlockPropertyRoundTrip:
+    """Blocks carry dicts and lists of dicts, which Neo4j cannot store; they go
+    in as JSON and must come back out as what ArangoDB would return."""
+
+    def test_json_encoded_fields_round_trip(self, neo4j_provider) -> None:
+        block = {
+            "_key": "b1",
+            "pendingEdges": [{"relation": "CALLS", "toName": "notify"}],
+            "typeTable": {"conn": "GitLabConnector"},
+        }
+
+        stored = neo4j_provider._arango_to_neo4j_node(block, "blocks")
+        assert isinstance(stored["pendingEdges"], str)
+        assert isinstance(stored["typeTable"], str)
+
+        read_back = neo4j_provider._neo4j_to_arango_node(stored, "blocks")
+        assert read_back["pendingEdges"] == block["pendingEdges"]
+        assert read_back["typeTable"] == block["typeTable"]
+        assert read_back["_key"] == "b1"
+
+    def test_a_list_with_a_dict_anywhere_is_encoded(self, neo4j_provider) -> None:
+        stored = neo4j_provider._arango_to_neo4j_node(
+            {"_key": "b1", "mixed": ["plain", {"nested": 1}], "nested": [[1], [2]]},
+            "blocks",
+        )
+        assert isinstance(stored["mixed"], str)
+        assert isinstance(stored["nested"], str)
+
+    def test_primitive_lists_stay_native(self, neo4j_provider) -> None:
+        stored = neo4j_provider._arango_to_neo4j_node(
+            {"_key": "b1", "tags": ["a", "b"], "empty": []}, "blocks"
+        )
+        assert stored["tags"] == ["a", "b"]
+        assert stored["empty"] == []
+
+    def test_already_decoded_values_pass_through(self, neo4j_provider) -> None:
+        node = {"id": "b1", "pendingEdges": [{"relation": "CALLS"}], "typeTable": {}}
+        read_back = neo4j_provider._neo4j_to_arango_node(node, "blocks")
+        assert read_back["pendingEdges"] == [{"relation": "CALLS"}]
+        assert read_back["typeTable"] == {}
+
+    def test_unparseable_string_is_left_alone(self, neo4j_provider) -> None:
+        read_back = neo4j_provider._neo4j_to_arango_node(
+            {"id": "b1", "typeTable": "not json"}, "blocks"
+        )
+        assert read_back["typeTable"] == "not json"
+
+    def test_none_survives_translation_so_the_upsert_can_clear_it(
+        self, neo4j_provider
+    ) -> None:
+        stored = neo4j_provider._arango_to_neo4j_node(
+            {"_key": "b1", "pendingEdges": None, "typeTable": None}, "blocks"
+        )
+        assert stored["pendingEdges"] is None
+        assert stored["typeTable"] is None
+
+    @pytest.mark.asyncio
+    async def test_upserting_none_clears_a_stale_pending_edge(
+        self, neo4j_provider
+    ) -> None:
+        """`SET n += props` cannot drop an absent key, only a null one.
+
+        A symbol that loses its last cross-file reference must reach Cypher as
+        an explicit null, or the edge builder re-resolves the removed edge from
+        a `pendingEdges` the upsert never overwrote.
+        """
+        await neo4j_provider.batch_upsert_nodes(
+            [{"id": "b1", "orgId": "org1", "recordId": "r1", "pendingEdges": None}],
+            "blocks",
+        )
+
+        call = neo4j_provider.client.execute_query.call_args
+        assert "SET n += node" in call.args[0]
+        node = call.kwargs["parameters"]["nodes"][0]
+        assert "pendingEdges" in node and node["pendingEdges"] is None

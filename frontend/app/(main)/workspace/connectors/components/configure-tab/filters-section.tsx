@@ -964,7 +964,13 @@ function ConnectorFilterTagInput({
 // Manual indexing (legacy UI: own section, not under “Indexing filters”)
 // ========================================
 
-function ManualIndexingSection({ field }: { field: FilterSchemaField }) {
+function ManualIndexingSection({
+  field,
+  readOnly = false,
+}: {
+  field: FilterSchemaField;
+  readOnly?: boolean;
+}) {
   const { formData, setFilterFormValue } = useConnectorsStore();
   const raw = formData.filters.indexing[field.name];
 
@@ -1034,6 +1040,7 @@ function ManualIndexingSection({ field }: { field: FilterSchemaField }) {
           color="jade"
           size="2"
           checked={checked}
+          disabled={readOnly}
           onCheckedChange={(next) => {
             setFilterFormValue('indexing', field.name, {
               operator: defaultFilterOperator(field),
@@ -1051,7 +1058,7 @@ function ManualIndexingSection({ field }: { field: FilterSchemaField }) {
 // FiltersSection
 // ========================================
 
-export function FiltersSection() {
+export function FiltersSection({ readOnly = false }: { readOnly?: boolean }) {
   const { connectorSchema, panelConnectorId, formData, setFilterFormValue } = useConnectorsStore();
 
   const syncFields = useMemo(
@@ -1157,47 +1164,67 @@ export function FiltersSection() {
   }
 
   return (
-    <Flex direction="column" gap="5">
-      <Flex direction="column" gap="1">
-        <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-          Indexing & sync filters
-        </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
-          Indexing filters always apply—toggle booleans or adjust values as needed. For sync filters,
-          add only what you need; list and date filters use an operator and value, and you can clear
-          a sync filter when you do not want that constraint.
-        </Text>
+    // `fieldset[disabled]` disables every nested control and drops it from the
+    // tab order, which the individual filter inputs have no prop for. It is not
+    // enough on its own: a fieldset-disabled button still receives `pointerdown`,
+    // and Radix's dropdown/select triggers open on `pointerdown`, not `click`.
+    <fieldset
+      disabled={readOnly}
+      style={{
+        border: 0,
+        margin: 0,
+        padding: 0,
+        minWidth: 0,
+        opacity: readOnly ? 0.6 : 1,
+        pointerEvents: readOnly ? 'none' : undefined,
+      }}
+    >
+      <Flex direction="column" gap="5">
+        <Flex direction="column" gap="1">
+          <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
+            Indexing & sync filters
+          </Text>
+          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            Indexing filters always apply—toggle booleans or adjust values as needed. For sync filters,
+            add only what you need; list and date filters use an operator and value, and you can clear
+            a sync filter when you do not want that constraint.
+          </Text>
+        </Flex>
+
+        {manualIndexingField ? (
+          <ManualIndexingSection field={manualIndexingField} readOnly={readOnly} />
+        ) : null}
+
+        {syncFields.length > 0 && (
+          <FilterCategoryBlock
+            title="Sync filters"
+            section="sync"
+            fields={syncFields}
+            values={formData.filters.sync}
+            activeFieldNames={activeSync}
+            setActiveFieldNames={setActiveSync}
+            connectorId={panelConnectorId}
+            onChange={setFilterFormValue}
+            readOnly={readOnly}
+          />
+        )}
+
+        {indexingFields.length > 0 && (
+          <FilterCategoryBlock
+            title="Indexing filters"
+            section="indexing"
+            fields={indexingFields}
+            values={formData.filters.indexing}
+            activeFieldNames={activeIndexing}
+            setActiveFieldNames={setActiveIndexing}
+            connectorId={panelConnectorId}
+            onChange={setFilterFormValue}
+            showConfiguredPreview={false}
+            readOnly={readOnly}
+          />
+        )}
       </Flex>
-
-      {manualIndexingField ? <ManualIndexingSection field={manualIndexingField} /> : null}
-
-      {syncFields.length > 0 && (
-        <FilterCategoryBlock
-          title="Sync filters"
-          section="sync"
-          fields={syncFields}
-          values={formData.filters.sync}
-          activeFieldNames={activeSync}
-          setActiveFieldNames={setActiveSync}
-          connectorId={panelConnectorId}
-          onChange={setFilterFormValue}
-        />
-      )}
-
-      {indexingFields.length > 0 && (
-        <FilterCategoryBlock
-          title="Indexing filters"
-          section="indexing"
-          fields={indexingFields}
-          values={formData.filters.indexing}
-          activeFieldNames={activeIndexing}
-          setActiveFieldNames={setActiveIndexing}
-          connectorId={panelConnectorId}
-          onChange={setFilterFormValue}
-          showConfiguredPreview={false}
-        />
-      )}
-    </Flex>
+    </fieldset>
   );
 }
 
@@ -1211,6 +1238,7 @@ function FilterCategoryBlock({
   connectorId,
   onChange,
   showConfiguredPreview = true,
+  readOnly = false,
 }: {
   title: string;
   section: FilterSection;
@@ -1222,15 +1250,17 @@ function FilterCategoryBlock({
   onChange: (section: FilterSection, name: string, value: unknown) => void;
   /** Green summary chips; hidden for indexing filters (legacy + less clutter). */
   showConfiguredPreview?: boolean;
+  readOnly?: boolean;
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   /** Indexing filters are always-on (legacy); sync filters stay add/remove. */
-  const allowRemoveFilter = section === 'sync';
+  const allowRemoveFilter = section === 'sync' && !readOnly;
   const availableToAdd = allowRemoveFilter
     ? fields.filter((f) => !f.required && !activeFieldNames.includes(f.name))
     : [];
 
   const addField = (fieldName: string) => {
+    if (readOnly) return;
     const field = fields.find((f) => f.name === fieldName);
     if (!field) return;
     setActiveFieldNames((prev) => [...prev, fieldName]);
@@ -1243,6 +1273,7 @@ function FilterCategoryBlock({
   };
 
   const removeField = (fieldName: string) => {
+    if (readOnly) return;
     setActiveFieldNames((prev) => prev.filter((n) => n !== fieldName));
     // Set null (not undefined) to distinguish "explicitly removed" from "never configured"
     onChange(section, fieldName, null);

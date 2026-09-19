@@ -26,10 +26,22 @@ from app.agents.agent_loop.hooks.citations import (
     citation_tracking,
     ensure_fetch_full_record_available,
 )
+from app.agents.agent_loop.hooks.code_graph_unlock import (
+    code_graph_unlock_after_tools,
+    code_graph_unlock_on_turn,
+)
 from app.agents.agent_loop.hooks.completion_gate import completion_gate
 from app.agents.agent_loop.hooks.memory import (
     conversation_enrichment,
     seed_visible_tools_from_history,
+    sync_visible_tools_for_prompt,
+)
+from app.agents.agent_loop.hooks.progressive_tools import (
+    ENTITY_TOOL_NAMES,
+    PROGRESSIVE_FIND_RECORDS_TOOL_NAME,
+    PROGRESSIVE_TOOL_NAMES,
+    entity_tools_used_in_history,
+    progressive_entity_tools,
 )
 from app.agents.agent_loop.hooks.result_accumulation import (
     result_accumulation,
@@ -40,15 +52,23 @@ from app.agents.agent_loop.hooks.tool_blocking import ToolErrorTracker
 
 __all__ = [
     "CitationCollector",
+    "ENTITY_TOOL_NAMES",
+    "PROGRESSIVE_FIND_RECORDS_TOOL_NAME",
+    "PROGRESSIVE_TOOL_NAMES",
     "ToolErrorTracker",
     "artifact_context_reminder",
     "ask_user_question_sse",
     "attachment_rehydration",
     "citation_tracking",
     "ensure_fetch_full_record_available",
+    "code_graph_unlock_after_tools",
+    "code_graph_unlock_on_turn",
     "completion_gate",
     "conversation_enrichment",
+    "entity_tools_used_in_history",
+    "progressive_entity_tools",
     "seed_visible_tools_from_history",
+    "sync_visible_tools_for_prompt",
     "resolve_attachments_for_goal",
     "resolve_history_attachments",
     "shape_image_injection",

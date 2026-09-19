@@ -30,10 +30,9 @@ from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
-from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.context import AgentContext
+from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from tests.unit.agents.adapter.test_prompt_builder import FakeTool
-
 
 # ---------------------------------------------------------------------------
 # Meta-tools that are always expected to be referenceable even when not in
@@ -52,6 +51,7 @@ _ALWAYS_KNOWN_META_TOOLS: frozenset[str] = frozenset(
         "web_agent",
         "internal_exploration_agent",
         "knowledgegraph__fetch_record",
+        "knowledgegraph__find_records_by_entity",
         "dynamic_fetch_full_record",  # legacy alias kept for backward-compat
         "internaltools__ask_user_question",
     }
@@ -66,6 +66,7 @@ _KNOWLEDGE_ESSENTIAL_TOOLS: frozenset[str] = frozenset(
         "knowledgegraph__navigate",
         "knowledgegraph__lookup_record",
         "knowledgegraph__list_files",
+        "knowledgegraph__search_entities",
     }
 )
 
@@ -101,12 +102,10 @@ _DIRECTIONAL_RE = re.compile(
 )
 
 # 4-source fixture prompt should stay under this ceiling after consolidation.
-# Updated after the block-token-usage optimization added a one-time "Record &
-# Block Structure" explainer to `_CITATION_RULES` (compact `[idx|refN]`
-# block format, replacing the old per-block scaffolding). Measured size after
-# that change is ~11,338 chars — see test_prompt_size_regression.py for the
-# full per-tier table.
-_KB_PLUS_3_APPS_CHAR_CEILING = 12_500
+# Measured at ~12,816 chars after the entity tools were cut to search_entities
+# + find_records_by_entity — see test_prompt_size_regression.py for the full
+# per-tier table.
+_KB_PLUS_3_APPS_CHAR_CEILING = 13_800
 
 
 # ---------------------------------------------------------------------------
@@ -232,11 +231,63 @@ _FIXTURES: dict[str, dict[str, Any]] = {
         "pinned_toolsets": ["knowledgegraph"],
         "registry_toolsets": {
             "knowledgegraph": ["knowledgegraph__search", "knowledgegraph__navigate",
-                               "knowledgegraph__lookup_record", "knowledgegraph__list_files"],
+                               "knowledgegraph__lookup_record", "knowledgegraph__list_files",
+                               "knowledgegraph__search_entities"],
             "jira": ["jira_search_issues"],
         },
         "tool_names": [
             *sorted(_KNOWLEDGE_ESSENTIAL_TOOLS), "jira_search_issues",
+        ],
+    },
+    # Same as lazy_with_pinned plus a still-locked codegraph group.
+    "lazy_with_pinned_and_codegraph": {
+        "agent_knowledge": [_mk_kb("Private KB", KB_ID)],
+        "has_knowledge": True,
+        "available_connectors": [],
+        "tool_disclosure": "lazy",
+        "pinned_toolsets": ["knowledgegraph"],
+        "registry_toolsets": {
+            "knowledgegraph": ["knowledgegraph__search", "knowledgegraph__navigate",
+                               "knowledgegraph__lookup_record", "knowledgegraph__list_files"],
+            "codegraph": [
+                "codegraph__query_code_graph", "codegraph__get_neighbour",
+                "codegraph__read_code", "codegraph__find_symbol_path",
+            ],
+            "jira": ["jira_search_issues"],
+        },
+        "tool_names": [
+            *sorted(_KNOWLEDGE_ESSENTIAL_TOOLS),
+            "codegraph__query_code_graph", "codegraph__get_neighbour",
+            "codegraph__read_code", "codegraph__find_symbol_path",
+            "jira_search_issues",
+        ],
+    },
+    # Codegraph already in visible_tools (unlock / fetch_tools) — must not
+    # appear under "Tools you must load".
+    "lazy_with_bound_codegraph": {
+        "agent_knowledge": [_mk_kb("Private KB", KB_ID)],
+        "has_knowledge": True,
+        "available_connectors": [],
+        "tool_disclosure": "lazy",
+        "pinned_toolsets": ["knowledgegraph"],
+        "bound_tool_names": [
+            "codegraph__query_code_graph", "codegraph__get_neighbour",
+            "codegraph__read_code", "codegraph__find_symbol_path",
+        ],
+        "registry_toolsets": {
+            "knowledgegraph": ["knowledgegraph__search", "knowledgegraph__navigate",
+                               "knowledgegraph__lookup_record", "knowledgegraph__list_files"],
+            "codegraph": [
+                "codegraph__query_code_graph", "codegraph__get_neighbour",
+                "codegraph__read_code", "codegraph__find_symbol_path",
+            ],
+            "jira": ["jira_search_issues"],
+        },
+        "tool_names": [
+            *sorted(_KNOWLEDGE_ESSENTIAL_TOOLS),
+            "codegraph__query_code_graph", "codegraph__get_neighbour",
+            "codegraph__read_code", "codegraph__find_symbol_path",
+            "jira_search_issues",
         ],
     },
     # Full-record escalation granted — the one fixture where "## Reading
@@ -311,6 +362,10 @@ def build_prompt_for_fixture(fixture_name: str) -> str:
             "agent_toolsets": fx.get("agent_toolsets") or [],
         }
     )
+    if fx.get("bound_tool_names"):
+        from app.agents.agent_loop.prompt_builder import BOUND_TOOL_NAMES_KEY
+
+        context.tool_state[BOUND_TOOL_NAMES_KEY] = list(fx["bound_tool_names"])
 
     tool_names = _tool_names_for_fixture(fx)
     spec = AgentSpec(
@@ -547,6 +602,29 @@ def test_invariant_pinned_toolset_group_name_not_in_load_first_block() -> None:
     prompt = build_prompt_for_fixture("lazy_with_pinned")
     load_first_section = prompt.split("Tools you must load before calling", 1)[1]
     assert "`knowledgegraph`" not in load_first_section
+
+
+def test_invariant_bound_toolset_tools_listed_like_pinned() -> None:
+    """Mid-run grants (fetch_tools / CODE_FILE unlock) write bound names into
+    tool_state — those toolsets must leave the must-load block the same way
+    pinned essentials do, or the prompt contradicts already-bound schemas."""
+    prompt = build_prompt_for_fixture("lazy_with_bound_codegraph")
+    assert "## Available Tools" in prompt
+    available_section = prompt.split("## Available Tools", 1)[1].split("\n## ", 1)[0]
+    assert "codegraph__read_code" in available_section
+    assert "codegraph__get_neighbour" in available_section
+    assert "Tools you must load before calling" in prompt
+    load_first = prompt.split("Tools you must load before calling", 1)[1]
+    assert "`codegraph`" not in load_first
+    assert "`jira`" in load_first  # still lazy
+
+
+def test_invariant_unbound_codegraph_still_under_load_first() -> None:
+    prompt = build_prompt_for_fixture("lazy_with_pinned_and_codegraph")
+    load_first = prompt.split("Tools you must load before calling", 1)[1]
+    assert "`codegraph`" in load_first
+    available_section = prompt.split("## Available Tools", 1)[1].split("\n## ", 1)[0]
+    assert "codegraph__read_code" not in available_section
 
 
 # ---------------------------------------------------------------------------

@@ -95,6 +95,14 @@ class ConnectorRegistryAuthMetadataKeys:
     OAUTH_CONFIGS = "oauthConfigs"
 
 
+class ConnectorErrorCodes:
+    """Stable codes shared with Node and the web client."""
+
+    DESKTOP_OFFLINE = "DESKTOP_OFFLINE"
+    DESKTOP_UNCLAIMED = "DESKTOP_UNCLAIMED"
+    DESKTOP_OWNED_BY_OTHER_DEVICE = "DESKTOP_OWNED_BY_OTHER_DEVICE"
+
+
 class ConnectorStateKeys:
     """Keys for connector state/status fields (typically in connector documents)."""
     IS_CONFIGURED = "isConfigured"
@@ -111,6 +119,8 @@ class ConnectorStateKeys:
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"
     CREATED_BY = "createdBy"
+    OWNER_DEVICE_ID = "ownerDeviceId"
+    OWNER_DEVICE_NAME = "ownerDeviceName"
 
 
 CONNECTOR_EMAIL_IDENTITY_INFO = (

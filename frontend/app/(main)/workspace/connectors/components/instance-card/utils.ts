@@ -1,4 +1,8 @@
-import { STRATEGY_LABELS, INTERVAL_LABELS, CONNECTOR_INSTANCE_STATUS } from '../../constants';
+import {
+  STRATEGY_LABELS,
+  INTERVAL_LABELS,
+  CONNECTOR_INSTANCE_STATUS,
+} from '../../constants';
 import { isConnectorInstanceOAuthAuthIncompleteForSyncUi, isOAuthType } from '../../utils/auth-helpers';
 import type {
   ConnectorInstance,

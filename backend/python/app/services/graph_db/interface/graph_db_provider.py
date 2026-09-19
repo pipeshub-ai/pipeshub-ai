@@ -279,6 +279,8 @@ class IGraphDBProvider(ABC):
         sort_field: str | None = None,
         transaction: str | None = None,
         raise_on_error: bool = False,
+        after_key: str | None = None,
+        return_fields: list[str] | None = None,
     ) -> list[dict]:
         """
         Fetch a single page of documents from a collection using database-level
@@ -297,6 +299,15 @@ class IGraphDBProvider(ABC):
             transaction:  Optional transaction ID.
             raise_on_error: Propagate database errors instead of returning an
                             empty page.
+            after_key:    Keyset cursor: only documents whose `_key` sorts
+                          after this value are returned. Pass the last `_key`
+                          of the previous page together with
+                          `sort_field="_key"` and `skip=0` to sweep a large
+                          collection without the O(n^2) cost of a growing
+                          offset.
+            return_fields: Optional list of fields to project (None = whole
+                           document). `_key` is always spelled `_key` in the
+                           result, whichever backend serves it.
 
         Returns:
             List of document dicts for the requested page (may be shorter than
@@ -453,6 +464,32 @@ class IGraphDBProvider(ABC):
 
         Returns:
             bool: True if successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_record_relations(
+        self,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Batch upsert record relation edges.
+
+        Upserts rather than inserts, matching on _from, _to, relationshipType
+        and constraintName, so the same edge written twice is one edge while
+        two relation types (or two constraints) between the same pair coexist.
+
+        Args:
+            edges: Edge documents with _from, _to, relationshipType and
+                optionally constraintName
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+
+        Raises:
+            Exception: propagated from the database on failure
         """
         pass
 
@@ -786,6 +823,72 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_neighbors_by_relationship_types(
+        self,
+        node_key: str,
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 25,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Walk one hop from a node along edges of the given relationship types.
+
+        Endpoints may live in a different collection than the anchor -- a code
+        symbol can call a whole file -- so each result names its own collection
+        rather than assuming the anchor's.
+
+        Args:
+            node_key (str): Anchor node key
+            node_collection (str): Anchor node collection name
+            relationship_types (List[str]): Relationship type values to follow
+            direction (str): "outbound" (anchor is _from) or "inbound" (anchor is _to)
+            limit (int): Maximum neighbours to return
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: One dict per neighbour with keys ``collection``, ``key``,
+                ``relationshipType``, ``sourceLineNumber``, ``sourceColumnNumber``
+                and ``provenance``.
+        """
+        pass
+
+    @abstractmethod
+    async def get_neighbors_for_nodes_by_relationship_types(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 5000,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Walk one hop from many nodes at once along the given relationship types.
+
+        The batched sibling of ``get_neighbors_by_relationship_types``, for
+        breadth-first search: one query per frontier level instead of one per
+        node. Each row names the anchor it came from and the direction it was
+        traversed, which a caller reconstructing a path needs.
+
+        Args:
+            node_keys (List[str]): Anchor node keys (one frontier)
+            node_collection (str): Collection the anchors live in
+            relationship_types (List[str]): Relationship type values to follow
+            direction (str): "outbound", "inbound", or "any"
+            limit (int): Maximum rows to return across the whole frontier
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: One dict per edge with keys ``anchorKey``, ``collection``,
+                ``key``, ``direction`` ("outbound" / "inbound", relative to the
+                anchor), ``relationshipType``, ``sourceLineNumber``,
+                ``sourceColumnNumber`` and ``provenance``.
+        """
+        pass
+
+    @abstractmethod
     async def get_related_nodes(
         self,
         node_id: str,
@@ -909,6 +1012,130 @@ class IGraphDBProvider(ABC):
         Returns:
             List[Dict]: List of matching node documents
         """
+        pass
+
+    @abstractmethod
+    async def get_nodes_by_field_prefix(
+        self,
+        collection: str,
+        field_name: str,
+        prefix: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Get nodes whose field starts with a prefix."""
+        pass
+
+    @abstractmethod
+    async def search_nodes_by_field_terms(
+        self,
+        collection: str,
+        field_name: str,
+        terms: list[str],
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Get nodes whose field contains any search term."""
+        pass
+
+    @abstractmethod
+    async def delete_edges_touching_nodes(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        edge_collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete edges whose source or target is one of the given nodes."""
+        pass
+
+    @abstractmethod
+    async def get_edge_rollup_by_file_prefix(
+        self,
+        org_id: str,
+        file_path_prefix: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 100000,
+        transaction: str | None = None,
+        connector_id: str | None = None,
+    ) -> list[dict]:
+        """Aggregate code-graph edges between files under a path prefix.
+
+        ``connector_id`` restricts the source side to one repo connector. File
+        paths are repo-relative, so without it two repos that both have
+        ``backend/`` roll up into a single, meaningless bucket.
+        """
+        pass
+
+    @abstractmethod
+    async def get_file_paths_for_records(
+        self,
+        org_id: str,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, str]:
+        """Return one code-file path for each requested record."""
+        pass
+
+    @abstractmethod
+    async def get_edges_by_target_keys(
+        self,
+        target_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        return_field: str = "_from",
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return distinct edge fields for edges targeting the given nodes."""
+        pass
+
+    @abstractmethod
+    async def delete_edges_by_source_keys(
+        self,
+        source_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete filtered edges originating from any requested node."""
+        pass
+
+    @abstractmethod
+    async def count_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        """Count nodes matching equality and membership filters."""
+        pass
+
+    @abstractmethod
+    async def has_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """Return whether any node matches equality and membership filters."""
+        pass
+
+    @abstractmethod
+    async def get_nodes_updated_since(
+        self,
+        collection: str,
+        timestamp_field: str,
+        since: int,
+        filters: dict[str, Any] | None = None,
+        return_fields: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Get nodes whose timestamp field is greater than the given value."""
         pass
 
 
@@ -2749,6 +2976,58 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_entity_access_context(
+        self,
+        user_id: str,
+        org_id: str,
+        source_ids: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        The apps and record groups a user can reach, for permission-scoping
+        knowledge-graph entity search (``app.modules.retrieval.entity_permissions``).
+
+        Apps:
+          - Apps linked by ``userAppRelation``, directly or via a team the
+            user belongs to (same paths as ``get_user_apps``).
+          - KB apps (``type == "KB"``, ``orgId == org_id``) shared through a
+            ``permission`` edge, directly (``type USER``) or via a team
+            (``type TEAM``) — KB sharing never creates a ``userAppRelation``.
+          - Narrowed to ``source_ids`` when it is non-empty.
+
+        Record groups (only for apps that are neither KB nor
+        ``permissionModel == APP_LEVEL``):
+          - Seeded by the Knowledge Hub RecordGroup paths: direct USER
+            permission, group/role (GROUP/ROLE edge), org (ORG edge via the
+            user's ORGANIZATION ``belongsTo``), and team (TEAM edge).
+          - Plus child record groups inheriting from a seed via
+            ``inheritPermissions`` (depth 1..5), skipping seeds with
+            ``hideChildren``.
+          - Every group filtered by ``orgId == org_id``, not deleted, and
+            ``connectorId`` in the qualifying apps above.
+
+        Args:
+            user_id: The ``userId`` field of the user document.
+            org_id: Organization to scope apps and record groups to.
+            source_ids: Optional app/KB ids to narrow the result to.
+            transaction: Optional transaction id.
+
+        Returns:
+            ``None`` when the user does not exist, otherwise::
+
+                {
+                  "user_key": str,
+                  "apps": [{"id", "name", "type", "permissionModel"}],
+                  "record_group_ids": [str],
+                }
+
+        Raises:
+            Exception: on any query failure. Callers fail closed and report
+                the failure instead of treating it as "no access".
+        """
+        pass
+
+    @abstractmethod
     async def get_records_by_record_ids(
         self,
         record_ids: list[str],
@@ -3381,6 +3660,23 @@ class IGraphDBProvider(ABC):
         isOfType type doc, records vertex, optional deleteRecord payload) but
         inventory is only the given record. Children stay. Missing/empty id is a
         no-op success.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_blocks_for_records(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the blocks projected from the given records, and their edges.
+
+        Blocks hang off their record by ``recordId`` alone, so a record vertex
+        can be removed without any of them going with it. Cross-file code edges
+        point straight at a block, never at its record, and outlive the record
+        sweep too -- both halves have to be removed here.
+
+        Returns the number of block nodes removed.
         """
         raise NotImplementedError
 
@@ -4732,6 +5028,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         *,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> set[str]:
         """Return ids from ``nodes`` where the user has a non-empty KH permission_role.
 
@@ -4739,6 +5036,10 @@ class IGraphDBProvider(ABC):
         Reuses the same ``_get_permission_role_*`` fragments as
         ``get_knowledge_hub_node_access`` (full inheritPermissions paths).
         Apps are not checked here — callers keep App trail segments via ACL.
+
+        A query failure returns ``set()`` unless ``raise_on_error`` is true,
+        in which case it is re-raised so the caller can tell a failure apart
+        from "no access".
         """
         pass
 
@@ -4775,5 +5076,129 @@ class IGraphDBProvider(ABC):
                 ],
               },
             }
+        """
+        pass
+
+    @abstractmethod
+    async def get_entities_for_sync(
+        self,
+        org_id: str,
+        entity_types: list[str] | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Org-scoped, paginated read of knowledge-graph entities for repair/
+        backfill sync into the entity vector store (see ``EntityVectorStore``
+        and ``api/routes/entity_sync.py``).
+
+            Supported ``entity_types`` values today (``EntityType`` in
+            ``app.models.entities``): ``record_group``, ``category``,
+            ``subcategory``, ``department``, ``topic``, ``language``.
+            Unknown or not-yet-implemented types are silently skipped rather
+            than raising, so callers can safely pass the full ``EntityType``
+            enum.
+
+        Taxonomy nodes (category/subcategory/department/topic/language) carry
+        no ``orgId`` field of their own — they are deduplicated globally by
+        name and shared across organisations at the graph layer. Org scoping
+        for these types is therefore derived by traversing from this org's
+        ``records`` through the corresponding ``belongsTo*`` edge, which also
+        means only taxonomy actually referenced by the org's own data is
+        returned (never another org's unrelated categories).
+
+        Args:
+            org_id:       Organisation to scope the read to. Always applied —
+                          never optional, to avoid a cross-tenant leak.
+            entity_types: Optional subset of ``EntityType`` values (lowercase
+                          strings) to restrict the read to. ``None`` means all
+                          supported types.
+            limit:        Max rows returned per call (page size).
+            offset:       Rows to skip, for pagination across repeated calls.
+
+        Returns:
+            List of dicts shaped like ``EntityRecord`` source fields:
+            ``{entityId, entityType, name, description?, aliases?,
+            connectorId?}``. Callers should keep paging (increasing
+            ``offset`` by ``limit``) until a page returns fewer than
+            ``limit`` rows.
+        """
+        pass
+
+    @abstractmethod
+    async def get_taxonomy_entities_for_record(
+        self,
+        record_key: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Taxonomy entities (category/subcategory/department/topic/language)
+        directly linked to a single record via its ``belongsTo*`` edges.
+
+        Unlike ``get_entities_for_sync``, this is not paginated and not
+        org-scoped by traversal — the record itself pins the scope. Used by
+        the MD5-dedup path (``SinkOrchestrator.sync_entities_for_duplicate``)
+        to re-project a deduplicated record's already-copied taxonomy edges
+        into the entities vector collection, so a shared category/topic/etc.
+        picks up the duplicate's ``connectorId``/``recordGroupId``.
+
+        Args:
+            record_key: The record's ``_key`` (Arango) / ``id`` (Neo4j).
+            transaction: Optional transaction ID.
+
+        Returns:
+            List of dicts shaped like ``EntityRecord`` source fields:
+            ``{entityId, entityType, name}``.
+        """
+        pass
+
+    @abstractmethod
+    async def get_entity_candidate_records(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        *,
+        record_types: list[str] | None = None,
+        limit_per_entity: int = 20,
+        offset: int = 0,
+        transaction: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Records linked to each knowledge-graph entity in ``refs``, scoped
+        to the org and to each ref's connectors. **No permission check** —
+        callers (``app.modules.retrieval.entity_permissions``) check every
+        row before exposing it.
+
+        Each ref is ``{"id": str, "type": str, "connectorIds": list[str]}``:
+          - taxonomy types (``department``/``category``/``subcategory``/
+            ``topic``/``language``): records with an outbound ``belongsTo*``
+            edge to the entity node; ``subcategory`` matches levels 1-3.
+          - ``record_group``: records with a ``belongsTo`` edge to the group
+            (direct members only), and the group itself must be in ``org_id``.
+          - ``record``: the record itself.
+          - any other type: no rows.
+
+        Every row satisfies ``orgId == org_id``, not deleted,
+        ``connectorId IN ref["connectorIds"]`` and, when ``record_types`` is
+        given, ``recordType IN record_types``. Rows are deduplicated per
+        entity, sorted by ``sourceLastModifiedTimestamp`` (falling back to
+        ``updatedAtTimestamp``) descending then key ascending, and paged per
+        entity with ``offset``/``limit_per_entity``. Runs at most one query
+        per entity type present in ``refs``; the type→collection/label/edge
+        mapping is fixed, never taken from caller input.
+
+        Args:
+            refs: Entities to list records for.
+            org_id: Organization scope. Empty returns ``{}`` without querying.
+            record_types: Optional record-type filter.
+            limit_per_entity: Max rows per entity.
+            offset: Rows to skip per entity.
+            transaction: Optional transaction id.
+
+        Returns:
+            ``{entity_id: [row, ...]}`` for every ref queried, where each row is
+            ``{"_key", "recordName", "recordType", "connectorId",
+            "virtualRecordId", "webUrl", "sourceLastModifiedTimestamp",
+            "updatedAtTimestamp"}``. A ref with no rows maps to ``[]``.
+
+        Raises:
+            Exception: on any query failure.
         """
         pass

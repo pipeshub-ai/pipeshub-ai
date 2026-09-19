@@ -670,6 +670,27 @@ class TestRunSyncAndClearStatus:
             # Should not raise
             await service._run_sync_and_clear_status(mock_conn, "c1")
 
+    @pytest.mark.asyncio
+    async def test_skipped_sync_clears_status_without_persisting_error(self, service):
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorSyncSkippedError,
+        )
+        from app.connectors.core.constants import ConnectorErrorCodes
+
+        mock_conn = AsyncMock()
+        mock_conn.run_sync = AsyncMock(
+            side_effect=ConnectorSyncSkippedError(
+                ConnectorErrorCodes.DESKTOP_OFFLINE, "asleep"
+            )
+        )
+        with patch.object(service, "_update_app_status", new_callable=AsyncMock):
+            # A skip is not a crash: it must not propagate, and the only
+            # write is the status reset. Presence is read live by the UI.
+            await service._run_sync_and_clear_status(mock_conn, "c1")
+            service._update_app_status.assert_awaited_once()
+            kwargs = service._update_app_status.await_args.kwargs
+            assert kwargs == {"status": "IDLE"}
+
 
 # ===========================================================================
 # _handle_reindex

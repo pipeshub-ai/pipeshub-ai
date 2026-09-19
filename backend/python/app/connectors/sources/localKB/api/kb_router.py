@@ -44,12 +44,18 @@ async def get_kb_service(request: Request) -> KnowledgeBaseService:
     kafka_service = container.kafka_service()
     processor = request.app.state.kb_entities_processor
     config_service = container.config_service()
+    entity_vector_store = None
+    try:
+        entity_vector_store = await container.entity_vector_store()
+    except Exception as e:
+        logger.warning(f"Entity vector store unavailable for KB service: {e}")
     return KnowledgeBaseService(
         logger=logger,
         graph_provider=graph_provider,
         kafka_service=kafka_service,
         processor=processor,
         config_service=config_service,
+        entity_vector_store=entity_vector_store,
     )
 
 

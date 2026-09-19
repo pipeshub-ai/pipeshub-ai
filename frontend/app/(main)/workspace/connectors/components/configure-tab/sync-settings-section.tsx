@@ -22,6 +22,7 @@ export function SyncSettingsSection({
   connectorName,
   onStrategyChange,
   onIntervalChange,
+  disabled = false,
 }: {
   supportedStrategies: SyncStrategy[];
   selectedStrategy: SyncStrategy;
@@ -29,6 +30,7 @@ export function SyncSettingsSection({
   connectorName: string;
   onStrategyChange: (strategy: SyncStrategy) => void;
   onIntervalChange: (minutes: number) => void;
+  disabled?: boolean;
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
 
@@ -58,6 +60,7 @@ export function SyncSettingsSection({
         <Select.Root
           value={selectedStrategy}
           onValueChange={(v) => onStrategyChange(v as SyncStrategy)}
+          disabled={disabled}
         >
           <Select.Trigger
             style={{ width: '100%', height: 32 }}
@@ -86,6 +89,7 @@ export function SyncSettingsSection({
           <Select.Root
             value={String(intervalMinutes ?? 60)}
             onValueChange={(v) => onIntervalChange(Number(v))}
+            disabled={disabled}
           >
             <Select.Trigger
               style={{ width: '100%', height: 32 }}

@@ -32,6 +32,9 @@ class ClassifyRequest(BaseModel):
     block_container: BlocksContainer
     org_id: str
     departments: list[str] = []
+    record_name: str = ""
+    record_type: str = ""
+    is_code: bool = False
 
 
 class ClassifyResponse(BaseModel):
@@ -51,7 +54,11 @@ class ClassifyResponse(BaseModel):
     summary="LLM document classification",
 )
 async def classify(request: Request, body: ClassifyRequest) -> JSONResponse:
-    """Classify a document (departments, topics, summary, sentiment).
+    """Classify a document (departments, categories, topics, summary).
+
+    ``is_code`` comes from the caller's record-level decision and selects the
+    code prompt, which returns a different field set -- hence the shared mapper
+    rather than an inline SemanticMetadata construction here.
 
     ``departments`` should be pre-fetched by the caller (e.g. from the graph
     DB) to avoid introducing a graph connection dependency here.
@@ -63,21 +70,18 @@ async def classify(request: Request, body: ClassifyRequest) -> JSONResponse:
             blocks=body.block_container.blocks,
             org_id=body.org_id,
             departments=body.departments or None,
+            record_name=body.record_name,
+            record_type=body.record_type,
+            block_groups=body.block_container.block_groups,
+            is_code=body.is_code,
         )
         if classification is None:
             metadata = None
         else:
-            from app.models.blocks import SemanticMetadata  # noqa: PLC0415
-            metadata = SemanticMetadata(
-                departments=classification.departments,
-                languages=classification.languages,
-                topics=classification.topics,
-                summary=classification.summary,
-                categories=[classification.category],
-                sub_category_level_1=classification.subcategories.level1,
-                sub_category_level_2=classification.subcategories.level2,
-                sub_category_level_3=classification.subcategories.level3,
+            from app.modules.transformers.document_extraction import (
+                to_semantic_metadata,
             )
+            metadata = to_semantic_metadata(classification)
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "Unexpected error during classification for org '%s'", body.org_id

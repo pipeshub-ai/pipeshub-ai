@@ -53,7 +53,7 @@ def conversation_enrichment(context: AgentContext) -> "Middleware[TurnContext]":
     return _middleware
 
 
-def _tool_names_used_in_history(previous_conversations: list[dict[str, Any]]) -> set[str]:
+def tool_names_used_in_history(previous_conversations: list[dict[str, Any]]) -> set[str]:
     """Every `tool_name` recorded in each turn's `tool_results` (same shape
     `_convert_conversation_turn` replays into context — see
     `factory.py::_convert_conversation_turn`'s docstring for the field
@@ -113,7 +113,7 @@ def seed_visible_tools_from_history(context: AgentContext) -> "Middleware[TurnCo
             return
 
         spec = run_scope.spec
-        prior_names = _tool_names_used_in_history(context.previous_conversations)
+        prior_names = tool_names_used_in_history(context.previous_conversations)
         registered = set(registry.names())
         prior_names &= registered
         if spec.tool_names:
@@ -127,4 +127,28 @@ def seed_visible_tools_from_history(context: AgentContext) -> "Middleware[TurnCo
     return _middleware
 
 
-__all__ = ["conversation_enrichment", "seed_visible_tools_from_history"]
+def sync_visible_tools_for_prompt(context: AgentContext) -> "Middleware[TurnContext]":
+    """PRE_TURN: copy ``RunScope.visible_tools`` into ``tool_state`` for the
+    prompt builder.
+
+    Must register *after* hooks that grow visibility (history seed, CODE_FILE
+    unlock) so the lazy "must load" block matches schemas already bound.
+    """
+    from app.agents.agent_loop.prompt_builder import BOUND_TOOL_NAMES_KEY
+
+    async def _middleware(ctx: TurnContext, next_fn: "Next") -> None:
+        if ctx.scope is not None:
+            visible = ctx.scope.run.visible_tools
+            if visible is not None:
+                context.tool_state[BOUND_TOOL_NAMES_KEY] = sorted(visible)
+        await next_fn()
+
+    return _middleware
+
+
+__all__ = [
+    "conversation_enrichment",
+    "seed_visible_tools_from_history",
+    "sync_visible_tools_for_prompt",
+    "tool_names_used_in_history",
+]

@@ -460,6 +460,56 @@ class TestDeleteKnowledgeBase:
         assert result["success"] is True
         service.logger.error.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_cleans_up_entity_vector_store_scoped_to_kb(self, service):
+        """KB records/groups carry connectorIds=[kb_id], so connector-scoped
+        entity cleanup applies unchanged to a KB delete."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+        service.entity_vector_store = AsyncMock()
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is True
+        service.entity_vector_store.delete_entities_by_connector.assert_awaited_once_with(
+            org_id="org1", connector_id="kb1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_entity_vector_store_still_succeeds(self, service):
+        """entity_vector_store is optional (defaults to None) — KB delete
+        must not depend on it being wired up."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+        assert service.entity_vector_store is None
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_entity_vector_store_cleanup_failure_still_succeeds(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+        service.entity_vector_store = AsyncMock()
+        service.entity_vector_store.delete_entities_by_connector = AsyncMock(
+            side_effect=RuntimeError("vector db down")
+        )
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is True
+        service.logger.error.assert_called()
+
 
 class TestCreateFolderInKb:
     @pytest.mark.asyncio

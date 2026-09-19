@@ -87,6 +87,56 @@ async def test_classify_passes_departments_in_request() -> None:
     payload = call_args[0][1]  # second positional arg = payload dict
     assert payload["departments"] == ["Finance", "HR"]
     assert payload["org_id"] == "org-456"
+    assert payload["is_code"] is False
+
+
+@pytest.mark.asyncio
+async def test_classify_forwards_is_code_flag() -> None:
+    """Dropping it silently downgrades source files to the document prompt."""
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+
+    mock_post = AsyncMock(
+        return_value=_make_response(200, {"success": True, "classification": None})
+    )
+
+    with patch.object(client, "_post_json", new=mock_post):
+        await client.classify(_bc(), "org-456", is_code=True)
+
+    assert mock_post.call_args[0][1]["is_code"] is True
+
+
+@pytest.mark.asyncio
+async def test_classify_passes_record_name_and_type_in_request() -> None:
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+
+    response_body = {"success": True, "classification": None}
+    mock_post = AsyncMock(return_value=_make_response(200, response_body))
+
+    with patch.object(client, "_post_json", new=mock_post):
+        await client.classify(
+            _bc(), "org-456", record_name="Q3 Board Deck.pdf", record_type="FILE",
+        )
+
+    call_args = mock_post.call_args
+    payload = call_args[0][1]
+    assert payload["record_name"] == "Q3 Board Deck.pdf"
+    assert payload["record_type"] == "FILE"
+
+
+@pytest.mark.asyncio
+async def test_classify_record_name_and_type_default_to_empty_string() -> None:
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+
+    response_body = {"success": True, "classification": None}
+    mock_post = AsyncMock(return_value=_make_response(200, response_body))
+
+    with patch.object(client, "_post_json", new=mock_post):
+        await client.classify(_bc(), "org-456")
+
+    call_args = mock_post.call_args
+    payload = call_args[0][1]
+    assert payload["record_name"] == ""
+    assert payload["record_type"] == ""
 
 
 # ---------------------------------------------------------------------------

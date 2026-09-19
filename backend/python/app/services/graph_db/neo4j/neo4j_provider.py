@@ -8,6 +8,7 @@ Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, pro
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -48,6 +49,7 @@ from app.config.constants.neo4j import (
     build_node_id,
     collection_to_label,
     edge_collection_to_relationship,
+    label_to_collection,
     parse_node_id,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
@@ -76,6 +78,7 @@ from app.models.entities import (
     SQLTableRecord,
     SQLViewRecord,
 )
+from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
@@ -99,6 +102,12 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # Constants
 MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
 EDGE_DELETE_BATCH_SIZE = 2000  # Batch size for edge deletion to avoid huge single-query transactions
+# DETACH DELETE holds every touched node/rel in txn state; a mid-size code repo
+# is 100k+ blocks and blows dbms.memory.transaction.total.max (~70% of heap).
+BLOCK_DELETE_BATCH_SIZE = 500
+# Block properties that hold a dict or a list of dicts, which Neo4j cannot
+# store natively; written as JSON strings and decoded again on read.
+JSON_ENCODED_BLOCK_FIELDS = ("pendingEdges", "typeTable")
 
 
 class Neo4jProvider(IGraphDBProvider):
@@ -427,6 +436,15 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.indexingStatus)"
         )
 
+        # COMPOSITE: "is every record of this repo indexed yet?", asked once per
+        # code file that finishes. A repo connector also syncs issues and merge
+        # requests into record groups of their own, so the connector-leading
+        # indexes above do not answer it.
+        indexes.append(
+            "CREATE INDEX record_org_group_indexing_status IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.recordGroupId, n.indexingStatus)"
+        )
+
         # SINGLE: origin (heavily used in permission WHERE clauses)
         indexes.append(
             "CREATE INDEX record_origin IF NOT EXISTS "
@@ -550,7 +568,66 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.recordType, n.externalGroupId)"
         )
 
+        # ==================== BLOCK INDEXES (code knowledge graph) ====================
+        # Blocks are the largest label by far (100k+ on a mid-size repo) and only
+        # carried the id uniqueness constraint, so every code-graph query was a
+        # full label scan.
+
+        # COMPOSITE: orgId + recordId + qualifiedName — the code tools address a
+        # symbol by (file, name); the file resolves to a record on Codefiles
+        # first, so blocks are reached by record.
+        indexes.append(
+            "CREATE INDEX block_org_record_qualified_name IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.recordId, n.qualifiedName)"
+        )
+
+        # COMPOSITE: orgId + filePath on Codefiles — the single home of a code
+        # file's path, and what every path-prefix query now drives from.
+        indexes.append(
+            "CREATE INDEX code_file_org_path IF NOT EXISTS "
+            "FOR (n:Codefiles) ON (n.orgId, n.filePath)"
+        )
+
+        # COMPOSITE: orgId + qualifiedName — symbol lookup by identity.
+        indexes.append(
+            "CREATE INDEX block_org_qualified_name IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.qualifiedName)"
+        )
+
+        # COMPOSITE: orgId + recordGroupId + name — the symbol index the edge
+        # resolution pass sweeps per repo.
+        indexes.append(
+            "CREATE INDEX block_org_group_name IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.recordGroupId, n.name)"
+        )
+
+        # SINGLE: recordId — per-file reconciliation on re-index, and the
+        # record-scoped block delete.
+        indexes.append(
+            "CREATE INDEX block_record_id IF NOT EXISTS "
+            "FOR (n:Block) ON (n.recordId)"
+        )
+
+        # SINGLE: connectorId — connector-instance deletion pages by this alone.
+        # Without it every batch is a full Block label scan.
+        indexes.append(
+            "CREATE INDEX block_connector_id IF NOT EXISTS "
+            "FOR (n:Block) ON (n.connectorId)"
+        )
+
         return indexes
+
+    def _generate_fulltext_indexes(self) -> list[str]:
+        """Full-text indexes, which use a different DDL form to range indexes.
+
+        Free-text symbol lookup is what lets an agent start from a question rather
+        than from a symbol id it already holds. Without this it means scanning and
+        scoring every Block on each call.
+        """
+        return [
+            "CREATE FULLTEXT INDEX block_text IF NOT EXISTS "
+            "FOR (n:Block) ON EACH [n.name, n.qualifiedName]"
+        ]
 
     def _generate_required_field_constraints(self) -> list[str]:
         """
@@ -635,6 +712,15 @@ class Neo4jProvider(IGraphDBProvider):
                     self.logger.debug(f"Index creation (may already exist): {str(e)}")
 
             self.logger.info(f"✅ Created {len(indexes)} performance indexes")
+
+            fulltext_indexes = self._generate_fulltext_indexes()
+            for index_query in fulltext_indexes:
+                try:
+                    await self.client.execute_query(index_query)
+                except Exception as e:
+                    self.logger.debug(f"Full-text index creation (may already exist): {str(e)}")
+
+            self.logger.info(f"✅ Created {len(fulltext_indexes)} full-text indexes")
             self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
 
             # Seed departments collection with predefined department types
@@ -670,6 +756,17 @@ class Neo4jProvider(IGraphDBProvider):
         # Remove _id if present (we'll reconstruct it if needed)
         neo4j_node.pop("_id", None)
 
+        # Neo4j properties must be primitives or arrays of primitives.
+        # JSON-serialize dicts and any list with a nested dict or list. None is
+        # kept so that `SET n += props` still removes the property on update paths.
+        for key, value in list(neo4j_node.items()):
+            if isinstance(value, dict):
+                neo4j_node[key] = json.dumps(value, default=str)
+            elif isinstance(value, list) and any(
+                isinstance(item, (dict, list)) for item in value
+            ):
+                neo4j_node[key] = json.dumps(value, default=str)
+
         return neo4j_node
 
     def _neo4j_to_arango_node(self, neo4j_node: dict, collection: str) -> dict:
@@ -690,6 +787,14 @@ class Neo4jProvider(IGraphDBProvider):
             arango_node["_key"] = arango_node["id"]
             # Also create _id for compatibility
             arango_node["_id"] = f"{collection}/{arango_node['id']}"
+
+        # Undo the JSON encoding _arango_to_neo4j_node applied on write, so a
+        # block reads the same here as it does from ArangoDB.
+        for key in JSON_ENCODED_BLOCK_FIELDS:
+            value = arango_node.get(key)
+            if isinstance(value, str):
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
+                    arango_node[key] = json.loads(value)
 
         return arango_node
 
@@ -823,6 +928,8 @@ class Neo4jProvider(IGraphDBProvider):
         sort_field: str | None = None,
         transaction: str | None = None,
         raise_on_error: bool = False,
+        after_key: str | None = None,
+        return_fields: list[str] | None = None,
     ) -> list[dict]:
         """
         Fetch a page of documents using Cypher SKIP/LIMIT so that only the
@@ -839,6 +946,9 @@ class Neo4jProvider(IGraphDBProvider):
                     param = f"fv_{field}"
                     where_clauses.append(f"n.{field} = ${param}")
                     parameters[param] = value
+            if after_key is not None:
+                where_clauses.append("n.id > $after_key")
+                parameters["after_key"] = after_key
 
             where_cypher = (
                 "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
@@ -850,12 +960,20 @@ class Neo4jProvider(IGraphDBProvider):
                 else ""
             )
 
+            if return_fields:
+                return_expr = ", ".join(
+                    f"n.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
+            else:
+                return_expr = "n"
+
             query = f"""
             MATCH (n:{label})
             {where_cypher}
             {order_cypher}
             SKIP $skip LIMIT $limit
-            RETURN n
+            RETURN {return_expr}
             """
 
             results = await self.client.execute_query(
@@ -867,7 +985,10 @@ class Neo4jProvider(IGraphDBProvider):
             if results:
                 documents = []
                 for record in results:
-                    node_dict = dict(record["n"])
+                    if return_fields:
+                        node_dict = {field: record.get(field) for field in return_fields}
+                    else:
+                        node_dict = dict(record["n"])
                     documents.append(self._neo4j_to_arango_node(node_dict, collection))
                 return documents
 
@@ -906,18 +1027,18 @@ class Neo4jProvider(IGraphDBProvider):
 
             label = collection_to_label(collection)
 
-            # Convert nodes to Neo4j format
+            # Validate against the schema before Neo4j-specific conversion,
+            # which JSON-serializes nested dicts that the schema expects as
+            # objects/arrays but Neo4j cannot store natively.
             neo4j_nodes = []
             for node in nodes:
+                self.validator.validate_node_update(collection, node)
                 neo4j_node = self._arango_to_neo4j_node(node, collection)
-                # Ensure id exists
                 if "id" not in neo4j_node:
                     if "_key" in neo4j_node:
                         neo4j_node["id"] = neo4j_node.pop("_key")
                     else:
                         neo4j_node["id"] = str(uuid.uuid4())
-                # Validate nodes before writing
-                self.validator.validate_node_update(collection, neo4j_node)
                 neo4j_nodes.append(neo4j_node)
 
             # Use UNWIND for batch upsert
@@ -1005,10 +1126,8 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             label = collection_to_label(collection)
 
-            # Convert updates to Neo4j format
+            self.validator.validate_node_update(collection, node_updates)
             updates = self._arango_to_neo4j_node(node_updates, collection)
-            # Validate updates before writing
-            self.validator.validate_node_update(collection, updates)
 
             query = f"""
             MATCH (n:{label} {{id: $key}})
@@ -1093,11 +1212,10 @@ class Neo4jProvider(IGraphDBProvider):
 
             label = collection_to_label(collection)
             
-            # Convert nodes to Neo4j format and validate
             neo4j_nodes = []
             for node in nodes:
+                self.validator.validate_node_update(collection, node)
                 neo4j_node = self._arango_to_neo4j_node(node, collection)
-                self.validator.validate_node_update(collection, neo4j_node)
                 neo4j_nodes.append(neo4j_node)
 
             # Use UNWIND to batch update multiple nodes
@@ -1750,9 +1868,14 @@ class Neo4jProvider(IGraphDBProvider):
                 where_clause = ""
                 parameters = {}
 
-            # Build return clause
+            # Build return clause. `_key` is stored as `id` on Neo4j nodes, so
+            # projecting it verbatim returns null for every row and silently
+            # empties any caller that reads keys back.
             if return_fields:
-                return_expr = ", ".join([f"n.{field} AS {field}" for field in return_fields])
+                return_expr = ", ".join(
+                    f"n.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
             else:
                 return_expr = "n"
 
@@ -1844,15 +1967,19 @@ class Neo4jProvider(IGraphDBProvider):
         """Get nodes where field value is in list"""
         try:
             label = collection_to_label(collection)
+            neo4j_field = "id" if field_name == "_key" else field_name
 
             if return_fields:
-                return_expr = ", ".join([f"n.{field} AS {field}" for field in return_fields])
+                return_expr = ", ".join(
+                    f"n.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
             else:
                 return_expr = "n"
 
             query = f"""
             MATCH (n:{label})
-            WHERE n.{field_name} IN $values
+            WHERE n.{neo4j_field} IN $values
             RETURN {return_expr}
             """
 
@@ -1874,6 +2001,469 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get nodes by field in failed: {str(e)}")
+            return []
+
+    @staticmethod
+    def _filter_conditions(
+        filters: dict[str, Any] | None,
+        in_filters: dict[str, list[Any]] | None = None,
+        var: str = "n",
+    ) -> tuple[list[str], dict[str, Any]]:
+        """Equality and membership filters as Cypher predicates on ``var`` plus their parameters."""
+        conditions: list[str] = []
+        parameters: dict[str, Any] = {}
+        for field, value in (filters or {}).items():
+            parameter = f"filter_{field}"
+            conditions.append(f"{var}.{field} = ${parameter}")
+            parameters[parameter] = value
+        for field, values in (in_filters or {}).items():
+            parameter = f"in_filter_{field}"
+            conditions.append(f"{var}.{field} IN ${parameter}")
+            parameters[parameter] = values
+        return conditions, parameters
+
+    async def get_nodes_by_field_prefix(
+        self,
+        collection: str,
+        field_name: str,
+        prefix: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        try:
+            label = collection_to_label(collection)
+            neo4j_field = "id" if field_name == "_key" else field_name
+            filter_conditions, parameters = self._filter_conditions(filters)
+            conditions = [f"n.{neo4j_field} STARTS WITH $prefix", *filter_conditions]
+            parameters.update({"prefix": prefix, "limit": limit})
+            query = f"""
+            MATCH (n:{label})
+            WHERE {" AND ".join(conditions)}
+            RETURN n
+            LIMIT $limit
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return [
+                self._neo4j_to_arango_node(dict(row.get("n", {})), collection)
+                for row in rows or []
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ Get nodes by field prefix failed: {str(e)}")
+            return []
+
+    async def search_nodes_by_field_terms(
+        self,
+        collection: str,
+        field_name: str,
+        terms: list[str],
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        if not terms:
+            return []
+        filters = filters or {}
+        parameters: dict[str, Any] = {
+            "terms": [term.lower() for term in terms],
+            "query": " OR ".join(terms),
+            "limit": limit,
+        }
+        for field, value in filters.items():
+            parameters[f"filter_{field}"] = value
+        try:
+            label = collection_to_label(collection)
+            if (
+                collection == CollectionNames.BLOCKS.value
+                and field_name == "name"
+            ):
+                filter_clause = " AND ".join(
+                    f"node.{field} = $filter_{field}" for field in filters
+                )
+                where_clause = f"WHERE {filter_clause}" if filter_clause else ""
+                fulltext_query = f"""
+                CALL db.index.fulltext.queryNodes('block_text', $query)
+                YIELD node, score
+                {where_clause}
+                RETURN node AS n, score
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+                try:
+                    rows = await self.client.execute_query(
+                        fulltext_query,
+                        parameters=parameters,
+                        txn_id=transaction,
+                    )
+                    if rows:
+                        return [
+                            self._neo4j_to_arango_node(
+                                dict(row.get("n", {})), collection
+                            )
+                            for row in rows
+                        ]
+                except Exception as e:
+                    self.logger.debug(
+                        f"Full-text node search unavailable, using scan: {str(e)}"
+                    )
+
+            conditions = [
+                f"n.{field_name} IS NOT NULL",
+                f"any(term IN $terms WHERE toLower(n.{field_name}) CONTAINS term)",
+            ]
+            conditions.extend(
+                f"n.{field} = $filter_{field}" for field in filters
+            )
+            query = f"""
+            MATCH (n:{label})
+            WHERE {" AND ".join(conditions)}
+            RETURN n
+            LIMIT $limit
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return [
+                self._neo4j_to_arango_node(dict(row.get("n", {})), collection)
+                for row in rows or []
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ Search nodes by field terms failed: {str(e)}")
+            return []
+
+    async def delete_edges_touching_nodes(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        edge_collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        if not node_keys:
+            return 0
+        try:
+            label = collection_to_label(node_collection)
+            relationship = edge_collection_to_relationship(edge_collection)
+            query = f"""
+            MATCH (node:{label})-[rel:{relationship}]-()
+            WHERE node.id IN $node_keys
+            WITH DISTINCT rel
+            DELETE rel
+            RETURN count(rel) AS deleted
+            """
+            rows = await self.client.execute_query(
+                query,
+                parameters={"node_keys": node_keys},
+                txn_id=transaction,
+            )
+            return int(rows[0].get("deleted", 0)) if rows else 0
+        except Exception as e:
+            self.logger.error(f"❌ Delete edges touching nodes failed: {str(e)}")
+            raise
+
+    async def get_edge_rollup_by_file_prefix(
+        self,
+        org_id: str,
+        file_path_prefix: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 100000,
+        transaction: str | None = None,
+        connector_id: str | None = None,
+    ) -> list[dict]:
+        if direction not in ("outbound", "inbound", "any"):
+            raise ValueError("direction must be 'outbound', 'inbound', or 'any'")
+        try:
+            block_label = collection_to_label(CollectionNames.BLOCKS.value)
+            relationship = edge_collection_to_relationship(
+                CollectionNames.RECORD_RELATIONS.value
+            )
+            pattern = {
+                "outbound": f"(block:{block_label})-[rel:{relationship}]->(target)",
+                "inbound": f"(block:{block_label})<-[rel:{relationship}]-(target)",
+                "any": f"(block:{block_label})-[rel:{relationship}]-(target)",
+            }[direction]
+            record_label = collection_to_label(CollectionNames.RECORDS.value)
+            code_file_label = collection_to_label(CollectionNames.CODE_FILES.value)
+            # The prefix is matched on codeFiles -- one node per file rather than
+            # ~30 per file on blocks -- and the connector scope is re-applied per
+            # record, since codeFiles carries no connectorId. Grouped by record,
+            # not by path: the caller resolves ids to paths in one batch, so a
+            # moved file needs no rewrite here.
+            query = f"""
+            MATCH (codeFile:{code_file_label})
+            WHERE codeFile.orgId = $orgId
+              AND codeFile.filePath STARTS WITH $prefix
+            MATCH (record:{record_label} {{id: codeFile.id}})
+            WHERE $connectorId IS NULL OR record.connectorId = $connectorId
+            WITH collect(record.id) AS scopedRecords
+            MATCH {pattern}
+            WHERE block.recordId IN scopedRecords
+              AND rel.relationshipType IN $relations
+            WITH block, target, rel,
+                 CASE WHEN startNode(rel).id = block.id
+                      THEN 'outbound' ELSE 'inbound' END AS dir
+            RETURN block.recordId AS srcRecord,
+                   rel.relationshipType AS rel,
+                   dir,
+                   coalesce(target.recordId, target.id) AS dstRecord,
+                   count(*) AS n
+            LIMIT $limit
+            """
+            return await self.client.execute_query(
+                query,
+                parameters={
+                    "orgId": org_id,
+                    "prefix": file_path_prefix,
+                    "relations": relationship_types,
+                    "limit": limit,
+                    "connectorId": connector_id,
+                },
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error(f"❌ Get edge rollup by file prefix failed: {str(e)}")
+            return []
+
+    async def get_file_paths_for_records(
+        self,
+        org_id: str,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, str]:
+        if not record_ids:
+            return {}
+        try:
+            record_label = collection_to_label(CollectionNames.RECORDS.value)
+            code_file_label = collection_to_label(CollectionNames.CODE_FILES.value)
+            # codeFiles is keyed by record id. recordName is the fallback for a
+            # source file that arrived without a codeFiles node -- a .py uploaded
+            # to a KB is a plain FILE record, and dispatch is by extension, so it
+            # still gets parsed and projected.
+            query = f"""
+            MATCH (record:{record_label})
+            WHERE record.orgId = $orgId
+              AND record.id IN $record_ids
+            OPTIONAL MATCH (codeFile:{code_file_label} {{id: record.id}})
+            WITH record, coalesce(codeFile.filePath, record.recordName) AS path
+            WHERE path IS NOT NULL
+            RETURN record.id AS recordId, path AS filePath
+            """
+            rows = await self.client.execute_query(
+                query,
+                parameters={"orgId": org_id, "record_ids": record_ids},
+                txn_id=transaction,
+            )
+            return {
+                row["recordId"]: row["filePath"]
+                for row in rows or []
+                if row.get("recordId") and row.get("filePath")
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Get file paths for records failed: {str(e)}")
+            return {}
+
+    @staticmethod
+    def _endpoint_lookup(keys: list[str], alias: str, parameter: str) -> str:
+        """Cypher binding *alias* to the nodes the ArangoDB-style *keys* name.
+
+        The endpoint needs a label for ``id IN $ids`` to reach an index -- Neo4j
+        indexes are per label, so an unlabelled ``(target)`` pattern makes the
+        planner walk every relationship of the type instead. The labels come from
+        the collection half of the keys the caller passed, so a batch mixing
+        records and blocks still seeks both.
+        """
+        labels = sorted({
+            collection_to_label(key.partition("/")[0])
+            for key in keys
+            if "/" in key
+        })
+        if not labels:
+            return f"MATCH ({alias}) WHERE {alias}.id IN ${parameter}"
+        seeks = "\n            ".join(
+            f"OPTIONAL MATCH (_n{i}:{label} {{id: _id}})"
+            for i, label in enumerate(labels)
+        )
+        coalesced = ", ".join(f"_n{i}" for i in range(len(labels)))
+        return f"""UNWIND ${parameter} AS _id
+            {seeks}
+            WITH coalesce({coalesced}) AS {alias}
+            WHERE {alias} IS NOT NULL"""
+
+    async def get_edges_by_target_keys(
+        self,
+        target_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        return_field: str = "_from",
+        transaction: str | None = None,
+    ) -> list[str]:
+        if not target_keys:
+            return []
+        if return_field not in ("_from", "_to"):
+            raise ValueError("return_field must be '_from' or '_to'")
+        try:
+            relationship = edge_collection_to_relationship(edge_collection)
+            # Deduped: the lookup below unwinds these, and a repeated id would
+            # otherwise expand the same relationship twice.
+            target_ids = sorted({key.split("/", 1)[-1] for key in target_keys})
+            conditions: list[str] = []
+            parameters: dict[str, Any] = {"target_ids": target_ids}
+            for field, value in (filters or {}).items():
+                parameter = f"filter_{field}"
+                conditions.append(f"rel.{field} = ${parameter}")
+                parameters[parameter] = value
+            endpoint = "source" if return_field == "_from" else "target"
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+            {self._endpoint_lookup(target_keys, "target", "target_ids")}
+            MATCH (source)-[rel:{relationship}]->(target)
+            {where_clause}
+            RETURN DISTINCT labels({endpoint}) AS labels,
+                            {endpoint}.id AS key
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            result: list[str] = []
+            for row in rows or []:
+                labels = row.get("labels") or []
+                key = row.get("key")
+                if labels and key:
+                    result.append(f"{label_to_collection(labels[0])}/{key}")
+            return result
+        except Exception as e:
+            self.logger.error(f"❌ Get edges by target keys failed: {str(e)}")
+            return []
+
+    async def delete_edges_by_source_keys(
+        self,
+        source_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        if not source_keys:
+            return 0
+        try:
+            relationship = edge_collection_to_relationship(edge_collection)
+            source_ids = sorted({key.split("/", 1)[-1] for key in source_keys})
+            conditions, parameters = self._filter_conditions(filters, var="rel")
+            parameters["source_ids"] = source_ids
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+            {self._endpoint_lookup(source_keys, "source", "source_ids")}
+            MATCH (source)-[rel:{relationship}]->()
+            {where_clause}
+            DELETE rel
+            RETURN count(rel) AS deleted
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return int(rows[0].get("deleted", 0)) if rows else 0
+        except Exception as e:
+            self.logger.error(f"❌ Delete edges by source keys failed: {str(e)}")
+            raise
+
+    async def count_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        try:
+            label = collection_to_label(collection)
+            conditions, parameters = self._filter_conditions(filters, in_filters, var="node")
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+            MATCH (node:{label})
+            {where_clause}
+            RETURN count(node) AS count
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return int(rows[0].get("count", 0)) if rows else 0
+        except Exception as e:
+            # Callers gate on the count (build_code_graph_edges only builds when
+            # nothing is still indexing), so a swallowed failure reading as 0
+            # would let them act on a repo that has not drained.
+            self.logger.error(f"❌ Count nodes by filters failed: {str(e)}")
+            raise
+
+    async def has_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        try:
+            label = collection_to_label(collection)
+            conditions, parameters = self._filter_conditions(filters, in_filters, var="node")
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+            MATCH (node:{label})
+            {where_clause}
+            RETURN 1 AS matched
+            LIMIT 1
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return bool(rows)
+        except Exception as e:
+            self.logger.error(f"❌ Node existence check failed: {str(e)}")
+            raise
+
+    async def get_nodes_updated_since(
+        self,
+        collection: str,
+        timestamp_field: str,
+        since: int,
+        filters: dict[str, Any] | None = None,
+        return_fields: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        try:
+            label = collection_to_label(collection)
+            conditions = [f"node.{timestamp_field} > $since"]
+            parameters: dict[str, Any] = {"since": since}
+            for field, value in (filters or {}).items():
+                parameter = f"filter_{field}"
+                conditions.append(f"node.{field} = ${parameter}")
+                parameters[parameter] = value
+            if return_fields:
+                return_expr = ", ".join(
+                    f"node.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
+            else:
+                return_expr = "node"
+            query = f"""
+            MATCH (node:{label})
+            WHERE {" AND ".join(conditions)}
+            RETURN {return_expr}
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            if return_fields:
+                return [
+                    {field: row.get(field) for field in return_fields}
+                    for row in rows or []
+                ]
+            return [
+                self._neo4j_to_arango_node(
+                    dict(row.get("node", {})), collection
+                )
+                for row in rows or []
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ Get nodes updated since failed: {str(e)}")
             return []
 
     async def remove_nodes_by_field(
@@ -1969,6 +2559,158 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get edges to node failed: {str(e)}")
+            return []
+
+    async def get_neighbors_by_relationship_types(
+        self,
+        node_key: str,
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 25,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Walk one hop from a node along the given relationship types.
+
+        See IGraphDBProvider.get_neighbors_by_relationship_types.
+        """
+        if not relationship_types:
+            return []
+        if direction not in ("outbound", "inbound"):
+            raise ValueError(
+                f"direction must be 'outbound' or 'inbound', got {direction!r}"
+            )
+
+        try:
+            rel_type = edge_collection_to_relationship(
+                CollectionNames.RECORD_RELATIONS.value
+            )
+            anchor_label = collection_to_label(node_collection)
+            # The neighbour is deliberately unlabelled: a code symbol can point
+            # at a whole file, so Block and Record both turn up here.
+            pattern = (
+                f"(n:{anchor_label} {{id: $node_key}})-[rel:{rel_type}]->(m)"
+                if direction == "outbound"
+                else f"(n:{anchor_label} {{id: $node_key}})<-[rel:{rel_type}]-(m)"
+            )
+            query = f"""
+            MATCH {pattern}
+            WHERE rel.relationshipType IN $relationship_types
+            RETURN labels(m) AS labels,
+                   m.id AS key,
+                   rel.relationshipType AS relationshipType,
+                   rel.sourceLineNumber AS sourceLineNumber,
+                   rel.sourceColumnNumber AS sourceColumnNumber,
+                   rel.provenance AS provenance,
+                   rel.line AS line,
+                   rel.confidence AS confidence
+            LIMIT $limit
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "node_key": node_key,
+                    "relationship_types": relationship_types,
+                    "limit": limit,
+                },
+                txn_id=transaction
+            )
+            neighbours: list[dict[str, Any]] = []
+            for row in results or []:
+                labels = row.get("labels") or []
+                neighbours.append({
+                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "key": row.get("key"),
+                    "relationshipType": row.get("relationshipType"),
+                    "sourceLineNumber": row.get("sourceLineNumber"),
+                    "sourceColumnNumber": row.get("sourceColumnNumber"),
+                    "provenance": row.get("provenance"),
+                    "line": row.get("line"),
+                    "confidence": row.get("confidence"),
+                })
+            return neighbours
+        except Exception as e:
+            self.logger.error(f"❌ Get neighbors by relationship types failed: {str(e)}")
+            return []
+
+    async def get_neighbors_for_nodes_by_relationship_types(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 5000,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Walk one hop from many nodes at once.
+
+        See IGraphDBProvider.get_neighbors_for_nodes_by_relationship_types.
+        """
+        if not node_keys or not relationship_types:
+            return []
+        if direction not in ("outbound", "inbound", "any"):
+            raise ValueError(
+                f"direction must be 'outbound', 'inbound' or 'any', got {direction!r}"
+            )
+
+        try:
+            rel_type = edge_collection_to_relationship(
+                CollectionNames.RECORD_RELATIONS.value
+            )
+            anchor_label = collection_to_label(node_collection)
+            # The neighbour stays unlabelled: a code symbol can point at a whole
+            # file, so Block and Record both turn up here.
+            pattern = {
+                "outbound": f"(n:{anchor_label})-[rel:{rel_type}]->(m)",
+                "inbound": f"(n:{anchor_label})<-[rel:{rel_type}]-(m)",
+                "any": f"(n:{anchor_label})-[rel:{rel_type}]-(m)",
+            }[direction]
+            query = f"""
+            MATCH {pattern}
+            WHERE n.id IN $node_keys
+              AND rel.relationshipType IN $relationship_types
+            RETURN n.id AS anchorKey,
+                   labels(m) AS labels,
+                   m.id AS key,
+                   CASE WHEN startNode(rel).id = n.id
+                        THEN 'outbound' ELSE 'inbound' END AS direction,
+                   rel.relationshipType AS relationshipType,
+                   rel.sourceLineNumber AS sourceLineNumber,
+                   rel.sourceColumnNumber AS sourceColumnNumber,
+                   rel.provenance AS provenance,
+                   rel.line AS line,
+                   rel.confidence AS confidence
+            LIMIT $limit
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "node_keys": node_keys,
+                    "relationship_types": relationship_types,
+                    "limit": limit,
+                },
+                txn_id=transaction
+            )
+            neighbours: list[dict[str, Any]] = []
+            for row in results or []:
+                labels = row.get("labels") or []
+                neighbours.append({
+                    "anchorKey": row.get("anchorKey"),
+                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "key": row.get("key"),
+                    "direction": row.get("direction"),
+                    "relationshipType": row.get("relationshipType"),
+                    "sourceLineNumber": row.get("sourceLineNumber"),
+                    "sourceColumnNumber": row.get("sourceColumnNumber"),
+                    "provenance": row.get("provenance"),
+                    "line": row.get("line"),
+                    "confidence": row.get("confidence"),
+                })
+            return neighbours
+        except Exception as e:
+            self.logger.error(
+                f"❌ Get neighbors for nodes by relationship types failed: {str(e)}"
+            )
             return []
 
     async def get_related_nodes(
@@ -4357,11 +5099,24 @@ class Neo4jProvider(IGraphDBProvider):
                 "BELONGS_TO_TOPIC"
             ]
 
+            # BELONGS_TO_CATEGORY targets both Categories and Subcategories1/2/3
+            # nodes. Resolving to a single hardcoded collection dropped every
+            # subcategory edge on copy (batch_create_edges MATCHes on the
+            # label). Build rel_type -> {label: collection} from the same
+            # taxonomy map _get_taxonomy_entities_for_sync uses, so the real
+            # node label picked out below always resolves correctly.
+            label_to_collection_by_rel_type: dict[str, dict[str, str]] = {}
+            for edge_collection, node_map in self._TAXONOMY_EDGE_GROUPS.values():
+                rel_type_key = edge_collection_to_relationship(edge_collection)
+                label_to_collection_by_rel_type[rel_type_key] = {
+                    collection_to_label(coll): coll for coll in node_map
+                }
+
             for rel_type in relationship_types:
                 # Find all relationships from source document
                 query = f"""
                 MATCH (source:Record {{id: $source_key}})-[r:{rel_type}]->(target)
-                RETURN target.id as target_id, r.createdAtTimestamp as timestamp
+                RETURN target.id as target_id, labels(target) as target_labels, r.createdAtTimestamp as timestamp
                 """
 
                 results = await self.client.execute_query(
@@ -4373,30 +5128,35 @@ class Neo4jProvider(IGraphDBProvider):
                 relationships = list(results) if results else []
 
                 if relationships:
+                    label_to_collection = label_to_collection_by_rel_type.get(rel_type, {})
                     # Create new relationships for target document
                     new_edges = []
                     for rel in relationships:
                         target_id = rel.get("target_id")
                         if target_id:
-                            # Determine target collection based on relationship type
-                            if rel_type == "BELONGS_TO_DEPARTMENT":
-                                target_collection = CollectionNames.DEPARTMENTS.value
-                            elif rel_type == "BELONGS_TO_CATEGORY":
-                                # Could be categories or subcategories - need to check
-                                target_collection = CollectionNames.CATEGORIES.value
-                            elif rel_type == "BELONGS_TO_LANGUAGE":
-                                target_collection = CollectionNames.LANGUAGES.value
-                            elif rel_type == "BELONGS_TO_TOPIC":
-                                target_collection = CollectionNames.TOPICS.value
-                            else:
-                                target_collection = CollectionNames.CATEGORIES.value
+                            target_labels = rel.get("target_labels") or []
+                            target_collection = next(
+                                (
+                                    label_to_collection[label]
+                                    for label in target_labels
+                                    if label in label_to_collection
+                                ),
+                                None,
+                            )
+                            if target_collection is None:
+                                # Unrecognised label — fall back to the group's
+                                # first collection rather than dropping the edge.
+                                target_collection = next(
+                                    iter(label_to_collection.values()),
+                                    CollectionNames.CATEGORIES.value,
+                                )
 
                             new_edge = {
                                 "from_id": target_key,
                                 "from_collection": CollectionNames.RECORDS.value,
                                 "to_id": target_id,
                                 "to_collection": target_collection,
-                                "createdAtTimestamp": get_epoch_timestamp_in_ms()
+                                "createdAtTimestamp": rel.get("timestamp") or get_epoch_timestamp_in_ms()
                             }
                             new_edges.append(new_edge)
 
@@ -4517,7 +5277,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("departments"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_DEPARTMENT]->(dept:Department)
+                        MATCH (r)-[:BELONGS_TO_DEPARTMENT]->(dept:Departments)
                         WHERE dept.departmentName IN $departmentNames
                     }
                     """)
@@ -4525,7 +5285,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("categories"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(cat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(cat:Categories)
                         WHERE cat.name IN $categoryNames
                     }
                     """)
@@ -4533,7 +5293,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories1"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Subcategories1)
                         WHERE subcat.name IN $subcat1Names
                     }
                     """)
@@ -4541,7 +5301,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories2"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Subcategories2)
                         WHERE subcat.name IN $subcat2Names
                     }
                     """)
@@ -4549,7 +5309,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories3"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Subcategories3)
                         WHERE subcat.name IN $subcat3Names
                     }
                     """)
@@ -4557,7 +5317,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("languages"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_LANGUAGE]->(lang:Language)
+                        MATCH (r)-[:BELONGS_TO_LANGUAGE]->(lang:Languages)
                         WHERE lang.name IN $languageNames
                     }
                     """)
@@ -4565,7 +5325,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("topics"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_TOPIC]->(topic:Topic)
+                        MATCH (r)-[:BELONGS_TO_TOPIC]->(topic:Topics)
                         WHERE topic.name IN $topicNames
                     }
                     """)
@@ -4757,7 +5517,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("departments"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_DEPARTMENT]->(dept:Department)
+                        MATCH (r)-[:BELONGS_TO_DEPARTMENT]->(dept:Departments)
                         WHERE dept.departmentName IN $departmentNames
                     }
                     """)
@@ -4765,7 +5525,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("categories"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(cat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(cat:Categories)
                         WHERE cat.name IN $categoryNames
                     }
                     """)
@@ -4773,7 +5533,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories1"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Subcategories1)
                         WHERE subcat.name IN $subcat1Names
                     }
                     """)
@@ -4781,7 +5541,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories2"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Subcategories2)
                         WHERE subcat.name IN $subcat2Names
                     }
                     """)
@@ -4789,7 +5549,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories3"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Subcategories3)
                         WHERE subcat.name IN $subcat3Names
                     }
                     """)
@@ -4797,7 +5557,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("languages"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_LANGUAGE]->(lang:Language)
+                        MATCH (r)-[:BELONGS_TO_LANGUAGE]->(lang:Languages)
                         WHERE lang.name IN $languageNames
                     }
                     """)
@@ -4805,7 +5565,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("topics"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_TOPIC]->(topic:Topic)
+                        MATCH (r)-[:BELONGS_TO_TOPIC]->(topic:Topics)
                         WHERE topic.name IN $topicNames
                     }
                     """)
@@ -4961,6 +5721,138 @@ class Neo4jProvider(IGraphDBProvider):
             query, parameters={"userId": user_id, "includeHidden": include_hidden}
         )
         return [r.get("kbId") for r in results if r.get("kbId")]
+
+    async def get_entity_access_context(
+        self,
+        user_id: str,
+        org_id: str,
+        source_ids: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, Any] | None:
+        """See :meth:`IGraphDBProvider.get_entity_access_context`.
+
+        App paths mirror `get_user_apps` plus the KB paths, and RecordGroup
+        paths mirror Paths 1-4 and the nested step of
+        `_build_permission_paths_cypher`.
+        """
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+
+        # Each aggregating CALL returns exactly one row, so a user with no apps
+        # or no record groups still yields a row (and is not mistaken for missing).
+        query = """
+        MATCH (u:User {userId: $user_id})
+        WITH u LIMIT 1
+
+        CALL {
+            WITH u
+            CALL {
+                WITH u
+                MATCH (u)-[:USER_APP_RELATION]->(app:App)
+                RETURN app
+                UNION
+                WITH u
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)-[:USER_APP_RELATION]->(app:App)
+                RETURN app
+                UNION
+                WITH u
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(app:App {type: $kb_type})
+                WHERE app.orgId = $org_id
+                RETURN app
+                UNION
+                WITH u
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)-[:PERMISSION {type: 'TEAM'}]->(app:App {type: $kb_type})
+                WHERE app.orgId = $org_id
+                RETURN app
+            }
+            WITH app
+            WHERE size($source_ids) = 0 OR app.id IN $source_ids
+            RETURN collect(app {.id, .name, .type, .permissionModel}) AS apps
+        }
+
+        WITH u, apps,
+             [a IN apps
+              WHERE coalesce(a.type, '') <> $kb_type
+                AND coalesce(a.permissionModel, '') <> $app_level
+              | a.id] AS record_level_app_ids
+
+        CALL {
+            WITH u, record_level_app_ids
+            CALL {
+                WITH u, record_level_app_ids
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(rg:RecordGroup)
+                WHERE rg.orgId = $org_id
+                  AND coalesce(rg.isDeleted, false) = false
+                  AND rg.connectorId IN record_level_app_ids
+                RETURN rg
+                UNION
+                WITH u, record_level_app_ids
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp)
+                WHERE grp:Group OR grp:Role
+                MATCH (grp)-[:PERMISSION]->(rg:RecordGroup)
+                WHERE rg.orgId = $org_id
+                  AND coalesce(rg.isDeleted, false) = false
+                  AND rg.connectorId IN record_level_app_ids
+                RETURN rg
+                UNION
+                WITH u, record_level_app_ids
+                MATCH (u)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
+                MATCH (org)-[:PERMISSION {type: 'ORG'}]->(rg:RecordGroup)
+                WHERE rg.orgId = $org_id
+                  AND coalesce(rg.isDeleted, false) = false
+                  AND rg.connectorId IN record_level_app_ids
+                RETURN rg
+                UNION
+                WITH u, record_level_app_ids
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)
+                MATCH (team)-[:PERMISSION {type: 'TEAM'}]->(rg:RecordGroup)
+                WHERE rg.orgId = $org_id
+                  AND coalesce(rg.isDeleted, false) = false
+                  AND rg.connectorId IN record_level_app_ids
+                RETURN rg
+            }
+            RETURN collect(rg) AS seed_rgs
+        }
+
+        CALL {
+            WITH seed_rgs, record_level_app_ids
+            UNWIND seed_rgs AS seed
+            WITH seed, record_level_app_ids
+            WHERE coalesce(seed.hideChildren, false) = false
+            MATCH (seed)<-[:INHERIT_PERMISSIONS*1..5]-(child:RecordGroup)
+            WHERE child.orgId = $org_id
+              AND coalesce(child.isDeleted, false) = false
+              AND child.connectorId IN record_level_app_ids
+            RETURN collect(DISTINCT child.id) AS nested_rg_ids
+        }
+
+        CALL {
+            WITH seed_rgs, nested_rg_ids
+            UNWIND [rg IN seed_rgs | rg.id] + nested_rg_ids AS rg_id
+            RETURN collect(DISTINCT rg_id) AS record_group_ids
+        }
+
+        RETURN u.id AS user_key, apps, record_group_ids
+        """
+        rows = await self.client.execute_query(
+            query,
+            parameters={
+                "user_id": user_id,
+                "org_id": org_id,
+                "source_ids": source_ids or [],
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "app_level": PermissionModel.APP_LEVEL.value,
+            },
+            txn_id=transaction,
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "user_key": row.get("user_key"),
+            "apps": [dict(app) for app in row.get("apps") or []],
+            "record_group_ids": [str(rg_id) for rg_id in row.get("record_group_ids") or [] if rg_id],
+        }
 
     async def _get_kb_virtual_ids_for_kb(self, kb_id: str) -> dict[str, str]:
         """Every completed upload in one KB, independent of user.
@@ -5527,10 +6419,18 @@ class Neo4jProvider(IGraphDBProvider):
                     "props": props
                 })
 
+            # An endpoint is a Record or a Block, and the id indexes are
+            # per-label, so an unlabelled MATCH cannot seek and degrades to an
+            # AllNodesScan per UNWIND row. Seek each label separately instead.
             query = """
             UNWIND $edges AS edge
-            MATCH (from:Record {id: edge.from_key})
-            MATCH (to:Record {id: edge.to_key})
+            OPTIONAL MATCH (fromRecord:Record {id: edge.from_key})
+            OPTIONAL MATCH (fromBlock:Block {id: edge.from_key})
+            WITH edge, coalesce(fromRecord, fromBlock) AS from
+            OPTIONAL MATCH (toRecord:Record {id: edge.to_key})
+            OPTIONAL MATCH (toBlock:Block {id: edge.to_key})
+            WITH edge, from, coalesce(toRecord, toBlock) AS to
+            WHERE from IS NOT NULL AND to IS NOT NULL
             MERGE (from)-[r:RECORD_RELATION {relationshipType: edge.relationshipType, constraintName: edge.constraintName}]->(to)
             SET r += edge.props
             RETURN count(r) AS upserted
@@ -6822,6 +7722,10 @@ class Neo4jProvider(IGraphDBProvider):
             # In Neo4j, DETACH DELETE removes node and all relationships
             record_label = collection_to_label(CollectionNames.RECORDS.value)
 
+            # Blocks join the record by property, not by an edge, so the DETACH
+            # DELETE below does not take them with it.
+            await self.delete_blocks_for_records([record_key], transaction=transaction)
+
             query = f"""
             MATCH (r:{record_label} {{id: $record_key}})
             DETACH DELETE r
@@ -7419,6 +8323,13 @@ class Neo4jProvider(IGraphDBProvider):
                 f"Groups: {len(collected['group_keys'])}, TypeNodes: {len(isoftype_targets)}"
             )
 
+            # Blocks are the bulk of a code connector. DETACH DELETE of the whole
+            # set inside the write txn below hits dbms.memory.transaction.total.max
+            # (~1.4 GiB on a 2G heap). Auto-committed batches free that memory
+            # before the rest of the delete opens; a later rollback leaves the
+            # connector intact so a retry finishes the leftover blocks.
+            deleted_blocks = await self.delete_blocks_by_connector_id(connector_id)
+
             # Phase 2: Delete within a single transaction
             node_collections = [
                 CollectionNames.RECORDS.value,
@@ -7435,6 +8346,7 @@ class Neo4jProvider(IGraphDBProvider):
                 CollectionNames.LINKS.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
+                CollectionNames.BLOCKS.value,
             ]
 
             if transaction is None:
@@ -7511,7 +8423,7 @@ class Neo4jProvider(IGraphDBProvider):
                     f"✅ Connector instance {connector_id} deleted successfully. "
                     f"Records: {deleted_records}, RecordGroups: {deleted_rg}, "
                     f"Roles: {deleted_roles}, Groups: {deleted_groups}, "
-                    f"isOfType targets: {deleted_isoftype}"
+                    f"Blocks: {deleted_blocks}, isOfType targets: {deleted_isoftype}"
                 )
 
                 return {
@@ -7520,6 +8432,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "deleted_record_groups_count": deleted_rg,
                     "deleted_roles_count": deleted_roles,
                     "deleted_groups_count": deleted_groups,
+                    "deleted_blocks_count": deleted_blocks,
                     "virtual_record_ids": collected["virtual_record_ids"],
                     "connector_id": connector_id,
                     "connector_name": connector.get("type"),
@@ -10317,6 +11230,84 @@ class Neo4jProvider(IGraphDBProvider):
             return None
 
 
+    async def _delete_blocks_where(
+        self,
+        condition: str,
+        parameters: dict[str, Any],
+        transaction: str | None,
+    ) -> int:
+        """Delete every block matching a Cypher ``condition`` on ``block``.
+
+        ``DETACH DELETE`` takes the structural CONTAINS/METHOD/DEFINES edges and
+        the cross-file CALLS/IMPORTS edges other files' blocks point in with, in
+        one pass -- those name a block, never its record, so a record-scoped
+        sweep never sees them.
+
+        Deletes page in batches of ``BLOCK_DELETE_BATCH_SIZE``. A single unbounded
+        DETACH DELETE on a code connector holds the whole subgraph in Neo4j txn
+        state and trips ``dbms.memory.transaction.total.max``. When ``transaction``
+        is None each page auto-commits and frees that state; when a txn is open
+        paging still caps the per-statement working set.
+        """
+        label = collection_to_label(CollectionNames.BLOCKS.value)
+        query = f"""
+        MATCH (block:{label})
+        WHERE {condition}
+        WITH block
+        LIMIT $limit
+        DETACH DELETE block
+        RETURN count(*) AS deleted
+        """
+        total_deleted = 0
+        try:
+            while True:
+                rows = await self.client.execute_query(
+                    query,
+                    parameters={**parameters, "limit": BLOCK_DELETE_BATCH_SIZE},
+                    txn_id=transaction,
+                )
+                deleted = int(rows[0].get("deleted", 0)) if rows else 0
+                total_deleted += deleted
+                if deleted < BLOCK_DELETE_BATCH_SIZE:
+                    break
+            if total_deleted:
+                self.logger.debug(f"🗑️ Deleted {total_deleted} block(s)")
+            return total_deleted
+        except Exception as e:
+            self.logger.error(f"❌ Delete blocks failed: {str(e)}")
+            raise
+
+    async def delete_blocks_for_records(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the blocks projected from the given records, and their edges.
+
+        Blocks are reached by their ``recordId`` property rather than by
+        traversal, so this stays correct whether it runs before or after the
+        record node goes.
+        """
+        if not record_ids:
+            return 0
+        return await self._delete_blocks_where(
+            "block.recordId IN $record_ids", {"record_ids": record_ids}, transaction
+        )
+
+    async def delete_blocks_by_connector_id(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every block a connector produced. The whole-connector form of
+        ``delete_blocks_for_records``, which would otherwise have to carry a
+        repo's worth of record ids in a parameter."""
+        if not connector_id:
+            return 0
+        return await self._delete_blocks_where(
+            "block.connectorId = $connector_id", {"connector_id": connector_id}, transaction
+        )
+
     async def delete_records_recursive(
         self,
         record_ids: list[str],
@@ -10344,7 +11335,12 @@ class Neo4jProvider(IGraphDBProvider):
                     "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
                     "eventData": None,
                 }
-            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+            node_collections = [
+                CollectionNames.RECORDS.value,
+                # blocks is not an isOfType target, so it is absent from the type
+                # mapping, but a code record's blocks are deleted with it.
+                CollectionNames.BLOCKS.value,
+            ] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
             txn_id = transaction
             if transaction is None:
                 txn_id = await self.begin_transaction(
@@ -10436,6 +11432,13 @@ class Neo4jProvider(IGraphDBProvider):
                         "MATCH (r:Record)-[:IS_OF_TYPE]->(t) WHERE r.id IN $record_ids DETACH DELETE t",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,
                     )
+                    # Auto-committed in batches, as delete_connector_instance
+                    # does: a repo's worth of blocks DETACH DELETEd inside this
+                    # txn keeps every page in txn state and trips
+                    # dbms.memory.transaction.total.max. A later rollback then
+                    # leaves the records intact, so a retry finishes the
+                    # leftover blocks.
+                    await self.delete_blocks_for_records(record_keys)
                     await self.client.execute_query(
                         "MATCH (r:Record) WHERE r.id IN $record_ids DETACH DELETE r",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,
@@ -10497,7 +11500,12 @@ class Neo4jProvider(IGraphDBProvider):
                     "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
                     "eventData": None,
                 }
-            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+            node_collections = [
+                CollectionNames.RECORDS.value,
+                # blocks is not an isOfType target, so it is absent from the type
+                # mapping, but a code record's blocks are deleted with it.
+                CollectionNames.BLOCKS.value,
+            ] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
             txn_id = transaction
             if transaction is None:
                 txn_id = await self.begin_transaction(
@@ -10543,6 +11551,7 @@ class Neo4jProvider(IGraphDBProvider):
                         "MATCH (r:Record)-[:IS_OF_TYPE]->(t) WHERE r.id IN $record_ids DETACH DELETE t",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,
                     )
+                    await self.delete_blocks_for_records(record_keys, transaction=txn_id)
                     await self.client.execute_query(
                         "MATCH (r:Record) WHERE r.id IN $record_ids DETACH DELETE r",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,
@@ -14146,9 +15155,14 @@ class Neo4jProvider(IGraphDBProvider):
         org_id: str,
         *,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> set[str]:
         """Batch KH permission_role check for record/recordGroup ancestor ids."""
-        if not nodes or not user_key or not self.client:
+        if not nodes or not user_key:
+            return set()
+        if not self.client:
+            if raise_on_error:
+                raise RuntimeError("Neo4j client is not connected")
             return set()
 
         record_ids = [
@@ -14222,6 +15236,8 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.warning(
                 "filter_nodes_with_permission_role: Cypher failed — %s", exc
             )
+            if raise_on_error:
+                raise
             return set()
 
     async def get_record_parent_adjacency(
@@ -14335,6 +15351,388 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as exc:
             self.logger.warning("get_record_parent_adjacency: Cypher failed — %s", exc)
             return {"nodes": {}, "parents": {}}
+
+    # ------------------------------------------------------------------
+    # Entity sync (knowledge-graph vector-store backfill)
+    # ------------------------------------------------------------------
+
+    _TAXONOMY_EDGE_GROUPS: dict[str, tuple[str, dict[str, str]]] = {
+        "category_group": (
+            CollectionNames.BELONGS_TO_CATEGORY.value,
+            {
+                CollectionNames.CATEGORIES.value: KnowledgeGraphEntityType.CATEGORY.value,
+                CollectionNames.SUBCATEGORIES1.value: KnowledgeGraphEntityType.SUBCATEGORY.value,
+                CollectionNames.SUBCATEGORIES2.value: KnowledgeGraphEntityType.SUBCATEGORY.value,
+                CollectionNames.SUBCATEGORIES3.value: KnowledgeGraphEntityType.SUBCATEGORY.value,
+            },
+        ),
+        "department_group": (
+            CollectionNames.BELONGS_TO_DEPARTMENT.value,
+            {CollectionNames.DEPARTMENTS.value: KnowledgeGraphEntityType.DEPARTMENT.value},
+        ),
+        "topic_group": (
+            CollectionNames.BELONGS_TO_TOPIC.value,
+            {CollectionNames.TOPICS.value: KnowledgeGraphEntityType.TOPIC.value},
+        ),
+        "language_group": (
+            CollectionNames.BELONGS_TO_LANGUAGE.value,
+            {CollectionNames.LANGUAGES.value: KnowledgeGraphEntityType.LANGUAGE.value},
+        ),
+    }
+    _ENTITY_TYPE_TO_TAXONOMY_GROUP: dict[str, str] = {
+        KnowledgeGraphEntityType.CATEGORY.value: "category_group",
+        KnowledgeGraphEntityType.SUBCATEGORY.value: "category_group",
+        KnowledgeGraphEntityType.DEPARTMENT.value: "department_group",
+        KnowledgeGraphEntityType.TOPIC.value: "topic_group",
+        KnowledgeGraphEntityType.LANGUAGE.value: "language_group",
+    }
+    # Entity type -> (Record->entity relationship, entity labels). Fixed so no
+    # caller-supplied value is ever interpolated into Cypher; ``record`` is
+    # handled separately in ``_entity_candidate_records_cypher``.
+    _ENTITY_CANDIDATE_TARGETS: dict[str, tuple[str, tuple[str, ...]]] = {
+        KnowledgeGraphEntityType.DEPARTMENT.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO_DEPARTMENT.value),
+            (collection_to_label(CollectionNames.DEPARTMENTS.value),),
+        ),
+        KnowledgeGraphEntityType.CATEGORY.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO_CATEGORY.value),
+            (collection_to_label(CollectionNames.CATEGORIES.value),),
+        ),
+        KnowledgeGraphEntityType.SUBCATEGORY.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO_CATEGORY.value),
+            (
+                collection_to_label(CollectionNames.SUBCATEGORIES1.value),
+                collection_to_label(CollectionNames.SUBCATEGORIES2.value),
+                collection_to_label(CollectionNames.SUBCATEGORIES3.value),
+            ),
+        ),
+        KnowledgeGraphEntityType.TOPIC.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO_TOPIC.value),
+            (collection_to_label(CollectionNames.TOPICS.value),),
+        ),
+        KnowledgeGraphEntityType.LANGUAGE.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO_LANGUAGE.value),
+            (collection_to_label(CollectionNames.LANGUAGES.value),),
+        ),
+        KnowledgeGraphEntityType.RECORD_GROUP.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO.value),
+            (collection_to_label(CollectionNames.RECORD_GROUPS.value),),
+        ),
+    }
+
+    async def _get_record_group_entities_for_sync(
+        self, org_id: str, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        """RecordGroup nodes carry ``orgId`` directly — no traversal needed."""
+        if not self.client:
+            return []
+        rg_label = collection_to_label(CollectionNames.RECORD_GROUPS.value)
+        query = f"""
+            MATCH (rg:{rg_label} {{orgId: $org_id}})
+            WITH rg ORDER BY rg.id
+            SKIP $offset LIMIT $limit
+            RETURN rg.id AS entityId,
+                   coalesce(rg.groupName, rg.id) AS name,
+                   rg.connectorId AS connectorId
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={
+                    "org_id": org_id,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit),
+                },
+            )
+            results = []
+            for row in rows or []:
+                if not row.get("entityId"):
+                    continue
+                row = dict(row)
+                row["entityType"] = KnowledgeGraphEntityType.RECORD_GROUP.value
+                results.append(row)
+            return results
+        except Exception as exc:
+            self.logger.warning("get_entities_for_sync (record_group) failed: %s", exc)
+            return []
+
+    async def _get_taxonomy_entities_for_sync(
+        self,
+        org_id: str,
+        edge_collection: str,
+        node_label_types: dict[str, str],
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        """See ArangoHTTPProvider._get_taxonomy_entities_for_sync — taxonomy
+        nodes carry no ``orgId`` of their own; scoping is derived by walking
+        outward from this org's own Record nodes."""
+        if not self.client:
+            return []
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        rel_type = edge_collection_to_relationship(edge_collection)
+        node_labels = [collection_to_label(c) for c in node_label_types]
+        # label_to_type keyed by Neo4j label (not Arango collection name),
+        # since that is what `labels(v)` returns from the query below.
+        label_to_type = {
+            collection_to_label(c): etype for c, etype in node_label_types.items()
+        }
+        query = f"""
+            MATCH (rec:{record_label} {{orgId: $org_id}})-[:{rel_type}]->(v)
+            WHERE any(l IN labels(v) WHERE l IN $node_labels)
+            WITH DISTINCT v
+            ORDER BY v.id
+            SKIP $offset LIMIT $limit
+            RETURN v.id AS entityId, coalesce(v.name, v.id) AS name, labels(v) AS nodeLabels
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={
+                    "org_id": org_id,
+                    "node_labels": node_labels,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit),
+                },
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "get_entities_for_sync (taxonomy via %s) failed: %s", edge_collection, exc
+            )
+            return []
+        results: list[dict[str, Any]] = []
+        for row in rows or []:
+            if not row.get("entityId"):
+                continue
+            matched_label = next(
+                (label for label in row.get("nodeLabels") or [] if label in label_to_type),
+                None,
+            )
+            if not matched_label:
+                continue
+            results.append(
+                {
+                    "entityId": row["entityId"],
+                    "name": row.get("name") or row["entityId"],
+                    "entityType": label_to_type[matched_label],
+                }
+            )
+        return results
+
+    async def _get_taxonomy_entities_for_record_via_edge(
+        self,
+        record_key: str,
+        edge_collection: str,
+        node_label_types: dict[str, str],
+        transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """Single-record variant of ``_get_taxonomy_entities_for_sync`` — the
+        record itself pins the scope, so there is no org filter and no
+        pagination.
+        """
+        if not self.client:
+            return []
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        rel_type = edge_collection_to_relationship(edge_collection)
+        node_labels = [collection_to_label(c) for c in node_label_types]
+        label_to_type = {
+            collection_to_label(c): etype for c, etype in node_label_types.items()
+        }
+        query = f"""
+            MATCH (rec:{record_label} {{id: $record_key}})-[:{rel_type}]->(v)
+            WHERE any(l IN labels(v) WHERE l IN $node_labels)
+            RETURN DISTINCT v.id AS entityId, coalesce(v.name, v.id) AS name, labels(v) AS nodeLabels
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={"record_key": record_key, "node_labels": node_labels},
+                txn_id=transaction,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "get_taxonomy_entities_for_record (via %s) failed for %s: %s",
+                edge_collection, record_key, exc,
+            )
+            return []
+        results: list[dict[str, Any]] = []
+        for row in rows or []:
+            if not row.get("entityId"):
+                continue
+            matched_label = next(
+                (label for label in row.get("nodeLabels") or [] if label in label_to_type),
+                None,
+            )
+            if not matched_label:
+                continue
+            results.append(
+                {
+                    "entityId": row["entityId"],
+                    "name": row.get("name") or row["entityId"],
+                    "entityType": label_to_type[matched_label],
+                }
+            )
+        return results
+
+    async def get_taxonomy_entities_for_record(
+        self,
+        record_key: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_taxonomy_entities_for_record`."""
+        if not record_key:
+            return []
+        results: list[dict[str, Any]] = []
+        for edge_collection, node_map in self._TAXONOMY_EDGE_GROUPS.values():
+            results.extend(
+                await self._get_taxonomy_entities_for_record_via_edge(
+                    record_key, edge_collection, node_map, transaction
+                )
+            )
+        return results
+
+    async def get_entities_for_sync(
+        self,
+        org_id: str,
+        entity_types: list[str] | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_entities_for_sync`."""
+        if not org_id:
+            return []
+        wanted = set(entity_types) if entity_types else None
+        results: list[dict[str, Any]] = []
+
+        if wanted is None or KnowledgeGraphEntityType.RECORD_GROUP.value in wanted:
+            results.extend(
+                await self._get_record_group_entities_for_sync(org_id, limit, offset)
+            )
+
+        groups_to_query: set[str] = set()
+        for etype, group in self._ENTITY_TYPE_TO_TAXONOMY_GROUP.items():
+            if wanted is None or etype in wanted:
+                groups_to_query.add(group)
+
+        for group in groups_to_query:
+            edge_collection, node_map = self._TAXONOMY_EDGE_GROUPS[group]
+            rows = await self._get_taxonomy_entities_for_sync(
+                org_id, edge_collection, node_map, limit, offset
+            )
+            if wanted is not None:
+                rows = [r for r in rows if r.get("entityType") in wanted]
+            results.extend(rows)
+
+        return results
+
+    _ENTITY_CANDIDATE_RECORD_PROJECTION = (
+        "rec {_key: rec.id, .recordName, .recordType, .connectorId, .virtualRecordId, "
+        ".webUrl, .sourceLastModifiedTimestamp, .updatedAtTimestamp}"
+    )
+
+    def _entity_candidate_records_cypher(self, entity_type: str) -> str:
+        projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
+        if entity_type == KnowledgeGraphEntityType.RECORD.value:
+            return f"""
+            UNWIND $refs AS ref
+            OPTIONAL MATCH (rec:Record {{id: ref.id}})
+            WHERE rec.orgId = $org_id
+              AND coalesce(rec.isDeleted, false) = false
+              AND rec.connectorId IN ref.connectorIds
+              AND ($record_types IS NULL OR rec.recordType IN $record_types)
+            RETURN ref.id AS id,
+                   CASE WHEN rec IS NULL OR $offset > 0 THEN [] ELSE [{projection}] END AS rows
+            """
+
+        relationship, labels = self._ENTITY_CANDIDATE_TARGETS[entity_type]
+        if len(labels) == 1:
+            entity_match = f"MATCH (e:{labels[0]} {{id: ref.id}})"
+        else:
+            # One index seek per label instead of an unlabeled scan.
+            branches = "\n                UNION\n                ".join(
+                f"""WITH ref
+                MATCH (e:{label} {{id: ref.id}})
+                RETURN e"""
+                for label in labels
+            )
+            entity_match = f"""CALL {{
+                {branches}
+              }}"""
+        if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
+            entity_match += "\n              WHERE e.orgId = $org_id"
+
+        # The aggregating CALL yields one row per ref even when nothing matches.
+        return f"""
+            UNWIND $refs AS ref
+            CALL {{
+              WITH ref
+              {entity_match}
+              MATCH (rec:Record)-[:{relationship}]->(e)
+              WHERE rec.orgId = $org_id
+                AND coalesce(rec.isDeleted, false) = false
+                AND rec.connectorId IN ref.connectorIds
+                AND ($record_types IS NULL OR rec.recordType IN $record_types)
+              WITH DISTINCT rec
+              ORDER BY coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0) DESC, rec.id ASC
+              SKIP $offset LIMIT $limit
+              RETURN collect({projection}) AS rows
+            }}
+            RETURN ref.id AS id, rows
+            """
+
+    async def get_entity_candidate_records(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        *,
+        record_types: list[str] | None = None,
+        limit_per_entity: int = 20,
+        offset: int = 0,
+        transaction: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """See :meth:`IGraphDBProvider.get_entity_candidate_records`."""
+        if not refs or not org_id:
+            return {}
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+
+        refs_by_type: dict[str, list[dict[str, Any]]] = {}
+        seen: set[tuple[str, str]] = set()
+        for ref in refs:
+            ref_id = ref.get("id")
+            ref_type = ref.get("type")
+            if not ref_id or (
+                ref_type != KnowledgeGraphEntityType.RECORD.value
+                and ref_type not in self._ENTITY_CANDIDATE_TARGETS
+            ):
+                continue
+            # A repeated ref would return its own row and overwrite the first one's.
+            if (ref_type, str(ref_id)) in seen:
+                continue
+            seen.add((ref_type, str(ref_id)))
+            refs_by_type.setdefault(ref_type, []).append(
+                {"id": str(ref_id), "connectorIds": list(ref.get("connectorIds") or [])}
+            )
+
+        results: dict[str, list[dict[str, Any]]] = {}
+        for entity_type, typed_refs in refs_by_type.items():
+            rows = await self.client.execute_query(
+                self._entity_candidate_records_cypher(entity_type),
+                parameters={
+                    "refs": typed_refs,
+                    "org_id": org_id,
+                    "record_types": list(record_types) if record_types else None,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit_per_entity),
+                },
+                txn_id=transaction,
+            )
+            for typed_ref in typed_refs:
+                results.setdefault(typed_ref["id"], [])
+            for row in rows or []:
+                if row.get("id"):
+                    results[str(row["id"])] = [dict(rec) for rec in row.get("rows") or []]
+        return results
 
     async def get_user_app_ids(
         self,

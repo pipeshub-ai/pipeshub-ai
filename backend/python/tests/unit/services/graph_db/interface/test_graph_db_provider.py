@@ -14,12 +14,11 @@ import importlib
 import sys
 import types
 from abc import ABC
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -211,12 +210,24 @@ class TestAbstractMethodInventory:
         "get_edges_to_node",
         "get_edges_from_node",
         "get_edges_from_node_with_target_name",
+        "get_neighbors_by_relationship_types",
+        "get_neighbors_for_nodes_by_relationship_types",
         "get_related_nodes",
         "get_related_node_field",
         # Query operations
         "execute_query",
         "get_nodes_by_filters",
         "get_nodes_by_field_in",
+        "get_nodes_by_field_prefix",
+        "search_nodes_by_field_terms",
+        "delete_edges_touching_nodes",
+        "get_edge_rollup_by_file_prefix",
+        "get_file_paths_for_records",
+        "get_edges_by_target_keys",
+        "delete_edges_by_source_keys",
+        "count_nodes_by_filters",
+        "has_nodes_by_filters",
+        "get_nodes_updated_since",
         # Record operations
         "get_record_by_path",
         "get_record_by_external_id",
@@ -247,6 +258,10 @@ class TestAbstractMethodInventory:
         "get_record_group_by_external_id",
         "get_record_group_by_id",
         "get_file_record_by_id",
+        # Knowledge-graph entity sync (KG Clean Rebuild plan, Phase 1)
+        "get_entities_for_sync",
+        "get_taxonomy_entities_for_record",
+        "get_entity_candidate_records",
         # User operations
         "get_user_by_email",
         "get_user_by_source_id",
@@ -312,8 +327,10 @@ class TestAbstractMethodInventory:
         "get_accessible_virtual_record_ids",
         "get_accessible_connector_types",
         "get_records_by_virtual_record_id",
+        "get_entity_access_context",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
+        "batch_upsert_record_relations",
         "get_file_permissions",
         "get_first_user_with_permission_to_node",
         "get_users_with_permission_to_node",
@@ -348,6 +365,7 @@ class TestAbstractMethodInventory:
         "remove_user_access_to_record",
         "delete_records_recursive",
         "delete_single_record",
+        "delete_blocks_for_records",
         "delete_connector_instance",
         "get_key_by_external_file_id",
         "organization_exists",
@@ -491,7 +509,6 @@ class TestConcreteMethodCalls:
 
     @pytest.mark.asyncio
     async def test_batch_upsert_people(self):
-        from app.models.entities import Person
         ConcreteProvider = _make_concrete_class()
         instance = ConcreteProvider()
         instance.batch_upsert_people.return_value = None

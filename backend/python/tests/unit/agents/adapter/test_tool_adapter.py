@@ -42,6 +42,18 @@ class TestPipesHubStructuredToolAdapter:
         assert adapter.name == "dynamic__web_search"
         assert adapter.path == "/dynamic/dynamic/web_search"
 
+    def test_short_description_prefers_metadata(self) -> None:
+        tool = _make_structured_tool()
+        tool.description = "Long docstring that must not leak into Available Tools."
+        tool.metadata = {"short_description": "One-liner for the index"}
+        adapter = PipesHubStructuredToolAdapter(tool, "codegraph", "query_code_graph")
+        assert adapter.short_description == "One-liner for the index"
+        assert adapter.description == tool.description
+
+    def test_short_description_falls_back_to_full_description(self) -> None:
+        adapter = PipesHubStructuredToolAdapter(_make_structured_tool(), "dynamic", "web_search")
+        assert adapter.short_description == "Search the web"
+
     async def test_execute_success_calls_coroutine(self) -> None:
         adapter = PipesHubStructuredToolAdapter(_make_structured_tool(), "dynamic", "web_search")
         output = await adapter.execute(text="hello")

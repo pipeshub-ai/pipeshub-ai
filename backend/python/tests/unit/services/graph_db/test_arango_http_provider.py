@@ -24,16 +24,11 @@ Tests cover:
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+import uuid
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from app.services.graph_db.arango.arango_http_provider import (
-    ARANGO_ID_PARTS_COUNT,
-    ArangoHTTPProvider,
-)
-import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
 from app.services.graph_db.arango.arango_http_provider import (
     ARANGO_ID_PARTS_COUNT,
     MAX_REINDEX_DEPTH,
@@ -5542,7 +5537,40 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 28
+
+    @pytest.mark.asyncio
+    async def test_block_indexes_cover_every_query_shape(self, connected_provider):
+        """Each of these backs a query that is otherwise a full collection scan.
+
+        The bare count above fails on any index change without saying which one;
+        this names them, so removing one is distinguishable from adding one.
+        """
+        from app.config.constants.arangodb import CollectionNames
+
+        connected_provider.http_client.ensure_persistent_index = AsyncMock()
+        await connected_provider._ensure_indexes()
+        blocks = {
+            tuple(call.args[1])
+            for call in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if call.args[0] == CollectionNames.BLOCKS.value
+        }
+        assert blocks == {
+            ("orgId", "recordGroupId", "name"),           # edge-resolution symbol sweep
+            ("orgId", "recordGroupId", "qualifiedName"),  # resolution target lookup
+            ("recordId",),                                # per-file reconciliation
+            ("orgId", "recordId", "qualifiedName"),       # the agent tools' addressing
+            ("orgId", "name"),                            # free-text select, repo-agnostic
+        }
+
+        code_files = {
+            tuple(call.args[1])
+            for call in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if call.args[0] == CollectionNames.CODE_FILES.value
+        }
+        # A file's path lives here, not on its blocks, so this backs every
+        # path-prefix query the code tools make.
+        assert code_files == {("orgId", "filePath")}
 
 
 # ---------------------------------------------------------------------------
@@ -8119,7 +8147,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 28
 
 
 # ---------------------------------------------------------------------------
@@ -14164,6 +14192,107 @@ class TestCopyDocumentRelationships:
         result = await connected_provider.copy_document_relationships("r1", "r2")
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_uses_batch_upsert_not_per_edge_create_document(self, connected_provider):
+        """The old per-edge create_document loop had no dedup guard and
+        accumulated duplicate taxonomy edges on retry -- batch_create_edges
+        UPSERTs on {_from, _to} instead, so a redelivered dedup event is a
+        no-op on the graph.
+        """
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                [{"from": "records/r1", "to": "departments/d1", "timestamp": 1000}],
+                [{"_from": "records/r2", "_to": "departments/d1"}],  # batch upsert result
+                [],  # categories: no edges
+                [],  # languages: no edges
+                [],  # topics: no edges
+            ]
+        )
+        connected_provider.http_client.create_document = AsyncMock()
+
+        result = await connected_provider.copy_document_relationships("r1", "r2")
+
+        assert result is True
+        connected_provider.http_client.create_document.assert_not_awaited()
+        upsert_call = connected_provider.http_client.execute_aql.await_args_list[1]
+        upsert_query = upsert_call.args[0] if upsert_call.args else upsert_call.kwargs.get("query")
+        assert "UPSERT" in upsert_query
+        bind_vars = upsert_call.args[1] if len(upsert_call.args) > 1 else upsert_call.kwargs.get("bind_vars")
+        assert bind_vars["edges"][0]["_from"] == "records/r2"
+        assert bind_vars["edges"][0]["_to"] == "departments/d1"
+
+
+# ---------------------------------------------------------------------------
+# get_taxonomy_entities_for_record
+# ---------------------------------------------------------------------------
+
+
+class TestGetTaxonomyEntitiesForRecord:
+    @pytest.mark.asyncio
+    async def test_empty_record_key_returns_empty(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock()
+        result = await connected_provider.get_taxonomy_entities_for_record("")
+        assert result == []
+        connected_provider.http_client.execute_aql.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_aggregates_across_all_taxonomy_groups(self, connected_provider):
+        """One query per edge group (category, department, topic, language),
+        and a subcategory-level result under BELONGS_TO_CATEGORY resolves to
+        entityType=subcategory, not category."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                [
+                    {"entityId": "cat-1", "name": "Finance", "_collection": "categories"},
+                    {"entityId": "sub-1", "name": "Budgets", "_collection": "subcategories1"},
+                ],
+                [{"entityId": "dept-1", "name": "Engineering", "_collection": "departments"}],
+                [{"entityId": "topic-1", "name": "OKRs", "_collection": "topics"}],
+                [{"entityId": "lang-1", "name": "English", "_collection": "languages"}],
+            ]
+        )
+
+        result = await connected_provider.get_taxonomy_entities_for_record("rec-1")
+
+        assert connected_provider.http_client.execute_aql.await_count == 4
+        by_id = {row["entityId"]: row for row in result}
+        assert by_id["cat-1"]["entityType"] == "category"
+        assert by_id["sub-1"]["entityType"] == "subcategory"
+        assert by_id["dept-1"]["entityType"] == "department"
+        assert by_id["topic-1"]["entityType"] == "topic"
+        assert by_id["lang-1"]["entityType"] == "language"
+        # _collection is an internal routing field, must not leak into the
+        # EntityRecord-shaped output.
+        assert all("_collection" not in row for row in result)
+
+    @pytest.mark.asyncio
+    async def test_seeds_from_the_single_record_not_org(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+
+        await connected_provider.get_taxonomy_entities_for_record("rec-42", transaction="txn-1")
+
+        first_call = connected_provider.http_client.execute_aql.await_args_list[0]
+        bind_vars = first_call.args[1] if len(first_call.args) > 1 else first_call.kwargs.get("bind_vars")
+        assert bind_vars["record_doc"] == "records/rec-42"
+        assert "org_id" not in bind_vars
+        assert first_call.kwargs.get("txn_id") == "txn-1"
+
+    @pytest.mark.asyncio
+    async def test_one_group_failure_does_not_abort_the_others(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                RuntimeError("category query failed"),
+                [{"entityId": "dept-1", "name": "Engineering", "_collection": "departments"}],
+                [],
+                [],
+            ]
+        )
+
+        result = await connected_provider.get_taxonomy_entities_for_record("rec-1")
+
+        assert len(result) == 1
+        assert result[0]["entityId"] == "dept-1"
+
 
 # ---------------------------------------------------------------------------
 # get_team_with_users
@@ -15884,8 +16013,14 @@ class TestDeleteMainRecord:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        connected_provider.delete_blocks_for_records = AsyncMock(return_value=0)
         await connected_provider._delete_main_record("r1", transaction="txn1")
         connected_provider.http_client.execute_aql.assert_called_once()
+        # Every connector-specific delete executor ends here, so this is where a
+        # code file's blocks go with it.
+        connected_provider.delete_blocks_for_records.assert_awaited_once_with(
+            ["r1"], transaction="txn1"
+        )
 
 
 # ---------------------------------------------------------------------------
