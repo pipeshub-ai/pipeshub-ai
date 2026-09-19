@@ -24,7 +24,7 @@ from app.agents.actions.util.parse_file import (
 )
 from app.models.blocks import Block, BlockType, BlocksContainer, ImageMetadata
 from app.models.entities import LlmTextContent
-from app.utils.llm import LLMNotConfiguredError
+from app.utils.llm import LLM_MISSING_FOR_FILE, LLMNotConfiguredError
 from app.agents.actions.util.parse_file import ParseErrorPayload
 
 
@@ -390,6 +390,30 @@ class TestParse:
         ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
         assert ok is False
         assert "Parse failed" in msg[0].error
+
+    @pytest.mark.asyncio
+    async def test_spreadsheet_without_a_model_says_what_to_do(self) -> None:
+        """XLSX parsing asks for the model; its message must not get a "Parse failed:" prefix."""
+        import io
+
+        import openpyxl
+
+        workbook = openpyxl.Workbook()
+        workbook.active.append(["name", "value"])
+        raw = io.BytesIO()
+        workbook.save(raw)
+
+        parser = _make_parser()
+        parser._config.get_config = AsyncMock(return_value={"embedding": [{"provider": "openAI"}]})
+        rec = _make_file_record(
+            extension="xlsx",
+            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        ok, msg = await parser.parse(rec, raw.getvalue(), None, None, MagicMock())
+
+        assert ok is False
+        assert msg[0].error == LLM_MISSING_FOR_FILE
+        assert "Parse failed" not in msg[0].error
 
     @pytest.mark.asyncio
     async def test_to_llm_context_fails(self):

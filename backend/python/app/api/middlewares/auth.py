@@ -278,7 +278,7 @@ async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str
         # Without Node's answer a revoked token looks exactly like a valid one.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not verify the access token; try again shortly",
+            detail="We couldn't confirm your sign-in just now. Please try again in a few seconds.",
             headers={"Retry-After": "5"},
         )
     return caller.role

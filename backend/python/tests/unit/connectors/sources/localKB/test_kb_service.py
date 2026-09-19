@@ -1200,6 +1200,9 @@ class TestCreateKbPermissions:
 
         assert result["success"] is False
         assert result["code"] == 404
+        # The person sharing sees what to do, never raw team ids.
+        assert "Refresh the page" in result["reason"]
+        assert not any(team_id in result["reason"] for team_id in team_ids)
         service.graph_provider.create_kb_permissions.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1999,6 +2002,14 @@ class TestResolveUserIds:
         keys, err = await service._resolve_user_ids_to_graph_keys(["u1"], "req1")
         assert keys is None
         assert err["code"] == 400
+
+    @pytest.mark.asyncio
+    async def test_unknown_requester_gets_a_next_step_not_an_id(self, service) -> None:
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        _, _, err = await service._resolve_user_and_kb_access("kb1", "user-mongo-123")
+        assert err["code"] == 404
+        assert "Sign out and sign back in" in err["reason"]
+        assert "user-mongo-123" not in err["reason"]
 
     @pytest.mark.asyncio
     async def test_malformed_user_record(self, service):

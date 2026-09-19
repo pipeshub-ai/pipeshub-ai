@@ -14,7 +14,7 @@ import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
-import { toast } from '@/lib/store/toast-store';
+import { showNoModelToast } from './utils/no-model-toast';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import {
   buildAssistantApiFilters,
@@ -219,11 +219,7 @@ export function buildStreamChatRequestForSlot(
   const modelCtxKey = ctxKeyFromAgent(effectiveAgentId ?? null);
   const rawModel = getEffectiveModel(modelCtxKey);
   if (!rawModel) {
-    toast.warning('No AI model configured', {
-      description: 'This workspace has no AI model set up. Configure one in Settings.',
-      action: { label: 'AI Models Settings', href: '/workspace/ai-models' },
-      duration: null,
-    });
+    showNoModelToast();
   }
   const effectiveModel = rawModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
   // No explicit user choice → prefer the agent's configured default, then

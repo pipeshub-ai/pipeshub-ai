@@ -207,7 +207,7 @@ describe('uploadRecords — KB existence and write-permission pre-check', () => 
     stubConnectorCalls([
       {
         statusCode: 503,
-        data: { detail: 'Could not verify the access token; try again shortly' },
+        data: { detail: "We couldn't confirm your sign-in just now. Please try again in a few seconds." },
         headers: { 'retry-after': '5' },
       },
     ])
@@ -224,7 +224,7 @@ describe('uploadRecords — KB existence and write-permission pre-check', () => 
     expect(next.calledOnce).to.be.true
     const err = next.firstCall.args[0] as ServiceUnavailableError
     expect(err).to.be.instanceOf(ServiceUnavailableError)
-    expect(err.message).to.equal('Could not verify the access token; try again shortly')
+    expect(err.message).to.equal("We couldn't confirm your sign-in just now. Please try again in a few seconds.")
     expect(err.metadata).to.deep.equal({ retryAfter: '5' })
   })
 

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.utils.llm import (
+    LLM_MISSING_FOR_FILE,
     LLMNotConfiguredError,
     get_embedding_model_config,
     get_image_generation_config,
@@ -102,9 +103,10 @@ class TestGetLlm:
         """A config with no LLM bucket used to raise KeyError('llm'), which records showed as "'llm'"."""
         mock_config_service.get_config.return_value = ai_models
 
-        with pytest.raises(LLMNotConfiguredError, match="No language model is configured") as exc:
+        with pytest.raises(LLMNotConfiguredError) as exc:
             await get_llm(mock_config_service)
-        assert "AI Models" in str(exc.value)
+        assert str(exc.value) == LLM_MISSING_FOR_FILE
+        assert "AI Models" in str(exc.value) and "reindex" in str(exc.value)
         assert isinstance(exc.value, ValueError)
 
     @pytest.mark.asyncio

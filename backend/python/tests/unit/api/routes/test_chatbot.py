@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from app.utils.llm import LLMNotConfiguredError
+from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 
 # ---------------------------------------------------------------------------
 # ChatQuery model
@@ -235,8 +235,9 @@ class TestGetModelConfig:
         from app.api.routes.chatbot import get_model_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=ai_models)
-        with pytest.raises(LLMNotConfiguredError, match="No language model is configured"):
+        with pytest.raises(LLMNotConfiguredError) as exc:
             await get_model_config(cs)
+        assert str(exc.value) == LLM_MISSING_FOR_CHAT
 
     @pytest.mark.asyncio
     async def test_no_llm_bucket_after_refresh_raises_the_clear_error(self) -> None:

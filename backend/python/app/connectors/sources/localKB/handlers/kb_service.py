@@ -49,6 +49,17 @@ def _mutation_succeeded(result: object) -> bool:
     return bool(result)
 
 
+def _people_gone() -> dict:
+    return {
+        "success": False,
+        "reason": (
+            "Some people you picked are no longer in this workspace. "
+            "Remove them and try sharing again."
+        ),
+        "code": 400,
+    }
+
+
 class KnowledgeBaseService:
     """Data handler for knowledge base operations."""
 
@@ -99,7 +110,14 @@ class KnowledgeBaseService:
         user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
         if not user:
             self.logger.warning(f"⚠️ User not found: {user_id}")
-            return None, None, {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
+            return None, None, {
+                "success": False,
+                "code": 404,
+                "reason": (
+                    "We couldn't find your account in this workspace. Sign out and sign back in; "
+                    "if that doesn't help, ask a workspace admin to check your access."
+                ),
+            }
 
         user_key = user.get("id") or user.get("_key")
         if not user_key:
@@ -149,22 +167,17 @@ class KnowledgeBaseService:
                 org_id,
                 chunk_size=MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE,
             )
-            if not mapping:
-                return None, {
-                    "success": False,
-                    "reason": f"Users not found in graph: {user_ids}",
-                    "code": 400,
-                }
-            missing = [uid for uid in user_ids if uid not in mapping]
+            missing = [uid for uid in user_ids if uid not in (mapping or {})]
             if missing:
-                return None, {
-                    "success": False,
-                    "reason": f"Users not found in graph: {missing}",
-                    "code": 400,
-                }
+                self.logger.warning(f"Share refused: users {missing} not found in org {org_id}")
+                return None, _people_gone()
             return [mapping[uid] for uid in user_ids], None
         except ValueError as e:
-            return None, {"success": False, "reason": str(e), "code": 400}
+            # The providers raise this, naming the missing ids, when any user is unknown.
+            self.logger.warning(
+                f"Share refused for requester {requester_id} in org {org_id}: {e}"
+            )
+            return None, _people_gone()
 
     async def _teams_not_in_requester_org(
         self,
@@ -183,7 +196,15 @@ class KnowledgeBaseService:
         # Another org's team reads as missing, so team ids can't be probed across tenants.
         missing = [team_id for team_id in team_ids if team_id not in in_org]
         if missing:
-            return {"success": False, "reason": f"Teams not found: {missing}", "code": 404}
+            self.logger.warning(f"Share refused: teams {missing} are not in org {org_id}")
+            return {
+                "success": False,
+                "reason": (
+                    "One or more of the selected teams no longer exists or isn't part of your "
+                    "organization. Refresh the page and choose the teams again."
+                ),
+                "code": 404,
+            }
         return None
 
     async def _assert_no_folder_sibling_conflict(

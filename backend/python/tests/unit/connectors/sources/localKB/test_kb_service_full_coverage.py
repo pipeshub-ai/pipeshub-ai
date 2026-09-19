@@ -961,7 +961,9 @@ class TestResolveUserIdsToGraphKeys:
         assert graph_keys is None
         assert err["success"] is False
         assert err["code"] == 400
-        assert "u1" in err["reason"]
+        # Plain words and a next step; the ids go to the log, not the person sharing.
+        assert "Remove them and try sharing again" in err["reason"]
+        assert "u1" not in err["reason"]
 
     @pytest.mark.asyncio
     async def test_partial_mapping(self, service):
@@ -978,7 +980,9 @@ class TestResolveUserIdsToGraphKeys:
         assert graph_keys is None
         assert err["success"] is False
         assert err["code"] == 400
-        assert "u2" in err["reason"]
+        # Plain words and a next step; the ids go to the log, not the person sharing.
+        assert "Remove them and try sharing again" in err["reason"]
+        assert "u2" not in err["reason"]
 
     @pytest.mark.asyncio
     async def test_value_error_from_provider(self, service):
@@ -995,6 +999,8 @@ class TestResolveUserIdsToGraphKeys:
         assert graph_keys is None
         assert err["success"] is False
         assert err["code"] == 400
+        assert "Remove them and try sharing again" in err["reason"]
+        assert "missing" not in err["reason"] and "graph" not in err["reason"]
 
 
 class TestCreateKbPermissions:

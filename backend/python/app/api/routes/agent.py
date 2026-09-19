@@ -56,6 +56,7 @@ from app.telemetry.identity import domain_from_email
 from app.utils.attachment_utils import (
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
+from app.utils.llm import LLM_MISSING_FOR_CHAT
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -219,7 +220,7 @@ class LLMInitializationError(AgentError):
     """LLM initialization failed"""
     def __init__(self) -> None:
         super().__init__(
-            detail="Failed to initialize LLM service. LLM configuration is missing.",
+            detail=LLM_MISSING_FOR_CHAT,
             status_code=500
         )
 

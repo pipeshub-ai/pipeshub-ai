@@ -8,6 +8,8 @@ interface ErrorToastConfig {
 
 const activeErrorToasts = new Map<ErrorType, string>();
 
+const BUSY_STATUSES = new Set([429, 503, 504]);
+
 const ERROR_TOAST_MAP: Record<ErrorType, ErrorToastConfig | null> = {
   [ErrorType.AUTHENTICATION_ERROR]: null, // Handled by redirect
   [ErrorType.REQUEST_CANCELLED]: null, // Abort/superseded request — not user-actionable
@@ -61,8 +63,10 @@ export function showErrorToast(error: ProcessedError): void {
 
   // Always prefer backend error message over hardcoded fallback
   const description = error.message || config.description;
+  // Busy or slow is worth a retry, not a "Server Error" scare.
+  const title = BUSY_STATUSES.has(error.statusCode ?? 0) ? 'Please try again shortly' : config.title;
 
-  const id = toast.error(config.title, {
+  const id = toast.error(title, {
     description,
     duration: null,
     showCloseButton: true,

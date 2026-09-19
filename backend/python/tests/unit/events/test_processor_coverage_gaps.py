@@ -30,6 +30,7 @@ from app.models.blocks import (
     TableRowMetadata,
 )
 from app.services.messaging.config import IndexingEvent
+from app.utils.llm import LLM_MISSING_FOR_FILE
 
 log = logging.getLogger("test_processor_coverage_gaps")
 log.setLevel(logging.CRITICAL)
@@ -1256,5 +1257,6 @@ class TestNoLanguageModelConfigured:
                 proc.process_excel_document("a.xlsx", "r1", 1, "UPLOAD", "o1", b"PK", "vr1")
             )
 
-        assert "No language model is configured" in str(exc.value)
+        # Stored as the record's failure reason as-is, with no "Failed to process document" prefix.
+        assert str(exc.value) == LLM_MISSING_FOR_FILE
         assert "'llm'" not in str(exc.value)

@@ -86,6 +86,41 @@ export function extractApiErrorMessage(data: unknown): string | null {
   return null;
 }
 
+const MAX_RETRY_HINT_SECONDS = 120;
+
+/**
+ * Seconds to wait from a Retry-After value: whole seconds, or an HTTP date
+ * still in the future. Undefined when invalid, past, or above `max` (too far off
+ * to quote in a message).
+ */
+export function parseRetryAfter(
+  value: unknown,
+  now: number = Date.now(),
+  max: number = MAX_RETRY_HINT_SECONDS,
+): number | undefined {
+  const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
+  if (!text) return undefined;
+  let seconds: number;
+  if (/^\d+$/.test(text)) {
+    seconds = Number(text);
+  } else {
+    const at = Date.parse(text);
+    if (Number.isNaN(at)) return undefined;
+    seconds = Math.ceil((at - now) / 1000);
+  }
+  return seconds > 0 && seconds <= max ? seconds : undefined;
+}
+
+function retryAfterSeconds(error: AxiosError): number | undefined {
+  return parseRetryAfter(error.response?.headers?.['retry-after']);
+}
+
+export function busyMessage(retryAfter?: number): string {
+  return retryAfter
+    ? `PipesHub is busy right now. Please try again in ${retryAfter} second${retryAfter === 1 ? '' : 's'}.`
+    : 'PipesHub is busy right now. Please try again in a few seconds.';
+}
+
 function isAxiosRequestCancelled(error: AxiosError): boolean {
   return error.code === 'ERR_CANCELED' || error.message === 'canceled';
 }
@@ -182,10 +217,23 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
         originalError: error,
       };
 
+    // Busy or slow, not broken: the server's own words when it sent any
+    // (never axios's "Request failed with status code 503"), else a retry hint.
+    case 429:
+    case 503:
+    case 504: {
+      const serverMessage = data?.message || reasonField || errorField || detailField;
+      return {
+        type: ErrorType.SERVER_ERROR,
+        message: serverMessage || busyMessage(retryAfterSeconds(error)),
+        statusCode: status,
+        details: data?.details,
+        originalError: error,
+      };
+    }
+
     case 500:
     case 502:
-    case 503:
-    case 504:
       return {
         type: ErrorType.SERVER_ERROR,
         message: message || 'Server error. Please try again later.',

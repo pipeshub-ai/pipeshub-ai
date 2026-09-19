@@ -48,7 +48,7 @@ from app.utils.attachment_mime_types import (
     SUPPORTED_ATTACHMENT_MIME_TYPES,
     TEXT_ATTACHMENT_MIME_TYPES,
 )
-from app.utils.llm import LLMNotConfiguredError
+from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -332,7 +332,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
             return key_config, new_ai_models
 
     if not llm_configs:
-        raise LLMNotConfiguredError()
+        raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
 
     return llm_configs, ai_models
 
@@ -354,7 +354,7 @@ async def get_llm_for_chat(
     try:
         llm_config, ai_models_config = await get_model_config(config_service, model_key, model_name)
         if not llm_config:
-            raise LLMNotConfiguredError()
+            raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
 
         # Handle list of configs - extract first one if we got a list
         if isinstance(llm_config, list):
@@ -1048,7 +1048,7 @@ async def _generate_chat_stream_via_agent_loop(
     try:
         llm_bundle = await llm_task
         if not llm_bundle or llm_bundle[0] is None:
-            raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
+            raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
         llm, model_config, ai_models_config = llm_bundle
     except Exception as exc:
         for pending in (prompts_task, user_doc_task, org_doc_task):

@@ -889,6 +889,10 @@ class TestAuthMiddleware:
 
         assert exc_info.value.status_code == 503
         assert exc_info.value.headers == {"Retry-After": "5"}
+        # Shown to the person as-is: plain words and when to retry, no "access token".
+        assert exc_info.value.detail == (
+            "We couldn't confirm your sign-in just now. Please try again in a few seconds."
+        )
         assert not hasattr(request.state, "user")
 
     @pytest.mark.asyncio

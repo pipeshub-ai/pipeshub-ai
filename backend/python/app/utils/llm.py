@@ -6,6 +6,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.utils.aimodels import (
     STTAdapter,
     TTSAdapter,
@@ -15,18 +16,26 @@ from app.utils.aimodels import (
     is_local_cpu_embedding_provider,
 )
 
+# Users read these as a file's failure reason or a chat error, so each says what to do next.
+LLM_MISSING_FOR_FILE = (
+    "No AI model is set up for this workspace yet, so this file couldn't be processed. "
+    "An admin can add one in Workspace → AI Models, then reindex the file."
+)
+LLM_MISSING_FOR_CHAT = (
+    "No AI model is set up for this workspace yet. "
+    "An admin can add one in Workspace → AI Models, then you can send your message again."
+)
 
-class LLMNotConfiguredError(ValueError):
+
+class LLMNotConfiguredError(DocumentProcessingError, ValueError):
     """No language model is configured for the org.
 
-    Its message ends up as a record's failure reason, so it tells the admin what to do.
+    A DocumentProcessingError so indexing passes the message through as the
+    record's failure reason instead of prefixing it with "Failed to process document".
     """
 
-    def __init__(self) -> None:
-        super().__init__(
-            "No language model is configured. Add one under Workspace > AI Models; "
-            "indexing and chat both need it."
-        )
+    def __init__(self, message: str = LLM_MISSING_FOR_FILE) -> None:
+        super().__init__(message)
 
 
 async def _load_ai_models(config_service: ConfigurationService) -> dict:
