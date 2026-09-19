@@ -15,10 +15,13 @@ safe precisely because nothing references it — a shared VRID would still have
 records, and would take the per-record path instead.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
-from app.services.vector_db.collection_manifest import CollectionManifestStore
+from app.services.vector_db.collection_manifest import (
+    CollectionManifestStore,
+    ManagedCollection,
+)
 from app.services.vector_db.collections import CollectionType, sanitize_collection_name
 from app.services.vector_db.strategy import (
     CollectionStrategy,
@@ -49,7 +52,9 @@ class StaticCollectionLocator:
     ) -> Sequence[str]:
         return list(self._names)
 
-    async def all_collections(self, *, fresh: bool = False) -> Sequence[str]:
+    async def all_collections(
+        self, *, fresh: bool = False, strict: bool = False
+    ) -> Sequence[str]:
         return list(self._names)
 
 
@@ -62,11 +67,20 @@ class VirtualRecordCollectionLocator:
         manifest_store: CollectionManifestStore,
         logger,
         collection_type: CollectionType = CollectionType.RECORDS,
+        list_managed: Callable[..., Awaitable[Sequence[ManagedCollection]]] | None = None,
     ) -> None:
         self._strategy = strategy
         self._manifest_store = manifest_store
         self._logger = logger
         self._collection_type = collection_type
+        # The manifest is only ever written on the indexing write path, so a
+        # deployment that upgraded into the registry has a live collection and
+        # an empty manifest until something is indexed. Reading the store
+        # directly would report nothing there. ``CollectionRegistry
+        # .list_managed_collections`` adopts such a collection first, which is
+        # why delete paths hand it in; the store stays the fallback for callers
+        # that hold no registry.
+        self._list_managed = list_managed
 
     def collections_for_records(
         self, records: Sequence[Mapping[str, Any]]
@@ -101,15 +115,23 @@ class VirtualRecordCollectionLocator:
             )
         return names
 
-    async def all_collections(self, *, fresh: bool = False) -> Sequence[str]:
+    async def all_collections(
+        self, *, fresh: bool = False, strict: bool = False
+    ) -> Sequence[str]:
         """Every managed collection of this locator's collection type.
 
         ``fresh=True`` bypasses the manifest's TTL cache. Delete paths pass it:
         a stale — or, on a deployment that upgraded into the registry, an
         empty — view resolves to fewer collections than exist, and points left
         in the ones it missed are unreachable afterwards.
+
+        ``strict=True`` is forwarded to the registry enumerator, so a delete
+        path can tell "nothing is managed" apart from "could not find out".
         """
-        managed = await self._manifest_store.list(fresh=fresh)
+        if self._list_managed is not None:
+            managed = await self._list_managed(fresh=fresh, strict=strict)
+        else:
+            managed = await self._manifest_store.list(fresh=fresh)
         return [
             entry.name
             for entry in managed
