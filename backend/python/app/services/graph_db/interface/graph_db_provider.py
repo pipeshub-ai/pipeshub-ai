@@ -10,9 +10,234 @@ All methods support optional transaction parameter for atomic operations.
 import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
 from app.models.entities import Person
+
+
+@dataclass(frozen=True)
+class AccessibleContainers:
+    """The containers a user may search, in place of enumerating their records.
+
+    Consumed as a vector-DB predicate::
+
+        orgId == org_id
+        AND (connectorIds IN app_ids
+             OR recordGroupIds IN (trusted | verify)
+             OR rootRecordGroupIds IN root_group_ids
+             OR virtualRecordId IN direct_records)
+
+    Every field *widens* — the filter admits records the user cannot read, and
+    ``filter_accessible_virtual_record_ids`` is what makes the answer exact.
+    That asymmetry is the whole design: a container the user cannot reach costs
+    precision, a container wrongly omitted costs recall with no error to notice.
+    So bounds below fail over to ``fallback_reason`` rather than truncating.
+
+    ``trusted`` vs ``verify`` is the only performance lever. A group lands in
+    ``trusted`` solely when it declares ``PermissionModel.RECORD_GROUP_LEVEL``; unset —
+    which is every group until a connector says otherwise — means ``verify``.
+
+    Collections/KBs arrive in ``app_ids``, never in the group sets: a KB record
+    carries ``connectorIds = [kbId]`` and an empty ``recordGroupIds`` by design
+    (see ``services.vector_db.membership._record_group_id_from_edge``). Routing
+    them into the group sets makes every uploaded document invisible.
+
+    Note the empty convention inverts ``get_accessible_connector_types``, where
+    empty means "could not narrow". Here empty with ``fallback_reason is None``
+    means the user genuinely reaches nothing; "could not narrow" is
+    ``fallback_reason``.
+
+    ``scope_connector_ids`` echoes the request's ``apps`` ∪ ``kb`` scope the
+    sets were narrowed to (None when unscoped). Scope only ever removes
+    containers; the caller compares the echo against its own reading of the
+    request, so a provider that ignored the scope cannot silently widen it.
+    """
+
+    app_ids: frozenset[str] = frozenset()
+    #: The subset of ``app_ids`` whose connector declares ``APP_LEVEL``
+    app_ids_trusted: frozenset[str] = frozenset()
+    record_group_ids_trusted: frozenset[str] = frozenset()
+    record_group_ids_verify: frozenset[str] = frozenset()
+    direct_records: Mapping[str, str] = field(default_factory=dict)
+    #: Groups matched against a record's root instead of its own group, for
+    #: connectors where every descendant inherits (Slack: channels, so a
+    #: workspace costs one id per channel rather than one per thread).
+    root_group_ids: frozenset[str] = frozenset()
+    fallback_reason: str | None = None
+    scope_connector_ids: frozenset[str] | None = None
+
+    @property
+    def record_group_ids(self) -> frozenset[str]:
+        """Both group sets, as the vector filter sees them — it cannot tell them
+        apart, and separating them there would only cost a clause."""
+        return self.record_group_ids_trusted | self.record_group_ids_verify
+
+    @property
+    def is_empty(self) -> bool:
+        return not (
+            self.app_ids
+            or self.record_group_ids_trusted
+            or self.record_group_ids_verify
+            or self.root_group_ids
+            or self.direct_records
+        )
+
+    @property
+    def usable(self) -> bool:
+        """Whether a container filter may be built from this at all."""
+        return self.fallback_reason is None and not self.is_empty
+
+
+#: Filter keys that name containers (connector and Collection app ids) rather
+#: than record-level predicates. Treated as one scope: ``apps`` ∪ ``kb``.
+CONTAINER_SCOPE_FILTER_KEYS = ("apps", "kb")
+
+#: A control flag rather than a filter: a project-scoped chat sets it so an
+#: empty ``apps``/``kb`` selection means "search nothing" instead of falling
+#: back to everything the user can reach. Carried inside ``filters`` by
+#: `ChatQuery.strictScope` (see `api/routes/chatbot.py`).
+STRICT_SCOPE_FILTER_KEY = "strictScope"
+
+
+def requested_scope_ids(filters: "Mapping[str, Any] | None") -> tuple[str, ...] | None:
+    """The app ids a request is scoped to, or None when it is unscoped.
+
+    ``apps`` and ``kb`` are one scope: a Collection id is honoured under either
+    key, as is a connector id. Ordered (``apps`` first) and de-duplicated,
+    because the record-id path resolves a shared virtualRecordId to whichever
+    scoped app it queries first.
+
+    Unscoped only when both keys are absent, None or an empty list. Anything
+    else is scoped, and values that cannot be an app id contribute nothing — so
+    ``[""]``, ``[None]`` or a bare string narrow to nothing rather than widening
+    to everything. ``NO_KB_SELECTED`` is kept as-is: it matches no app, which is
+    exactly what an agent sending it alone means.
+    """
+    filters = filters or {}
+    raw_values = [filters.get(key) for key in CONTAINER_SCOPE_FILTER_KEYS]
+    # `strictScope` is deliberately not part of the scope: it says how an
+    # EMPTY scope must be read, not which containers were asked for.
+    if all(value is None or (isinstance(value, (list, tuple)) and not value) for value in raw_values):
+        return None
+
+    ordered: dict[str, None] = {}
+    for value in raw_values:
+        if not isinstance(value, (list, tuple)):
+            continue
+        for item in value:
+            if isinstance(item, str) and item:
+                ordered.setdefault(item, None)
+    return tuple(ordered)
+
+
+def _unsupported_container_filters(
+    filters: "dict[str, list[str]] | None",
+    time_range: "dict[str, int] | None",
+) -> str | None:
+    """Why this request cannot be expressed as containers, or None if it can.
+
+    ``apps`` and ``kb`` are supported: they name containers, and both the
+    container query and the verifier intersect against them. ``strictScope``
+    is a control flag the container query honours too (an empty scope under it
+    reaches nothing rather than everything). The rest — departments,
+    categories, languages, topics — and any time range are record-level
+    predicates with no container equivalent at all.
+    """
+    if time_range:
+        return "unsupported_filter:time_range"
+    present = sorted(
+        key
+        for key, values in (filters or {}).items()
+        if values
+        and key not in CONTAINER_SCOPE_FILTER_KEYS
+        and key != STRICT_SCOPE_FILTER_KEY
+    )
+    if present:
+        return f"unsupported_filters:{','.join(present)}"
+    return None
+
+
+def _containers_from_row(
+    row: "dict | None",
+    *,
+    logger: Any,
+    scope_connector_ids: frozenset[str] | None,
+) -> AccessibleContainers:
+    """Turn one provider result row into ``AccessibleContainers``.
+
+    Shared because the bounds are correctness, not tuning: a backend that
+    truncated where the other fell back would answer the same permission
+    question differently. Every bound here fails over rather than trimming.
+    """
+    from app.services.graph_db.common.utils import (
+        CONTAINER_FILTER_MAX_TERMS,
+        MAX_DIRECT_GRANT_RECORDS,
+    )
+
+    if not isinstance(row, dict):
+        # No row means the user document did not resolve. Distinct from "reaches
+        # nothing", which is a row with empty sets.
+        return AccessibleContainers(fallback_reason="user_not_found")
+
+    unsafe = [str(a) for a in (row.get("unsafeApps") or []) if a]
+    if unsafe:
+        # Points for a connector whose membership arrays were never written (or
+        # whose backfill gave up) carry empty connectorIds/recordGroupIds, so a
+        # container filter cannot see them at all. All-or-nothing per request:
+        # a mixed filter would be dominated by the unsafe half on day one.
+        return AccessibleContainers(
+            fallback_reason=f"membership_not_backfilled:{unsafe[0]}"
+        )
+
+    direct_rows = [r for r in (row.get("direct") or []) if isinstance(r, dict)]
+    if len(direct_rows) > MAX_DIRECT_GRANT_RECORDS:
+        logger.warning(
+            "get_accessible_containers: %d direct-grant records exceeds %d; "
+            "falling back to record ids. A connector is granting per record "
+            "without creating record groups.",
+            len(direct_rows),
+            MAX_DIRECT_GRANT_RECORDS,
+        )
+        return AccessibleContainers(
+            fallback_reason=f"direct_grant_overflow:{len(direct_rows)}"
+        )
+
+    app_ids = frozenset(str(a) for a in (row.get("appIds") or []) if a)
+    # Intersected with app_ids rather than taken at face value: a backend that
+    # forgets the new key yields an empty set and simply verifies everything,
+    # which is the safe direction.
+    app_ids_trusted = frozenset(
+        str(a) for a in (row.get("trustedApps") or []) if a
+    ) & app_ids
+    trusted = frozenset(str(g) for g in (row.get("trusted") or []) if g)
+    verify = frozenset(str(g) for g in (row.get("verify") or []) if g)
+    root_groups = frozenset(str(g) for g in (row.get("rootGroups") or []) if g)
+    direct = {
+        str(r["vid"]): str(r["rid"])
+        for r in direct_rows
+        if r.get("vid") and r.get("rid")
+    }
+
+    total = len(app_ids) + len(trusted) + len(verify) + len(root_groups) + len(direct)
+    if total > CONTAINER_FILTER_MAX_TERMS:
+        logger.warning(
+            "get_accessible_containers: %d filter terms exceeds %d; "
+            "falling back to record ids.",
+            total,
+            CONTAINER_FILTER_MAX_TERMS,
+        )
+        return AccessibleContainers(fallback_reason=f"too_many_terms:{total}")
+
+    return AccessibleContainers(
+        app_ids=app_ids,
+        app_ids_trusted=app_ids_trusted,
+        record_group_ids_trusted=trusted,
+        record_group_ids_verify=verify,
+        root_group_ids=root_groups,
+        direct_records=direct,
+        scope_connector_ids=scope_connector_ids,
+    )
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -2748,6 +2973,43 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def get_accessible_containers(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
+    ) -> AccessibleContainers:
+        """The containers a user may search, as an alternative to enumerating records.
+
+        Bounded by how many connectors and record groups a user reaches rather
+        than how many records, which is the point: the id list this replaces
+        grows with the corpus and is already past OpenSearch's default
+        ``index.max_terms_count`` on large tenants.
+
+        Concrete rather than abstract, unlike
+        ``filter_accessible_virtual_record_ids``, because the safe answer here is
+        not the empty one. An all-empty result with no ``fallback_reason`` reads
+        as "this user can search nothing" — a silent, total outage for any
+        provider that had simply not implemented it. Encoding the fallback once
+        is the value; a provider that overrides this opts in, and one that does
+        not keeps today's behaviour. Same reasoning as
+        ``get_record_relations_batch``.
+
+        ``apps`` and ``kb`` scope the result: an implementation must narrow
+        every set to ``requested_scope_ids(filters)`` and echo that scope in
+        ``scope_connector_ids``. Any other filter key or a ``time_range`` must
+        return a ``fallback_reason`` rather than silently dropping the
+        narrowing — see ``_unsupported_container_filters``.
+
+        Returns:
+            AccessibleContainers. Check ``usable`` before building a filter from
+            it; ``fallback_reason`` says why not when it is False.
+        """
+        return AccessibleContainers(
+            fallback_reason="provider does not implement container filtering"
+        )
+
     @abstractmethod
     async def get_records_by_record_ids(
         self,
@@ -4739,6 +5001,72 @@ class IGraphDBProvider(ABC):
         Reuses the same ``_get_permission_role_*`` fragments as
         ``get_knowledge_hub_node_access`` (full inheritPermissions paths).
         Apps are not checked here — callers keep App trail segments via ACL.
+
+        Not suitable for adjudicating search results: it takes record ids rather
+        than virtual record ids, so it cannot pick one record per VRID, and the
+        App carve-out above means it would admit a record whose connector the
+        user has lost. Use ``filter_accessible_virtual_record_ids``.
+        """
+        pass
+
+    @abstractmethod
+    async def filter_accessible_virtual_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        user_id: str,
+        org_id: str,
+        *,
+        trusted_app_ids: frozenset[str] | None = None,
+        trusted_group_ids: frozenset[str] | None = None,
+        scope_connector_ids: frozenset[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, str]:
+        """Adjudicate retrieved virtual record ids, returning the record to cite for each.
+
+        The read-side counterpart to ``get_accessible_virtual_record_ids``, and
+        deliberately the same ``{virtualRecordId: recordId}`` shape: that method
+        enumerates a user's whole reachable corpus so a search can be scoped by
+        it, this one decides an already-retrieved handful. A caller swapping one
+        for the other keeps every downstream mapping.
+
+        Resolving to a *single* record id per VRID is load-bearing, not a
+        convenience. A VRID is a content identity, so one can carry records from
+        several connectors; returning the wrong one cites a copy the user cannot
+        open. Implementations must return only ids the user may read, and must
+        apply the same gates as ``check_record_access_with_details``: the
+        connector must still be reachable, and the record must not be
+        soft-deleted or mid-indexing.
+
+        Abstract rather than defaulted because there is no safe default — an
+        empty map denies every search result, and anything permissive leaks.
+
+        Args:
+            virtual_record_ids: VRIDs returned by the vector search.
+            user_id: The ``userId`` field value, not the graph key.
+            org_id: Organization scope. A VRID is content identity and is not
+                unique across orgs, so this is a tenant boundary, not a filter.
+            trusted_app_ids: Apps declaring ``APP_LEVEL`` (connector instances
+                and Collections alike), where reaching the app proves reaching
+                every record under it. Records under these skip the role
+                resolution — every other gate still applies.
+            trusted_group_ids: Groups declaring ``RECORD_GROUP_LEVEL``. A record
+                qualifies only by reaching one through ``INHERIT_PERMISSIONS`` —
+                not by ``belongsTo`` membership, which is written unconditionally
+                and so would admit a record with ``inherit_permissions=False``.
+                Both default to empty, which reproduces full adjudication.
+            scope_connector_ids: The request's ``apps`` ∪ ``kb`` scope; only
+                records whose ``connectorId`` is in it may be cited. Needed even
+                though the search was already scoped: vector membership arrays
+                are unioned per VRID, so content shared with an out-of-scope app
+                can match. None means unscoped; an empty set grants nothing.
+
+        Returns:
+            ``{virtualRecordId: recordId}`` for the readable subset. VRIDs the
+            user cannot read are absent, so an empty map means every one was
+            denied.
+
+        Raises:
+            PermissionVerificationUnavailableError: the graph could not answer.
         """
         pass
 

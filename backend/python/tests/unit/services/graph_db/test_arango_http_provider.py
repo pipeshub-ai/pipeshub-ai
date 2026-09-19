@@ -992,6 +992,88 @@ class TestGetAccessibleVirtualRecordIds:
             # KB apps with UUIDs should be processed (not skipped like old knowledgeBase_ format)
             mock_connector.assert_awaited()
 
+    @pytest.mark.asyncio
+    async def test_a_bare_string_scope_is_not_a_substring_match(self, connected_provider):
+        """`cid in "app1app2"` is a substring test; a malformed scope must
+        narrow to nothing rather than match every app whose id it contains."""
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1", "app2"]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={"vid1": "rid1"}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vid2": "rid2"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", filters={"apps": "app1app2"}
+            )
+            assert result == {}
+            mock_connector.assert_not_awaited()
+            mock_kb.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_collection_id_under_apps_is_searched(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=["kb1"])
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1", "kb1"]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vk": "rk"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", filters={"apps": ["kb1"], "kb": []}
+            )
+            assert result == {"vk": "rk"}
+            mock_connector.assert_not_awaited()
+            assert mock_kb.await_args.args[2] == ["kb1"]
+
+    @pytest.mark.asyncio
+    async def test_scope_order_decides_query_order(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1", "app2"]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_kb:
+            await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", filters={"apps": ["app2", "app1"]}
+            )
+            assert [c.args[2] for c in mock_connector.await_args_list] == ["app2", "app1"]
+            mock_kb.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_app_types_offer_every_scoped_id_to_the_kb_query(
+        self, connected_provider
+    ):
+        """Without types a Collection looks like a connector and would only be
+        queried as one, which finds none of its uploads."""
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=RuntimeError("down"))
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1", "kb1"]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={}
+        ), patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_kb:
+            await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", filters={"apps": ["kb1"]}
+            )
+            assert mock_kb.await_args.args[2] == ["kb1"]
+
 
 class TestKbReclassificationFromAppsFilter:
     """KB app IDs placed in the `apps` filter must be reclassified to the
