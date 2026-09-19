@@ -25,9 +25,6 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 PROVIDER = Path(__file__).resolve().parents[4] / "app/services/graph_db/neo4j/neo4j_provider.py"
 
-# The All-team membership queries still say ``Users``; the fix is in its own pull request.
-PENDING_FIX = {"Users"}
-
 _CYPHER = re.compile(r"\b(MATCH|MERGE|CREATE|DETACH DELETE|RETURN)\b")
 _COMMENT = re.compile(r"//[^\n]*")
 _NODE = re.compile(r"\(\s*(?:[A-Za-z_]\w*)?\s*((?::\s*[A-Za-z_]\w*)+)")
@@ -97,7 +94,7 @@ def test_every_node_label_in_a_query_is_one_we_store() -> None:
     used = _used(_NODE, r"[:\s]+")
     for name, lines in _used(_PREDICATE, r":").items():
         used.setdefault(name, []).extend(lines)
-    unknown = {name: lines for name, lines in used.items() if name not in _known_labels() | PENDING_FIX}
+    unknown = {name: lines for name, lines in used.items() if name not in _known_labels()}
     assert not unknown, f"labels that no writer stores (name: provider lines): {unknown}"
 
 
