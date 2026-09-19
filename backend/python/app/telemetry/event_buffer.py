@@ -6,7 +6,7 @@ MetricsPusher tick. Bounded so a burst can't exhaust memory.
 
 import threading
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any
 
 MAX_EVENTS = 5000
 
@@ -14,7 +14,7 @@ MAX_EVENTS = 5000
 class EventBuffer:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._events: List[dict] = []
+        self._events: list[dict[str, Any]] = []
 
     def enqueue(self, event: dict) -> None:
         with self._lock:
@@ -22,7 +22,7 @@ class EventBuffer:
                 return  # drop on overflow
             self._events.append(event)
 
-    def drain(self) -> List[dict]:
+    def drain(self) -> list[dict[str, Any]]:
         with self._lock:
             events = self._events
             self._events = []
@@ -36,7 +36,7 @@ class EventBuffer:
 event_buffer = EventBuffer()
 
 
-def record_event(event: str, props: Optional[dict] = None) -> None:
+def record_event(event: str, props: dict[str, Any] | None = None) -> None:
     """Record a product-behaviour event (search_performed, agent_run, ...).
 
     Props may carry identity (email/org/user) and dimensions (connector/feature)

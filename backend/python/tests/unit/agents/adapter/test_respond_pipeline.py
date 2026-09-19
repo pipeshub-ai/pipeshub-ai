@@ -149,6 +149,23 @@ class TestSuccessPath:
         event_types = [e["event"] for e in sink.events]
         assert event_types == ["answer_chunk", "complete"]
 
+    async def test_empty_answer_still_counts_as_an_answer_in_telemetry(self) -> None:
+        """The user received something, sourceless. Leaving the fallback out
+        would make the answers-with-sources ratio look better than it is."""
+        from app.telemetry.event_buffer import event_buffer
+
+        event_buffer.drain()
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+
+        await finalizer.run(
+            agent_success=True, agent_error=None, agent_output="", event_sink=_RecordingSink(),
+        )
+
+        recorded = [e for e in event_buffer.drain() if e["event"] == "answer_generated"]
+        assert len(recorded) == 1
+        assert recorded[0]["props"]["citation_count"] == 0
+
     async def test_confidence_trailer_only_answer_falls_back_to_default_response(self) -> None:
         """The model's whole answer is the confidence trailer it was told to
         append — non-empty raw, but nothing survives the strip. Node rejects an
