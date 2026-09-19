@@ -11,22 +11,14 @@ and covers every statement & branch including:
   - All branch conditions: params vs no-params, cursor.description vs None,
     connected vs not connected, empty rows, etc.
 
-NOTE: We mock app.api.routes.toolsets via sys.modules before importing the
-redshift module to avoid the deep import chain that fails under --cov.
 """
 
 import logging
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Pre-mock the problematic dependency to allow import under --cov
-_toolsets_mock = MagicMock()
-if "app.api.routes.toolsets" not in sys.modules:
-    sys.modules["app.api.routes.toolsets"] = _toolsets_mock
-
-from app.sources.client.redshift.redshift import (  # noqa: E402
+from app.sources.client.redshift.redshift import (
     AuthConfig,
     RedshiftClient,
     RedshiftClientBuilder,
