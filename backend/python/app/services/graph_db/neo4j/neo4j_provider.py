@@ -51,6 +51,7 @@ from app.config.constants.neo4j import (
     parse_node_id,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -79,10 +80,22 @@ from app.models.entities import (
 from app.models.permission import EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
-from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
+from app.services.graph_db.common.utils import (
+    CONTAINER_INHERIT_MAX_DEPTH,
+    MAX_DIRECT_GRANT_RECORDS,
+    ROOT_SCOPED_CONNECTOR_TYPES,
+    build_connector_stats_response,
+    dedupe_agents_by_id,
+)
 from app.services.graph_db.interface.graph_db_provider import (
+    CONTAINER_SCOPE_FILTER_KEYS,
+    STRICT_SCOPE_FILTER_KEY,
+    AccessibleContainers,
     IGraphDBProvider,
+    _containers_from_row,
     _distinct_connector_types,
+    _unsupported_container_filters,
+    requested_scope_ids,
 )
 from app.services.graph_db.neo4j.neo4j_client import (
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
@@ -131,6 +144,7 @@ class Neo4jProvider(IGraphDBProvider):
         self.client: Neo4jClient | None = None
         self.validator = NodeSchemaValidator()
         self.accessible_records_cache = accessible_records_cache
+
 
     # ==================== Connection Management ====================
 
@@ -405,6 +419,20 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_web_url IF NOT EXISTS "
             "FOR (n:Record) ON (n.webUrl, n.orgId)"
+        )
+
+        # SINGLE: virtualRecordId. Every search adjudicates the VRIDs the vector
+        # DB returned with MATCH (r:Record {virtualRecordId, orgId}), once per
+        # VRID; unindexed that is a label scan per VRID, measured at 867 ms for
+        # 47 VRIDs over 12.8k records. Deliberately NOT composite with orgId:
+        # Neo4j only uses a composite when every indexed property is in the
+        # predicate, and get_records_by_virtual_record_id filters on
+        # virtualRecordId alone, so a composite leaves that path (the orphan
+        # sweeper, per-record ingest and delete) on a label scan. A VRID seek
+        # returns one or two rows, so filtering orgId afterwards is free.
+        indexes.append(
+            "CREATE INDEX record_virtual_record_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.virtualRecordId)"
         )
 
         # SINGLE: connectorId (queried independently in many patterns)
@@ -5004,6 +5032,7 @@ class Neo4jProvider(IGraphDBProvider):
         query = """
         MATCH (r:Record {connectorId: $connectorId})
         WHERE r.indexingStatus = $completedStatus
+          AND (r.isDeleted IS NULL OR r.isDeleted = false)
           AND r.virtualRecordId IS NOT NULL
           AND r.id IS NOT NULL
         RETURN DISTINCT r.virtualRecordId AS virtualId, r.id AS recordId
@@ -5118,6 +5147,281 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.warning("Could not resolve accessible connector types: %s", e)
             return []
 
+    async def get_accessible_containers(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
+    ) -> AccessibleContainers:
+        """Containers this user may search. See the interface for the contract.
+
+        The four seed paths mirror paths 5-7 of ``_get_virtual_ids_for_connector``
+        — same grants, same graph — but stop at the record *group* rather than
+        walking on to records, which is the entire saving.
+
+        Depth is ``CONTAINER_INHERIT_MAX_DEPTH``, not the ``0..2`` / ``0..5`` that
+        method uses per path. Those are shallower than the verifier's ``1..20``,
+        so they are pre-existing recall bugs; inheriting them here would omit
+        containers the verifier would then have admitted.
+
+        ``$scope_ids`` narrows every result set and never the traversal:
+        ``reachable_apps``, ``root_scoped_apps`` and the seed groups stay whole,
+        so scoping can only remove containers. The seeds are walked unscoped
+        because inheritance can cross apps — a group of an in-scope app that
+        inherits from a grant on another app is still in scope.
+        """
+        unsupported = _unsupported_container_filters(filters, time_range)
+        if unsupported:
+            return AccessibleContainers(fallback_reason=unsupported)
+        scope = requested_scope_ids(filters)
+        scope_set = frozenset(scope) if scope is not None else None
+        if scope_set is not None and not scope_set:
+            return AccessibleContainers(scope_connector_ids=scope_set)
+        # A project-scoped chat that selected nothing reaches nothing — the
+        # record-id path says the same (`get_accessible_virtual_record_ids`).
+        if scope_set is None and bool((filters or {}).get(STRICT_SCOPE_FILTER_KEY)):
+            return AccessibleContainers(scope_connector_ids=None)
+        if not user_id or not self.client:
+            return AccessibleContainers(fallback_reason="no_user_or_client")
+        query = """
+        MATCH (u:User {userId: $user_id})
+
+        // Every way a user reaches an app: ownership/instance membership
+        // (USER_APP_RELATION, direct and via team) and sharing (PERMISSION,
+        // direct and via team). Both halves are needed — a Collection shared
+        // with a user has a PERMISSION edge and no USER_APP_RELATION, and
+        // leaving it out of app_docs would exempt it from the backfill gate
+        // below while still admitting it as a container.
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(directApp:App)
+            RETURN collect(DISTINCT directApp) AS da
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:USER_APP_RELATION]->(teamApp:App)
+            RETURN collect(DISTINCT teamApp) AS ta
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(permApp:App)
+            RETURN collect(DISTINCT permApp) AS pa
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:PERMISSION {type: 'TEAM'}]->(teamPermApp:App)
+            RETURN collect(DISTINCT teamPermApp) AS tpa
+        }
+        // Duplicates across the four are harmless — every list below is turned
+        // into a set by the caller — but a null id would poison `IN`, which is
+        // three-valued in Cypher and would silently drop rows.
+        WITH u, [a IN da + ta + pa + tpa WHERE a.id IS NOT NULL] AS app_docs
+        WITH u, app_docs,
+             [a IN app_docs | a.id] AS reachable_apps,
+             // `$scope_ids IS NOT NULL` is what admits a hidden Collection: a
+             // scoped request can only reach one by naming it, and the scope
+             // clause beside this has already required that. Unscoped, a
+             // project's linked Collection stays out of search entirely —
+             // same rule the record-id path applies.
+             [a IN app_docs
+                WHERE a.permissionModel = $app_level AND a.orgId = $org_id
+                  AND ($scope_ids IS NULL OR a.id IN $scope_ids)
+                  AND (coalesce(a.isHidden, false) = false OR $scope_ids IS NOT NULL)
+                | a.id] AS app_level_ids,
+             [a IN app_docs
+                WHERE a.type = $kb_type AND a.orgId = $org_id
+                  AND ($scope_ids IS NULL OR a.id IN $scope_ids)
+                  AND (coalesce(a.isHidden, false) = false OR $scope_ids IS NOT NULL)
+                | a.id] AS kb_app_ids,
+             // Scoped like the rest: an un-backfilled app the request excludes
+             // cannot hide anything from it.
+             [a IN app_docs
+                WHERE (coalesce(a.vectorMembershipBackfilled, false) = false
+                       OR coalesce(a.vectorMembershipBackfillExhausted, false) = true)
+                  AND ($scope_ids IS NULL OR a.id IN $scope_ids)
+                | a.id] AS unsafe_app_ids,
+             [a IN app_docs
+                WHERE toUpper(coalesce(a.type, '')) IN $root_scoped_types
+                | a.id] AS root_scoped_apps
+
+        CALL {
+            WITH u, reachable_apps
+            OPTIONAL MATCH (u)-[:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
+            OPTIONAL MATCH (rgApp:App {id: rg.connectorId})
+            WITH rg, rgApp, reachable_apps
+            WHERE rg IS NOT NULL
+              AND ((rgApp IS NOT NULL AND rgApp.type = $kb_type)
+                   OR rg.connectorId IN reachable_apps)
+            RETURN collect(DISTINCT rg) AS s1
+        }
+        CALL {
+            WITH u, reachable_apps
+            OPTIONAL MATCH (u)-[:PERMISSION]->(gr)-[:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
+            WHERE (gr:Group OR gr:Role)
+            OPTIONAL MATCH (rgApp:App {id: rg.connectorId})
+            WITH rg, rgApp, reachable_apps
+            WHERE rg IS NOT NULL
+              AND ((rgApp IS NOT NULL AND rgApp.type = $kb_type)
+                   OR rg.connectorId IN reachable_apps)
+            RETURN collect(DISTINCT rg) AS s2
+        }
+        CALL {
+            WITH u, reachable_apps
+            OPTIONAL MATCH (u)-[:BELONGS_TO]->(:Organization)
+                           -[:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
+            OPTIONAL MATCH (rgApp:App {id: rg.connectorId})
+            WITH rg, rgApp, reachable_apps
+            WHERE rg IS NOT NULL
+              AND ((rgApp IS NOT NULL AND rgApp.type = $kb_type)
+                   OR rg.connectorId IN reachable_apps)
+            RETURN collect(DISTINCT rg) AS s3
+        }
+        CALL {
+            WITH u, reachable_apps
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:PERMISSION {type: 'TEAM'}]->(rg:RecordGroup {orgId: $org_id})
+            WITH rg, reachable_apps
+            WHERE rg IS NOT NULL
+              AND (rg.connectorName = $kb_type OR rg.connectorId IN reachable_apps)
+            RETURN collect(DISTINCT rg) AS s4
+        }
+        WITH u, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids,
+             root_scoped_apps, s1 + s2 + s3 + s4 AS seed_rgs
+
+        // Unlike the AQL twin this has no `uniqueVertices: global` or `PRUNE`
+        // equivalent, so a group DAG enumerates paths rather than vertices.
+        // Safe because group hierarchies are trees in practice —
+        // `parentExternalGroupId` is scalar and the sync writes one parent edge
+        // — but a genuine diamond at this depth would be costly. If one ever
+        // appears, replace this with a bounded iterative fixed point.
+        CALL {
+            WITH seed_rgs
+            UNWIND seed_rgs AS seed
+            OPTIONAL MATCH (descendant:RecordGroup {orgId: $org_id})
+                           -[:INHERIT_PERMISSIONS*1..__INHERIT_DEPTH__]->(seed)
+            // No grouping key beside the aggregate: with one, a user holding no
+            // seed groups yields zero rows here and the whole query returns
+            // nothing, which reads as "user not found". Filter after the CALL.
+            WITH collect(DISTINCT descendant) AS descendants
+            RETURN descendants
+        }
+        // Root-scoped connectors match on the record's root instead, so
+        // enumerating their descendants would only inflate the filter.
+        WITH u, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids,
+             root_scoped_apps, seed_rgs,
+             [rg IN seed_rgs
+                WHERE $scope_ids IS NULL OR rg.connectorId IN $scope_ids]
+             + [d IN descendants
+                  WHERE d IS NOT NULL
+                    AND NOT d.connectorId IN root_scoped_apps
+                    AND ($scope_ids IS NULL OR d.connectorId IN $scope_ids)] AS all_rgs
+        WITH u, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids, all_rgs,
+             [rg IN seed_rgs
+                WHERE rg.id IS NOT NULL AND rg.connectorId IN root_scoped_apps
+                  AND ($scope_ids IS NULL OR rg.connectorId IN $scope_ids)
+                | rg.id] AS root_group_ids,
+             [rg IN all_rgs WHERE rg.id IS NOT NULL | rg.id] AS all_rg_ids
+
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION]->(r1:Record {orgId: $org_id})
+            WHERE $scope_ids IS NULL OR r1.connectorId IN $scope_ids
+            RETURN collect(DISTINCT r1) AS d1
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION]->(gr2)-[:PERMISSION]->(r2:Record {orgId: $org_id})
+            WHERE (gr2:Group OR gr2:Role)
+              AND ($scope_ids IS NULL OR r2.connectorId IN $scope_ids)
+            RETURN collect(DISTINCT r2) AS d2
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:BELONGS_TO]->(:Organization)
+                           -[:PERMISSION]->(r3:Record {orgId: $org_id})
+            WHERE $scope_ids IS NULL OR r3.connectorId IN $scope_ids
+            RETURN collect(DISTINCT r3) AS d3
+        }
+        WITH reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids, all_rgs,
+             all_rg_ids, root_group_ids, d1 + d2 + d3 AS direct_records
+
+        CALL {
+            WITH direct_records, all_rg_ids, app_level_ids, kb_app_ids, reachable_apps
+            UNWIND direct_records AS rec
+            // Carry covered_app_ids through the projection: a WITH is a scope
+            // boundary, and its attached WHERE can only see what it projected.
+            WITH rec, all_rg_ids, reachable_apps,
+                 app_level_ids + kb_app_ids AS covered_app_ids
+            WHERE rec.virtualRecordId IS NOT NULL
+              AND (rec.isDeleted IS NULL OR rec.isDeleted = false)
+              AND rec.indexingStatus = $completed
+              AND NOT rec.connectorId IN covered_app_ids
+              // The verifier's reachability gate, applied early: a grant that
+              // outlived the user's access to its connector would enter the
+              // filter only to be denied, and a scope holding nothing but such
+              // grants would then return no results at all.
+              AND (rec.origin <> $connector_origin
+                   OR rec.connectorId IN reachable_apps)
+            OPTIONAL MATCH (rec)-[:BELONGS_TO]->(rgOfRec:RecordGroup)
+            WITH rec, all_rg_ids, collect(DISTINCT rgOfRec.id) AS rec_group_ids
+            WHERE none(g IN rec_group_ids WHERE g IN all_rg_ids)
+            RETURN collect(DISTINCT {vid: rec.virtualRecordId, rid: rec.id})[0..$direct_probe_limit] AS residual_direct
+        }
+
+        RETURN
+            app_level_ids + kb_app_ids AS appIds,
+            // Only what declared APP_LEVEL. kb_app_ids is a wider set, admitted
+            // on type alone so records carrying no recordGroupIds still have a
+            // term to match on; a KB app that has not been backfilled with its
+            // permissionModel yet is in appIds but not here, and falls through
+            // to full adjudication.
+            app_level_ids AS trustedApps,
+            [rg IN all_rgs
+               WHERE rg.id IS NOT NULL AND rg.permissionModel = $group_level
+               | rg.id] AS trusted,
+            [rg IN all_rgs
+               WHERE rg.id IS NOT NULL
+                 AND (rg.permissionModel IS NULL
+                      OR rg.permissionModel <> $group_level)
+               | rg.id] AS verify,
+            root_group_ids AS rootGroups,
+            residual_direct AS direct,
+            unsafe_app_ids AS unsafeApps
+        """
+        # Cypher cannot parameterise a variable-length path bound, and an
+        # f-string here would mean doubling every brace in the map literals
+        # above. Substitution keeps the depth tied to the shared constant.
+        query = query.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH))
+        try:
+            rows = await self.client.execute_query(
+                query,
+                {
+                    "user_id": user_id,
+                    "org_id": org_id,
+                    "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                    "app_level": PermissionModel.APP_LEVEL.value,
+                    "group_level": PermissionModel.RECORD_GROUP_LEVEL.value,
+                    "root_scoped_types": sorted(ROOT_SCOPED_CONNECTOR_TYPES),
+                    "completed": ProgressStatus.COMPLETED.value,
+                    "connector_origin": OriginTypes.CONNECTOR.value,
+                    # +1 so overflow is detectable without a second query.
+                    "direct_probe_limit": MAX_DIRECT_GRANT_RECORDS + 1,
+                    # Always bound: the query references it unconditionally.
+                    "scope_ids": sorted(scope_set) if scope_set is not None else None,
+                },
+            )
+            row = rows[0] if rows else None
+        except Exception as exc:
+            self.logger.error("get_accessible_containers: Cypher failed — %s", exc)
+            return AccessibleContainers(fallback_reason="query_failed")
+
+        return _containers_from_row(
+            row, logger=self.logger, scope_connector_ids=scope_set
+        )
+
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
@@ -5189,56 +5493,33 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.warning(f"User {user_id} has no accessible apps")
                 # Still need to check KB access even without apps
 
-            # Step 2: Extract filters and determine which connectors to query
+            # Step 2: Extract filters and determine which apps to query
             filters = filters or {}
-            kb_ids = filters.get("kb")
-            connector_ids_filter = filters.get("apps")
+            # `apps` and `kb` are one scope: a Collection id is honoured under
+            # either key, and so is a connector id.
+            scope = requested_scope_ids(filters)
             # Threaded through from ChatQuery.strictScope by the caller — a
             # project-scoped chat sets this so an empty effective scope stays
-            # empty (Scenario 3's implicit "search everything the user can
-            # access" must never apply), instead of quietly widening back out.
-            strict_scope = bool(filters.get("strictScope"))
+            # empty ("search everything the user can access" must never
+            # apply), instead of quietly widening back out.
+            strict_scope = bool(filters.get(STRICT_SCOPE_FILTER_KEY))
 
             # Extract metadata filters (departments, categories, etc.)
             metadata_filters = {
                 k: v for k, v in filters.items()
-                if k not in ["kb", "apps", "strictScope"] and v
+                if k not in CONTAINER_SCOPE_FILTER_KEYS
+                and k != STRICT_SCOPE_FILTER_KEY and v
             }
 
-            # Reclassify KB app IDs that arrived in the apps filter.
-            # MCP and some API clients send all source IDs (connectors + KB
-            # collections) in a single `apps` array; the backend must route
-            # KB IDs to the KB query path so Scenario 4 does not silently
-            # drop them.  Only IDs the user can actually access are moved.
-            if connector_ids_filter and kb_app_ids_set:
-                kb_in_apps = [
-                    cid for cid in connector_ids_filter
-                    if cid in kb_app_ids_set
-                ]
-                if kb_in_apps:
-                    self.logger.debug(
-                        f"Reclassifying {len(kb_in_apps)} KB app ID(s) "
-                        f"from apps to kb filter: {kb_in_apps}"
-                    )
-                    connector_ids_filter = [
-                        cid for cid in connector_ids_filter
-                        if cid not in kb_app_ids_set
-                    ]
-                    kb_ids = list(dict.fromkeys((kb_ids or []) + kb_in_apps))
-
-            has_kb_filter = kb_ids is not None and len(kb_ids) > 0
-            has_app_filter = connector_ids_filter is not None and len(connector_ids_filter) > 0
-
             self.logger.debug(
-                f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
-                f"App filter: {has_app_filter} (Connector IDs: {connector_ids_filter}), "
+                f"🔍 Filter analysis - scope: {scope}, "
                 f"Metadata filters: {list(metadata_filters.keys())}"
             )
 
-            if strict_scope and not has_kb_filter and not has_app_filter:
+            if strict_scope and scope is None:
                 self.logger.info(
                     "🔒 Strict scope with an empty effective apps/kb selection — "
-                    "returning no accessible records instead of Scenario 3's "
+                    "returning no accessible records instead of the implicit "
                     "'search everything'"
                 )
                 return {}
@@ -5272,59 +5553,40 @@ class Neo4jProvider(IGraphDBProvider):
                     user_id, org_id, kb_filter, metadata_filters, time_range=time_range
                 )
 
-            # Step 3: Determine tasks based on 4 scenarios
+            # Step 3: Determine tasks
             tasks = []
 
-            # Scenario 1: C=true, KB=true (both filters present)
-            if has_app_filter and has_kb_filter:
-                self.logger.info("🔍 Scenario 1: Both connector and KB filters applied")
-
-                # Query only filtered regular connectors (exclude KB apps)
-                connectors_to_query = [
-                    cid for cid in connector_ids_filter
-                    if cid in connector_app_ids_set
-                ]
-                self.logger.debug(f"Querying {len(connectors_to_query)} filtered connectors")
-
-                tasks.extend(connector_task(cid) for cid in connectors_to_query)
-
-                # Query only filtered KBs
-                self.logger.debug(f"Querying {len(kb_ids)} filtered KBs")
-                tasks.append(kb_task(kb_ids))
-
-            # Scenario 2: C=false, KB=true (only KB filter)
-            elif not has_app_filter and has_kb_filter:
-                self.logger.info("🔍 Scenario 2: Only KB filter applied")
-
-                # Query only filtered KBs (skip connector queries)
-                self.logger.debug(f"Querying {len(kb_ids)} filtered KBs only")
-                tasks.append(kb_task(kb_ids))
-
-            # Scenario 3: C=false, KB=false (no filters)
-            elif not has_app_filter and not has_kb_filter:
-                self.logger.info("🔍 Scenario 3: No filters - querying all connectors and KBs")
-
-                # Query all regular connector apps
-                self.logger.debug(f"Querying all {len(connector_app_ids_set)} accessible connectors")
+            if scope is None:
+                self.logger.info("🔍 No scope - querying all connectors and KBs")
                 tasks.extend(connector_task(cid) for cid in connector_app_ids_set)
-
-                # Query all KBs
-                self.logger.debug("Querying all KBs")
                 tasks.append(kb_task(None))
-
-            # Scenario 4: C=true, KB=false (only connector filter)
-            else:  # has_app_filter and not has_kb_filter
-                self.logger.info("🔍 Scenario 4: Only connector filter applied - skipping KB")
-
-                # Query only filtered regular connectors (skip KB entirely)
-                # Preserve the order from the filter list
-                connectors_to_query = [
-                    cid for cid in connector_ids_filter
-                    if cid in connector_app_ids_set
-                ]
-                self.logger.debug(f"Querying {len(connectors_to_query)} filtered connectors only")
-
+            else:
+                # Scope order, so a virtualRecordId shared by two scoped apps
+                # resolves to the one named first.
+                connectors_to_query = [cid for cid in scope if cid in connector_app_ids_set]
                 tasks.extend(connector_task(cid) for cid in connectors_to_query)
+                # Every other id may be a Collection. The KB query matches only
+                # KB apps the user holds a permission on, so connector ids, ids
+                # the user cannot reach and NO_KB_SELECTED add nothing.
+                # An id that arrived under `kb` is always offered to it, even
+                # when it looks like one of the user's connectors: the caller
+                # named it as a Collection, and only this query can confirm
+                # that (app types can be missing or unreadable).
+                kb_key_ids = {
+                    v for v in (filters.get("kb") or [])
+                    if isinstance(v, str) and v
+                }
+                remaining = [
+                    cid for cid in scope
+                    if cid not in connector_app_ids_set or cid in kb_key_ids
+                ]
+                if remaining:
+                    tasks.append(kb_task(remaining))
+                self.logger.info(
+                    "🔍 Scoped - querying %d connectors, %d candidate KB ids",
+                    len(connectors_to_query),
+                    len(remaining),
+                )
 
             # Step 5: Execute all tasks in parallel
             if not tasks:
@@ -14223,6 +14485,205 @@ class Neo4jProvider(IGraphDBProvider):
                 "filter_nodes_with_permission_role: Cypher failed — %s", exc
             )
             return set()
+
+    async def filter_accessible_virtual_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        user_id: str,
+        org_id: str,
+        *,
+        trusted_app_ids: frozenset[str] | None = None,
+        trusted_group_ids: frozenset[str] | None = None,
+        scope_connector_ids: frozenset[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, str]:
+        """Which of ``virtual_record_ids`` the user may read, and which record to cite.
+
+        Same ``{virtualRecordId: recordId}`` shape as
+        ``get_accessible_virtual_record_ids``, so a caller that swaps one for the
+        other keeps every downstream mapping intact. The difference is direction:
+        that method enumerates the corpus up front, this one adjudicates an
+        already-retrieved handful.
+
+        Not ``filter_nodes_with_permission_role``: that takes record ids rather
+        than VRIDs so it cannot pick one record per VRID — the cross-connector
+        disambiguation the old intersection did for free — and its contract omits
+        the app-reachability gate, which over-shares a record whose connector the
+        user has since lost.
+
+        One round trip, unlike its two-query sibling: there is only one node
+        label here, so the reachable-app set and the adjudication share a query.
+        """
+        if not self.client:
+            raise PermissionVerificationUnavailableError("graph client not connected")
+        if not virtual_record_ids or not user_id:
+            return {}
+        if scope_connector_ids is not None and not scope_connector_ids:
+            return {}
+
+        record_perm = self._get_permission_role_cypher("record", "record", "u")
+
+        # `reachable_apps` needs both halves — ownership/instance membership
+        # (USER_APP_RELATION) and sharing (PERMISSION). This gate can only
+        # narrow, so a missing half is a wrongly-denied record.
+        # Each leg is its own CALL: folding an accumulator into the same
+        # projection as its collect() ("WITH u, a1 + collect(...) AS a2") makes
+        # a1 an implicit grouping key alongside an aggregate, which Neo4j
+        # rejects at parse time. Same four legs, same shape as
+        # get_accessible_containers.
+        reachable_apps_cypher = """
+        MATCH (u:User {userId: $user_id})
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(directApp:App)
+            RETURN collect(DISTINCT directApp.id) AS a1
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:USER_APP_RELATION]->(teamApp:App)
+            RETURN collect(DISTINCT teamApp.id) AS a2
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(permApp:App)
+            RETURN collect(DISTINCT permApp.id) AS a3
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:PERMISSION {type: 'TEAM'}]->(teamPermApp:App)
+            RETURN collect(DISTINCT teamPermApp.id) AS a4
+        }
+        WITH u, a1 + a2 + a3 + a4 AS reachable_apps
+        """
+
+        trusted_apps = frozenset(trusted_app_ids or ())
+        trusted_groups = frozenset(trusted_group_ids or ())
+
+        # Membership of a container the user wholly owns is itself the proof, so
+        # these records skip the 10-path role resolution. Deliberately keyed on
+        # INHERIT_PERMISSIONS and not on recordGroupId/BELONGS_TO: group
+        # membership is always written, inheritance is conditional, so a record
+        # with inherit_permissions=False sits in a trusted group without
+        # inheriting from it and must still be adjudicated.
+        # coalesce because Cypher's IN is three-valued: a null connectorId makes
+        # the predicate NULL, and the two legs are `AND p` / `AND NOT p`, so
+        # NULL drops the row from BOTH and the record is silently denied —
+        # while Arango's two-valued IN grants it.
+        trusted_app_clause = (
+            "coalesce(candidate.connectorId, '') IN $trusted_app_ids"
+            if trusted_apps
+            else "false"
+        )
+        # Only build the ancestor walk when there is something to find: the plan
+        # is cached per parameterised form, so an empty list still expands
+        # INHERIT_PERMISSIONS*1..20 for every candidate on the adjudicated leg.
+        trusted_group_clause = (
+            """
+               OR EXISTS {
+                   MATCH (candidate)-[:INHERIT_PERMISSIONS*1..__INHERIT_DEPTH__]->(anc:RecordGroup)
+                   WHERE anc.id IN $trusted_group_ids
+               }"""
+            if trusted_groups
+            else ""
+        )
+        trusted_predicate = f"""
+              ({trusted_app_clause}{trusted_group_clause})
+        """
+
+        def candidates_cypher(extra: str = "") -> str:
+            # Every gate except permission stays here: orgId is a tenant
+            # boundary (a VRID is content identity and is not unique across
+            # orgs), and soft-delete, indexing state and app reachability are
+            # not things container membership can vouch for.
+            return f"""
+        UNWIND $virtual_record_ids AS vid
+        CALL {{
+            WITH vid, reachable_apps
+            MATCH (candidate:Record {{virtualRecordId: vid, orgId: $org_id}})
+            WHERE (candidate.isDeleted IS NULL OR candidate.isDeleted = false)
+              AND candidate.indexingStatus = $completed
+              AND (candidate.origin <> $connector_origin
+                   OR candidate.connectorId IN reachable_apps)
+              // Scope is re-checked per record, not trusted from the search:
+              // membership arrays are unioned per VRID, so content shared with
+              // an out-of-scope app matches too. Both legs share this block. A
+              // null connectorId makes the predicate NULL, which drops the
+              // record — right for a scoped request, and what Arango does.
+              AND ($scope_ids IS NULL OR candidate.connectorId IN $scope_ids)
+              {extra}
+            RETURN candidate AS record
+        }}
+        """
+
+        adjudicated_leg = f"""
+        {reachable_apps_cypher}
+        {candidates_cypher("AND NOT " + trusted_predicate if (trusted_apps or trusted_groups) else "")}
+        {record_perm}
+        WITH vid, record, permission_role
+        WHERE permission_role IS NOT NULL AND permission_role <> ''
+        WITH vid, min(record.id) AS rid
+        RETURN vid AS vid, rid AS rid, 'adjudicated' AS via
+        """
+
+        if trusted_apps or trusted_groups:
+            # Two legs rather than one pass: a CALL subquery runs per row, so the
+            # only way to actually not pay for the role resolution is to keep
+            # trusted candidates out of the leg that performs it.
+            query = f"""
+        {reachable_apps_cypher}
+        {candidates_cypher("AND " + trusted_predicate)}
+        WITH vid, min(record.id) AS rid
+        RETURN vid AS vid, rid AS rid, 'trusted' AS via
+        UNION
+        {adjudicated_leg}
+        """
+        else:
+            # No trusted sets: one leg, the pre-shortcut query plus the scope gate.
+            query = adjudicated_leg
+        query = query.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH))
+        params = {
+            "user_id": user_id,
+            "org_id": org_id,
+            "virtual_record_ids": list(virtual_record_ids),
+            "completed": ProgressStatus.COMPLETED.value,
+            "connector_origin": OriginTypes.CONNECTOR.value,
+            "trusted_app_ids": sorted(trusted_apps),
+            "trusted_group_ids": sorted(trusted_groups),
+            "scope_ids": (
+                sorted(scope_connector_ids) if scope_connector_ids is not None else None
+            ),
+        }
+        try:
+            rows = await self.client.execute_query(query, params, txn_id=transaction)
+            # A VRID with one candidate in a trusted container and another that
+            # had to be adjudicated returns a row on each leg, and UNION does not
+            # order them. Both rows cite a record the user may read, but picking
+            # by arrival makes the citation vary run to run; preferring the
+            # trusted row makes it deterministic and matches Arango, whose
+            # ternary resolves the same tie the same way.
+            granted: dict[str, str] = {}
+            trusted_vids: set[str] = set()
+            for row in rows or []:
+                if not row or not row.get("vid") or not row.get("rid"):
+                    continue
+                vid = str(row["vid"])
+                if vid in trusted_vids:
+                    continue
+                granted[vid] = str(row["rid"])
+                if row.get("via") == "trusted":
+                    trusted_vids.add(vid)
+            return granted
+        except Exception as exc:
+            # Raised, not {}: an empty map is also what total denial looks like,
+            # and the caller answers the two differently (503 vs no results).
+            self.logger.error(
+                "filter_accessible_virtual_record_ids: Cypher failed for %d vrids — %s",
+                len(virtual_record_ids),
+                exc,
+            )
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
 
     async def get_record_parent_adjacency(
         self,
