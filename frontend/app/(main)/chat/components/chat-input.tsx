@@ -35,6 +35,7 @@ import { useChatStore, ctxKeyFromAgent, isModelReasoningCapable } from '@/chat/s
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
+import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
@@ -881,26 +882,20 @@ export function ChatInput({
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
-        const errorMessage =
-          (err as { message?: string })?.message ??
-          t('chat.attachments.uploadFailed', { defaultValue: 'Upload failed' });
+        const errorMessage = attachmentErrorMessage(file.name, err);
         setUploadedFiles((prev) =>
           prev.map((f) =>
             f.id === file.id ? { ...f, status: 'error', errorMessage, ref: undefined } : f,
           ),
         );
-        toast.error(
-          t('chat.attachments.uploadFailedNamed', {
-            defaultValue: `Failed to upload ${file.name}: ${errorMessage}`,
-          }),
-        );
+        toast.error(errorMessage);
       })
       .finally(() => {
         if (uploadControllersRef.current.get(file.id) === controller) {
           uploadControllersRef.current.delete(file.id);
         }
       });
-  }, [onUploadFile, t]);
+  }, [onUploadFile]);
 
   const processFiles = useCallback((
     files: FileList | File[],

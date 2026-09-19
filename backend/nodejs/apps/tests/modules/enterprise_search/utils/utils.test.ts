@@ -38,6 +38,7 @@ import {
   recordClassifiedFailureOnSession,
   savePartialConversation,
 } from '../../../../src/modules/enterprise_search/utils/utils'
+import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { handleRegenerationError, markConversationFailed, replaceMessageWithError, markAgentConversationFailed, deleteAgentConversation, attachPopulatedCitations } from '../../../../src/modules/enterprise_search/utils/utils';
 import { InternalServerError, BadRequestError } from '../../../../src/libs/errors/http.errors'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
@@ -1221,12 +1222,13 @@ describe('Enterprise Search Utils', () => {
       expect(writeArg).to.include('Something went wrong')
     })
 
-    it('should include details when provided', async () => {
+    it('never sends raw details to the client', async () => {
       const res = createMockResponse()
-      await sendSSEErrorEvent(res, 'Error occurred', 'detail info')
+      await sendSSEErrorEvent(res, 'Error occurred', 'read ECONNRESET')
 
       const writeArg = res.write.firstCall.args[0]
-      expect(writeArg).to.include('detail info')
+      expect(writeArg).to.include('Error occurred')
+      expect(writeArg).not.to.include('ECONNRESET')
     })
 
     it('should include conversation when provided', async () => {
@@ -1986,7 +1988,8 @@ describe('Enterprise Search Utils', () => {
       expect(res.write.calledOnce).to.be.true
       const writeArg = res.write.firstCall.args[0]
       expect(writeArg).to.include('error')
-      expect(writeArg).to.include('Stream broke')
+      expect(writeArg).to.include(CHAT_ERROR_MESSAGES.failed)
+      expect(writeArg).not.to.include('Stream broke')
     })
 
     it('should send SSE error when there is no messageId', async () => {
@@ -2033,6 +2036,36 @@ describe('Enterprise Search Utils', () => {
       expect(res.write.calledOnce).to.be.true
       const writeArg = res.write.firstCall.args[0]
       expect(writeArg).to.include('Regeneration failed')
+    })
+
+    it('saves and sends the interrupted message, never the socket error, when regeneration drops', async () => {
+      const res = createMockResponse()
+      const error = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+      const messageId = new mongoose.Types.ObjectId()
+      const sessionId = new mongoose.Types.ObjectId()
+
+      const mockConv: any = {
+        _id: sessionId,
+        conversationErrors: [],
+        save: sinon.stub().resolves(true),
+      }
+      const { findOneAndReplaceStub } = stubUpdateMessageById({ _id: messageId, sessionId, orgId: 'org-1', seq: 2 })
+      sinon.stub(ChatSession, 'findById').resolves({
+        _id: sessionId,
+        toObject: () => ({ _id: sessionId, title: 'Test' }),
+      })
+      stubGetMessagesChain([])
+
+      await handleRegenerationError(
+        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'stream_error'
+      )
+
+      const saved = JSON.stringify(findOneAndReplaceStub.firstCall.args)
+      expect(saved).to.include(CHAT_ERROR_MESSAGES.interrupted)
+      expect(saved).not.to.include('ECONNRESET')
+      const writeArg = res.write.firstCall.args[0]
+      expect(writeArg).to.include(CHAT_ERROR_MESSAGES.interrupted)
+      expect(writeArg).not.to.include('ECONNRESET')
     })
   })
 })
@@ -3105,11 +3138,11 @@ describe('Enterprise Search Utils - coverage', () => {
       expect(written).to.include('Something failed')
     })
 
-    it('should include details when provided', async () => {
+    it('omits details from the payload even when provided', async () => {
       const res = createMockResponse()
       await sendSSEErrorEvent(res, 'Error', 'Detail info')
       const written = res.write.firstCall.args[0]
-      expect(written).to.include('Detail info')
+      expect(written).not.to.include('Detail info')
     })
 
     it('should include conversation when provided', async () => {

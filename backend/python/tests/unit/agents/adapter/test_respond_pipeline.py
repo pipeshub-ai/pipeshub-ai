@@ -7,6 +7,7 @@ completion_data shape and the empty-answer / agent-failure fallback paths."""
 
 from __future__ import annotations
 
+from app.agents.agent_loop.error_classification import _USER_MESSAGES
 from app.agents.agent_loop.hooks.citations import CitationCollector
 from app.agents.agent_loop.respond import AnswerFinalizer
 from tests.unit.agents.adapter.conftest import make_context
@@ -29,7 +30,7 @@ class TestErrorPath:
 
         result = await finalizer.run(agent_success=False, agent_error="tool exploded", event_sink=sink)
 
-        assert result["answer"] == "I encountered an issue while processing your request. Please try again."
+        assert result["answer"] == _USER_MESSAGES["unknown"]
         assert result["answerMatchType"] == "Error"
         assert result["errorCode"] == "unknown"
         event_types = [e["event"] for e in sink.events]
@@ -44,7 +45,7 @@ class TestErrorPath:
         result = await finalizer.run(agent_success=False, agent_error=None, event_sink=sink)
 
         assert result["errorCode"] == "unknown"
-        assert result["answer"] == "I encountered an issue while processing your request. Please try again."
+        assert result["answer"] == _USER_MESSAGES["unknown"]
 
     async def test_agent_failure_classifies_rate_limit_error(self) -> None:
         """LLM 429s (see `error_classification.py`) must surface as a
@@ -62,7 +63,7 @@ class TestErrorPath:
         )
 
         assert result["errorCode"] == "rate_limit"
-        assert result["answer"] == "The AI service is currently rate limited. Please try again in a moment."
+        assert result["answer"] == _USER_MESSAGES["rate_limit"]
 
     async def test_agent_failure_surfaces_invalid_request_provider_message(self) -> None:
         context = make_context()
@@ -81,7 +82,7 @@ class TestErrorPath:
 
         assert result["errorCode"] == "invalid_request"
         assert result["answer"] == (
-            "The AI service rejected this request: invalid Qwen3.8 reasoning_effort"
+            "The AI model rejected this request: invalid Qwen3.8 reasoning_effort"
         )
 
 
@@ -202,7 +203,7 @@ class TestSuccessPath:
         )
 
         assert result["answerMatchType"] == "Error"
-        assert result["answer"] == "I encountered an issue while processing your request. Please try again."
+        assert result["answer"] == _USER_MESSAGES["unknown"]
 
     async def test_citations_and_confidence_normalized_from_agent_output(self) -> None:
         context = make_context()

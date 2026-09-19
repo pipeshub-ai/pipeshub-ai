@@ -217,7 +217,7 @@ class TestAskAIStreamHTTPExceptionDictDetail:
 
         combined = "".join(events)
         assert "RUN_ERROR" in combined
-        assert "indexing" in combined
+        assert "Still processing" in combined
         assert "llm_initialization_failed" in combined
 
 
@@ -257,7 +257,9 @@ class TestAskAIStreamGenericError:
 
         combined = "".join(events)
         assert "RUN_ERROR" in combined
-        assert "unexpected crash" in combined
+        # The cause goes to the log; the user gets what to do next.
+        assert "unexpected crash" not in combined
+        assert "Try another model" in combined
         assert "llm_initialization_failed" in combined
 
 
@@ -329,7 +331,8 @@ class TestAskAIStreamHTTPExceptionNonDictDetail:
 
         combined = "".join(events)
         assert "RUN_ERROR" in combined
-        assert "500: Internal Server Error" in combined
+        assert "Internal Server Error" not in combined
+        assert "try again" in combined
         assert "llm_initialization_failed" in combined
 
 

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
@@ -3846,7 +3847,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     yield _evt
             except Exception as exc:
                 logger.error(f"Error in chat_stream body: {exc}", exc_info=True)
-                yield _stream_error_frame(protocol, str(exc))
+                error_code, user_message = classify_exception(exc)
+                yield _stream_error_frame(protocol, user_message, error_code)
 
         return StreamingResponse(
             _run(),
@@ -3861,7 +3863,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         raise
     except Exception as e:
         logger.error(f"Error in chat_stream: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _, user_message = classify_exception(e)
+        raise HTTPException(status_code=400, detail=user_message) from e
 
 def _stream_error_frame(protocol: str, message: str, code: str = "stream_error") -> str:
     """Terminal SSE error frame, in whichever protocol the client asked for.
