@@ -23358,6 +23358,125 @@ paths:
           description: Parent folder ID. Omit to create at the knowledge base root.
           schema:
             type: string
+            format: uuid
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                folderName:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: Name of the folder
+                  example: "Project Documents"
+              required:
+                - folderName
+      responses:
+        '200':
+          description: Folder created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FolderCreateResponseSchema'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or empty folder name
+            - Folder name exceeds 255 characters
+            - XSS or invalid characters in folder name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - User lacks WRITER or higher permission on the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Knowledge base or parent folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Folder with this name already exists at the knowledge base root or within the parent folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while creating folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/{kbId}/folder/{folderId}/subfolder:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Create subfolder
+      description: |
+        Create a nested subfolder inside an existing parent folder.
+
+        **Required permission:** WRITER or higher
+
+        **Folder features:**
+
+        - Organize records hierarchically
+        - Support nested subfolders (unlimited depth)
+        - Inherit parent KB permissions
+
+        **Naming rules:**
+
+        - 1–255 characters
+        - XSS protection applied
+        - Spaces and special characters allowed
+        - Duplicate names rejected within the same parent (`409`)
+
+        **Response:** Returns `id` and `name` for the created folder.
+      operationId: createSubfolder
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:write]
+      parameters:
+        - name: kbId
+          in: path
+          required: true
+          description: Knowledge base ID
+          schema:
+            type: string
+        - name: folderId
+          in: path
+          required: true
+          description: Parent folder ID
+          schema:
+            type: string
+            format: uuid
       requestBody:
         required: true
         description: "Request payload"
@@ -23458,6 +23577,7 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         description: "Request payload"
@@ -23561,6 +23681,7 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
       responses:
         '200':
           description: Folder deleted successfully
@@ -23655,6 +23776,7 @@ paths:
           description: Target folder ID. Omit to upload to the KB root.
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         description: "Request payload"
