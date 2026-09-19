@@ -19,6 +19,15 @@ export const CONNECTOR_INSTANCE_STATUS = {
   IDLE: 'IDLE',
 } as const;
 
+/** `details.code` of the 409 Node returns when the Local FS owner device is not connected. */
+export const LOCAL_FS_DESKTOP_OFFLINE = 'DESKTOP_OFFLINE';
+/** `details.code` when no device owns the connector yet: it must be enabled from the desktop app. */
+export const LOCAL_FS_DESKTOP_UNCLAIMED = 'DESKTOP_UNCLAIMED';
+/** `details.code` when the enabling device differs from the connector's owner device. Toggle-on only. */
+export const LOCAL_FS_DESKTOP_OWNED_BY_OTHER_DEVICE = 'DESKTOP_OWNED_BY_OTHER_DEVICE';
+
+export const LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS = 5000;
+
 // ========================================
 // Connector sync strategy display labels
 // ========================================

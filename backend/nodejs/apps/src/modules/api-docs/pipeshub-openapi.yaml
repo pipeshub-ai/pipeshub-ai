@@ -12007,6 +12007,22 @@ components:
         isActive:
           type: boolean
           description: Whether connector is enabled for syncing/agent
+        desktopOnline:
+          type: boolean
+          description: |
+            Whether the owner device (`ownerDeviceId`) is currently connected.
+            Local FS only; omitted otherwise, and while the connector has no owner.
+        ownerDeviceId:
+          type: string
+          description: |
+            Local FS only. The desktop device that owns this connector, set when
+            sync is first enabled from the desktop app.
+        ownerDeviceName:
+          type: string
+          description: |
+            Local FS only. Display name of the desktop device that owns this
+            connector, set when sync is first enabled from the desktop app.
+          example: "WIN-LAPTOP"
         isConfigured:
           type: boolean
           description: Whether all required configuration is complete
@@ -12317,82 +12333,54 @@ components:
           type: string
           enum: [sync, agent]
           description: "Toggle type: 'sync' for data synchronization, 'agent' for AI agent integration"
+        deviceId:
+          type: string
+          description: |
+            Sent by the desktop app. Required when enabling sync on a Local FS
+            connector with no owner yet; must match `ownerDeviceId` afterwards.
+        deviceName:
+          type: string
+          description: |
+            Sent by the desktop app with `deviceId`. Stored as `ownerDeviceName`
+            when the device claims the connector.
 
-    LocalFsFileEvent:
+    LocalFsDesktopRefusal:
       type: object
-      description: Single filesystem change event for Local FS replay
+      description: |
+        409 body returned when a Local FS connector cannot sync because of its
+        owner device.
       required:
-        - type
-        - path
-        - timestamp
-        - isDirectory
+        - success
+        - code
+        - message
+        - details
       properties:
-        type:
-          type: string
-          description: Event type (e.g. CREATED, MODIFIED, DELETED, RENAMED, MOVED)
-        path:
-          type: string
-          description: Path relative to the configured sync root
-        oldPath:
-          type: string
-          nullable: true
-          description: Previous path for rename or move events
-        timestamp:
-          type: integer
-          format: int64
-          description: Event time in epoch milliseconds
-        size:
-          type: integer
-          format: int64
-          nullable: true
-        contentField:
-          type: string
-          nullable: true
-          description: Multipart form field name containing file bytes for uploaded desktop sync events
-        sha256:
-          type: string
-          nullable: true
-          description: SHA-256 digest of the uploaded file bytes
-        mimeType:
-          type: string
-          nullable: true
-          description: MIME type of the uploaded file bytes
-        isDirectory:
+        success:
           type: boolean
-          description: Must be false when sent from the CLI (directories are expanded client-side)
-
-    LocalFsFileEventBatchRequest:
-      type: object
-      description: Batch of Local FS file events (also accepts a bare JSON array of events, which the server wraps)
-      required:
-        - batchId
-        - events
-        - timestamp
-      properties:
-        batchId:
+          example: false
+        code:
           type: string
-        events:
-          type: array
-          items:
-            $ref: '#/components/schemas/LocalFsFileEvent'
-        timestamp:
-          type: integer
-          format: int64
-          description: Batch timestamp in epoch milliseconds
-        resetBeforeApply:
-          type: boolean
-          description: When true, clear existing Local FS records before applying this batch
-
-    LocalFsFileEventStats:
-      type: object
-      description: Counts returned after applying a Local FS file event batch
-      properties:
-        processed:
-          type: integer
-          description: Files upserted or updated from the batch
-        deleted:
-          type: integer
-          description: Deletions or path removals applied
+          enum: [DESKTOP_OFFLINE, DESKTOP_UNCLAIMED, DESKTOP_OWNED_BY_OTHER_DEVICE]
+        message:
+          type: string
+          example: "No desktop is connected for connector conn_abc123. Open the Pipeshub desktop app on the machine that owns this folder."
+        details:
+          type: object
+          required:
+            - code
+            - connectorId
+            - retryable
+          properties:
+            code:
+              type: string
+              enum: [DESKTOP_OFFLINE, DESKTOP_UNCLAIMED, DESKTOP_OWNED_BY_OTHER_DEVICE]
+            connectorId:
+              type: string
+            retryable:
+              type: boolean
+            ownerDeviceName:
+              type: string
+              description: Name of the owner device, when the connector has one.
 
     FilterOptions:
       type: object
@@ -32078,6 +32066,8 @@ paths:
         <li><b>isConfigured:</b> All required settings are complete</li>
         <li><b>isAuthenticated:</b> OAuth flow complete or credentials valid</li>
         <li><b>isActive:</b> Connector is enabled for sync/agent</li>
+        <li><b>desktopOnline:</b> Owner device's desktop app connected (Local FS only)</li>
+        <li><b>ownerDeviceId / ownerDeviceName:</b> Desktop device that owns the connector, set on first enable (Local FS only)</li>
         </ul>
       operationId: listConnectorInstances
       security:
@@ -33054,7 +33044,18 @@ paths:
         '401':
           description: Unauthorized
         '409':
-          description: Conflict — the connector instance is disabled or locked.
+          description: |
+            Conflict. Possible reasons:<br>
+            <ul>
+            <li>The connector instance is disabled or locked</li>
+            <li><code>DESKTOP_OFFLINE</code> - Local FS: the owner device's desktop app is not connected</li>
+            <li><code>DESKTOP_UNCLAIMED</code> - Local FS: no device owns the connector yet</li>
+            </ul>
+            Local FS refusals carry <code>details.code</code> and use the body below.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalFsDesktopRefusal'
 
   /connectors/{connectorId}/name:
     put:
@@ -33308,6 +33309,7 @@ paths:
         <li>Connector must be configured (<code>isConfigured: true</code>)</li>
         <li>For OAuth connectors: Must be authenticated (<code>isAuthenticated: true</code>)</li>
         <li>For agent: Connector must support agent (<code>supportsAgent: true</code>)</li>
+        <li>Local FS: must be enabled from the owner device via the desktop app, which sends <code>deviceId</code> and <code>deviceName</code>. The first enable claims that device as owner.</li>
         </ul>
         <b>Permissions:</b><br>
         <ul>
@@ -33360,139 +33362,18 @@ paths:
           description: Permission denied
         '404':
           description: Connector not found
-
-  /connectors/{connectorId}/file-events:
-    post:
-      tags:
-        - Connector Control
-      summary: Submit Local FS file events
-      description: |
-        Replays a batch of filesystem change events for a **Local FS** connector instance.
-        Used by the local CLI to apply incremental changes without a full directory rescan.
-        Only Local FS connector instances accept this endpoint; other connector types receive 400.
-      operationId: submitConnectorFileEvents
-      security:
-        - bearerAuth: []
-        - oauth2: [connector:sync]
-      parameters:
-        - name: connectorId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: |
-          JSON body: either a `LocalFsFileEventBatchRequest` object, or a bare JSON array of
-          `LocalFsFileEvent` objects (the server wraps arrays with a generated batch id).
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LocalFsFileEventBatchRequest'
-      responses:
-        '200':
-          description: File event batch applied
+        '409':
+          description: |
+            Local FS sync cannot be enabled. <code>details.code</code> is one of:<br>
+            <ul>
+            <li><code>DESKTOP_OFFLINE</code> - the owner device's desktop app is not connected</li>
+            <li><code>DESKTOP_UNCLAIMED</code> - the connector has no owner yet and no <code>deviceId</code> was sent</li>
+            <li><code>DESKTOP_OWNED_BY_OTHER_DEVICE</code> - <code>deviceId</code> differs from <code>ownerDeviceId</code>; <code>details.ownerDeviceName</code> names the owner</li>
+            </ul>
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - success
-                  - connectorId
-                  - batchId
-                  - stats
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  connectorId:
-                    type: string
-                  batchId:
-                    type: string
-                  stats:
-                    $ref: '#/components/schemas/LocalFsFileEventStats'
-        '400':
-          description: Not a Local FS connector, or invalid path or event payload
-        '401':
-          description: Unauthorized
-        '403':
-          description: Permission denied
-        '404':
-          description: Connector not found
-        '422':
-          description: Invalid or missing request body
-
-  /connectors/{connectorId}/file-events/upload:
-    post:
-      tags:
-        - Connector Control
-      summary: Submit Local FS file events with file bytes
-      description: |
-        Replays a batch of Local FS desktop sync events and uploads file bytes for created,
-        modified, renamed, or moved files. This supports deployed connector backends that
-        cannot read the desktop filesystem path directly.
-      operationId: submitConnectorFileEventUploads
-      security:
-        - bearerAuth: []
-        - oauth2: [connector:sync]
-      parameters:
-        - name: connectorId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required:
-                - manifest
-              properties:
-                manifest:
-                  type: string
-                  description: |
-                    JSON `LocalFsFileEventBatchRequest`. Upsert events include `contentField`,
-                    `sha256`, `mimeType`, `size`, and timestamps. Delete events do not need files.
-                file_0:
-                  type: string
-                  format: binary
-                  description: File bytes referenced by an event `contentField`; additional file_N fields are allowed.
-      responses:
-        '200':
-          description: Uploaded file event batch applied
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                  - success
-                  - connectorId
-                  - batchId
-                  - stats
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  connectorId:
-                    type: string
-                  batchId:
-                    type: string
-                  stats:
-                    $ref: '#/components/schemas/LocalFsFileEventStats'
-        '400':
-          description: Not a Local FS connector, invalid path, or digest mismatch
-        '401':
-          description: Unauthorized
-        '403':
-          description: Permission denied
-        '404':
-          description: Connector not found
-        '413':
-          description: Batch or file upload too large
-        '422':
-          description: Invalid manifest or missing file part
+                $ref: '#/components/schemas/LocalFsDesktopRefusal'
 
   # -------------------- Connector OAuth --------------------
   /connectors/{connectorId}/oauth/authorize:

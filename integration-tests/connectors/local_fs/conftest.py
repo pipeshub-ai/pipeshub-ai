@@ -49,6 +49,12 @@ def local_fs_folder() -> LocalFsFolder:
     return folder
 
 
+@pytest.mark.skip(
+    reason=(
+        "Local FS now pulls events from the desktop; creating this connector "
+        "would wait forever for a folder-walk sync"
+    )
+)
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def local_fs_connector(
     local_fs_folder: LocalFsFolder,
@@ -93,6 +99,12 @@ async def local_fs_connector(
     )
 
 
+@pytest.mark.skip(
+    reason=(
+        "Local FS now pulls events from the desktop; this fixture still "
+        "points at a folder the backend cannot see and expects upload ingest"
+    )
+)
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def local_fs_desktop_connector(
     pipeshub_client: PipeshubClient,

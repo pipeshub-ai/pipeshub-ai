@@ -3033,6 +3033,13 @@ class AppMetadata(BaseModel):
         default=None,
         description="Keyset cursor for an in-progress vector membership backfill",
     )
+    owner_device_id: str | None = Field(
+        default=None,
+        description="Local FS: desktop device that owns the connector, claimed on first enable",
+    )
+    owner_device_name: str | None = Field(
+        default=None, description="Local FS: display name of the owner device"
+    )
 
     @staticmethod
     def from_db_document(doc: dict[str, Any]) -> "AppMetadata":
@@ -3062,6 +3069,8 @@ class AppMetadata(BaseModel):
             vector_membership_backfill_after_key=doc.get(
                 "vectorMembershipBackfillAfterKey"
             ),
+            owner_device_id=doc.get("ownerDeviceId"),
+            owner_device_name=doc.get("ownerDeviceName"),
         )
 
 class MeetingRecord(Record):

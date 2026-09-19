@@ -393,6 +393,7 @@
       "subtitleExisting": "PipesHub 서버 URL을 확인하거나 업데이트하세요.",
       "label": "서버 URL",
       "submit": "연결",
+      "changeServer": "서버 변경",
       "errors": {
         "empty": "서버 URL을 입력해 주세요.",
         "invalid": "유효한 URL을 입력해 주세요 (예: http://localhost:3000).",
@@ -2028,6 +2029,8 @@
         "additionalSettingsDescription": "커넥터별 동기화 옵션을 구성합니다",
         "nonEditableUrlFieldTooltip": "웹사이트 URL은 설정한 후에는 변경할 수 없습니다.",
         "nonEditableLockedFieldTooltip": "이 값은 설정한 후에는 변경할 수 없습니다.",
+        "localFsDesktopOnlyBanner": "로컬 파일 시스템 설정은 PipesHub 데스크톱 앱에서만 변경할 수 있습니다. 이 화면은 읽기 전용입니다.",
+        "localFsDesktopOnlySaveTooltip": "이 설정을 변경하려면 PipesHub 데스크톱 앱을 여세요.",
         "importDate": "가져오기 시작 날짜",
         "importDateDescription": "메시지를 가져올 시작 날짜를 선택하세요",
         "importAllTime": "전체 기간 데이터 가져오기",
@@ -2109,7 +2112,9 @@
           "needsAuth": "인증 필요",
           "needsAuthTooltip": "구성은 저장되었지만 이 인스턴스는 아직 인증이 필요합니다.",
           "ready": "완료",
-          "readyTooltip": "구성과 인증이 완료되었습니다. 활성화하면 동기화를 실행할 수 있습니다."
+          "readyTooltip": "구성과 인증이 완료되었습니다. 활성화하면 동기화를 실행할 수 있습니다.",
+          "desktopOffline": "데스크톱 오프라인",
+          "desktopOfflineTooltip": "이 폴더를 관리하는 데스크톱 앱이 연결되어 있지 않습니다. 동기화하려면 해당 컴퓨터에서 앱을 여세요."
         },
         "sync": {
           "kind": "동기화",
@@ -2120,6 +2125,14 @@
           "removing": "제거 중",
           "removingTooltip": "이 인스턴스는 삭제되는 중입니다."
         }
+      },
+      "localFsDesktop": {
+        "offlineToast": "동기화하려면 이 폴더를 관리하는 컴퓨터에서 PipesHub 데스크톱 앱을 여세요.",
+        "offlineNamedToast": "이 폴더를 관리하는 기기 {{deviceName}}이(가) 연결되어 있지 않습니다. 동기화하려면 해당 기기에서 PipesHub 데스크톱 앱을 여세요.",
+        "unclaimedToast": "이 커넥터는 아직 데스크톱에서 설정되지 않았습니다. 이 폴더를 관리하는 컴퓨터에서 PipesHub 데스크톱 앱을 열고 동기화를 한 번 활성화하세요.",
+        "ownedByOtherDeviceToast": "이 커넥터는 {{deviceName}}에 속해 있습니다. 해당 기기의 PipesHub 데스크톱 앱에서 동기화를 활성화하세요.",
+        "ownedByOtherDeviceUnknownToast": "이 커넥터는 다른 기기에 속해 있습니다. 해당 기기의 PipesHub 데스크톱 앱에서 동기화를 활성화하세요.",
+        "deviceIdentityError": "이 기기를 식별할 수 없습니다: {{error}}"
       },
       "schemaForm": {
         "tagsPlaceholder": "입력 후 Enter 키를 눌러 태그를 추가하세요",

@@ -86,6 +86,12 @@ def _streamed(pipeshub_client: PipeshubClient, record_id: str) -> str:
     return response.content.decode()
 
 
+@pytest.mark.skip(
+    reason=(
+        "Local FS now pulls events from the desktop; this suite still assumes "
+        "the connector walks a compose-mounted folder"
+    )
+)
 @pytest.mark.integration
 @pytest.mark.local_fs
 @pytest.mark.asyncio(loop_scope="session")
@@ -254,6 +260,12 @@ class TestLocalFsFolderSync:
         await graph_provider.assert_record_not_exists(connector_id, "leave-policy.txt")
 
 
+@pytest.mark.skip(
+    reason=(
+        "Local FS now pulls events from the desktop; this suite still POSTs "
+        "the removed /file-events/upload route"
+    )
+)
 @pytest.mark.integration
 @pytest.mark.local_fs
 @pytest.mark.permissions

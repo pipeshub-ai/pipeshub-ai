@@ -42,6 +42,7 @@ import {
 } from '../utils/sync-filter-save-guards';
 import type { PanelTab } from '../types';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
+import { isLocalFsConfigReadOnly } from '../utils/local-fs-helpers';
 
 /** Non-admin OAuth instances must pick an OAuth app before save. */
 function oauthAppSelectionError(
@@ -175,6 +176,7 @@ export function ConnectorPanel() {
     (isNoneAuthType(authTypeForConfigureGate) ||
       !isOAuthType(authTypeForConfigureGate) ||
       instanceAuthenticated);
+  const configReadOnly = isLocalFsConfigReadOnly(connectorType);
   // Use registry connector's display name so the panel always shows the type name
   // (e.g. "Pipeshub docs") rather than an instance name when creating a new connector.
   const connectorTypeName = registryConnectors.find((c) => c.type === connectorType)?.name ?? connectorName;
@@ -651,6 +653,9 @@ export function ConnectorPanel() {
   ]);
 
   const performSaveConfig = useCallback(async () => {
+    // Backstop for the confirm dialogs, which can reach here without the footer button.
+    if (configReadOnly) return;
+
     const currentConnectorId =
       panelConnectorId || useConnectorsStore.getState().panelConnectorId;
 
@@ -746,6 +751,7 @@ export function ConnectorPanel() {
     panelConnectorId,
     formData,
     connectorSchema,
+    configReadOnly,
     mergeFormErrors,
     closePanel,
     connectorType,
@@ -759,6 +765,8 @@ export function ConnectorPanel() {
   ]);
 
   const handleSaveConfig = useCallback(() => {
+    if (configReadOnly) return;
+
     const currentConnectorId =
       panelConnectorId || useConnectorsStore.getState().panelConnectorId;
 
@@ -818,6 +826,7 @@ export function ConnectorPanel() {
     panelConnectorId,
     panelConnector,
     connectorSchema,
+    configReadOnly,
     formData.sync.customValues,
     formData.filters.sync,
     formData.filters.indexing,
@@ -878,6 +887,7 @@ export function ConnectorPanel() {
     isSavingConfig,
     isLoadingSchema,
     isLoadingConfig,
+    configReadOnly,
     onNext: handleSaveAuth,
     onSave: handleSaveConfig,
     labels: {
@@ -892,6 +902,7 @@ export function ConnectorPanel() {
       authBeforeConfigure: t('workspace.connectors.authRequiredBeforeConfig'),
       backToAuth: t('workspace.connectors.backToCredentials'),
       backFromConfigure: t('workspace.connectors.backFromConfigure'),
+      configReadOnly: t('workspace.connectors.configTab.localFsDesktopOnlySaveTooltip'),
     },
     onContinueFromAuthorize: async () => {
       await refreshPanelFromServer();
@@ -1006,7 +1017,7 @@ export function ConnectorPanel() {
                 </Tabs.Content>
               ) : null}
               <Tabs.Content value="configure">
-                <ConfigureTab />
+                <ConfigureTab readOnly={configReadOnly} />
               </Tabs.Content>
             </Box>
           </Tabs.Root>
@@ -1073,6 +1084,7 @@ function getFooterConfig({
   isSavingConfig,
   isLoadingSchema,
   isLoadingConfig,
+  configReadOnly,
   onNext,
   onSave,
   labels,
@@ -1091,6 +1103,7 @@ function getFooterConfig({
   isSavingConfig: boolean;
   isLoadingSchema: boolean;
   isLoadingConfig: boolean;
+  configReadOnly: boolean;
   onNext: () => void;
   onSave: () => void;
   labels: {
@@ -1105,6 +1118,7 @@ function getFooterConfig({
     authBeforeConfigure: string;
     backToAuth: string;
     backFromConfigure: string;
+    configReadOnly: string;
   };
   onContinueFromAuthorize: () => void | Promise<void>;
   onBackFromConfigure: () => void | Promise<void>;
@@ -1158,7 +1172,9 @@ function getFooterConfig({
       isNoneAuthType(authTypeForConfigureGate) ||
       !isOAuthType(authTypeForConfigureGate));
 
-  const configTooltip = !hasConnectorId
+  const configTooltip = configReadOnly
+    ? labels.configReadOnly
+    : !hasConnectorId
     ? labels.completeAuthForSave
     : !configureSaveAllowed
     ? labels.authBeforeConfigure
@@ -1168,7 +1184,8 @@ function getFooterConfig({
 
   return {
     primaryLabel: labels.saveConfig,
-    primaryDisabled: !configureSaveAllowed || isSavingConfig || isLoadingSchema || isLoadingConfig,
+    primaryDisabled:
+      configReadOnly || !configureSaveAllowed || isSavingConfig || isLoadingSchema || isLoadingConfig,
     primaryLoading: isSavingConfig,
     primaryTooltip: configTooltip,
     onPrimary: onSave,

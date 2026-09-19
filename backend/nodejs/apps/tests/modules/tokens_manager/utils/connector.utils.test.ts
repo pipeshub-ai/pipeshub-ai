@@ -1,9 +1,16 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { Response } from 'express'
 import {
   handleBackendError,
   handleConnectorResponse,
+  annotateLocalFsDesktopPresence,
+  respondLocalFsDesktopRefusal,
+  localFsRefusalFromBackend,
+  DESKTOP_OFFLINE_CODE,
+  DESKTOP_OWNED_BY_OTHER_DEVICE_CODE,
+  DESKTOP_UNCLAIMED_CODE,
 } from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import {
   BadRequestError,
@@ -229,6 +236,217 @@ describe('tokens_manager/utils/connector.utils', () => {
       expect(() =>
         handleConnectorResponse(connectorResponse, res, 'Test op', 'Not found'),
       ).to.throw(NotFoundError)
+    })
+  })
+})
+
+describe('tokens_manager/utils/connector.utils - Local FS desktop presence', () => {
+  describe('annotateLocalFsDesktopPresence', () => {
+    const presence = () => ({
+      isLocalFsDeviceOnline: sinon.stub(),
+      isDesktopConnected: sinon.stub().returns(null),
+    })
+    const localFs = (overrides: Record<string, unknown> = {}) => ({
+      _key: 'c1',
+      type: 'Local FS',
+      createdBy: 'owner-1',
+      isActive: true,
+      ownerDeviceId: 'dev-a',
+      ...overrides,
+    })
+
+    it('stamps desktopOnline from the owner device, keyed by createdBy', () => {
+      const p = presence()
+      p.isLocalFsDeviceOnline.returns(false)
+      const body = { success: true, connector: localFs() }
+
+      annotateLocalFsDesktopPresence(body, 'org-1', p)
+
+      expect(body.connector).to.have.property('desktopOnline', false)
+      expect(p.isLocalFsDeviceOnline.calledOnceWithExactly('org-1', 'owner-1', 'dev-a')).to.be.true
+    })
+
+    it('stamps only the Local FS rows of a list, each by its own owner device', () => {
+      const p = presence()
+      p.isLocalFsDeviceOnline.withArgs('org-1', 'owner-1', 'dev-a').returns(true)
+      p.isLocalFsDeviceOnline.withArgs('org-1', 'owner-2', 'dev-b').returns(false)
+      const body = {
+        connectors: [
+          localFs(),
+          { _key: 'c2', type: 'Slack', createdBy: 'owner-1', isActive: true },
+          localFs({ _key: 'c3', type: 'local_fs', createdBy: 'owner-2', ownerDeviceId: 'dev-b' }),
+        ],
+      }
+
+      annotateLocalFsDesktopPresence(body, 'org-1', p)
+
+      expect(body.connectors[0]).to.have.property('desktopOnline', true)
+      expect(body.connectors[1]).to.not.have.property('desktopOnline')
+      expect(body.connectors[2]).to.have.property('desktopOnline', false)
+      expect(p.isLocalFsDeviceOnline.calledTwice).to.be.true
+    })
+
+    it('omits the field when presence is unknown', () => {
+      const p = presence()
+      p.isLocalFsDeviceOnline.returns(null)
+      const body = { connector: localFs() }
+
+      annotateLocalFsDesktopPresence(body, 'org-1', p)
+
+      expect(body.connector).to.not.have.property('desktopOnline')
+    })
+
+    it('skips connectors whose sync is not enabled', () => {
+      const p = presence()
+      p.isLocalFsDeviceOnline.returns(false)
+      const body = { connector: localFs({ isActive: false }) }
+
+      annotateLocalFsDesktopPresence(body, 'org-1', p)
+
+      expect(body.connector).to.not.have.property('desktopOnline')
+      expect(p.isLocalFsDeviceOnline.called).to.be.false
+    })
+
+    it('leaves desktopOnline unset when the connector has no owner device', () => {
+      const p = presence()
+      p.isLocalFsDeviceOnline.returns(false)
+      const body = { connector: localFs({ ownerDeviceId: null }) }
+
+      annotateLocalFsDesktopPresence(body, 'org-1', p)
+
+      expect(body.connector).to.not.have.property('desktopOnline')
+      expect(p.isLocalFsDeviceOnline.called).to.be.false
+    })
+
+    it('is a no-op without presence, orgId, owner, or a body', () => {
+      const p = presence()
+      p.isLocalFsDeviceOnline.returns(false)
+      const noOwner = { connector: localFs({ createdBy: undefined }) }
+
+      annotateLocalFsDesktopPresence(noOwner, 'org-1', p)
+      annotateLocalFsDesktopPresence({ connector: localFs() }, undefined, p)
+      annotateLocalFsDesktopPresence({ connector: localFs() }, 'org-1', null)
+      annotateLocalFsDesktopPresence(null, 'org-1', p)
+      annotateLocalFsDesktopPresence('text', 'org-1', p)
+
+      expect(noOwner.connector).to.not.have.property('desktopOnline')
+      expect(p.isLocalFsDeviceOnline.called).to.be.false
+    })
+  })
+
+  describe('respondLocalFsDesktopRefusal', () => {
+    type LocalFsRefusalBody = {
+      success: boolean
+      code: string
+      message: string
+      details: { code: string; connectorId: string; ownerDeviceName?: string }
+    }
+
+    type LocalFsRefusalResponse = {
+      status: sinon.SinonStub<[409], LocalFsRefusalResponse>
+      json: sinon.SinonStub<[LocalFsRefusalBody], LocalFsRefusalResponse>
+    }
+
+    function createLocalFsRefusalRes(): LocalFsRefusalResponse {
+      const res = {
+        status: sinon.stub<[409], LocalFsRefusalResponse>(),
+        json: sinon.stub<[LocalFsRefusalBody], LocalFsRefusalResponse>(),
+      }
+      res.status.returns(res)
+      res.json.returns(res)
+      return res
+    }
+
+    it('writes a 409 whose details.code the frontend can match', () => {
+      const res = createLocalFsRefusalRes()
+
+      respondLocalFsDesktopRefusal(res as unknown as Response, 'c1')
+
+      expect(res.status.calledOnceWith(409)).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(body.success).to.equal(false)
+      expect(body.code).to.equal(DESKTOP_OFFLINE_CODE)
+      expect(body.details).to.deep.include({ code: DESKTOP_OFFLINE_CODE, connectorId: 'c1' })
+      expect(body.message).to.be.a('string').and.not.empty
+    })
+
+    it('uses the unclaimed code and first-enable wording for that reason', () => {
+      const res = createLocalFsRefusalRes()
+
+      respondLocalFsDesktopRefusal(res as unknown as Response, 'c1', 'unclaimed')
+
+      expect(res.status.calledOnceWith(409)).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(body.code).to.equal(DESKTOP_UNCLAIMED_CODE)
+      expect(body.details.code).to.equal(DESKTOP_UNCLAIMED_CODE)
+      expect(body.message).to.include('enable sync there once')
+    })
+
+    it('names the owner device when refusing another device', () => {
+      const res = createLocalFsRefusalRes()
+
+      respondLocalFsDesktopRefusal(res as unknown as Response, 'c1', 'other_device', 'Work Laptop')
+
+      const body = res.json.firstCall.args[0]
+      expect(body.code).to.equal(DESKTOP_OWNED_BY_OTHER_DEVICE_CODE)
+      expect(body.details).to.deep.include({
+        code: DESKTOP_OWNED_BY_OTHER_DEVICE_CODE,
+        connectorId: 'c1',
+        ownerDeviceName: 'Work Laptop',
+      })
+      expect(body.message).to.include('Work Laptop')
+    })
+  })
+
+  describe('localFsRefusalFromBackend', () => {
+    it('maps a Python 409 whose detail leads with a refusal code', () => {
+      expect(
+        localFsRefusalFromBackend({
+          statusCode: 409,
+          data: { detail: 'DESKTOP_OWNED_BY_OTHER_DEVICE: Connector c1 is owned by device X.' },
+        }),
+      ).to.equal('other_device')
+      expect(
+        localFsRefusalFromBackend({ statusCode: 409, data: { detail: 'DESKTOP_UNCLAIMED: no owner' } }),
+      ).to.equal('unclaimed')
+    })
+
+    it('reads the code off an object-shaped detail', () => {
+      expect(
+        localFsRefusalFromBackend({ statusCode: 409, data: { detail: { code: 'DESKTOP_OFFLINE' } } }),
+      ).to.equal('offline')
+      expect(
+        localFsRefusalFromBackend({ statusCode: 409, data: { detail: { code: 'HTTP_CONFLICT' } } }),
+      ).to.equal(null)
+      // A non-string `code` must not be coerced into a lookup.
+      expect(
+        localFsRefusalFromBackend({ statusCode: 409, data: { detail: { code: 42 } } }),
+      ).to.equal(null)
+      expect(localFsRefusalFromBackend({ statusCode: 409, data: { detail: {} } })).to.equal(null)
+    })
+
+    it('does not resolve inherited object keys to a reason', () => {
+      // respondLocalFsDesktopRefusal indexes DESKTOP_REFUSAL by the reason, so
+      // anything but a real reason here throws on an otherwise ordinary 409.
+      expect(
+        localFsRefusalFromBackend({ statusCode: 409, data: { detail: 'constructor: boom' } }),
+      ).to.equal(null)
+      expect(
+        localFsRefusalFromBackend({ statusCode: 409, data: { detail: { code: 'toString' } } }),
+      ).to.equal(null)
+    })
+
+    it('ignores other conflicts and non-409 responses', () => {
+      expect(
+        localFsRefusalFromBackend({
+          statusCode: 409,
+          data: { detail: 'A full sync is in progress. Please wait and try again.' },
+        }),
+      ).to.equal(null)
+      expect(
+        localFsRefusalFromBackend({ statusCode: 400, data: { detail: 'DESKTOP_UNCLAIMED: no owner' } }),
+      ).to.equal(null)
+      expect(localFsRefusalFromBackend({ statusCode: 200, data: {} })).to.equal(null)
     })
   })
 })
