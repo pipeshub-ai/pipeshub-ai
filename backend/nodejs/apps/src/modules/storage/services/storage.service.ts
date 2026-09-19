@@ -95,4 +95,71 @@ export interface StorageServiceInterface {
   generatePresignedUrlForDirectUpload?(
     documentPath: string,
   ): Promise<StorageServiceResponse<{ url: string }>>;
+
+  /**
+   * Deletes a blob or folder (including all contents) at the given storage path.
+   * For cloud providers this performs a prefix-based delete of all objects
+   * under the path. For local storage the entire directory tree is removed.
+   * @param storagePath - The root path / key prefix to remove.
+   */
+  deleteObject?(storagePath: string): Promise<StorageServiceResponse<void>>;
+
+  /**
+   * Copies a blob from sourcePath to destinationPath.
+   * @param sourcePath - The source path / key.
+   * @param destinationPath - The destination path / key.
+   * @returns A promise resolving to the destination URL.
+   */
+  copyObject?(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>>;
+
+  /**
+   * Recursively copies all objects under sourcePrefix to destinationPrefix.
+   * An empty source prefix (zero objects) is a no-op success, not an error.
+   * @param sourcePrefix - The source path / key prefix.
+   * @param destinationPrefix - The destination path / key prefix.
+   */
+  copyTree?(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>>;
+
+  /**
+   * Renames/moves a whole directory tree (prefix) from sourcePrefix to destinationPrefix.
+   * Where the underlying provider has a native atomic rename (e.g., local filesystem),
+   * implementations should use it. Otherwise, fall back to recursive copy+delete.
+   * @param sourcePrefix - The source path / key prefix.
+   * @param destinationPrefix - The destination path / key prefix.
+   */
+  renameTree?(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>>;
+
+  /**
+   * Moves a blob from sourcePath to destinationPath. Where the underlying
+   * provider has no native move (S3, Azure Blob -- both immutable, object-
+   * store APIs with no rename primitive), implementations may fall back to
+   * copy+delete; local storage can implement this as a single atomic
+   * filesystem rename instead of a copy followed by a separate delete.
+   * @param sourcePath - The source path / key.
+   * @param destinationPath - The destination path / key.
+   * @returns A promise resolving to the destination URL.
+   */
+  renameObject?(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>>;
+
+  /**
+   * Builds the canonical stored URL for a given storage key/path, using the
+   * exact same encoding the upload path uses. Used by move-tree to rewrite a
+   * relocated document's stored URL fields (`s3.url` / `azureBlob.url` /
+   * `local.localPath`) so downloads resolve to the new location -- reads
+   * never consult `documentPath`, only these fields.
+   * @param storageKey - The storage key / relative path of the object.
+   */
+  getObjectUrl?(storageKey: string): string;
 }

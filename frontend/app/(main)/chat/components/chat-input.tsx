@@ -293,6 +293,11 @@ export function ChatInput({
    * allow-list) instead of the org-wide pickers. Web search has no knowledge scope.
    */
   const usesScopedPanel = isAgentChat || (isProjectChat && settings.queryMode !== 'web-search');
+  
+  const debugDisableSemantic = useChatStore((s) => s.debugDisableSemantic);
+  const debugDisablePatternMatch = useChatStore((s) => s.debugDisablePatternMatch);
+  const setDebugDisableSemantic = useChatStore((s) => s.setDebugDisableSemantic);
+  const setDebugDisablePatternMatch = useChatStore((s) => s.setDebugDisablePatternMatch);
 
   // Shared capability wiring for the desktop "+" popover (PlusMenuButton) and
   // the mobile "+" sheet (PlusMenuSheet) — kept in one place so the two
@@ -319,6 +324,10 @@ export function ChatInput({
       agentHasWebSearch: isAgentChat
         ? (agentHasWebSearch && canPersistScoped ? undefined : false)
         : undefined,
+      debugDisableSemantic,
+      debugDisablePatternMatch,
+      onToggleDebugDisableSemantic: setDebugDisableSemantic,
+      onToggleDebugDisablePatternMatch: setDebugDisablePatternMatch,
     };
   }, [
     isAgentChat,
@@ -330,6 +339,10 @@ export function ChatInput({
     setAgentCapabilities,
     agentHasInternalSearch,
     agentHasWebSearch,
+    debugDisableSemantic,
+    debugDisablePatternMatch,
+    setDebugDisableSemantic,
+    setDebugDisablePatternMatch,
   ]);
   const showPlusMenuFilterBadge = hasNonDefaultSearchCapabilities(
     plusMenuCapabilities.internalSearch,

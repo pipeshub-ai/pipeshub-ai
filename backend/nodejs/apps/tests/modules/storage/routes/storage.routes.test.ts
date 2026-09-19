@@ -33,6 +33,7 @@ describe('Storage Routes', () => {
       rollBackToPreviousVersion: sinon.stub().resolves(),
       uploadDirectDocument: sinon.stub().resolves(),
       documentDiffChecker: sinon.stub().resolves(),
+      moveTree: sinon.stub().resolves(),
       watchStorageType: sinon.stub(),
     }
 
@@ -374,6 +375,21 @@ describe('Storage Routes', () => {
           layer.route.methods.get,
       )
       expect(internalIsModifiedRoute).to.not.be.undefined
+    })
+  })
+
+  describe('move-tree route', () => {
+    it('should register POST /internal/move-tree route', () => {
+      const router = createStorageRouter(container)
+      const routes = (router as any).stack
+
+      const moveTreeRoute = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/internal/move-tree' &&
+          layer.route.methods.post,
+      )
+      expect(moveTreeRoute).to.not.be.undefined
     })
   })
 
@@ -770,6 +786,30 @@ describe('Storage Routes', () => {
       const handler = findRouteHandler(router, '/:documentId/download', 'get')
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
+      await handler(mockReq, mockRes, mockNext)
+
+      expect(mockNext.calledOnce).to.be.true
+    })
+
+    it('POST /internal/move-tree handler should call storageController.moveTree', async () => {
+      const router = createStorageRouter(container)
+      const handler = findRouteHandler(router, '/internal/move-tree', 'post')
+      expect(handler).to.not.be.undefined
+
+      const { mockReq, mockRes, mockNext } = createMockReqRes()
+      mockReq.body = { oldPath: 'records/conn1/p1', newPath: 'records/conn1/p2' }
+      await handler(mockReq, mockRes, mockNext)
+
+      expect(mockStorageController.moveTree.calledOnce).to.be.true
+    })
+
+    it('POST /internal/move-tree handler should call next on error', async () => {
+      mockStorageController.moveTree.rejects(new Error('Move failed'))
+      const router = createStorageRouter(container)
+      const handler = findRouteHandler(router, '/internal/move-tree', 'post')
+
+      const { mockReq, mockRes, mockNext } = createMockReqRes()
+      mockReq.body = { oldPath: 'records/conn1/p1', newPath: 'records/conn1/p2' }
       await handler(mockReq, mockRes, mockNext)
 
       expect(mockNext.calledOnce).to.be.true

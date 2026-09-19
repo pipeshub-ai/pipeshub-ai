@@ -137,6 +137,13 @@ class TestCorrectFirstToolSelection:
         assert "No knowledge source is attached" in section
         assert "knowledgegraph__search" not in section
         assert "web_search" not in section
+    
+    def test_no_sources_prompt_states_no_knowledge_attached(self) -> None:
+        """When no search surface is granted, the Finding Information
+        section tells the model that no knowledge source is attached."""
+        prompt = build_prompt_for_fixture("no_sources")
+        assert "Finding Information" in prompt
+        assert "No knowledge source is attached" in prompt
 
     def test_kb_only_prompt_names_retrieval_tool(self) -> None:
         """KB-only fixture must name the knowledge search tool in the
