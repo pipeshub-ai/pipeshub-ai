@@ -216,13 +216,12 @@ function AppLayout({
             maxWidth: (!isMobile && isNavCollapsed)
               ? 0
               : `${sidebarWidth + SIDEBAR_SECONDARY_PANEL_EXTRA_PX}px`,
-            // SidebarBase keeps its fixed width inside the animating slot; without
-            // clipping it paints over pages with a transparent background (e.g.
-            // /projects). The expanded max-width already covers the "More Chats"
-            // cluster, so nothing legitimate is clipped.
             overflow: 'hidden',
+            visibility: (!isMobile && isNavCollapsed) ? 'hidden' : 'visible',
             flexShrink: 0,
-            transition: 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
+            transition: (!isMobile && isNavCollapsed)
+              ? 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0.28s'
+              : 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
             position: 'relative',
             // Must be an explicit height so the SidebarBase's height:'100%'
             // chain resolves correctly (this Box is a flex child of the outer
