@@ -187,7 +187,7 @@ const createConnectorConfigUpdateHandler = (
 
       // Execute API call
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config/${endpointPath}`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/config/${endpointPath}`,
         HttpMethod.PUT,
         headers,
         config,
@@ -263,7 +263,7 @@ const fetchConnectorSnapshot = async (
     const headers = buildProxyHeaders(req);
 
     const resp = await executeConnectorCommand(
-      `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
+      `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/config`,
       HttpMethod.GET,
       headers,
     );
@@ -768,7 +768,7 @@ export const getConnectorInstance =
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
         HttpMethod.GET,
         headers,
       );
@@ -814,7 +814,7 @@ export const getConnectorInstanceConfig =
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/config`,
         HttpMethod.GET,
         headers,
       );
@@ -871,7 +871,7 @@ export const updateConnectorInstanceConfig =
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/config`,
         HttpMethod.PUT,
         headers,
         config,
@@ -991,7 +991,7 @@ export const deleteConnectorInstance =
       const snapshot = await fetchConnectorSnapshot(req, connectorId, appConfig);
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
         HttpMethod.DELETE,
         headers,
       );
@@ -1081,7 +1081,7 @@ export const updateConnectorInstanceName =
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/name`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/name`,
         HttpMethod.PUT,
         headers,
         { instanceName: instanceName },
@@ -1129,7 +1129,7 @@ export const getOAuthAuthorizationUrl =
         queryParams.set('base_url', String(baseUrl));
       }
 
-      const authorizationUrl = `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/oauth/authorize?${queryParams.toString()}`;
+      const authorizationUrl = `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/oauth/authorize?${queryParams.toString()}`;
 
       logger.info(
         `Getting OAuth authorization URL for instance ${connectorId}`,
@@ -1280,7 +1280,7 @@ export const getConnectorInstanceFilterOptions =
 
       const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/filters`,
         HttpMethod.GET,
         headers,
       );
@@ -1362,7 +1362,7 @@ export const getFilterFieldOptions =
       const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters/${filterKey}/options${queryString}`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/filters/${encodeURIComponent(filterKey)}/options${queryString}`,
         HttpMethod.GET,
         headers,
       );
@@ -1416,7 +1416,7 @@ export const saveConnectorInstanceFilterOptions =
 
       const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/filters`,
         HttpMethod.POST,
         headers,
         { filters },
@@ -1478,7 +1478,7 @@ export const toggleConnectorInstance =
         body.fullSync = fullSync;
       }
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/toggle`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/toggle`,
         HttpMethod.POST,
         headers,
         body,
@@ -1660,7 +1660,7 @@ export const getConnectorSchema =
 
       const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/registry/${connectorType}/schema`,
+        `${appConfig.connectorBackend}/api/v1/connectors/registry/${encodeURIComponent(connectorType)}/schema`,
         HttpMethod.GET,
         headers,
       );
@@ -2009,7 +2009,7 @@ const validateConnectorNotLocked = async (
   headers: Record<string, string>,
 ): Promise<void> => {
   const response = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+    `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
     HttpMethod.GET,
     headers,
   );
@@ -2088,7 +2088,7 @@ export const reindexConnector =
       const headers = buildProxyHeaders(req);
 
       const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/reindex`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/reindex`,
         HttpMethod.POST,
         headers,
         reindexBody,

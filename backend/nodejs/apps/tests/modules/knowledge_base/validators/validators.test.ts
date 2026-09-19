@@ -50,6 +50,43 @@ describe('knowledge_base/validators/validators', () => {
       const result = getRecordByIdSchema.safeParse(data);
       expect(result.success).to.be.true;
     });
+
+    it('should accept UUID and ObjectId record ids', () => {
+      for (const recordId of [
+        '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
+        '507f1f77bcf86cd799439011',
+      ]) {
+        const result = getRecordByIdSchema.safeParse({ params: { recordId }, query: {} });
+        expect(result.success, recordId).to.be.true;
+      }
+    });
+
+    it('should reject record ids that contain URL separators (GHSA-rfmg-j28j-f635)', () => {
+      for (const recordId of [
+        '../records',
+        'abc/def',
+        'abc?x=1#frag',
+        'abc%2Fdef',
+        'abc def',
+        'a'.repeat(129),
+      ]) {
+        const result = getRecordByIdSchema.safeParse({ params: { recordId }, query: {} });
+        expect(result.success, recordId).to.be.false;
+      }
+    });
+
+    it('should apply the same record id rule to update, delete, reindex and move schemas', () => {
+      const bad = '../records';
+      expect(updateRecordSchema.safeParse({ body: {}, params: { recordId: bad } }).success).to.be.false;
+      expect(deleteRecordSchema.safeParse({ params: { recordId: bad } }).success).to.be.false;
+      expect(reindexRecordSchema.safeParse({ params: { recordId: bad } }).success).to.be.false;
+      expect(
+        moveRecordSchema.safeParse({
+          body: { newParentId: null },
+          params: { kbId: '3f2504e0-4f89-11d3-9a0c-0305e82c3301', recordId: bad },
+        }).success,
+      ).to.be.false;
+    });
   });
 
   describe('updateRecordSchema', () => {

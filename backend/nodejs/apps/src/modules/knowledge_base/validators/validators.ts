@@ -12,8 +12,16 @@ const rejectedFileSchema = z.object({
 });
 
 
+// Record ids are UUIDs or Mongo ObjectIds. Restricting them to one URL path
+// segment keeps a caller from widening the proxied connector-service path.
+const recordIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/, 'Invalid record id');
+
 export const getRecordByIdSchema = z.object({
-  params: z.object({ recordId: z.string().min(1) }),
+  params: z.object({ recordId: recordIdSchema }),
   query: z.object({
     convertTo: z.string().optional(),
     // Registry version number for artifact records — resolved to a
@@ -29,16 +37,16 @@ export const updateRecordSchema = z.object({
     recordName: z.string().optional(),
   }),
   params: z.object({
-    recordId: z.string(),
+    recordId: recordIdSchema,
   }),
 });
 
 export const deleteRecordSchema = z.object({
-  params: z.object({ recordId: z.string().min(1) }),
+  params: z.object({ recordId: recordIdSchema }),
 });
 
 export const reindexRecordSchema = z.object({
-  params: z.object({ recordId: z.string().min(1) }),
+  params: z.object({ recordId: recordIdSchema }),
   body: z
     .object({
       depth: z.number().int().min(-1).max(100).optional(),
@@ -355,6 +363,6 @@ export const moveRecordSchema = z.object({
   }),
   params: z.object({
     kbId: z.string().uuid(),
-    recordId: z.string().min(1),
+    recordId: recordIdSchema,
   }),
 });
