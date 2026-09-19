@@ -131,3 +131,27 @@ def test_without_a_health_check_the_probe_decides(compose_file: Path) -> None:
     probes = [argv for argv in calls if "exec" in argv]
     assert len(probes) == 3
     assert probes[-1][-5:] == ["exec", "-T", "redis", "redis-cli", "ping"]
+
+
+def test_graph_service_follows_the_graph_backend_under_test(monkeypatch) -> None:
+    monkeypatch.setenv("TEST_GRAPH_DB_TYPE", "Neo4j")
+    assert compose_control.graph_service() == "neo4j"
+    monkeypatch.setenv("TEST_GRAPH_DB_TYPE", "arango")
+    assert compose_control.graph_service() == "arango"
+
+
+def test_stop_confirms_the_service_is_really_down(compose_file: Path) -> None:
+    stack = ComposeStack(compose_file)
+    calls: list[list[str]] = []
+
+    def still_running(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _done("mongodb\nredis\n" if "ps" in argv else "")
+
+    with mock.patch.object(compose_control.subprocess, "run", side_effect=still_running):
+        with pytest.raises(ComposeUnavailable, match="still reports running"):
+            stack.stop("mongodb")
+    assert any(argv[-2:] == ["stop", "mongodb"] for argv in calls)
+
+    with mock.patch.object(compose_control.subprocess, "run", return_value=_done("redis\n")):
+        stack.stop("mongodb")

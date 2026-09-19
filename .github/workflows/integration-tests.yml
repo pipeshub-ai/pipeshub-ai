@@ -458,8 +458,10 @@ jobs:
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
 
-      # Restarts Redis and Qdrant and kills the indexing process on the live
-      # stack, which would break any test running beside it. So it runs alone,
+      # Restarts Redis, Qdrant, the graph database and MongoDB, kills the
+      # indexing process, cuts the app off from its AI provider and makes blob
+      # storage unwritable on the live stack, which would break any test
+      # running beside it. So it runs alone,
       # after everything else on this stack, and only nightly on the core
       # shard's Neo4j pass: one stack, no extra runner, no time added to a PR.
       # A dispatch with connectors=resilience runs it through the step above.

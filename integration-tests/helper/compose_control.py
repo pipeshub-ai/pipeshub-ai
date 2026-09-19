@@ -30,6 +30,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_DIR = REPO_ROOT / "deployment" / "docker-compose"
 
 
+def graph_service() -> str:
+    """The graph database's compose service in the stack for TEST_GRAPH_DB_TYPE."""
+    return {"neo4j": "neo4j", "arango": "arango"}[os.getenv("TEST_GRAPH_DB_TYPE", "neo4j").lower()]
+
+
 class ComposeUnavailable(RuntimeError):
     """The stack cannot be controlled from here; the message says why."""
 
@@ -91,6 +96,15 @@ class ComposeStack:
 
     def restart(self, service: str) -> None:
         self._run(["restart", service])
+
+    def stop(self, service: str) -> None:
+        """Stop ``service`` and confirm it is down, so a caller knows the outage has really begun."""
+        self._run(["stop", service])
+        if service in self.running_services():
+            raise ComposeUnavailable(f"{service} was stopped but still reports running")
+
+    def start(self, service: str) -> None:
+        self._run(["start", service])
 
     def exec(self, service: str, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         return self._run(["exec", "-T", service, *command])

@@ -1,12 +1,13 @@
 """Indexing survives its dependencies going away mid-run.
 
 Each test uploads a batch of documents to a fresh knowledge base and, while
-they are being indexed, takes one dependency away: the message broker (Redis)
-is restarted, the vector database (Qdrant) is restarted, or the indexing
-process is killed outright. Then every document must still reach COMPLETED,
-exactly once:
+they are being indexed, takes one dependency away: the message broker (Redis),
+the vector database (Qdrant), the graph database (Neo4j or ArangoDB) or
+MongoDB is restarted, or the indexing process is killed outright. Then every
+document must still reach COMPLETED, exactly once:
 
   * the knowledge base lists each upload once, and nothing else;
+  * the graph holds one record per upload for the knowledge base, no more;
   * each document has vectors, and the same number as its siblings. The
     documents share one shape, so a document indexed twice over shows up as
     a count the others do not have.
@@ -32,28 +33,26 @@ import os
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import pytest
 
 from helper.clients.kb_client import KBClient
-from helper.compose_control import ComposeStack
+from helper.compose_control import ComposeStack, graph_service
+from helper.fault_switches import KILL_INDEXING
+from helper.indexing_progress import (
+    POLL,
+    RECOVERY_TIMEOUT,
+    UNFINISHED,
+    document,
+    record_fields,
+    statuses,
+    wait_until_finished,
+)
 
 logger = logging.getLogger("resilience")
 
 FILES = int(os.getenv("RESILIENCE_FILES", "8"))
 MAX_BATCHES = int(os.getenv("RESILIENCE_MAX_BATCHES", "4"))
-RECOVERY_TIMEOUT = int(os.getenv("RESILIENCE_RECOVERY_TIMEOUT_SEC", "900"))
-POLL = 5
-UNFINISHED = {"NOT_STARTED", "QUEUED", "IN_PROGRESS"}
-
-# Matches the indexing service's own command line, not this shell's: the
-# bracket keeps the pattern from matching the text of the pattern.
-KILL_INDEXING = (
-    "for p in /proc/[0-9]*; do "
-    "if tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q '^python[0-9.]* -m [a]pp[.]indexing_main'; "
-    "then kill -9 ${p#/proc/} && echo ${p#/proc/}; fi; done"
-)
 
 # Redis in the stack has no health check, so readiness is an answered PING
 # (a Redis still loading its data answers LOADING, not PONG).
@@ -88,47 +87,28 @@ class Outage:
 OUTAGES = [
     Outage("broker restart", _restart("redis", REDIS_PING)),
     Outage("vector database restart", _restart("qdrant")),
+    Outage("graph database restart", _restart(graph_service())),
+    Outage("main database restart", _restart("mongodb")),
     Outage("indexing process killed", _kill_indexing),
 ]
 
 
-def _document(token: str) -> bytes:
-    # One shape for every document, so each chunks the same way; only the token
-    # differs. Long enough that indexing a batch takes a while.
-    sections = "\n\n".join(
-        f"## Section {n}\n\nOperating note {n} for batch {token}. " + "Routine maintenance detail. " * 12
-        for n in range(1, 31)
-    )
-    return f"# Runbook {token}\n\n{sections}\n".encode()
-
-
-def _record_fields(payload: dict[str, Any]) -> dict[str, Any]:
-    return payload.get("record") or payload.get("data", {}).get("record") or payload
-
-
-def _statuses(kb_client: KBClient, record_ids: list[str]) -> dict[str, str]:
-    return {
-        record_id: _record_fields(kb_client.get_record(record_id)).get("indexingStatus", "UNKNOWN")
-        for record_id in record_ids
-    }
-
-
-async def _wait_until_finished(kb_client: KBClient, record_ids: list[str]) -> dict[str, str]:
-    deadline = asyncio.get_event_loop().time() + RECOVERY_TIMEOUT
-    statuses = _statuses(kb_client, record_ids)
-    while asyncio.get_event_loop().time() < deadline:
-        if not UNFINISHED & set(statuses.values()):
-            return statuses
-        await asyncio.sleep(POLL)
-        statuses = _statuses(kb_client, record_ids)
-    return statuses
-
-
 def _listed_names(kb_client: KBClient, kb_id: str, expected: int) -> list[str]:
     # Room past the expected count, so a duplicate is listed rather than paged off.
-    payload = kb_client.list_records(kb_id, limit=expected + 10)
-    records = payload.get("records") or payload.get("data", {}).get("records") or []
-    return [r["recordName"] for r in records]
+    payload = kb_client.list_records(kb_id, limit=min(expected + 10, 200))
+    return [item["name"] for item in payload.get("items") or []]
+
+
+async def _graph_record_names(graph_provider, kb_id: str) -> list[str]:
+    # The graph database may just have come back; its first query can meet a stale connection.
+    for attempt in range(3):
+        try:
+            return await graph_provider.fetch_record_names(kb_id)
+        except Exception:  # noqa: BLE001 - retried, then raised
+            if attempt == 2:
+                raise
+            await asyncio.sleep(POLL)
+    return []
 
 
 @pytest.mark.parametrize("outage", OUTAGES, ids=[o.name for o in OUTAGES])
@@ -137,6 +117,7 @@ async def test_indexing_recovers_from_outage_without_losing_or_duplicating(
     compose: ComposeStack,
     kb_client: KBClient,
     vector_store,
+    graph_provider,
 ) -> None:
     kb_id = kb_client.create_kb(f"resilience-{uuid.uuid4().hex[:8]}")["id"]
     try:
@@ -148,13 +129,13 @@ async def test_indexing_recovers_from_outage_without_losing_or_duplicating(
             for _ in range(FILES):
                 token = uuid.uuid4().hex[:12]
                 name = f"runbook-{token}.md"
-                upload = kb_client.upload_file(kb_id, name, _document(token), mimetype="text/markdown")
+                upload = kb_client.upload_file(kb_id, name, document(token), mimetype="text/markdown")
                 assert upload["summary"]["failed"] == 0, f"upload of {name} failed before any fault: {upload}"
                 names.append(name)
                 batch.append(upload["records"][0]["recordId"])
             record_ids += batch
             # The newest batch is the one most likely still in the pipeline.
-            in_flight = {rid: st for rid, st in _statuses(kb_client, batch).items() if st in UNFINISHED}
+            in_flight = {rid: st for rid, st in statuses(kb_client, batch).items() if st in UNFINISHED}
             if in_flight:
                 break
         assert in_flight, (
@@ -164,7 +145,7 @@ async def test_indexing_recovers_from_outage_without_losing_or_duplicating(
         logger.info("Injecting %s with %d document(s) in flight: %s", outage.name, len(in_flight), in_flight)
         outage.inject(compose)
 
-        final = await _wait_until_finished(kb_client, record_ids)
+        final = await wait_until_finished(kb_client, record_ids)
         stuck = {rid: status for rid, status in final.items() if status != "COMPLETED"}
         assert not stuck, (
             f"after a {outage.name}, {len(stuck)} of {len(record_ids)} documents did not reach COMPLETED "
@@ -176,10 +157,15 @@ async def test_indexing_recovers_from_outage_without_losing_or_duplicating(
             f"after a {outage.name}, the knowledge base lists {sorted(listed)}; "
             f"expected each of the {len(names)} uploads exactly once"
         )
+        in_graph = await _graph_record_names(graph_provider, kb_id)
+        assert sorted(in_graph) == sorted(names), (
+            f"after a {outage.name}, the graph holds records {sorted(in_graph)} for the knowledge base; "
+            f"expected one per upload ({len(names)}), so a record was lost or written twice"
+        )
 
         counts = {}
         for record_id in record_ids:
-            virtual_id = _record_fields(kb_client.get_record(record_id)).get("virtualRecordId")
+            virtual_id = record_fields(kb_client.get_record(record_id)).get("virtualRecordId")
             assert virtual_id, f"record {record_id} is COMPLETED but has no virtual record id"
             counts[record_id] = await vector_store.count_for_virtual_record(str(virtual_id))
         assert all(counts.values()), f"after a {outage.name}, some COMPLETED documents have no vectors: {counts}"

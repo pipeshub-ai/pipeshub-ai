@@ -1,7 +1,8 @@
 """Fixtures for breaking a dependency of the running stack on purpose.
 
-These tests restart the broker, the vector database, or the indexing process
-while documents are being indexed. That disturbs anything else using the
+These tests restart the broker, the vector database, the graph database or
+MongoDB, kill the indexing process, cut the app off from its AI provider, or
+make blob storage unwritable, while the product is busy. That disturbs anything else using the
 stack, so they carry their own marker and run on their own, after the rest of
 the suite (see the integration workflow).
 """
@@ -10,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from helper.compose_control import ComposeStack, ComposeUnavailable
+from helper.compose_control import ComposeStack, ComposeUnavailable, graph_service
 
-STACK_SERVICES = ("pipeshub-ai", "redis", "qdrant")
+STACK_SERVICES = ("pipeshub-ai", "redis", "qdrant", "mongodb", graph_service())
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
