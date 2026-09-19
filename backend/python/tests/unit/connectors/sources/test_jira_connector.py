@@ -2131,11 +2131,11 @@ class TestFetchProjectPermissionScheme:
         assert len(permissions) == 0
 
     @pytest.mark.asyncio
-    async def test_application_role_forbidden_grants_creator(self):
-        """When 403 flag is set, grant configuring user instead of ORG."""
+    async def test_application_role_forbidden_grants_authenticated_jira_account(self):
+        """When 403 flag is set, grant the authenticated Jira account instead of ORG."""
         connector = _make_connector()
         connector._app_roles_forbidden = True
-        connector.creator_email = "admin@example.com"
+        connector._authenticated_jira_email = "admin@example.com"
         mock_ds = MagicMock()
         mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response_fullcov(200, {"id": 1}))
         mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response_fullcov(200, {

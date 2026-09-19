@@ -4423,7 +4423,10 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (user:User {id: $user_id})
             OPTIONAL MATCH (user)-[:USER_APP_RELATION]->(app1:App)
             OPTIONAL MATCH (user)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
-            WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
+            // Connectors the user authenticated as another source account
+            OPTIONAL MATCH (user)-[linked:AUTHENTICATED_AS]->(:User)
+            OPTIONAL MATCH (app3:App {id: linked.connectorId})
+            WITH collect(DISTINCT app1) + collect(DISTINCT app2) + collect(DISTINCT app3) AS app_list
             UNWIND app_list AS app
             WITH app WHERE app IS NOT NULL
             RETURN DISTINCT app
@@ -4588,7 +4591,13 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Build the comprehensive Cypher query for this connector
             query = f"""
-            MATCH (userDoc:User {{userId: $userId}})
+            MATCH (caller:User {{userId: $userId}})
+
+            // Principals: the user, plus the source account the user authenticated this
+            // connector as, reached through the link and never by its userId
+            OPTIONAL MATCH (caller)-[:AUTHENTICATED_AS {{connectorId: $connectorId}}]->(source_account:User)
+            WITH caller, collect(DISTINCT source_account) AS source_accounts
+            UNWIND [caller] + source_accounts AS userDoc
 
             // Collect all accessible records from different permission paths
             CALL {{
@@ -6444,6 +6453,55 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"ensure_team_app_edge failed: {e}", exc_info=True)
             raise
 
+    async def upsert_authenticated_as(
+        self,
+        creator_key: str,
+        source_user_key: str,
+        connector_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> None:
+        # A relationship cannot be repointed, so a stale link for this connector is
+        # dropped in the same statement before MERGE keeps exactly one per connector.
+        ts = get_epoch_timestamp_in_ms()
+        query = """
+        MATCH (c:User {id: $creator_key})
+        MATCH (s:User {id: $source_user_key})
+        OPTIONAL MATCH (x:User)-[old:AUTHENTICATED_AS {connectorId: $connector_id}]->(y:User)
+        WHERE x <> c OR y <> s
+        DELETE old
+        WITH c, s
+        MERGE (c)-[r:AUTHENTICATED_AS {connectorId: $connector_id}]->(s)
+        ON CREATE SET r.orgId = $org_id, r.createdAtTimestamp = $ts, r.updatedAtTimestamp = $ts
+        ON MATCH SET r.orgId = $org_id, r.updatedAtTimestamp = $ts
+        """
+        await self.client.execute_query(
+            query,
+            parameters={
+                "creator_key": creator_key,
+                "source_user_key": source_user_key,
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "ts": ts,
+            },
+            txn_id=transaction,
+        )
+
+    async def remove_authenticated_as(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        query = """
+        MATCH ()-[r:AUTHENTICATED_AS {connectorId: $connector_id}]->()
+        DELETE r
+        RETURN count(*) AS deleted
+        """
+        rows = await self.client.execute_query(
+            query, parameters={"connector_id": connector_id}, txn_id=transaction
+        )
+        return bool(rows and rows[0].get("deleted"))
+
     async def batch_upsert_user_groups(
         self,
         user_groups: list[AppUserGroup],
@@ -7492,6 +7550,9 @@ class Neo4jProvider(IGraphDBProvider):
                 if not sync_success:
                     raise Exception("CRITICAL: Failed to delete sync points.")
 
+                # User -> User link is not attached to any node deleted above
+                await self.remove_authenticated_as(connector_id, transaction=transaction)
+
                 # Step 7: Delete the app itself
                 deleted_app, _ = await self._delete_nodes_by_keys(
                     transaction,
@@ -8311,9 +8372,16 @@ class Neo4jProvider(IGraphDBProvider):
             # Build comprehensive access query
             # Check all access paths: direct, group, record group, nested record groups, org, KB, anyone
             access_query = """
-            MATCH (u:User {id: $user_key})
+            MATCH (caller:User {id: $user_key})
             MATCH (rec:Record {id: $record_id})
             WHERE rec.origin <> "CONNECTOR" OR rec.connectorId IN $user_apps_ids
+
+            // Principals: the user, plus the source account the user authenticated this record's
+            // connector as. One row per principal; their access paths are merged after the query.
+            OPTIONAL MATCH (caller)-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = rec.connectorId
+            WITH caller, rec, collect(DISTINCT source_account) AS source_accounts
+            UNWIND [caller] + source_accounts AS u
 
             // Direct access
             OPTIONAL MATCH (u)-[directPerm:PERMISSION {type: "USER"}]->(rec)
@@ -8432,7 +8500,7 @@ class Neo4jProvider(IGraphDBProvider):
             if not access_results or not access_results[0].get("allAccess"):
                 return None
 
-            access_result = access_results[0]["allAccess"]
+            access_result = [access for row in access_results for access in (row.get("allAccess") or [])]
             # Filter out None entries
             access_result = [a for a in access_result if a.get("source") is not None or a.get("type") == "ANYONE"]
 
@@ -8938,9 +9006,16 @@ class Neo4jProvider(IGraphDBProvider):
             # Check multiple paths: direct, via groups, via org
             # This matches the ArangoDB implementation logic
             query = """
-            MATCH (userDoc:User {id: $user_key})
+            MATCH (caller:User {id: $user_key})
             MATCH (recordGroup:RecordGroup {id: $record_group_id})
             WHERE recordGroup.orgId = $org_id
+
+            // Principals: the user, plus the source account the user authenticated this
+            // record group's connector as. One result row per principal; the best one wins.
+            OPTIONAL MATCH (caller)-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = recordGroup.connectorId
+            WITH caller, recordGroup, collect(DISTINCT source_account) AS source_accounts
+            UNWIND [caller] + source_accounts AS userDoc
 
             // Direct user -> record group permission (including parent hierarchy 0-10 levels)
             OPTIONAL MATCH (recordGroup)-[:INHERIT_PERMISSIONS*0..10]->(rg:RecordGroup)
@@ -8990,6 +9065,8 @@ class Neo4jProvider(IGraphDBProvider):
                 allowed: hasPermission,
                 role: userRole
             } AS result
+            ORDER BY result.allowed DESC, CASE result.role WHEN 'OWNER' THEN 6 WHEN 'ADMIN' THEN 5 WHEN 'EDITOR' THEN 4 WHEN 'WRITER' THEN 3 WHEN 'COMMENTER' THEN 2 WHEN 'READER' THEN 1 ELSE 0 END DESC
+            LIMIT 1
             """
 
             results = await self.client.execute_query(
@@ -9149,8 +9226,15 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             query = """
-            MATCH (user:User {id: $user_key})
+            MATCH (caller:User {id: $user_key})
             MATCH (record:Record {id: $record_id})
+
+            // Principals: the user, plus the source account the user authenticated this
+            // record's connector as. One result row per principal; the best one wins.
+            OPTIONAL MATCH (caller)-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = record.connectorId
+            WITH caller, record, collect(DISTINCT source_account) AS source_accounts
+            UNWIND [caller] + source_accounts AS user
 
             // 1. Check direct user permissions on the record
             OPTIONAL MATCH (user)-[direct_perm:PERMISSION {type: "USER"}]->(record)
@@ -9282,6 +9366,8 @@ class Neo4jProvider(IGraphDBProvider):
             END AS source
 
             RETURN final_permission AS permission, source
+            ORDER BY CASE permission WHEN 'OWNER' THEN 6 WHEN 'ADMIN' THEN 5 WHEN 'EDITOR' THEN 4 WHEN 'WRITER' THEN 3 WHEN 'COMMENTER' THEN 2 WHEN 'READER' THEN 1 ELSE 0 END DESC
+            LIMIT 1
             """
 
             parameters = {
@@ -14352,7 +14438,10 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (u:User {id: $user_key})
             OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(app1:App)
             OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
-            WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
+            // Connectors the user authenticated as another source account
+            OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(:User)
+            OPTIONAL MATCH (app3:App {id: linked.connectorId})
+            WITH collect(DISTINCT app1) + collect(DISTINCT app2) + collect(DISTINCT app3) AS app_list
             UNWIND app_list AS app
             WITH app WHERE app IS NOT NULL AND coalesce(app.isHidden, false) = false
             RETURN DISTINCT app.id AS app_id
@@ -14725,14 +14814,21 @@ class Neo4jProvider(IGraphDBProvider):
               AND (v.orgId = $org_id)
               AND (v.isDeleted IS NULL OR v.isDeleted = false)
 
+            // Principals: the user, plus the source account the user authenticated the linked
+            // record's own connector as, so a link never reaches into another connector.
             WITH u, v, e
+            OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = v.connectorId
+            WITH u, v, e, collect(DISTINCT source_account) AS source_accounts
+            UNWIND [u] + source_accounts AS principal
+            WITH v, e, principal
             WHERE (
-                EXISTS { (u)-[:PERMISSION]->(v) }
-                OR EXISTS { (u)-[:PERMISSION]->(:RecordGroup)<-[:INHERIT_PERMISSIONS*1..20]-(v) }
-                OR EXISTS { (u)-[:BELONGS_TO]->(:Organization)-[:PERMISSION]->(v) }
+                EXISTS { (principal)-[:PERMISSION]->(v) }
+                OR EXISTS { (principal)-[:PERMISSION]->(:RecordGroup)<-[:INHERIT_PERMISSIONS*1..20]-(v) }
+                OR EXISTS { (principal)-[:BELONGS_TO]->(:Organization)-[:PERMISSION]->(v) }
             )
 
-            WITH v, e
+            WITH DISTINCT v, e
             OPTIONAL MATCH (v)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record)
             WITH v, e, count(*) > 0 AS has_child_pc
             OPTIONAL MATCH (v)-[:RECORD_RELATION {relationshipType: 'ATTACHMENT'}]->(:Record)
@@ -15631,29 +15727,37 @@ class Neo4jProvider(IGraphDBProvider):
             WITH {node_var}, {user_var}, role_priority,
                  [t IN permission_targets_raw WHERE t IS NOT NULL] AS permission_targets
 
+            // Principals: the user, plus the source account the user authenticated this node's
+            // connector as. The link is per connector, so it never grants outside that connector.
+            OPTIONAL MATCH ({user_var})-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = {node_var}.connectorId
+            WITH {node_var}, {user_var}, role_priority, permission_targets,
+                 [{user_var}] + collect(DISTINCT source_account) AS principals
+
             // Step 2: Check all 10 permission paths across all targets
             // Unwind targets to check each one
             UNWIND permission_targets AS target
+            UNWIND principals AS principal
 
             // Path 1: Direct user permission on target
-            OPTIONAL MATCH ({user_var})-[p1:PERMISSION {{type: 'USER'}}]->(target)
+            OPTIONAL MATCH (principal)-[p1:PERMISSION {{type: 'USER'}}]->(target)
             WHERE p1.role IS NOT NULL AND p1.role <> ''
 
             // Path 3: User -> Group -> target
-            OPTIONAL MATCH ({user_var})-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
+            OPTIONAL MATCH (principal)-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
             WHERE p3.role IS NOT NULL AND p3.role <> ''
 
             // Path 5: User -> Role -> target
-            OPTIONAL MATCH ({user_var})-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
+            OPTIONAL MATCH (principal)-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
             WHERE p5.role IS NOT NULL AND p5.role <> ''
 
             // Path 7: User -> Team -> target
             // Use role from User->Team permission edge (ut.role), not Team->target edge
-            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
+            OPTIONAL MATCH (principal)-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
             WHERE ut.role IS NOT NULL AND ut.role <> ''
 
             // Path 9: User -> Org -> target
-            OPTIONAL MATCH ({user_var})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
+            OPTIONAL MATCH (principal)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
             WHERE p9.role IS NOT NULL AND p9.role <> ''
 
             // Collect all found permissions for this target
@@ -15724,28 +15828,36 @@ class Neo4jProvider(IGraphDBProvider):
             WITH {node_var}, {user_var}, role_priority,
                  [t IN permission_targets_raw WHERE t IS NOT NULL] AS permission_targets
 
+            // Principals: the user, plus the source account the user authenticated this node's
+            // connector as. The link is per connector, so it never grants outside that connector.
+            OPTIONAL MATCH ({user_var})-[linked:AUTHENTICATED_AS]->(source_account:User)
+            WHERE linked.connectorId = {node_var}.connectorId
+            WITH {node_var}, {user_var}, role_priority, permission_targets,
+                 [{user_var}] + collect(DISTINCT source_account) AS principals
+
             // Step 2: Check all permission paths across all targets
             UNWIND permission_targets AS target
+            UNWIND principals AS principal
 
             // Path 1: Direct user permission on target
-            OPTIONAL MATCH ({user_var})-[p1:PERMISSION {{type: 'USER'}}]->(target)
+            OPTIONAL MATCH (principal)-[p1:PERMISSION {{type: 'USER'}}]->(target)
             WHERE p1.role IS NOT NULL AND p1.role <> ''
 
             // Path 2: User -> Group -> target
-            OPTIONAL MATCH ({user_var})-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
+            OPTIONAL MATCH (principal)-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
             WHERE p3.role IS NOT NULL AND p3.role <> ''
 
             // Path 3: User -> Role -> target
-            OPTIONAL MATCH ({user_var})-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
+            OPTIONAL MATCH (principal)-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
             WHERE p5.role IS NOT NULL AND p5.role <> ''
 
             // Path 4: User -> Team -> target
             // Use role from User->Team permission edge (ut.role), not Team->target edge
-            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
+            OPTIONAL MATCH (principal)-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
             WHERE ut.role IS NOT NULL AND ut.role <> ''
 
             // Path 5: User -> Org -> target
-            OPTIONAL MATCH ({user_var})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
+            OPTIONAL MATCH (principal)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
             WHERE p9.role IS NOT NULL AND p9.role <> ''
 
             // Collect all found permissions for this target
@@ -15804,7 +15916,10 @@ class Neo4jProvider(IGraphDBProvider):
             WITH {node_var}, {user_var}
 
             // Check if user has USER_APP_RELATION to app
-            OPTIONAL MATCH ({user_var})-[user_app_rel:USER_APP_RELATION]->({node_var})
+            OPTIONAL MATCH ({user_var})-[own_app_rel:USER_APP_RELATION]->({node_var})
+
+            // A connector the user authenticated as another source account is the user's app too
+            OPTIONAL MATCH ({user_var})-[linked_app:AUTHENTICATED_AS {{connectorId: {node_var}.id}}]->(:User)
 
             // Check if user has path User->Team->App (user in team, team has USER_APP_RELATION to app)
             OPTIONAL MATCH ({user_var})-[:PERMISSION {{type: 'USER'}}]->(team:Teams)-[team_app_rel:USER_APP_RELATION]->({node_var})
@@ -15820,7 +15935,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(kb_team:Teams)-[tb:PERMISSION {{type: 'TEAM'}}]->({node_var})
 
             // Collect team KB roles and find highest priority
-            WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm,
+            WITH {node_var}, {user_var}, coalesce(own_app_rel, linked_app) AS user_app_rel, team_app_rel, direct_perm,
                 collect(DISTINCT ut.role) AS team_kb_roles_list
 
             WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm,
@@ -16180,18 +16295,26 @@ class Neo4jProvider(IGraphDBProvider):
         """
         cypher = """
         MATCH (u:User {id: $user_key})
-        WITH u
+
+        // Principals: the user everywhere, plus each source account the user authenticated a
+        // connector as, counted for that connector only
+        OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User)
+        WITH u, [{user: u, connectorId: null}] +
+                [p IN collect({user: source_account, connectorId: linked.connectorId}) WHERE p.user IS NOT NULL] AS principals
 
         // Get user's accessible apps
-        WITH u, $user_accessible_app_ids AS user_accessible_app_ids
+        WITH u, principals, $user_accessible_app_ids AS user_accessible_app_ids
 
         // ========== RECORDGROUP-BASED ACCESS (Paths 1-4) for external connectors ==========
 
         // Path 1: User -> RecordGroup (external connectors only)
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:PERMISSION {type: 'USER'}]->(rg:RecordGroup)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:PERMISSION {type: 'USER'}]->(rg:RecordGroup)
             WHERE rg.orgId = $org_id
+              AND (linked_connector IS NULL OR rg.connectorId = linked_connector)
               AND rg.connectorId IN user_accessible_app_ids
               {scope_filter_rg}
             RETURN collect(rg) AS path1_rgs
@@ -16199,11 +16322,14 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 2: User -> Group/Role -> RecordGroup
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:PERMISSION {type: 'USER'}]->(grp)
             WHERE grp:Group OR grp:Role
             MATCH (grp)-[:PERMISSION]->(rg:RecordGroup)
             WHERE rg.orgId = $org_id
+              AND (linked_connector IS NULL OR rg.connectorId = linked_connector)
               AND rg.connectorId IN user_accessible_app_ids
               {scope_filter_rg}
             RETURN collect(rg) AS path2_rgs
@@ -16211,10 +16337,13 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 3: User -> Org -> RecordGroup
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
             MATCH (org)-[:PERMISSION {type: 'ORG'}]->(rg:RecordGroup)
             WHERE rg.orgId = $org_id
+              AND (linked_connector IS NULL OR rg.connectorId = linked_connector)
               AND rg.connectorId IN user_accessible_app_ids
               {scope_filter_rg}
             RETURN collect(rg) AS path3_rgs
@@ -16222,17 +16351,20 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 4: User -> Team -> RecordGroup
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:PERMISSION {type: 'USER'}]->(team:Teams)
             MATCH (team)-[:PERMISSION {type: 'TEAM'}]->(rg:RecordGroup)
             WHERE rg.orgId = $org_id
+              AND (linked_connector IS NULL OR rg.connectorId = linked_connector)
               AND rg.connectorId IN user_accessible_app_ids
               {scope_filter_rg}
             RETURN collect(rg) AS path4_rgs
         }
 
         // Combine all accessible RecordGroups (parent level)
-        WITH u, user_accessible_app_ids,
+        WITH u, principals, user_accessible_app_ids,
              path1_rgs + path2_rgs + path3_rgs + path4_rgs AS all_parent_rgs
 
         // Find nested RecordGroups via INHERIT_PERMISSIONS (skip parents with hideChildren)
@@ -16249,11 +16381,11 @@ class Neo4jProvider(IGraphDBProvider):
         }
 
         // Combine parent and nested RecordGroups
-        WITH u, user_accessible_app_ids,
+        WITH u, principals, user_accessible_app_ids,
              all_parent_rgs + (CASE WHEN nested_rgs IS NOT NULL THEN nested_rgs ELSE [] END) AS all_accessible_rgs
 
         // Find all Records that inherit from accessible RecordGroups (skip hideChildren parents)
-        WITH u, user_accessible_app_ids, all_accessible_rgs,
+        WITH u, principals, user_accessible_app_ids, all_accessible_rgs,
              [rg IN all_accessible_rgs |
                CASE WHEN coalesce(rg.hideChildren, false) = true THEN []
                ELSE [(record:Record)-[:INHERIT_PERMISSIONS]->(rg)
@@ -16263,7 +16395,7 @@ class Neo4jProvider(IGraphDBProvider):
              ] AS records_lists
 
         // Flatten and deduplicate records from RecordGroups
-        WITH u, user_accessible_app_ids,
+        WITH u, principals, user_accessible_app_ids,
              all_accessible_rgs AS accessible_rgs,
              reduce(acc = [], list IN records_lists | acc + list) AS rg_inherited_records
 
@@ -16271,7 +16403,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         // KB Path 1: User -> KB App (direct permission)
         CALL {
-            WITH u, user_accessible_app_ids
+            WITH u, principals, user_accessible_app_ids
             MATCH (u)-[:PERMISSION {type: 'USER'}]->(kb_app:App {type: 'KB'})
             WHERE kb_app.orgId = $org_id
               AND kb_app.id IN user_accessible_app_ids
@@ -16280,7 +16412,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         // KB Path 2: User -> Team -> KB App
         CALL {
-            WITH u, user_accessible_app_ids
+            WITH u, principals, user_accessible_app_ids
             MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)
             MATCH (team)-[:PERMISSION {type: 'TEAM'}]->(kb_app:App {type: 'KB'})
             WHERE kb_app.orgId = $org_id
@@ -16289,11 +16421,11 @@ class Neo4jProvider(IGraphDBProvider):
         }
 
         // Combine accessible KB apps
-        WITH u, user_accessible_app_ids, accessible_rgs, rg_inherited_records,
+        WITH u, principals, user_accessible_app_ids, accessible_rgs, rg_inherited_records,
              kb_path1_apps + kb_path2_apps AS all_kb_apps
 
         // Find records with INHERIT_PERMISSIONS edges to accessible KB apps
-        WITH u, user_accessible_app_ids, accessible_rgs, rg_inherited_records, all_kb_apps,
+        WITH u, principals, user_accessible_app_ids, accessible_rgs, rg_inherited_records, all_kb_apps,
              [kb_app IN all_kb_apps |
                [(record:Record)-[:INHERIT_PERMISSIONS]->(kb_app)
                 WHERE record.orgId = $org_id
@@ -16301,7 +16433,7 @@ class Neo4jProvider(IGraphDBProvider):
                | record]
              ] AS kb_records_lists
 
-        WITH u, user_accessible_app_ids, accessible_rgs,
+        WITH u, principals, user_accessible_app_ids, accessible_rgs,
              rg_inherited_records +
              reduce(acc = [], list IN kb_records_lists | acc + list) AS all_rg_inherited_records
 
@@ -16309,9 +16441,12 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 5: User -> Record (direct)
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:PERMISSION {type: 'USER'}]->(record:Record)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:PERMISSION {type: 'USER'}]->(record:Record)
             WHERE record.orgId = $org_id
+              AND (linked_connector IS NULL OR record.connectorId = linked_connector)
               {scope_filter_record}
 
             OPTIONAL MATCH (record_app:App {id: record.connectorId})
@@ -16323,11 +16458,14 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 6: User -> Group/Role -> Record (direct)
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:PERMISSION {type: 'USER'}]->(grp)
             WHERE grp:Group OR grp:Role
             MATCH (grp)-[:PERMISSION]->(record:Record)
             WHERE record.orgId = $org_id
+              AND (linked_connector IS NULL OR record.connectorId = linked_connector)
               {scope_filter_record}
 
             OPTIONAL MATCH (record_app:App {id: record.connectorId})
@@ -16339,10 +16477,13 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Path 7: User -> Org -> Record (direct)
         CALL {
-            WITH u, user_accessible_app_ids
-            MATCH (u)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
+            WITH principals, user_accessible_app_ids
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
+            MATCH (pu)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
             MATCH (org)-[:PERMISSION {type: 'ORG'}]->(record:Record)
             WHERE record.orgId = $org_id
+              AND (linked_connector IS NULL OR record.connectorId = linked_connector)
               {scope_filter_record}
 
             OPTIONAL MATCH (record_app:App {id: record.connectorId})

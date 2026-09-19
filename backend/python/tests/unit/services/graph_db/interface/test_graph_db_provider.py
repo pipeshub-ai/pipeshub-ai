@@ -402,6 +402,9 @@ class TestAbstractMethodInventory:
         "add_user_to_all_team",
         "ensure_all_team_with_users",
         "ensure_team_app_edge",
+        # Authenticated-as (creator -> source account)
+        "upsert_authenticated_as",
+        "remove_authenticated_as",
         # User operations
         "get_organization_users",
         # Agent permission operations
