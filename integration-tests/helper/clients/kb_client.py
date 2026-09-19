@@ -115,17 +115,26 @@ class KBClient(APIClient):
             resp.raise_for_status()
         raise RuntimeError(f"get_record failed after {retries} retries: {last_err}")
 
-    def list_records(self, kb_id: str, **params: Any) -> dict[str, Any]:
-        """List records in a knowledge base.
+    def list_records(self, kb_id: str, page: int = 1, limit: int = 200) -> dict[str, Any]:
+        """List every record in a knowledge base, including those in nested folders.
+
+        The gateway has no ``/{kb_id}/records`` route (a GET there falls through
+        to the web app and answers 200 with HTML), so this reads the Knowledge
+        Hub browse API, flattened to records only.
 
         Args:
             kb_id: KB ID
-            **params: Query params (page, limit, etc.)
+            page: 1-indexed page
+            limit: Items per page (the API allows up to 200)
 
         Returns:
-            Response body from the API
+            ``{"items": [...], "pagination": {"totalPages": ..., ...}}``; each
+            item carries ``id``, ``name``, ``indexingStatus`` and ``reason``.
         """
-        resp = self.get(f"/{kb_id}/records", params=params)
+        resp = self.get(
+            f"/knowledge-hub/nodes/app/{kb_id}",
+            params={"flattened": "true", "nodeTypes": "record", "page": page, "limit": limit},
+        )
         resp.raise_for_status()
         return resp.json()
 

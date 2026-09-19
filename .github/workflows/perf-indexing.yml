@@ -1,0 +1,217 @@
+name: Indexing Performance
+
+# Weekly indexing benchmark (integration-tests/perf/). Never runs on pull
+# requests: it holds secrets and only ever checks out this repository's own
+# branches, the same way the scheduled integration run does.
+on:
+  # Saturday 21:00 UTC (Sunday 02:30 IST), clear of the nightly integration run
+  # at 18:30 UTC so the two never share a runner pool's busy hour.
+  schedule:
+    - cron: '0 21 * * 6'
+  workflow_dispatch:
+    inputs:
+      docs:
+        description: 'Number of files in the synthetic corpus'
+        required: true
+        default: '500'
+      seed:
+        description: 'Corpus seed (change only when you also refresh the baseline)'
+        required: true
+        default: '1337'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-indexing
+  cancel-in-progress: false
+
+env:
+  PIPESHUB_BASE_URL: http://localhost:3000
+  MESSAGE_BROKER: redis
+  COMPOSE_FILE_NEO4J: docker-compose.integration.neo4j.yml
+  PERF_LABEL: ci-neo4j-4cpu
+
+jobs:
+  indexing-benchmark:
+    name: Indexing benchmark (neo4j)
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
+    timeout-minutes: 150
+
+    # Same environments, and so the same approval gate and secrets, as the
+    # integration workflow.
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+
+    env:
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      DOCKER_BUILDKIT: "1"
+      PIPESHUB_TEST_ENV: local
+      PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+      PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+      # Routed through env (never interpolated into the shell) so dispatch
+      # input cannot inject; validated as integers before use.
+      DOCS_INPUT: ${{ github.event.inputs.docs || '500' }}
+      SEED_INPUT: ${{ github.event.inputs.seed || '1337' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        run: |
+          [[ "$DOCS_INPUT" =~ ^[0-9]+$ ]] || { echo "docs must be a whole number"; exit 1; }
+          [[ "$SEED_INPUT" =~ ^[0-9]+$ ]] || { echo "seed must be a whole number"; exit 1; }
+
+      - name: Pull pre-built base images
+        run: |
+          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
+          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+
+      - name: Build Neo4j stack images
+        working-directory: deployment/docker-compose
+        run: docker compose -f "$COMPOSE_FILE_NEO4J" build
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install integration-test dependencies
+        working-directory: integration-tests
+        run: |
+          uv venv
+          uv pip install -e .
+
+      # Only the app and the stores it depends on: the connector source
+      # databases the integration suite also starts would be idle neighbours
+      # competing for the same four CPUs.
+      - name: Start services
+        working-directory: deployment/docker-compose
+        run: docker compose -f "$COMPOSE_FILE_NEO4J" up -d pipeshub-ai
+
+      - name: Wait for core services
+        run: |
+          deadline=$((SECONDS + 300))
+          delay=1
+          until curl -sf "${PIPESHUB_BASE_URL}/api/v1/health" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "Core services not healthy after 300s"; exit 1; fi
+            echo "Not ready, retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+            if [ "$delay" -gt 64 ]; then delay=64; fi
+          done
+
+      - name: Wait for Python microservices
+        run: |
+          deadline=$((SECONDS + 300))
+          delay=1
+          until curl -sf "${PIPESHUB_BASE_URL}/api/v1/health/services" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "Python services not healthy after 300s"; exit 1; fi
+            echo "Not ready, retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+            if [ "$delay" -gt 64 ]; then delay=64; fi
+          done
+
+      # Bodies are built with jq so a secret containing a quote, backslash or
+      # newline still produces valid JSON.
+      - name: Create organization and admin user
+        run: |
+          jq -n \
+            --arg email "$PIPESHUB_TEST_USER_EMAIL" \
+            --arg password "$PIPESHUB_TEST_USER_PASSWORD" \
+            '{
+              accountType: "business",
+              adminFullName: "Integration Test Admin",
+              contactEmail: $email,
+              password: $password,
+              confirmPassword: $password,
+              registeredName: "Integration Test Org",
+              shortName: "INTTEST"
+            }' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
+                -H "Content-Type: application/json" \
+                --data-binary @- > /dev/null
+
+      - name: Skip onboarding
+        run: |
+          HEADERS=$(mktemp)
+          jq -n --arg email "$PIPESHUB_TEST_USER_EMAIL" '{email: $email}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+                -H "Content-Type: application/json" \
+                --data-binary @- \
+                -D "${HEADERS}" -o /dev/null
+          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
+          rm -f "${HEADERS}"
+
+          ACCESS_TOKEN=$(jq -n \
+              --arg email "$PIPESHUB_TEST_USER_EMAIL" \
+              --arg password "$PIPESHUB_TEST_USER_PASSWORD" \
+              '{method: "password", credentials: {password: $password}, email: $email}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+                -H "Content-Type: application/json" \
+                -H "x-session-token: ${SESSION_TOKEN}" \
+                --data-binary @- \
+            | jq -r '.accessToken')
+
+          curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -d '{"status": "configured"}' > /dev/null
+
+      - name: Run indexing benchmark
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          CONTAINER=$(docker compose -f "../deployment/docker-compose/$COMPOSE_FILE_NEO4J" ps -q pipeshub-ai)
+          python perf/bench_indexing.py \
+            --docs "$DOCS_INPUT" --seed "$SEED_INPUT" \
+            --label "$PERF_LABEL" --graph-db neo4j --ai-models seed \
+            --container "$CONTAINER" \
+            --output reports/perf/indexing.json \
+            --summary reports/perf/summary.md
+
+      # Reports only: compare.py exits 0 on a regression until the thresholds
+      # have a few weeks of CI history behind them (see perf/README.md).
+      - name: Compare with baseline
+        if: ${{ !cancelled() && hashFiles('integration-tests/reports/perf/indexing.json') != '' }}
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          python perf/compare.py \
+            --baseline "perf/baselines/$PERF_LABEL.json" \
+            --current reports/perf/indexing.json \
+            --summary reports/perf/summary.md
+
+      - name: Write job summary
+        if: ${{ !cancelled() && hashFiles('integration-tests/reports/perf/summary.md') != '' }}
+        run: cat integration-tests/reports/perf/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dump docker logs
+        if: failure()
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p ../../integration-tests/reports/perf/docker-logs
+          docker compose -f "$COMPOSE_FILE_NEO4J" logs --no-color --timestamps pipeshub-ai \
+            > ../../integration-tests/reports/perf/docker-logs/pipeshub-ai.log 2>&1 || true
+
+      - name: Upload benchmark result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-indexing-${{ github.run_id }}
+          path: integration-tests/reports/perf/
+          if-no-files-found: ignore
+
+      - name: Tear down services
+        if: always()
+        working-directory: deployment/docker-compose
+        run: docker compose -f "$COMPOSE_FILE_NEO4J" down -v
