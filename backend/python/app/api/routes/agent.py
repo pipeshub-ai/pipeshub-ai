@@ -3506,7 +3506,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         lookup_key = instance_id
                         display_name = toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
 
-                        if config and config.get("isAuthenticated", False):
+                        from app.api.routes.toolsets import is_toolset_authenticated
+
+                        if is_toolset_authenticated(toolset.get("authType"), config if isinstance(config, dict) else None):
                             # Fully configured and authenticated — allow
                             # Use instanceId as the toolset_configs key so downstream code
                             # (_build_tool_to_toolset_map) can look it up correctly.
