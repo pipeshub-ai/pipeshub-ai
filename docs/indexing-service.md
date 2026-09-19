@@ -132,6 +132,7 @@ Failure paths from the same wrapper (`redis_streams/indexing_consumer.py::_proce
 | `RECORD_PROCESSING_TIMEOUT` (1800s) elapsed inside the handler | Task cancelled, handler leaves the record IN_PROGRESS, counted as a transient failure. |
 | Lease lost (renewer could not prove ownership) | Handler cancelled, message left un-ACKed for redelivery. |
 | Process crash | Entry stays in the PEL; `XAUTOCLAIM` after `claim_min_idle_ms`, and the stale-record scan republishes IN_PROGRESS records older than ~32 min. |
+| Worker event loop exits without a stop request | `consumer_concurrency.record_worker_loop_exit` logs CRITICAL with the cause and clears `running`, so the consumer stops reading, dispatching and claiming (each claim would spend a delivery attempt toward `REDIS_MAX_DELIVERIES`). `GET /health` returns 503 with `worker_loop_failures`. Un-ACKed entries stay pending; restart the process to resume. |
 
 ---
 
