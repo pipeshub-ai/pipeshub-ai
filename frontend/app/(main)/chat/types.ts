@@ -897,6 +897,8 @@ export interface StreamChatRequest {
    * is ignored").
    */
   projectId?: string;
+  disableSemantic?: boolean;
+  disablePatternMatch?: boolean;
 }
 
 /**

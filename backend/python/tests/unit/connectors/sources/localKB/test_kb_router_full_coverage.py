@@ -1,5 +1,5 @@
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -1226,6 +1226,8 @@ class TestMoveRecord:
     def test_success(self):
         app, kb_svc, _ = _make_app()
         kb_svc.move_record = AsyncMock(return_value={"success": True})
+        gp = app.state.graph_provider
+        gp.get_document = AsyncMock(return_value=None)
         client = TestClient(app)
         resp = client.put("/api/v1/kb/kb1/record/r1/move", json={"newParentId": "f1"})
         assert resp.status_code == 200
@@ -1233,6 +1235,8 @@ class TestMoveRecord:
     def test_move_to_root(self):
         app, kb_svc, _ = _make_app()
         kb_svc.move_record = AsyncMock(return_value={"success": True})
+        gp = app.state.graph_provider
+        gp.get_document = AsyncMock(return_value=None)
         client = TestClient(app)
         resp = client.put("/api/v1/kb/kb1/record/r1/move", json={"newParentId": None})
         assert resp.status_code == 200

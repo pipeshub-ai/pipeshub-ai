@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
@@ -43,6 +44,7 @@ from app.models.entities import (
     User,
     WebpageRecord,
 )
+from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -52,6 +54,11 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from app.services.messaging.interface.producer import IMessagingProducer
+
+# (org_id, old_path, new_path)
+PendingMove = tuple[str, str, str]
+
+_NO_OLD_PATH = object()  # sentinel: "no pre-computed old_path supplied"
 
 ARANGO_NODE_ID_PARTS = 2 # ArangoDB node IDs are in format "collection/id"
 
@@ -116,6 +123,73 @@ class DataSourceEntitiesProcessor:
         self.data_store_provider: DataStoreProvider = data_store_provider
         self.config_service: ConfigurationService = config_service
         self.org_id = ""
+        # StorageCleanupHelper is initialized lazily the first time it is needed
+        self._storage_cleanup: StorageCleanupHelper | None = None
+
+    def _get_storage_cleanup(self) -> StorageCleanupHelper | None:
+        """Return (or lazily create) the StorageCleanupHelper if graph_provider is available."""
+        if self._storage_cleanup is None:
+            graph_provider = getattr(self.data_store_provider, "graph_provider", None)
+            if graph_provider:
+                self._storage_cleanup = StorageCleanupHelper(
+                    self.logger, graph_provider, self.config_service
+                )
+        return self._storage_cleanup
+
+    async def _flush_pending_blob_moves(
+        self, pending_moves: list[PendingMove]
+    ) -> None:
+        """Execute best-effort tree moves collected during a transaction.
+
+        Callers must invoke this only AFTER the transaction that produced
+        these moves has committed -- calling it mid-transaction risks moving
+        a blob for a record whose graph write later rolls back.
+
+        Moves are executed **sequentially**, shortest old_path first (parent
+        prefixes before their descendants).  After each successful move the
+        remaining moves' old_paths are rewritten so a child move whose
+        source was relocated by a parent prefix move still targets the
+        correct location.
+        """
+        if not pending_moves:
+            return
+        storage_cleanup = self._get_storage_cleanup()
+        if not storage_cleanup:
+            return
+
+        moves: list[list[str]] = [
+            [org, old, new]
+            for org, old, new in pending_moves
+            if old != new
+        ]
+        if not moves:
+            return
+
+        moves.sort(key=lambda m: len(m[1]))
+
+        for i, (org_id, old_path, new_path) in enumerate(moves):
+            if old_path == new_path:
+                continue
+            try:
+                await storage_cleanup.move_record_tree(org_id, old_path, new_path)
+                self.logger.info(
+                    "Blob tree move succeeded: %s -> %s", old_path, new_path,
+                )
+            except Exception as e:
+                self.logger.error(
+                    "Blob tree move failed for %s -> %s: %s",
+                    old_path, new_path, str(e),
+                )
+                continue
+
+            prefix = old_path + "/"
+            for j in range(i + 1, len(moves)):
+                j_old = moves[j][1]
+                if j_old == old_path or j_old.startswith(prefix):
+                    moves[j][1] = new_path + j_old[len(old_path):]
+                j_new = moves[j][2]
+                if j_new == old_path or j_new.startswith(prefix):
+                    moves[j][2] = new_path + j_new[len(old_path):]
 
     async def initialize(self, org_id: Optional[str] = None) -> None:
         config = await MessagingUtils.create_producer_config_from_service(
@@ -326,7 +400,8 @@ class DataSourceEntitiesProcessor:
 
             if parent_record and isinstance(parent_record, Record):
                 if (record.record_type == RecordType.FILE and record.parent_external_record_id and
-                    record.parent_record_type in self.ATTACHMENT_CONTAINER_TYPES):
+                    record.parent_record_type in self.ATTACHMENT_CONTAINER_TYPES
+                    and getattr(record, 'is_file', True)):
                     relation_type = RecordRelations.ATTACHMENT.value
                 else:
                     relation_type = RecordRelations.PARENT_CHILD.value
@@ -778,11 +853,58 @@ class DataSourceEntitiesProcessor:
         self.logger.debug("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
 
-    async def _handle_updated_record(self, record: Record, existing_record: Record, tx_store: TransactionStore) -> None:
+    async def _handle_updated_record(
+        self,
+        record: Record,
+        existing_record: Record,
+        tx_store: TransactionStore,
+        old_path: str | None,
+    ) -> list[PendingMove]:
         self.logger.debug("Updating existing record: %s, version %d -> %d",
         record.record_name, existing_record.version, record.version)
 
         await tx_store.batch_upsert_records([record])
+
+        pending_moves: list[PendingMove] = []
+
+        name_changed = record.record_name != existing_record.record_name
+        parent_changed = (
+            getattr(record, "parent_external_record_id", None)
+            != getattr(existing_record, "parent_external_record_id", None)
+        )
+        # record.record_group_id is already the NEW group id here --
+        # _handle_record_group runs (and overwrites it) before this method is
+        # called, both from _process_record's own call site and from
+        # on_record_metadata_update's explicit second call. A record
+        # reassigned to a different space/project/drive gets a new
+        # records/<connector_id>/<group>/... prefix even when its name and
+        # parent folder are unchanged, so this must trigger a move on its
+        # own, same as name_changed/parent_changed.
+        group_changed = (
+            getattr(record, "record_group_id", None)
+            != getattr(existing_record, "record_group_id", None)
+        )
+        if not (name_changed or parent_changed or group_changed):
+            return pending_moves
+        if old_path is None:
+            return pending_moves
+
+        storage_cleanup = self._get_storage_cleanup()
+        if not storage_cleanup:
+            return pending_moves
+
+        try:
+            new_path = await storage_cleanup.build_record_path(record, transaction=tx_store.txn)
+        except Exception as e:
+            self.logger.warning(
+                "Failed to compute new path for record %s: %s", record.id, str(e)
+            )
+            return pending_moves
+        if new_path is None:
+            return pending_moves
+
+        pending_moves.append((self.org_id, old_path, new_path))
+        return pending_moves
 
     async def _handle_record_permissions(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> None:
         record_permissions = []
@@ -893,6 +1015,7 @@ class DataSourceEntitiesProcessor:
     @retry_on_deadlock()
     async def on_updated_record_permissions(self, record: Record, permissions: list[Permission]) -> None:
         self.logger.debug(f"Starting permission update for record: {record.record_name} ({record.id})")
+        pending_moves: list[PendingMove] = []
 
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -908,7 +1031,8 @@ class DataSourceEntitiesProcessor:
                         "to restore graph edges",
                         record.record_name,
                     )
-                    await self._process_record(record, [], tx_store, publishes_event=False)
+                    _, inner_moves = await self._process_record(record, [], tx_store, publishes_event=False)
+                    pending_moves.extend(inner_moves)
                 elif record.shared_with_me_record_group_ids:
                     # The record already has BELONGS_TO edges (e.g. to the owner's "My Drive"), but
                     # the shared-with-me edge for *this* user may still be missing because
@@ -968,6 +1092,8 @@ class DataSourceEntitiesProcessor:
 
                 self.logger.debug(f"Successfully updated permissions for record: {record.id}")
 
+            await self._flush_pending_blob_moves(pending_moves)
+
         except Exception as e:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
             raise
@@ -979,7 +1105,8 @@ class DataSourceEntitiesProcessor:
         tx_store: TransactionStore,
         *,
         publishes_event: bool = True,
-    ) -> Record | None:
+        pre_old_path: object = _NO_OLD_PATH,
+    ) -> tuple[Record | None, list[PendingMove]]:
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
@@ -988,6 +1115,23 @@ class DataSourceEntitiesProcessor:
         # callers pass an explicit request org that must win over self.org_id.
         if not record.org_id:
             record.org_id = self.org_id
+
+        old_path: str | None = None
+        if existing_record is not None:
+            if pre_old_path is not _NO_OLD_PATH:
+                old_path = pre_old_path
+            else:
+                storage_cleanup = self._get_storage_cleanup()
+                if storage_cleanup:
+                    try:
+                        old_path = await storage_cleanup.build_record_path(
+                            existing_record, transaction=tx_store.txn
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            "Failed to capture old path for record %s: %s",
+                            existing_record.id, str(e),
+                        )
 
         # KB / Collections records anchor directly to their apps doc, not a recordGroup.
         # Prepare record group BEFORE saving (so record_group_id is included in first save)
@@ -1077,11 +1221,9 @@ class DataSourceEntitiesProcessor:
             # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
             if existing_record.is_placeholder and not record.is_placeholder:
                 record.is_placeholder = False
-            #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
                 if publishes_event:
                     self._stamp_queued_at(record)
-                await self._handle_updated_record(record, existing_record, tx_store)
 
         # Link record to group AFTER saving (when record.id is available for edges)
         if record_group_id or record.shared_with_me_record_group_ids:
@@ -1101,6 +1243,13 @@ class DataSourceEntitiesProcessor:
         else:
             await self._handle_parent_record(record, tx_store, existing_record)
 
+        # Handle updated record AFTER parent edges are repointed so that
+        # build_record_path (which walks PARENT_CHILD edges) sees the new
+        # ancestor chain when computing the storage move destination.
+        pending_moves: list[PendingMove] = []
+        if existing_record is not None:
+            pending_moves = await self._handle_updated_record(record, existing_record, tx_store, old_path)
+
         # Handle related external records (issue links, project links, FK relations, etc.)
         # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
         # to clean up stale link edges even when related_external_records is empty (handles removed links)
@@ -1118,7 +1267,6 @@ class DataSourceEntitiesProcessor:
         # Create message entity relation edges (MENTIONED_IN, INVOLVED_IN) if record is a MessageRecord
         if isinstance(record, MessageRecord):
             await self._handle_message_entity_edges(record, tx_store)
-
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
         await self._handle_record_permissions(record, permissions, tx_store)
@@ -1130,9 +1278,33 @@ class DataSourceEntitiesProcessor:
         # Record download function
         # Create a permission edge between the record and the app with sync status if it doesn't exist
         if existing_record is None:
-            return record
+            return record, pending_moves
 
-        return record
+        return record, pending_moves
+
+    async def _reset_indexing_status_to_queued(self, record_id: str, tx_store: TransactionStore) -> None:
+        """
+        Reset indexing status to QUEUED before sending update/reindex events.
+        Only skips if status is already QUEUED.
+        """
+        try:
+            # Get the record — get_record_by_key delegates to get_document which returns a raw dict
+            record = await tx_store.get_record_by_key(record_id)
+            if not record:
+                self.logger.warning(f"Record {record_id} not found for status reset")
+                return
+            self.logger.debug(f"Record: {record}")
+            # The document uses camelCase keys (indexingStatus), not snake_case attributes
+            current_status = record.get("indexingStatus")
+            if current_status == ProgressStatus.QUEUED.value:
+                self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
+                return
+            record["indexingStatus"] = ProgressStatus.QUEUED.value
+            await tx_store.batch_upsert_nodes([record], CollectionNames.RECORDS.value)
+            self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
+        except Exception as e:
+            # Log but don't fail the main operation if status update fails
+            self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
     async def _mark_queued_after_publish(self, record_ids: list[str]) -> None:
         """
@@ -1157,7 +1329,53 @@ class DataSourceEntitiesProcessor:
             # Never fail a publish over a status write; the records are already on the topic.
             self.logger.error(f"❌ Failed to mark {len(record_ids)} record(s) QUEUED: {str(e)}")
 
-    @retry_on_deadlock()
+    async def _snapshot_old_paths(
+        self,
+        records_with_permissions: list[tuple[Record, list[Permission]]],
+        tx_store: TransactionStore,
+    ) -> dict[str, str | None]:
+        """Capture the storage path for every existing record BEFORE any
+        graph mutations.  When multiple records in the same batch rename or
+        reparent each other, computing old_path mid-loop would read a
+        partially-mutated graph and return a path that doesn't match the
+        actual blob location.
+
+        Reads run with bounded concurrency (up to 8 in-flight) so that
+        large batches don't serialise hundreds of graph round-trips.  All
+        reads are on the pre-mutation graph inside the same transaction, so
+        concurrency is safe.
+        """
+        storage_cleanup = self._get_storage_cleanup()
+        if not storage_cleanup:
+            return {}
+
+        semaphore = asyncio.Semaphore(8)
+
+        async def _snap_one(record: Record) -> tuple[str, str | None] | None:
+            async with semaphore:
+                existing = await tx_store.get_record_by_external_id(
+                    connector_id=record.connector_id,
+                    external_id=record.external_record_id,
+                )
+                if existing is None:
+                    return None
+                try:
+                    path = await storage_cleanup.build_record_path(
+                        existing, transaction=tx_store.txn,
+                    )
+                    return (record.external_record_id, path)
+                except Exception as e:
+                    self.logger.warning(
+                        "Snapshot: failed to capture old path for %s: %s",
+                        existing.id, str(e),
+                    )
+                    return (record.external_record_id, None)
+
+        items = await asyncio.gather(
+            *[_snap_one(record) for record, _ in records_with_permissions],
+        )
+        return {item[0]: item[1] for item in items if item is not None}
+
     async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:
         try:
             if not records_with_permissions:
@@ -1165,10 +1383,22 @@ class DataSourceEntitiesProcessor:
                 return
 
             records_to_publish = []
+            all_pending_moves: list[PendingMove] = []
 
             async with self.data_store_provider.transaction() as tx_store:
+                old_path_map = await self._snapshot_old_paths(
+                    records_with_permissions, tx_store,
+                )
+
                 for record, permissions in records_with_permissions:
-                    processed_record = await self._process_record(record, permissions, tx_store)
+                    pre_old_path = old_path_map.get(
+                        record.external_record_id, _NO_OLD_PATH,
+                    )
+                    processed_record, moves = await self._process_record(
+                        record, permissions, tx_store,
+                        pre_old_path=pre_old_path,
+                    )
+                    all_pending_moves.extend(moves)
 
                     if processed_record:
                         records_to_publish.append(processed_record)
@@ -1215,6 +1445,8 @@ class DataSourceEntitiesProcessor:
 
                 publishable.append(record)
 
+            await self._flush_pending_blob_moves(all_pending_moves)
+
             if publishable:
                 acked = await self.messaging_producer.send_messages(
                     "record-events",
@@ -1240,24 +1472,28 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_record_content_update(self, record: Record) -> None:
+        pending_moves: list[PendingMove] = []
+        should_publish = False
+        processed_record: Record | None = None
         async with self.data_store_provider.transaction() as tx_store:
-            processed_record = await self._process_record(record, [], tx_store)
+            processed_record, pending_moves = await self._process_record(record, [], tx_store)
 
-            # Skip publishing update events for records with AUTO_INDEX_OFF status
-            if processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+            if processed_record is not None and processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                 self.logger.debug(
                     f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
-                return
+            elif processed_record is not None:
+                should_publish = True
 
-        # Publish after the transaction commits. Publishing inside it would put the
-        # event on the topic even if the transaction went on to roll back.
-        await self.messaging_producer.send_message(
-            "record-events",
-            {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
-            key=record.id
-        )
-        await self._mark_queued_after_publish([record.id])
+        await self._flush_pending_blob_moves(pending_moves)
+
+        if should_publish:
+            await self.messaging_producer.send_message(
+                "record-events",
+                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
+                key=record.id
+            )
+            await self._mark_queued_after_publish([record.id])
 
     def _preserve_indexing_state(self, record: Record, existing_record: Record) -> None:
         """Carry the stored indexing lifecycle onto a metadata-only write.
@@ -1293,16 +1529,19 @@ class DataSourceEntitiesProcessor:
 
         Leaves the indexing lifecycle untouched — see ``_preserve_indexing_state``.
         """
+        pending_moves: list[PendingMove] = []
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
-            processed_record = await self._process_record(
+            processed_record, process_moves = await self._process_record(
                 record, [], tx_store, publishes_event=False
             )
-            if processed_record:
-                if existing_record is not None:
-                    self._preserve_indexing_state(processed_record, existing_record)
-                await self._handle_updated_record(processed_record, existing_record, tx_store)
+            pending_moves.extend(process_moves)
+            if processed_record and existing_record is not None:
+                self._preserve_indexing_state(processed_record, existing_record)
+                await tx_store.batch_upsert_records([processed_record])
+
+        await self._flush_pending_blob_moves(pending_moves)
 
     @retry_on_deadlock()
     async def on_records_moved(
@@ -1332,9 +1571,48 @@ class DataSourceEntitiesProcessor:
         records_to_reindex: list[Record] = []
         new_records_to_publish: list[Record] = []
         membership_vrids: list[str] = []
+        fallback_pending_moves: list[PendingMove] = []
+        moved_with_old_path: list[tuple[Record, Record, str | None]] = []
 
         try:
             async with self.data_store_provider.transaction() as tx_store:
+                # Snapshot old paths BEFORE any mutations in the loop.
+                # Uses bounded concurrency so large batches don't
+                # serialise hundreds of graph round-trips.
+                old_path_snap: dict[str, str | None] = {}
+                storage_cleanup = self._get_storage_cleanup()
+                if storage_cleanup:
+                    semaphore = asyncio.Semaphore(8)
+
+                    async def _snap_moved(
+                        old_ext_id: str, new_rec: Record,
+                    ) -> tuple[str, str | None] | None:
+                        async with semaphore:
+                            old_rec = await tx_store.get_record_by_external_id(
+                                connector_id=new_rec.connector_id,
+                                external_id=old_ext_id,
+                            )
+                            if not old_rec:
+                                return None
+                            try:
+                                path = await storage_cleanup.build_record_path(
+                                    old_rec, transaction=tx_store.txn,
+                                )
+                                return (old_ext_id, path)
+                            except Exception as e:
+                                self.logger.warning(
+                                    "Snapshot: failed for record %s: %s",
+                                    old_rec.id, str(e),
+                                )
+                                return None
+
+                    snap_items = await asyncio.gather(
+                        *[_snap_moved(oid, nr) for oid, nr, _ in moves],
+                    )
+                    old_path_snap = {
+                        item[0]: item[1] for item in snap_items if item is not None
+                    }
+
                 for old_external_id, new_record, permissions in moves:
                     if not new_record.org_id:
                         new_record.org_id = self.org_id
@@ -1345,11 +1623,14 @@ class DataSourceEntitiesProcessor:
                     )
 
                     if old_record is None:
-                        # Old record was never stored (dotfile, skipped, etc.) — treat as add.
-                        processed = await self._process_record(new_record, permissions, tx_store)
+                        processed, process_moves = await self._process_record(new_record, permissions, tx_store)
+                        fallback_pending_moves.extend(process_moves)
                         if processed:
                             new_records_to_publish.append(processed)
                         continue
+
+                    old_path = old_path_snap.get(old_external_id)
+                    moved_with_old_path.append((new_record, old_record, old_path))
 
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
@@ -1432,6 +1713,50 @@ class DataSourceEntitiesProcessor:
                         await self._handle_parent_record(new_record, tx_store, existing_record=None)
                     await self._handle_record_permissions(new_record, permissions, tx_store)
 
+            # Compute and attempt the storage move for every record that was
+            # actually moved (not new) BEFORE publishing any Kafka event below
+            # -- a downstream consumer reindexing off updateRecord must never
+            # see graph=new location while storage/Mongo still says old
+            # location.
+            pending_moves: list[PendingMove] = []
+            storage_cleanup = self._get_storage_cleanup()
+            if storage_cleanup:
+                for new_record, old_record, old_path in moved_with_old_path:
+                    if old_path is None:
+                        continue
+                    name_changed = new_record.record_name != old_record.record_name
+                    parent_changed = (
+                        getattr(new_record, "parent_external_record_id", None)
+                        != getattr(old_record, "parent_external_record_id", None)
+                    )
+                    # new_record.record_group_id was set to the NEW group by
+                    # _handle_record_group earlier in this same loop iteration
+                    # (above, before batch_upsert_records); old_record still
+                    # carries the group it was fetched with. A record
+                    # reassigned to a different group changes its
+                    # records/<connector_id>/<group>/... prefix even with no
+                    # name or parent change.
+                    group_changed = (
+                        getattr(new_record, "record_group_id", None)
+                        != getattr(old_record, "record_group_id", None)
+                    )
+                    if not (name_changed or parent_changed or group_changed):
+                        continue
+                    try:
+                        new_path = await storage_cleanup.build_record_path(new_record)
+                    except Exception as e:
+                        self.logger.warning(
+                            "Failed to compute new path for record %s: %s", new_record.id, str(e)
+                        )
+                        continue
+                    if new_path is None:
+                        continue
+                    pending_moves.append((self.org_id, old_path, new_path))
+
+            # Attempt the storage move BEFORE publishing -- a downstream consumer
+            # reindexing off updateRecord must never see graph=new location while
+            # storage/Mongo still says old location.
+            await self._flush_pending_blob_moves(pending_moves + fallback_pending_moves)
 
             # Publish events outside the transaction.
             def _publishable(candidates: list[Record]) -> list[Record]:
@@ -1732,12 +2057,63 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_new_record_groups(self, record_groups: list[tuple[RecordGroup, list[Permission]]]) -> None:
+        # Most connectors have no dedicated "space renamed"/"project renamed"
+        # webhook (Dropbox's team_folder_rename -> update_record_group_name
+        # is the only one that does); everyone else re-pushes the group's
+        # current name on every sync, and a name change surfaces right here,
+        # in the "existing_record_group is not None" branch below. Without
+        # this pending_moves wiring, that silently renamed every blob under
+        # the group's records/<connector_id>/<group_name>/... prefix with no
+        # relocation -- the graph moved on, storage didn't.
+        pending_moves: list[PendingMove] = []
         try:
             if not record_groups:
                 self.logger.warning("on_new_record_groups received an empty list; skipping processing.")
                 return
 
             async with self.data_store_provider.transaction() as tx_store:
+                # Snapshot old hierarchical prefixes for renamed groups
+                # BEFORE any upserts mutate ancestor group names.
+                # Uses bounded concurrency for large group batches.
+                old_prefix_snapshot: dict[str, str | None] = {}
+                storage_cleanup = self._get_storage_cleanup()
+                if storage_cleanup:
+                    semaphore = asyncio.Semaphore(8)
+
+                    async def _snap_group(
+                        rg: RecordGroup,
+                    ) -> tuple[str, str | None] | None:
+                        async with semaphore:
+                            existing = await tx_store.get_record_group_by_external_id(
+                                connector_id=rg.connector_id,
+                                external_id=rg.external_group_id,
+                            )
+                            if not existing or existing.name == rg.name:
+                                return None
+                            try:
+                                prefix = await storage_cleanup.build_record_group_hierarchical_prefix(
+                                    existing.id,
+                                    rg.connector_id,
+                                    override_leaf_name=existing.name,
+                                    transaction=tx_store.txn,
+                                )
+                                return (rg.external_group_id, prefix)
+                            except Exception as e:
+                                self.logger.warning(
+                                    "Snapshot: failed to capture old prefix for group %s: %s",
+                                    existing.id, str(e),
+                                )
+                                return None
+
+                    snap_items = await asyncio.gather(
+                        *[_snap_group(rg) for rg, _ in record_groups],
+                    )
+                    old_prefix_snapshot = {
+                        item[0]: item[1]
+                        for item in snap_items
+                        if item is not None
+                    }
+
                 for record_group, permissions in record_groups:
                     record_group.org_id = self.org_id
 
@@ -1747,10 +2123,13 @@ class DataSourceEntitiesProcessor:
                         external_id=record_group.external_group_id
                     )
 
+                    old_group_name: str | None = None
+
                     if existing_record_group is None:
                         record_group.id = str(uuid.uuid4())
                         self.logger.debug(f"Creating new record group with id: {record_group.id}")
                     else:
+                        old_group_name = existing_record_group.name
                         record_group.id = existing_record_group.id
                         self.logger.debug(f"Updating existing record group with id: {record_group.id}")
                         # Ensure update timestamp is fresh for the edge
@@ -1765,6 +2144,26 @@ class DataSourceEntitiesProcessor:
 
                     # 1. Upsert the record group document
                     await tx_store.batch_upsert_record_groups([record_group])
+
+                    if old_group_name is not None and old_group_name != record_group.name:
+                        if storage_cleanup:
+                            new_prefix = await storage_cleanup.build_record_group_hierarchical_prefix(
+                                record_group.id,
+                                record_group.connector_id,
+                                transaction=tx_store.txn,
+                            )
+                            old_prefix = old_prefix_snapshot.get(
+                                record_group.external_group_id,
+                            )
+                            if old_prefix is None:
+                                old_prefix = await storage_cleanup.build_record_group_hierarchical_prefix(
+                                    record_group.id,
+                                    record_group.connector_id,
+                                    override_leaf_name=old_group_name,
+                                    transaction=tx_store.txn,
+                                )
+                            if old_prefix and new_prefix and old_prefix != new_prefix:
+                                pending_moves.append((self.org_id, old_prefix, new_prefix))
 
                     # 2. Create the BELONGS_TO edge for the organization and connector instance
                     org_relation = {
@@ -1922,13 +2321,27 @@ class DataSourceEntitiesProcessor:
                     if record_group.parent_record_group_id:
                         await tx_store.create_record_groups_relation(record_group.id, record_group.parent_record_group_id)
 
+            await self._flush_pending_blob_moves(pending_moves)
+
         except Exception as e:
             self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
             raise e
 
     @retry_on_deadlock()
     async def update_record_group_name(self, folder_id: str, new_name: str, old_name: str = None, connector_id: str = None) -> None:
-        """Update the name of an existing record group in the database."""
+        """Update the name of an existing record group in the database.
+
+        Renaming the group moves every blob beneath it via a prefix-based
+        tree move.  For nested groups the full ancestor chain is resolved
+        via ``get_record_group_path`` so the prefix includes parent groups
+        (e.g. ``records/<cid>/<parent>/<old_name>``).  Both prefixes are
+        computed AFTER the graph upsert: the new prefix uses the graph
+        directly, the old prefix overrides the leaf name with the
+        pre-rename value.
+        """
+        old_prefix: str | None = None
+        new_prefix: str | None = None
+        old_group_name: str | None = None
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 existing_group = await tx_store.get_record_group_by_external_id(
@@ -1942,19 +2355,57 @@ class DataSourceEntitiesProcessor:
                     )
                     return
 
+                # Captured BEFORE existing_group.name is overwritten below --
+                # the caller-supplied old_name parameter can be None, so this
+                # is the only reliable source for the pre-rename name.
+                old_group_name = existing_group.name
+
+                # Trust an explicitly supplied connector_id first (it's the
+                # caller's own connector context for this event); only fall
+                # back to existing_group.connector_id -- a required RecordGroup
+                # field, so always reliable -- when the caller omitted it.
+                group_connector_id = connector_id or getattr(existing_group, "connector_id", None)
+
+                storage_cleanup = self._get_storage_cleanup()
+                if not group_connector_id:
+                    self.logger.debug(
+                        "Skipping blob relocation for record group %s: no connector_id available",
+                        folder_id,
+                    )
+
                 existing_group.name = new_name
                 existing_group.updated_at = get_epoch_timestamp_in_ms()
 
                 await tx_store.batch_upsert_record_groups([existing_group])
 
+                if storage_cleanup and group_connector_id:
+                    new_prefix = await storage_cleanup.build_record_group_hierarchical_prefix(
+                        existing_group.id,
+                        group_connector_id,
+                        transaction=tx_store.txn,
+                    )
+                    old_prefix = await storage_cleanup.build_record_group_hierarchical_prefix(
+                        existing_group.id,
+                        group_connector_id,
+                        override_leaf_name=old_group_name,
+                        transaction=tx_store.txn,
+                    )
+
                 self.logger.debug(
-                    f"Successfully renamed record group {folder_id} from '{old_name}' to '{new_name}' "
+                    f"Successfully renamed record group {folder_id} from '{old_group_name}' to '{new_name}' "
                     f"(internal_id: {existing_group.id})"
                 )
 
         except Exception as e:
             self.logger.error(f"Failed to update record group name for {folder_id}: {e}", exc_info=True)
             raise
+
+        # Best-effort, post-commit -- same posture as every other move-tree
+        # call site: a failure here is logged and not retried, leaving graph
+        # and blob storage diverged until the next rename/move touches this
+        # group or one of its records.
+        if new_prefix and old_prefix and old_prefix != new_prefix:
+            await self._flush_pending_blob_moves([(self.org_id, old_prefix, new_prefix)])
 
     @retry_on_deadlock()
     async def on_new_app_users(self, users: list[AppUser]) -> None:

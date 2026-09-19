@@ -1,7 +1,7 @@
 from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -52,6 +52,7 @@ CONNECTOR_NOTION_PERSONAL_INFO = (
         max_delay=60.0,
     )\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Notion Personal",

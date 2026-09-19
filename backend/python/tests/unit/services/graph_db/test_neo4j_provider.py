@@ -2801,18 +2801,122 @@ class TestVirtualAccessAndRecordLookup:
         neo4j_provider._get_kb_virtual_ids.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_get_accessible_virtual_record_ids_no_tasks_returns_empty(
+    async def test_get_accessible_virtual_record_ids_unreachable_app_is_only_offered_to_the_kb_query(
         self, neo4j_provider: Neo4jProvider
     ):
+        """An id that is not one of the user's connectors may still be a
+        Collection shared with them, so the KB query — which checks its own
+        permission edges — decides. It is never queried as a connector."""
         neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
         neo4j_provider._get_user_app_ids = AsyncMock(return_value=["conn-1"])  # type: ignore[method-assign]
         neo4j_provider._get_virtual_ids_for_connector = AsyncMock()  # type: ignore[method-assign]
-        neo4j_provider._get_kb_virtual_ids = AsyncMock()  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={})  # type: ignore[method-assign]
 
         result = await neo4j_provider.get_accessible_virtual_record_ids(
             "user-1",
             "org-1",
             filters={"apps": ["not-accessible"]},
+        )
+
+        assert result == {}
+        neo4j_provider._get_virtual_ids_for_connector.assert_not_called()
+        assert neo4j_provider._get_kb_virtual_ids.await_args.args[2] == ["not-accessible"]
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_honours_a_collection_id_under_apps(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """Collection-page chat sends `apps: [collectionId], kb: []`. `apps` and
+        `kb` are one scope, so the Collection is searched rather than dropped."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "conn-1", "type": "google"}, {"id": "kb-1", "type": "KB"}]
+        )
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock()  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={"vk": "rk"})  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1", "org-1", filters={"apps": ["kb-1"], "kb": []}
+        )
+
+        assert result == {"vk": "rk"}
+        neo4j_provider._get_virtual_ids_for_connector.assert_not_called()
+        assert neo4j_provider._get_kb_virtual_ids.await_args.args[2] == ["kb-1"]
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_honours_a_connector_id_under_kb(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "conn-1", "type": "google"}]
+        )
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock(return_value={"v1": "r1"})  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1", "org-1", filters={"kb": ["conn-1"]}
+        )
+
+        assert result == {"v1": "r1"}
+        assert neo4j_provider._get_virtual_ids_for_connector.await_args.args[2] == "conn-1"
+        # Still offered to the KB query, which matches nothing for a connector
+        # id: an id named under `kb` is only known to be a Collection by that
+        # query, so skipping it would lose a Collection whose app type could
+        # not be read.
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_agent_sentinel_alone_searches_nothing(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """Reading NO_KB_SELECTED as "no scope" would search the whole corpus."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "conn-1", "type": "google"}]
+        )
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock(return_value={"v1": "r1"})  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1", "org-1", filters={"apps": [], "kb": ["NO_KB_SELECTED"]}
+        )
+
+        assert result == {}
+        neo4j_provider._get_virtual_ids_for_connector.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_connector_scope_runs_no_kb_query(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """Every id is a connector, so there is nothing for the KB query to find."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "conn-1", "type": "google"}, {"id": "conn-2", "type": "jira"}]
+        )
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock(return_value={})  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock()  # type: ignore[method-assign]
+
+        await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1", "org-1", filters={"apps": ["conn-2", "conn-1"]}
+        )
+
+        neo4j_provider._get_kb_virtual_ids.assert_not_called()
+        queried = [c.args[2] for c in neo4j_provider._get_virtual_ids_for_connector.await_args_list]
+        assert queried == ["conn-2", "conn-1"], "scope order decides which copy wins"
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_bare_string_scope_is_not_iterated(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "a", "type": "google"}]
+        )
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock(return_value={"v1": "r1"})  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={"v2": "r2"})  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1", "org-1", filters={"apps": "a"}
         )
 
         assert result == {}

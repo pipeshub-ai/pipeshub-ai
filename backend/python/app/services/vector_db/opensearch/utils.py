@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
 )
 from app.services.vector_db.filters import canonical_filter_key
 from app.services.vector_db.models import (
@@ -167,6 +168,9 @@ class OpenSearchUtils:
             "page_content": point.payload.get("page_content", ""),
             CONNECTOR_IDS_FIELD: list(point.payload.get(CONNECTOR_IDS_FIELD) or []),
             RECORD_GROUP_IDS_FIELD: list(point.payload.get(RECORD_GROUP_IDS_FIELD) or []),
+            ROOT_RECORD_GROUP_IDS_FIELD: list(
+                point.payload.get(ROOT_RECORD_GROUP_IDS_FIELD) or []
+            ),
         }
         if point.dense_vector is not None:
             doc["dense_embedding"] = point.dense_vector
@@ -185,5 +189,8 @@ class OpenSearchUtils:
                 "page_content": source.get("page_content", ""),
                 CONNECTOR_IDS_FIELD: list(source.get(CONNECTOR_IDS_FIELD) or []),
                 RECORD_GROUP_IDS_FIELD: list(source.get(RECORD_GROUP_IDS_FIELD) or []),
+                ROOT_RECORD_GROUP_IDS_FIELD: list(
+                    source.get(ROOT_RECORD_GROUP_IDS_FIELD) or []
+                ),
             },
         )
