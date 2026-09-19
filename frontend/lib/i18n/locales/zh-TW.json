@@ -2487,7 +2487,10 @@
         "confirmImport": "匯入技能",
         "source": "來源：{{source}}",
         "resourceCount": "{{count}} 個資源",
-        "skippedBinary": "已略過 {{count}} 個二進位檔案（尚不支援）"
+        "skippedBinary": "已略過 {{count}} 個二進位檔案（尚不支援）",
+        "nameHint": "使用小寫加連字號。如果原始名稱已是內建技能（例如 pptx），請改用其他名稱。",
+        "nameInvalid": "名稱只能包含小寫字母、數字和單一連字號。",
+        "originalName": "原始名稱：{{name}}"
       },
       "candidates": {
         "title": "待審核的技能候選項目",

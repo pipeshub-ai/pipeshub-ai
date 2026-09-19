@@ -2508,7 +2508,10 @@
         "confirmImport": "Import Skill",
         "source": "Source: {{source}}",
         "resourceCount": "{{count}} resource(s)",
-        "skippedBinary": "{{count}} binary file(s) were skipped (not supported yet)"
+        "skippedBinary": "{{count}} binary file(s) were skipped (not supported yet)",
+        "nameHint": "Lowercase kebab-case. Change this if the original name is already a built-in skill (for example pptx).",
+        "nameInvalid": "Name must be lowercase letters, numbers, and single hyphens.",
+        "originalName": "Original name: {{name}}"
       },
       "candidates": {
         "title": "Pending Skill Candidates",

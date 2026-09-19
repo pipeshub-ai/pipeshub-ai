@@ -2487,7 +2487,10 @@
         "confirmImport": "스킬 가져오기",
         "source": "출처: {{source}}",
         "resourceCount": "리소스 {{count}}개",
-        "skippedBinary": "바이너리 파일 {{count}}개를 건너뛰었습니다 (아직 지원되지 않음)"
+        "skippedBinary": "바이너리 파일 {{count}}개를 건너뛰었습니다 (아직 지원되지 않음)",
+        "nameHint": "소문자와 하이픈만 사용하세요. 원래 이름이 내장 스킬(예: pptx)이면 다른 이름을 지정하세요.",
+        "nameInvalid": "이름은 소문자, 숫자, 하이픈만 사용할 수 있습니다.",
+        "originalName": "원래 이름: {{name}}"
       },
       "candidates": {
         "title": "대기 중인 스킬 후보",
