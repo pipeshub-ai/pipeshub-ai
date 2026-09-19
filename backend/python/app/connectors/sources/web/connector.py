@@ -4,6 +4,7 @@ import hashlib
 import random
 import re
 import uuid
+from http import HTTPStatus
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -175,6 +176,26 @@ IMAGE_MIME_TYPES = {
 class WebApp(App):
     def __init__(self, connector_id: str) -> None:
         super().__init__(Connectors.WEB, AppGroups.WEB, connector_id)
+
+
+def failed_page_reason(status_code: int | None) -> str:
+    """What a person sees as the reason a crawled page failed, with what to do next."""
+    try:
+        status = HTTPStatus(int(status_code))
+        label = f"{status.value} {status.phrase}"
+    except (TypeError, ValueError):
+        return "We couldn't reach this page. Check the URL is correct and publicly reachable, then sync again."
+    if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+        return (
+            f"The page refused access ({label}). It may need a login or block automated visitors; "
+            "make sure it's publicly reachable, then sync again."
+        )
+    if status in (HTTPStatus.NOT_FOUND, HTTPStatus.GONE):
+        return f"The page wasn't found ({label}). Check the URL is correct, then sync again."
+    if status in (HTTPStatus.TOO_MANY_REQUESTS, HTTPStatus.REQUEST_TIMEOUT) or status.value >= 500:
+        return f"The site didn't respond properly ({label}). PipesHub will try again on the next sync."
+    return f"The page returned an error ({label}). Check the URL is correct and publicly reachable, then sync again."
+
 
 @ConnectorBuilder("Web")\
     .in_group("Web")\
@@ -1925,7 +1946,7 @@ class WebConnector(BaseConnector):
             parent_external_record_id=parent_url,
             parent_record_type=RecordType.FILE if parent_url else None,
             indexing_status=ProgressStatus.FAILED.value,
-            reason=f"Failed to process URL, status code: {status_code}",
+            reason=failed_page_reason(status_code),
         )
 
         permissions = []

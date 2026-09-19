@@ -10,6 +10,9 @@ const logger = Logger.getInstance({
   service: 'Azure Ad Token Validation',
 });
 
+export const MICROSOFT_SIGN_IN_FAILED =
+  "Sign-in with Microsoft didn't complete. Try again; if it keeps happening, ask your admin to check the Microsoft sign-in settings.";
+
 export const validateAzureAdUser = async (
   credentials: Record<string, any>,
   tenantId: string,
@@ -17,18 +20,18 @@ export const validateAzureAdUser = async (
   try {
     const idToken = credentials?.idToken;
     if (!idToken) {
-      throw new BadRequestError('Id token is required');
+      throw new BadRequestError(MICROSOFT_SIGN_IN_FAILED);
     }
 
     // Decode token without verification
     const decoded = jwt.decode(idToken, { complete: true });
     if (!decoded || !decoded.header)
-      throw new UnauthorizedError('Invalid token structure');
+      throw new UnauthorizedError(MICROSOFT_SIGN_IN_FAILED);
 
     // if (handleAzureAuthCallback(credentials, email, decoded) == null) {
     //   return { statusCode: 400 };
     if (handleAzureAuthCallback(credentials, decoded) == null) {
-      throw new BadRequestError('Error in Azure Auth CallBack');
+      throw new BadRequestError(MICROSOFT_SIGN_IN_FAILED);
     }
 
     // Fetch OpenID Configuration & JWKS
@@ -42,7 +45,10 @@ export const validateAzureAdUser = async (
     const signingKey = jwks.data.keys.find(
       (key: any) => key.kid === decoded.header.kid,
     );
-    if (!signingKey) throw new BadRequestError('Signing key not found');
+    if (!signingKey) {
+      logger.error('Azure AD signing key not found', { kid: decoded.header.kid });
+      throw new BadRequestError(MICROSOFT_SIGN_IN_FAILED);
+    }
     // Convert JWK to PEM & verify token
     const publicKey = jwkToPem(signingKey);
     const verifiedToken = jwt.verify(idToken, publicKey, {

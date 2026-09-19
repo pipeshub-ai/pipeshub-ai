@@ -80,7 +80,7 @@ class TestWebSearchHealthCheck:
             )
         assert resp.status_code == 408
         body = resp.body.decode()
-        assert "timed out" in body
+        assert "didn't answer in time" in body
 
     @pytest.mark.asyncio
     async def test_value_error_returns_400(self, mock_request):
@@ -118,7 +118,7 @@ class TestWebSearchHealthCheck:
             )
         assert resp.status_code == 400
         body = resp.body.decode()
-        assert "Invalid API key" in body
+        assert "didn't accept the API key" in body
 
     @pytest.mark.asyncio
     async def test_http_status_403_returns_invalid_api_key(self, mock_request):
@@ -140,7 +140,7 @@ class TestWebSearchHealthCheck:
             )
         assert resp.status_code == 400
         body = resp.body.decode()
-        assert "Invalid API key" in body
+        assert "didn't accept the API key" in body
 
     @pytest.mark.asyncio
     async def test_http_status_429_returns_rate_limit(self, mock_request):
@@ -162,7 +162,7 @@ class TestWebSearchHealthCheck:
             )
         assert resp.status_code == 400
         body = resp.body.decode()
-        assert "Rate limit exceeded" in body
+        assert "limiting requests right now" in body
 
     @pytest.mark.asyncio
     async def test_http_status_500_returns_generic_http_message(self, mock_request):
@@ -184,7 +184,7 @@ class TestWebSearchHealthCheck:
             )
         assert resp.status_code == 400
         body = resp.body.decode()
-        assert "returned HTTP 500" in body
+        assert "returned an error (500)" in body
 
     @pytest.mark.asyncio
     async def test_generic_exception_returns_500(self, mock_request):
@@ -200,7 +200,7 @@ class TestWebSearchHealthCheck:
             )
         assert resp.status_code == 500
         body = resp.body.decode()
-        assert "Web search health check failed" in body
+        assert "for web search. Check its API key" in body
 
     @pytest.mark.asyncio
     async def test_default_provider_is_duckduckgo(self, mock_request):
@@ -253,7 +253,7 @@ class TestPerformTtsHealthCheck:
             resp = await perform_tts_health_check(self._cfg("openAI"), logger)
         assert resp.status_code == 500
         body = resp.body.decode()
-        assert "TTS health check failed" in body
+        assert "with these speech model settings" in body
 
     @pytest.mark.asyncio
     async def test_openai_success(self):
@@ -413,7 +413,7 @@ class TestPerformTtsHealthCheck:
             resp = await perform_tts_health_check(self._cfg("openAI"), logger)
         assert resp.status_code == 500
         body = resp.body.decode()
-        assert "TTS health check failed" in body
+        assert "with these speech model settings" in body
 
 
 # ============================================================================
@@ -450,7 +450,7 @@ class TestPerformSttHealthCheck:
             resp = await perform_stt_health_check(self._cfg("openAI"), logger)
         assert resp.status_code == 500
         body = resp.body.decode()
-        assert "STT health check failed" in body
+        assert "with these speech-to-text model settings" in body
 
     @pytest.mark.asyncio
     async def test_openai_success(self):
@@ -672,7 +672,7 @@ class TestPerformSttHealthCheck:
             resp = await perform_stt_health_check(self._cfg("openAI"), logger)
         assert resp.status_code == 500
         body = resp.body.decode()
-        assert "STT health check failed" in body
+        assert "with these speech-to-text model settings" in body
 
 
 # ============================================================================

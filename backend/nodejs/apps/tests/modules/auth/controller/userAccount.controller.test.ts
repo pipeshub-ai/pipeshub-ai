@@ -6,6 +6,10 @@ import mongoose from 'mongoose';
 import {
   UserAccountController,
   SALT_ROUNDS,
+  SIGN_IN_SESSION_EXPIRED,
+  OAUTH_SIGN_IN_FAILED,
+  EMAIL_MISMATCH,
+  OTP_SEND_FAILED,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
@@ -1009,7 +1013,7 @@ describe('UserAccountController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
       expect(next.firstCall.args[0].message).to.equal(
-        'SessionInfo not found',
+        SIGN_IN_SESSION_EXPIRED,
       );
     });
 
@@ -1246,7 +1250,7 @@ describe('UserAccountController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
       expect(next.firstCall.args[0].message).to.equal(
-        'Missing required OAuth parameters',
+        OAUTH_SIGN_IN_FAILED,
       );
     });
 
@@ -1464,7 +1468,7 @@ describe('UserAccountController', () => {
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockIamService.getUserByEmail.resolves({
         statusCode: 404,
-        data: 'Not found',
+        data: { message: 'Account not found' },
       });
 
       try {
@@ -1472,6 +1476,27 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(NotFoundError);
+        // An object here used to reach the sign-in page as "[object Object]".
+        expect((error as NotFoundError).message).to.equal(
+          "We couldn't send a sign-in code to that email. Check the address and try again, or ask your admin to invite you.",
+        );
+      }
+    });
+  });
+
+  describe('getLoginOtp - account lookup failures', () => {
+    it('does not tell the person to get invited when the lookup itself failed', async () => {
+      const req: any = { body: { email: 'someone@test.com' }, ip: '127.0.0.1' };
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      mockIamService.getUserByEmail.resolves({ statusCode: 500, data: { message: 'upstream exploded' } });
+
+      try {
+        await controller.getLoginOtp(req, res);
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(InternalServerError);
+        expect((error as InternalServerError).message).to.equal(OTP_SEND_FAILED);
+        expect((error as InternalServerError).message).not.to.include('invite');
       }
     });
   });
@@ -2805,7 +2830,7 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('not properly configured');
+      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
     });
 
     it('should call next(BadRequestError) when no oauth config data', async () => {
@@ -2831,7 +2856,7 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('not properly configured');
+      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
     });
   });
 
@@ -3016,7 +3041,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.include('Email mismatch');
+        expect((error as BadRequestError).message).to.equal(EMAIL_MISMATCH);
       }
     });
 
@@ -3099,7 +3124,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.include('Access token is required');
+        expect((error as BadRequestError).message).to.equal(OAUTH_SIGN_IN_FAILED);
       }
     });
 
@@ -3115,7 +3140,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.include('User info endpoint');
+        expect((error as BadRequestError).message).to.equal(OAUTH_SIGN_IN_FAILED);
       }
     });
   });
@@ -3324,7 +3349,7 @@ describe('UserAccountController', () => {
         await controller.generateAndSendLoginOtp('u1', 'o1', 'Test', 'test@test.com', '127.0.0.1');
         expect.fail('Should have thrown');
       } catch (error) {
-        expect((error as Error).message).to.equal('SMTP error');
+        expect((error as Error).message).to.equal(OTP_SEND_FAILED);
       }
     });
   });
@@ -3393,7 +3418,7 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('not properly configured');
+      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
     });
 
     it('should call next(BadRequestError) when oauth config has no tokenEndpoint', async () => {
@@ -3419,7 +3444,7 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('not properly configured');
+      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
     });
 
     it('should call next(NotFoundError) when JIT not enabled', async () => {
@@ -3531,6 +3556,26 @@ describe('UserAccountController', () => {
   // authenticateWithOAuth - success and error paths
   // -----------------------------------------------------------------------
   describe('authenticateWithOAuth - additional paths', () => {
+    it('shows a plain message, not the network error, when the provider cannot be reached', async () => {
+      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
+      mockConfigService.getConfig.resolves({
+        data: { userInfoEndpoint: 'https://provider.com/userinfo' },
+      });
+      const originalFetch = global.fetch;
+      global.fetch = sinon.stub().rejects(new TypeError('fetch failed: getaddrinfo ENOTFOUND provider.com')) as any;
+
+      try {
+        await controller.authenticateWithOAuth(user, { accessToken: 'tok' }, '127.0.0.1');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(OAUTH_SIGN_IN_FAILED);
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+
     it('should throw UnauthorizedError when fetch response is not ok', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
 

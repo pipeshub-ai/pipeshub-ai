@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import axios from 'axios';
 import {
   validateAzureAdUser,
+  MICROSOFT_SIGN_IN_FAILED,
   handleAzureAuthCallback,
 } from '../../../../src/modules/auth/utils/azureAdTokenValidation';
 import {
@@ -25,7 +26,7 @@ describe('azureAdTokenValidation', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
         expect((error as BadRequestError).message).to.equal(
-          'Id token is required',
+          MICROSOFT_SIGN_IN_FAILED,
         );
       }
     });
@@ -52,7 +53,7 @@ describe('azureAdTokenValidation', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(UnauthorizedError);
         expect((error as UnauthorizedError).message).to.equal(
-          'Invalid token structure',
+          MICROSOFT_SIGN_IN_FAILED,
         );
       }
     });

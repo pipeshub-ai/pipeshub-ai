@@ -1660,7 +1660,7 @@ function KnowledgeBasePageContent() {
       for (const entry of oversized) {
         failUpload(
           entry.storeId,
-          `File exceeds the ${maxFileSizeMB} MB size limit`,
+          `This file is larger than the ${maxFileSizeMB} MB limit. Make it smaller or split it, then upload it again.`,
           [FileRejectionReason.EXCEEDS_SIZE_LIMIT],
         );
       }
