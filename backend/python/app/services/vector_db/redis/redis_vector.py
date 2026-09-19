@@ -45,7 +45,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.services.vector_db.filters import canonical_filter_key
+from app.services.vector_db.filters import (
+    canonical_filter_key,
+    split_values_count_conditions,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -74,10 +77,13 @@ from app.services.vector_db.redis.utils import (
     field_conditions_to_redis_query,
     filter_expression_to_redis_query,
     hash_doc_to_payload,
+    parse_aggregate_rows,
     parse_ft_hybrid_reply,
     parse_ft_search_reply,
+    parse_search_rows,
     vector_point_to_hash_fields,
     vector_to_bytes,
+    within_values_count,
 )
 from app.utils.logger import create_logger
 
@@ -96,6 +102,12 @@ _REDIS_CAPABILITIES = VectorDBCapabilities(
 
 # RediSearch caps offset+limit at MAXSEARCHRESULTS; the default is 10000.
 _MAX_SEARCH_RESULTS = 10000
+
+# Page size for paged deletes and aggregate-cursor reads.
+_DELETE_PAGE_SIZE = 500
+
+# How long RediSearch keeps an idle aggregate cursor alive between reads.
+_CURSOR_MAX_IDLE_MS = 300000
 
 # Fallback for when the service was built without a parsed config.
 _DEFAULT_MAX_CONCURRENT_SEARCHES = 8
@@ -479,6 +491,7 @@ class RedisVectorService(IVectorDBService):
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
+        max_values: Optional[Dict[str, int]] = None,
         **kwargs: FilterValue,
     ) -> FilterExpression:
         # Redis does not support min_should_match — reject early before the
@@ -498,6 +511,7 @@ class RedisVectorService(IVectorDBService):
             should=should,
             must_not=must_not,
             min_should_match=None,
+            max_values=max_values,
             extra_kwargs=kwargs or None,
             build_conditions=_build_generic_conditions,
         )
@@ -552,38 +566,75 @@ class RedisVectorService(IVectorDBService):
         self,
         collection_name: str,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         """Delete points matching *filter* using paged deletes.
 
-        Re-queries from offset 0 after each page is deleted to avoid the
-        stale-offset problem: FT.SEARCH offsets shift when keys are removed.
-        The max number of keys held in memory at once == page_size (not the
-        entire matching set), which keeps memory bounded for large collections.
+        With no array-length condition this re-queries from offset 0 after each
+        page: the deleted page is gone, so what was page 2 is now page 1, and
+        memory stays bounded by page_size rather than by the matching set.
+
+        Array-length conditions have no RediSearch equivalent, so they are
+        peeled off and applied to each page here. That makes some matches
+        survive, so the offset-0 shortcut no longer holds and a real cursor is
+        needed: it advances past the rows this pass deliberately kept.
         """
         if filter.is_empty():
             raise ValueError(
                 "delete_points called with an empty filter — this would wipe the entire "
                 "collection. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        if not filter.has_positive_match():
+            raise ValueError(
+                "delete_points called with only array-length conditions — a point "
+                "whose field is absent satisfies those too, so this would delete "
+                "most of the collection. Pair it with a value match "
+                "(e.g. connectorIds)."
+            )
         self._assert_connected()
 
         idx = self._index_name(collection_name)
-        query = filter_expression_to_redis_query(filter)
-        page_size = 500
-        total_deleted = 0
+        base_filter, raw_count_limits = split_values_count_conditions(filter)
+        query = filter_expression_to_redis_query(base_filter)
+        # Redis hash fields cannot contain dots, so a canonical key like
+        # "metadata.x" is stored and echoed back as "metadata_x". Normalise once:
+        # looking the value up under the canonical name misses, and a miss reads
+        # as zero values, which silently widens the delete.
+        count_limits = [
+            (key.replace(".", "_"), limit) for key, limit in raw_count_limits
+        ]
 
+        if count_limits:
+            total_deleted = await self._delete_filtered(
+                collection_name, idx, query, count_limits
+            )
+        else:
+            total_deleted = await self._delete_all_matching(collection_name, idx, query)
+
+        logger.info(
+            f"Deleted {total_deleted} points from Redis collection '{collection_name}'"
+        )
+
+    async def _delete_all_matching(
+        self, collection_name: str, idx: str, query: str
+    ) -> int:
+        """Delete every document matching *query*.
+
+        Re-queries from offset 0 after each page: the deleted page is gone, so
+        what was page 2 is now page 1 and neither memory nor the offset grows
+        with the size of the matching set.
+        """
+        total_deleted = 0
         while True:
-            # Always fetch from offset 0: after deleting the previous page,
-            # what was page 2 is now page 1.
             try:
                 raw = await self.client.execute_command(  # type: ignore
                     "FT.SEARCH", idx, query,
                     "NOCONTENT",
-                    "LIMIT", "0", str(page_size),
+                    "LIMIT", "0", str(_DELETE_PAGE_SIZE),
                 )
             except Exception as e:
                 # Do not swallow: callers treat a returned delete as complete and
-                # go on to drop the VRID→doc mapping, which would leave the
+                # go on to drop the VRID->doc mapping, which would leave the
                 # surviving points orphaned *and* no longer discoverable.
                 raise RuntimeError(
                     f"Paged delete on '{collection_name}' aborted after "
@@ -593,28 +644,154 @@ class RedisVectorService(IVectorDBService):
             if not raw or not isinstance(raw, (list, tuple)):
                 break
             page_keys = [
-                k if isinstance(k, bytes) else k.encode()
-                for k in raw[1:]  # skip total-count at index 0
+                k if isinstance(k, bytes) else str(k).encode()
+                for k in raw[1:]  # skip the total-count at index 0
             ]
             if not page_keys:
                 break
 
             await self.client.delete(*page_keys)  # type: ignore
             total_deleted += len(page_keys)
-
-            # If we got fewer than a full page, we're done
-            if len(page_keys) < page_size:
+            if len(page_keys) < _DELETE_PAGE_SIZE:
                 break
+        return total_deleted
 
-        logger.info(
-            f"Deleted {total_deleted} points from Redis collection '{collection_name}'"
-        )
+    async def _delete_filtered(
+        self, collection_name: str, idx: str, query: str, count_limits: List[tuple]
+    ) -> int:
+        """Delete matches of *query* that also satisfy the array-length limits.
+
+        Array-length conditions have no RediSearch equivalent, so they are
+        applied here and some matches deliberately survive. Survivors rule out
+        the re-query-from-0 trick and force a forward cursor, which FT.SEARCH
+        cannot give: its offset is capped by MAXSEARCHRESULTS, so a connector
+        sharing that many chunks would strand every one of them. FT.AGGREGATE
+        carries no such bound.
+        """
+        load = ["@__key"] + [f"@{key}" for key, _ in count_limits]
+        try:
+            raw = await self.client.execute_command(  # type: ignore
+                "FT.AGGREGATE", idx, query,
+                "LOAD", str(len(load)), *load,
+                "WITHCURSOR", "COUNT", str(_DELETE_PAGE_SIZE),
+                "MAXIDLE", str(_CURSOR_MAX_IDLE_MS),
+            )
+        except Exception as e:
+            logger.warning(
+                f"FT.AGGREGATE cursor unavailable on '{collection_name}' ({e}); "
+                f"falling back to offset paging, which cannot advance past "
+                f"{_MAX_SEARCH_RESULTS} retained matches"
+            )
+            return await self._delete_filtered_paged(
+                collection_name, idx, query, count_limits
+            )
+
+        total_deleted = 0
+        cursor_id = 0
+        try:
+            while True:
+                rows, cursor_id, unparsed = parse_aggregate_rows(raw)
+                if unparsed:
+                    # Unreadable rows are neither deleted nor retried; say so
+                    # rather than let the walk look complete.
+                    logger.warning(
+                        f"{unparsed} unreadable row(s) on '{collection_name}' were "
+                        f"skipped during a filtered delete"
+                    )
+                page_keys = [
+                    key if isinstance(key, bytes) else str(key).encode()
+                    for key, fields in rows
+                    if within_values_count(fields, count_limits)
+                ]
+                if page_keys:
+                    await self.client.delete(*page_keys)  # type: ignore
+                    total_deleted += len(page_keys)
+                if not cursor_id:
+                    break
+                raw = await self.client.execute_command(  # type: ignore
+                    "FT.CURSOR", "READ", idx, str(cursor_id),
+                    "COUNT", str(_DELETE_PAGE_SIZE),
+                )
+        except Exception as e:
+            if cursor_id:
+                try:
+                    await self.client.execute_command(  # type: ignore
+                        "FT.CURSOR", "DEL", idx, str(cursor_id)
+                    )
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"Filtered delete on '{collection_name}' aborted after "
+                f"{total_deleted} point(s): {e}"
+            ) from e
+        return total_deleted
+
+    async def _delete_filtered_paged(
+        self, collection_name: str, idx: str, query: str, count_limits: List[tuple]
+    ) -> int:
+        """Offset-paged fallback for a RediSearch without aggregate cursors.
+
+        Bounded by MAXSEARCHRESULTS, so it raises rather than return short.
+        """
+        return_fields = [key for key, _ in count_limits]
+        total_deleted = 0
+        offset = 0
+
+        while True:
+            if offset + _DELETE_PAGE_SIZE > _MAX_SEARCH_RESULTS:
+                # Retained rows mean the cursor cannot be reset to 0. Fail loudly
+                # rather than return as if the delete were complete: the caller
+                # would go on to drop the mapping rows for points still present.
+                raise RuntimeError(
+                    f"Paged delete on '{collection_name}' cannot continue past "
+                    f"offset {offset}: FT.SEARCH is bounded by MAXSEARCHRESULTS "
+                    f"({_MAX_SEARCH_RESULTS}) and {total_deleted} point(s) were "
+                    f"deleted so far. Narrow the filter or raise MAXSEARCHRESULTS."
+                )
+            try:
+                raw = await self.client.execute_command(  # type: ignore
+                    "FT.SEARCH", idx, query,
+                    "RETURN", str(len(return_fields)), *return_fields,
+                    "LIMIT", str(offset), str(_DELETE_PAGE_SIZE),
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Paged delete on '{collection_name}' aborted after "
+                    f"{total_deleted} point(s): FT.SEARCH failed: {e}"
+                ) from e
+
+            if not raw or not isinstance(raw, (list, tuple)):
+                break
+            rows, row_count = parse_search_rows(raw)
+            if row_count == 0:
+                break
+            page_keys = [
+                key if isinstance(key, bytes) else str(key).encode()
+                for key, fields in rows
+                if within_values_count(fields, count_limits)
+            ]
+            unparsed = row_count - len(rows)
+            if unparsed:
+                logger.warning(
+                    f"{unparsed} unparseable row(s) on '{collection_name}' "
+                    f"were skipped during a filtered delete"
+                )
+            if page_keys:
+                await self.client.delete(*page_keys)  # type: ignore
+                total_deleted += len(page_keys)
+
+            offset += row_count - len(page_keys)  # step over the rows we kept
+            if row_count < _DELETE_PAGE_SIZE:
+                break
+        return total_deleted
+
 
     async def overwrite_payload(
         self,
         collection_name: str,
         payload: dict,
         points: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if points.is_empty():
             raise ValueError(
@@ -630,6 +807,7 @@ class RedisVectorService(IVectorDBService):
         collection_name: str,
         payload: dict,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
@@ -678,12 +856,16 @@ class RedisVectorService(IVectorDBService):
         scroll_filter: FilterExpression,
         limit: int,
         offset: Optional[str] = None,
+        with_payload: Optional[List[str]] = None,
     ) -> ScrollResult:
         """Return one page of points.
 
         ``offset`` is the opaque integer cursor returned in the previous
         ``ScrollResult.next_offset``.  Pass ``None`` (or ``"0"``) for the
         first page.
+
+        ``with_payload`` maps to an ``FT.SEARCH RETURN`` clause. Dots become
+        underscores because Redis hash field names cannot contain them.
         """
         self._assert_connected()
         query = filter_expression_to_redis_query(scroll_filter)
@@ -699,10 +881,20 @@ class RedisVectorService(IVectorDBService):
         # With ON HASH and no RETURN/NOCONTENT clause, FT.SEARCH returns all
         # hash fields for each matching document.  dense_embedding is skipped
         # by decode_hash_doc since it's a binary blob with no payload value.
-        raw = await self.client.execute_command(  # type: ignore
-            "FT.SEARCH", idx, query,
-            "LIMIT", str(int_offset), str(limit),
+        return_fields = (
+            [key.replace(".", "_") for key in with_payload] if with_payload else []
         )
+        if return_fields:
+            raw = await self.client.execute_command(  # type: ignore
+                "FT.SEARCH", idx, query,
+                "RETURN", str(len(return_fields)), *return_fields,
+                "LIMIT", str(int_offset), str(limit),
+            )
+        else:
+            raw = await self.client.execute_command(  # type: ignore
+                "FT.SEARCH", idx, query,
+                "LIMIT", str(int_offset), str(limit),
+            )
 
         points: List[VectorPoint] = []
         total_count = 0
