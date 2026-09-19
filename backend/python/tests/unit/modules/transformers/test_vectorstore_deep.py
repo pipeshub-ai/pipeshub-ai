@@ -743,11 +743,18 @@ class TestDeleteEmbeddings:
 
     @pytest.mark.asyncio
     async def test_failure_raises(self):
-        from app.exceptions.indexing_exceptions import EmbeddingError
         vs = _make_vectorstore()
         vs.vector_db_service.filter_collection = AsyncMock(side_effect=Exception("db error"))
-        with pytest.raises(EmbeddingError):
+        with pytest.raises(VectorStoreError):
             await vs.delete_embeddings("vr-1", "test_collection")
+
+    @pytest.mark.asyncio
+    async def test_block_delete_failure_is_a_storage_error(self):
+        vs = _make_vectorstore()
+        vs.vector_db_service.filter_collection = AsyncMock(return_value={})
+        vs.vector_db_service.delete_points = AsyncMock(side_effect=Exception("db error"))
+        with pytest.raises(VectorStoreError):
+            await vs.delete_blocks_by_ids({"b1"}, "vr-1", "test_collection")
 
 
 # ===================================================================
