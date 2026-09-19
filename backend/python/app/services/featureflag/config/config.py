@@ -21,3 +21,6 @@ class CONFIG:
     # packages) and whether agents can load skill tools. Defaults to
     # enabled (Beta) — like ENABLE_ACTIONS, admins may opt out from Labs.
     ENABLE_SKILLS = "ENABLE_SKILLS"
+    # Controls whether coding_sandbox.* tools are exposed to agents.
+    # Defaults to enabled; admins can disable from Labs.
+    ENABLE_CODE_EXECUTION = "ENABLE_CODE_EXECUTION"

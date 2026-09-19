@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
+from typing import Any
 
 import aiohttp  # type: ignore
 
@@ -26,6 +27,7 @@ from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.models.entities import EntityType
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.messaging.config import (
@@ -66,6 +68,21 @@ class RecordEventHandler(BaseEventService):
 
         self.event_processor : EventProcessor = event_processor
         self.producer = producer
+
+    def _entity_vector_store(self) -> Any | None:
+        """Best-effort accessor for the entities-collection store.
+
+        ``EventProcessor.sink_orchestrator`` defaults to ``None`` (only set
+        when the HTTP-service pipeline is enabled), so a direct attribute
+        chain can raise ``AttributeError`` and turn an otherwise-successful
+        delete into a retried failure. Returns ``None`` when unavailable so
+        callers can skip entity cleanup without failing the whole event.
+        """
+        return getattr(
+            getattr(self.event_processor, "sink_orchestrator", None),
+            "entity_vector_store",
+            None,
+        )
 
     # Statuses that already describe a finished record. Abandoning a duplicate
     # delivery of one of these must not rewrite it as a failure. FAILED is
@@ -249,6 +266,61 @@ class RecordEventHandler(BaseEventService):
             self.logger.warning(
                 "Failed to propagate primary failure to queued duplicates for %s: %s",
                 record_id,
+                e,
+            )
+
+    async def _reconcile_promoted_duplicates(
+        self,
+        record_id: str,
+        virtual_record_id: str | None,
+    ) -> None:
+        """Copy taxonomy edges and entities-collection state to duplicates
+        that were parked QUEUED while this record indexed, now that
+        ``update_queued_duplicates_status`` has promoted them.
+
+        A duplicate arriving *after* the primary already finished gets its
+        taxonomy edges copied and entities synced inline, in
+        ``EventProcessor._check_duplicate_by_md5``. A duplicate arriving
+        *while* the primary was still in flight is parked QUEUED instead and,
+        until now, only had its status fields copied here when the primary
+        finished — this fills in the taxonomy-edge copy and entities-vector
+        sync that path was missing.
+
+        Best-effort: edge copy is UPSERT/MERGE-based and membership sync
+        recomputes from the graph, so re-running this for an
+        already-reconciled sibling is harmless — failures are logged and
+        swallowed rather than retried.
+        """
+        if not virtual_record_id:
+            return
+        try:
+            sibling_keys = await self.event_processor.graph_provider.get_records_by_virtual_record_id(
+                virtual_record_id
+            )
+            sibling_keys = [
+                key for key in (sibling_keys or []) if key and key != record_id
+            ]
+            if not sibling_keys:
+                return
+
+            sink = getattr(self.event_processor, "sink_orchestrator", None)
+            for sibling_key in sibling_keys:
+                await self.event_processor.graph_provider.copy_document_relationships(
+                    record_id, sibling_key
+                )
+                if sink is not None:
+                    sibling_doc = await self.event_processor.graph_provider.get_document(
+                        sibling_key, CollectionNames.RECORDS.value
+                    )
+                    if sibling_doc is not None:
+                        await sink.sync_entities_for_duplicate(sibling_doc)
+
+            await self.event_processor.sync_vector_membership(virtual_record_id)
+        except Exception as e:
+            self.logger.warning(
+                "Failed to reconcile promoted duplicates for record %s (vrid=%s): %s",
+                record_id,
+                virtual_record_id,
                 e,
             )
 
@@ -640,6 +712,11 @@ class RecordEventHandler(BaseEventService):
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([ virtual_record_id])
+                entity_store = self._entity_vector_store()
+                if entity_store is not None:
+                    await entity_store.delete_entity(
+                        payload.get("orgId", ""), EntityType.RECORD.value, record_id
+                    )
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1248,6 +1325,7 @@ class RecordEventHandler(BaseEventService):
                     virtual_record_id = record.get("virtualRecordId")
                     if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
                         await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
+                        await self._reconcile_promoted_duplicates(record_id, virtual_record_id)
                         if indexing_status == ProgressStatus.COMPLETED.value:
                             # Duplicates just became searchable too. They can live in
                             # a different KB than this record, which only the TTL

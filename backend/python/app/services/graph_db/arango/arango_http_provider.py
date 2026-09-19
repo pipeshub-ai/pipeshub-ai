@@ -31,6 +31,7 @@ from app.config.constants.arangodb import (
     DepartmentNames,
     GraphNames,
     OriginTypes,
+    PermissionModel,
     ProgressStatus,
     RecordTypes,
 )
@@ -43,6 +44,7 @@ from app.models.entities import (
     CodeFileRecord,
     CommentRecord,
     DealRecord,
+    EntityType,
     FileRecord,
     LinkRecord,
     MailRecord,
@@ -15274,9 +15276,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         *,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> set[str]:
         """Batch KH permission_role check for record/recordGroup ancestor ids."""
-        if not nodes or not user_key or not self.http_client:
+        if not nodes or not user_key:
+            return set()
+        if not self.http_client:
+            if raise_on_error:
+                raise RuntimeError(
+                    "filter_nodes_with_permission_role: ArangoDB client is not connected"
+                )
             return set()
 
         record_ids = [
@@ -15350,6 +15359,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.warning(
                 "filter_nodes_with_permission_role: AQL failed — %s", exc
             )
+            if raise_on_error:
+                raise
             return set()
 
     async def get_record_parent_adjacency(
@@ -15489,6 +15500,388 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as exc:
             self.logger.warning("get_record_parent_adjacency: AQL failed — %s", exc)
             return {"nodes": {}, "parents": {}}
+
+    # ------------------------------------------------------------------
+    # Entity sync (knowledge-graph vector-store backfill)
+    # ------------------------------------------------------------------
+
+    # entity_type -> (edge_collection, {node_collection: entity_type}).
+    # Category and subcategory share one edge collection (belongsToCategory
+    # fans out to categories/ + subcategories1/2/3/), so they are queried
+    # together and split back out by node collection.
+    _TAXONOMY_EDGE_GROUPS: dict[str, tuple[str, dict[str, str]]] = {
+        "category_group": (
+            CollectionNames.BELONGS_TO_CATEGORY.value,
+            {
+                CollectionNames.CATEGORIES.value: EntityType.CATEGORY.value,
+                CollectionNames.SUBCATEGORIES1.value: EntityType.SUBCATEGORY.value,
+                CollectionNames.SUBCATEGORIES2.value: EntityType.SUBCATEGORY.value,
+                CollectionNames.SUBCATEGORIES3.value: EntityType.SUBCATEGORY.value,
+            },
+        ),
+        "department_group": (
+            CollectionNames.BELONGS_TO_DEPARTMENT.value,
+            {CollectionNames.DEPARTMENTS.value: EntityType.DEPARTMENT.value},
+        ),
+        "topic_group": (
+            CollectionNames.BELONGS_TO_TOPIC.value,
+            {CollectionNames.TOPICS.value: EntityType.TOPIC.value},
+        ),
+        "language_group": (
+            CollectionNames.BELONGS_TO_LANGUAGE.value,
+            {CollectionNames.LANGUAGES.value: EntityType.LANGUAGE.value},
+        ),
+    }
+    _ENTITY_TYPE_TO_TAXONOMY_GROUP: dict[str, str] = {
+        EntityType.CATEGORY.value: "category_group",
+        EntityType.SUBCATEGORY.value: "category_group",
+        EntityType.DEPARTMENT.value: "department_group",
+        EntityType.TOPIC.value: "topic_group",
+        EntityType.LANGUAGE.value: "language_group",
+    }
+    # entity_type -> (edge_collection, target node collections) for
+    # get_entity_candidate_records; edges run record -> entity node.
+    _ENTITY_CANDIDATE_EDGE_TARGETS: dict[str, tuple[str, tuple[str, ...]]] = {
+        EntityType.DEPARTMENT.value: (
+            CollectionNames.BELONGS_TO_DEPARTMENT.value,
+            (CollectionNames.DEPARTMENTS.value,),
+        ),
+        EntityType.CATEGORY.value: (
+            CollectionNames.BELONGS_TO_CATEGORY.value,
+            (CollectionNames.CATEGORIES.value,),
+        ),
+        EntityType.SUBCATEGORY.value: (
+            CollectionNames.BELONGS_TO_CATEGORY.value,
+            (
+                CollectionNames.SUBCATEGORIES1.value,
+                CollectionNames.SUBCATEGORIES2.value,
+                CollectionNames.SUBCATEGORIES3.value,
+            ),
+        ),
+        EntityType.TOPIC.value: (
+            CollectionNames.BELONGS_TO_TOPIC.value,
+            (CollectionNames.TOPICS.value,),
+        ),
+        EntityType.LANGUAGE.value: (
+            CollectionNames.BELONGS_TO_LANGUAGE.value,
+            (CollectionNames.LANGUAGES.value,),
+        ),
+        EntityType.RECORD_GROUP.value: (
+            CollectionNames.BELONGS_TO.value,
+            (CollectionNames.RECORD_GROUPS.value,),
+        ),
+    }
+    _ENTITY_CANDIDATE_RECORD_FIELDS: tuple[str, ...] = (
+        "_key", "recordName", "recordType", "connectorId", "virtualRecordId",
+        "webUrl", "sourceLastModifiedTimestamp", "updatedAtTimestamp",
+    )
+
+    async def _get_record_group_entities_for_sync(
+        self, org_id: str, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        """RecordGroup nodes carry ``orgId`` directly — no traversal needed."""
+        query = f"""
+            FOR rg IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER rg.orgId == @org_id
+                SORT rg._key
+                LIMIT @offset, @limit
+                RETURN {{
+                    entityId: rg._key,
+                    entityType: @entity_type,
+                    name: NOT_NULL(rg.groupName, rg._key),
+                    connectorId: rg.connectorId,
+                }}
+        """
+        try:
+            rows = await self.execute_query(
+                query,
+                bind_vars={
+                    "org_id": org_id,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit),
+                    "entity_type": EntityType.RECORD_GROUP.value,
+                },
+            )
+            return rows or []
+        except Exception as exc:
+            self.logger.warning("get_entities_for_sync (record_group) failed: %s", exc)
+            return []
+
+    async def _get_taxonomy_entities_for_sync(
+        self,
+        org_id: str,
+        edge_collection: str,
+        node_collection_types: dict[str, str],
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        """Taxonomy nodes (category/subcategory/department/topic/language)
+        carry no ``orgId`` of their own — they are deduplicated globally by
+        name (see ``GraphDBTransformer._find_or_create_node``). Org scoping
+        is derived by walking OUTBOUND from this org's own records over the
+        ``belongsTo*`` edge, so only taxonomy this org's data actually
+        references is ever returned.
+        """
+        node_collections = list(node_collection_types.keys())
+        query = f"""
+            LET touched = (
+                FOR rec IN {CollectionNames.RECORDS.value}
+                    FILTER rec.orgId == @org_id
+                    FOR v IN 1..1 OUTBOUND rec {edge_collection}
+                        FILTER PARSE_IDENTIFIER(v._id).collection IN @node_collections
+                        RETURN DISTINCT v
+            )
+            FOR v IN touched
+                SORT v._key
+                LIMIT @offset, @limit
+                RETURN {{
+                    entityId: v._key,
+                    name: NOT_NULL(v.name, v._key),
+                    _collection: PARSE_IDENTIFIER(v._id).collection,
+                }}
+        """
+        try:
+            rows = await self.execute_query(
+                query,
+                bind_vars={
+                    "org_id": org_id,
+                    "node_collections": node_collections,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit),
+                },
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "get_entities_for_sync (taxonomy via %s) failed: %s", edge_collection, exc
+            )
+            return []
+        results: list[dict[str, Any]] = []
+        for row in rows or []:
+            collection = row.pop("_collection", None)
+            row["entityType"] = node_collection_types.get(collection)
+            if row["entityType"]:
+                results.append(row)
+        return results
+
+    async def _get_taxonomy_entities_for_record_via_edge(
+        self,
+        record_key: str,
+        edge_collection: str,
+        node_collection_types: dict[str, str],
+        transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """Single-record variant of ``_get_taxonomy_entities_for_sync`` — the
+        record itself pins the scope, so there is no org filter and no
+        pagination.
+        """
+        node_collections = list(node_collection_types.keys())
+        record_doc = f"{CollectionNames.RECORDS.value}/{record_key}"
+        query = f"""
+            FOR v IN 1..1 OUTBOUND @record_doc {edge_collection}
+                FILTER PARSE_IDENTIFIER(v._id).collection IN @node_collections
+                RETURN DISTINCT {{
+                    entityId: v._key,
+                    name: NOT_NULL(v.name, v._key),
+                    _collection: PARSE_IDENTIFIER(v._id).collection,
+                }}
+        """
+        try:
+            rows = await self.execute_query(
+                query,
+                bind_vars={
+                    "record_doc": record_doc,
+                    "node_collections": node_collections,
+                },
+                transaction=transaction,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "get_taxonomy_entities_for_record (via %s) failed for %s: %s",
+                edge_collection, record_key, exc,
+            )
+            return []
+        results: list[dict[str, Any]] = []
+        for row in rows or []:
+            collection = row.pop("_collection", None)
+            row["entityType"] = node_collection_types.get(collection)
+            if row["entityType"]:
+                results.append(row)
+        return results
+
+    async def get_taxonomy_entities_for_record(
+        self,
+        record_key: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_taxonomy_entities_for_record`."""
+        if not record_key:
+            return []
+        results: list[dict[str, Any]] = []
+        for edge_collection, node_map in self._TAXONOMY_EDGE_GROUPS.values():
+            results.extend(
+                await self._get_taxonomy_entities_for_record_via_edge(
+                    record_key, edge_collection, node_map, transaction
+                )
+            )
+        return results
+
+    async def get_entities_for_sync(
+        self,
+        org_id: str,
+        entity_types: list[str] | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_entities_for_sync`."""
+        if not org_id:
+            return []
+        wanted = set(entity_types) if entity_types else None
+        results: list[dict[str, Any]] = []
+
+        if wanted is None or EntityType.RECORD_GROUP.value in wanted:
+            results.extend(
+                await self._get_record_group_entities_for_sync(org_id, limit, offset)
+            )
+
+        groups_to_query: set[str] = set()
+        for etype, group in self._ENTITY_TYPE_TO_TAXONOMY_GROUP.items():
+            if wanted is None or etype in wanted:
+                groups_to_query.add(group)
+
+        for group in groups_to_query:
+            edge_collection, node_map = self._TAXONOMY_EDGE_GROUPS[group]
+            rows = await self._get_taxonomy_entities_for_sync(
+                org_id, edge_collection, node_map, limit, offset
+            )
+            if wanted is not None:
+                rows = [r for r in rows if r.get("entityType") in wanted]
+            results.extend(rows)
+
+        return results
+
+    @classmethod
+    def _entity_candidate_record_projection(cls, var: str) -> str:
+        # Explicit attributes (not KEEP) so absent fields come back as null,
+        # matching the Neo4j provider's row shape.
+        fields = ", ".join(f'"{f}": {var}.{f}' for f in cls._ENTITY_CANDIDATE_RECORD_FIELDS)
+        return f"{{{fields}}}"
+
+    def _entity_candidate_records_aql(
+        self, entity_type: str, *, filter_record_types: bool
+    ) -> str:
+        records = CollectionNames.RECORDS.value
+        if entity_type == EntityType.RECORD.value:
+            record_type_check = (
+                "AND rec.recordType IN @record_types" if filter_record_types else ""
+            )
+            projection = self._entity_candidate_record_projection("rec")
+            return f"""
+            FOR ref IN @refs
+                LET rec = DOCUMENT(CONCAT("{records}/", ref.id))
+                LET ok = rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
+                    AND rec.connectorId IN ref.connectorIds
+                    {record_type_check}
+                RETURN {{id: ref.id, rows: (ok AND @offset == 0) ? [{projection}] : []}}
+            """
+
+        edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
+        targets = ", ".join(f'CONCAT("{c}/", ref.id)' for c in target_collections)
+        record_type_filter = (
+            "FILTER rec.recordType IN @record_types" if filter_record_types else ""
+        )
+        rows_subquery = f"""(
+                    FOR edge IN {edge_collection}
+                        FILTER edge._to IN targets
+                        FILTER STARTS_WITH(edge._from, "{records}/")
+                        LET rec = DOCUMENT(edge._from)
+                        FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
+                        FILTER rec.connectorId IN ref.connectorIds
+                        {record_type_filter}
+                        COLLECT key = rec._key INTO grouped KEEP rec
+                        LET r = grouped[0].rec
+                        SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC
+                        LIMIT @offset, @limit
+                        RETURN {self._entity_candidate_record_projection("r")}
+                )"""
+        if entity_type == EntityType.RECORD_GROUP.value:
+            scope = (
+                f'LET rg = DOCUMENT(CONCAT("{CollectionNames.RECORD_GROUPS.value}/", ref.id))'
+            )
+            rows_expr = f"(rg != null AND rg.orgId == @org_id) ? {rows_subquery} : []"
+        else:
+            scope = ""
+            rows_expr = rows_subquery
+        return f"""
+            FOR ref IN @refs
+                {scope}
+                LET targets = [{targets}]
+                LET rows = {rows_expr}
+                RETURN {{id: ref.id, rows: rows}}
+            """
+
+    async def get_entity_candidate_records(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        *,
+        record_types: list[str] | None = None,
+        limit_per_entity: int = 20,
+        offset: int = 0,
+        transaction: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """See :meth:`IGraphDBProvider.get_entity_candidate_records`."""
+        if not refs or not org_id:
+            return {}
+
+        connectors_by_type: dict[str, dict[str, list[str]]] = defaultdict(dict)
+        for ref in refs:
+            ref_id = str(ref.get("id") or "")
+            ref_type = ref.get("type")
+            if not ref_id or not (
+                ref_type == EntityType.RECORD.value
+                or ref_type in self._ENTITY_CANDIDATE_EDGE_TARGETS
+            ):
+                continue
+            connector_ids = connectors_by_type[ref_type].setdefault(ref_id, [])
+            for connector_id in ref.get("connectorIds") or []:
+                if connector_id and str(connector_id) not in connector_ids:
+                    connector_ids.append(str(connector_id))
+
+        results: dict[str, list[dict[str, Any]]] = {}
+        for ref_type, connectors_by_id in connectors_by_type.items():
+            for ref_id in connectors_by_id:
+                results.setdefault(ref_id, [])
+            # A ref without connectors can never match a row, so it is not sent.
+            query_refs = [
+                {"id": ref_id, "connectorIds": connector_ids}
+                for ref_id, connector_ids in connectors_by_id.items()
+                if connector_ids
+            ]
+            if not query_refs:
+                continue
+
+            bind_vars: dict[str, Any] = {
+                "refs": query_refs,
+                "org_id": org_id,
+                "offset": max(0, offset),
+            }
+            # Arango rejects bind vars the query does not reference.
+            if ref_type != EntityType.RECORD.value:
+                bind_vars["limit"] = max(1, limit_per_entity)
+            if record_types:
+                bind_vars["record_types"] = list(record_types)
+
+            rows = await self.execute_query(
+                self._entity_candidate_records_aql(
+                    ref_type, filter_record_types=bool(record_types)
+                ),
+                bind_vars=bind_vars,
+                transaction=transaction,
+            )
+            for row in rows or []:
+                if row and row.get("id") in results:
+                    results[row["id"]] = row.get("rows") or []
+        return results
 
     async def get_user_app_ids(
         self,
@@ -18705,18 +19098,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 edges = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
 
                 if edges:
-                    # Create new edges for target document
-                    for edge in edges:
-                        new_edge = {
+                    # batch_create_edges UPSERTs on {_from, _to}, so re-running
+                    # dedup for the same record (e.g. a redelivered event)
+                    # updates the existing edge instead of duplicating it —
+                    # the previous per-edge create_document loop had no such
+                    # guard and accumulated duplicate taxonomy edges on retry.
+                    new_edges = [
+                        {
                             "_from": target_doc,
                             "_to": edge["to"],
-                            "createdAtTimestamp": edge.get("timestamp", get_epoch_timestamp_in_ms())
+                            "createdAtTimestamp": edge.get("timestamp") or get_epoch_timestamp_in_ms(),
                         }
-                        await self.http_client.create_document(
-                            collection,
-                            new_edge,
-                            txn_id=transaction
-                        )
+                        for edge in edges
+                    ]
+                    await self.batch_create_edges(new_edges, collection, transaction=transaction)
 
                     self.logger.debug(
                         f"✅ Copied {len(edges)} edges from {collection}"
@@ -19424,6 +19819,176 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Get accessible virtual record IDs failed: {e}", exc_info=True)
             return {}
+
+    async def get_entity_access_context(
+        self,
+        user_id: str,
+        org_id: str,
+        source_ids: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, Any] | None:
+        """See :meth:`IGraphDBProvider.get_entity_access_context`.
+
+        Apps mirror ``get_user_apps`` plus the Knowledge Hub KB app seeds;
+        record groups mirror the Knowledge Hub RG seed paths and inherited
+        traversal in ``_build_knowledge_hub_permission_expansion_aql``.
+        """
+        users = CollectionNames.USERS.value
+        permission = CollectionNames.PERMISSION.value
+        user_app_relation = CollectionNames.USER_APP_RELATION.value
+        belongs_to = CollectionNames.BELONGS_TO.value
+        inherit_permissions = CollectionNames.INHERIT_PERMISSIONS.value
+        teams = CollectionNames.TEAMS.value
+        apps = CollectionNames.APPS.value
+        groups = CollectionNames.GROUPS.value
+        roles = CollectionNames.ROLES.value
+        record_groups = CollectionNames.RECORD_GROUPS.value
+        query = f"""
+        LET userDoc = FIRST(
+            FOR u IN {users}
+                FILTER u.userId == @user_id
+                LIMIT 1
+                RETURN u
+        )
+        FILTER userDoc != null
+        LET user_from = userDoc._id
+
+        LET user_team_ids = (
+            FOR perm IN {permission}
+                FILTER perm._from == user_from AND perm.type == "USER"
+                FILTER STARTS_WITH(perm._to, "{teams}/")
+                RETURN perm._to
+        )
+
+        LET direct_apps = (
+            FOR app IN 1..1 OUTBOUND user_from {user_app_relation}
+                RETURN app
+        )
+
+        LET team_apps = (
+            FOR team_id IN user_team_ids
+                FOR app IN 1..1 OUTBOUND team_id {user_app_relation}
+                    RETURN app
+        )
+
+        // KB sharing writes permission edges, never userAppRelation
+        LET kb_apps_direct = (
+            FOR perm IN {permission}
+                FILTER perm._from == user_from AND perm.type == "USER"
+                FILTER STARTS_WITH(perm._to, "{apps}/")
+                LET app = DOCUMENT(perm._to)
+                FILTER app != null AND app.orgId == @org_id AND app.type == @kb_type
+                RETURN app
+        )
+
+        LET kb_apps_team = (
+            FOR team_id IN user_team_ids
+                FOR perm IN {permission}
+                    FILTER perm._from == team_id AND perm.type == "TEAM"
+                    FILTER STARTS_WITH(perm._to, "{apps}/")
+                    LET app = DOCUMENT(perm._to)
+                    FILTER app != null AND app.orgId == @org_id AND app.type == @kb_type
+                    RETURN app
+        )
+
+        LET accessible_apps = (
+            FOR app IN UNION(direct_apps, team_apps, kb_apps_direct, kb_apps_team)
+                FILTER app != null
+                FILTER LENGTH(@source_ids) == 0 OR app._key IN @source_ids
+                COLLECT key = app._key INTO grouped KEEP app
+                LET a = grouped[0].app
+                RETURN {{
+                    id: key,
+                    name: a.name,
+                    type: a.type,
+                    permissionModel: a.permissionModel
+                }}
+        )
+
+        LET record_level_app_ids = (
+            FOR app IN accessible_apps
+                FILTER app.type != @kb_type AND app.permissionModel != @app_level
+                RETURN app.id
+        )
+
+        LET path1_seed_rgs = (
+            FOR perm IN {permission}
+                FILTER perm._from == user_from AND perm.type == "USER"
+                FILTER STARTS_WITH(perm._to, "{record_groups}/")
+                LET rg = DOCUMENT(perm._to)
+                FILTER rg != null AND rg.orgId == @org_id AND rg.isDeleted != true
+                FILTER rg.connectorId IN record_level_app_ids
+                RETURN rg
+        )
+
+        LET path2_seed_rgs = (
+            FOR group, userEdge IN 1..1 ANY user_from {permission}
+                FILTER userEdge.type == "USER"
+                FILTER IS_SAME_COLLECTION("{groups}", group) OR IS_SAME_COLLECTION("{roles}", group)
+                FOR rg, groupEdge IN 1..1 ANY group._id {permission}
+                    FILTER groupEdge.type == "GROUP" OR groupEdge.type == "ROLE"
+                    FILTER IS_SAME_COLLECTION("{record_groups}", rg)
+                    FILTER rg.orgId == @org_id AND rg.isDeleted != true
+                    FILTER rg.connectorId IN record_level_app_ids
+                    RETURN rg
+        )
+
+        LET path3_seed_rgs = (
+            FOR org, belongsEdge IN 1..1 ANY user_from {belongs_to}
+                FILTER belongsEdge.entityType == "ORGANIZATION"
+                FOR rg, orgPerm IN 1..1 ANY org._id {permission}
+                    FILTER orgPerm.type == "ORG"
+                    FILTER IS_SAME_COLLECTION("{record_groups}", rg)
+                    FILTER rg.orgId == @org_id AND rg.isDeleted != true
+                    FILTER rg.connectorId IN record_level_app_ids
+                    RETURN rg
+        )
+
+        LET path4_seed_rgs = (
+            FOR team_id IN user_team_ids
+                FOR perm IN {permission}
+                    FILTER perm._from == team_id AND perm.type == "TEAM"
+                    FILTER STARTS_WITH(perm._to, "{record_groups}/")
+                    LET rg = DOCUMENT(perm._to)
+                    FILTER rg != null AND rg.orgId == @org_id AND rg.isDeleted != true
+                    FILTER rg.connectorId IN record_level_app_ids
+                    RETURN rg
+        )
+
+        LET seed_rgs = UNION_DISTINCT(path1_seed_rgs, path2_seed_rgs, path3_seed_rgs, path4_seed_rgs)
+
+        // Only recordGroups can inherit into recordGroups, so the traversal
+        // skips record children instead of loading every record under a seed.
+        LET inherited_rg_keys = (
+            FOR seed IN seed_rgs
+                FILTER seed.hideChildren != true
+                FOR child IN 1..5 INBOUND seed._id {inherit_permissions}
+                    PRUNE child.orgId != @org_id
+                    OPTIONS {{ bfs: true, uniqueVertices: "global", vertexCollections: ["{record_groups}"] }}
+                    FILTER child != null AND IS_SAME_COLLECTION("{record_groups}", child)
+                    FILTER child.orgId == @org_id AND child.isDeleted != true
+                    FILTER child.connectorId IN record_level_app_ids
+                    RETURN child._key
+        )
+
+        RETURN {{
+            user_key: userDoc._key,
+            apps: accessible_apps,
+            record_group_ids: UNIQUE(APPEND(seed_rgs[*]._key, inherited_rg_keys))
+        }}
+        """
+        rows = await self.execute_query(
+            query,
+            bind_vars={
+                "user_id": user_id,
+                "org_id": org_id,
+                "source_ids": source_ids or [],
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "app_level": PermissionModel.APP_LEVEL.value,
+            },
+            transaction=transaction,
+        )
+        return rows[0] if rows else None
 
     async def get_records_by_record_ids(
         self,

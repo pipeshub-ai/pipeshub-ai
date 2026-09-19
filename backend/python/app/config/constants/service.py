@@ -97,7 +97,6 @@ class OAuthScopes(str, Enum):
     TEAM_READ = "team:read"
     TEAM_WRITE = "team:write"
 
-
 class DefaultEndpoints(Enum):
     """Constants for default endpoints"""
 

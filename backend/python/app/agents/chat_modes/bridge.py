@@ -323,9 +323,15 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     client_name: str | None = None,
     cancellation_registry: "RunCancellationRegistry | None" = None,
     cancellation_owner: "RunOwner | None" = None,
+    entity_vector_store: Any = None,
 ) -> "AsyncGenerator[str, None]":
     """Entry point `chatbot.py::askAIStream()` calls for every `/chat/stream`
-    request, regardless of mode. See module docstring."""
+    request, regardless of mode. See module docstring.
+
+    ``entity_vector_store`` (optional) backs the knowledge-graph
+    ``search_entities``/``find_records_by_entity`` tools; with ``None`` they
+    are not granted (see ``factory._initial_entity_tool_grant``).
+    """
     from app.modules.agents.qna.chat_state import build_initial_state
     from app.utils.execute_query import connector_instances_have_sql
     from app.utils.fetch_slack_thread import connector_instances_have_slack
@@ -411,6 +417,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             reranker_service, config_service, model_name or "", model_key or "", org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
             has_slack_connector=has_slack_connector, client_name=client_name,
+            entity_vector_store=entity_vector_store,
         )
         _apply_policy_to_chat_state(chat_state, policy, web_search_config)
         chat_state["instructions"] = _with_mode_instructions(chat_state.get("instructions"), policy)

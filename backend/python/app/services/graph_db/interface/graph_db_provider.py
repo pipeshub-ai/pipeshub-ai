@@ -2749,6 +2749,58 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_entity_access_context(
+        self,
+        user_id: str,
+        org_id: str,
+        source_ids: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        The apps and record groups a user can reach, for permission-scoping
+        knowledge-graph entity search (``app.modules.retrieval.entity_permissions``).
+
+        Apps:
+          - Apps linked by ``userAppRelation``, directly or via a team the
+            user belongs to (same paths as ``get_user_apps``).
+          - KB apps (``type == "KB"``, ``orgId == org_id``) shared through a
+            ``permission`` edge, directly (``type USER``) or via a team
+            (``type TEAM``) — KB sharing never creates a ``userAppRelation``.
+          - Narrowed to ``source_ids`` when it is non-empty.
+
+        Record groups (only for apps that are neither KB nor
+        ``permissionModel == APP_LEVEL``):
+          - Seeded by the Knowledge Hub RecordGroup paths: direct USER
+            permission, group/role (GROUP/ROLE edge), org (ORG edge via the
+            user's ORGANIZATION ``belongsTo``), and team (TEAM edge).
+          - Plus child record groups inheriting from a seed via
+            ``inheritPermissions`` (depth 1..5), skipping seeds with
+            ``hideChildren``.
+          - Every group filtered by ``orgId == org_id``, not deleted, and
+            ``connectorId`` in the qualifying apps above.
+
+        Args:
+            user_id: The ``userId`` field of the user document.
+            org_id: Organization to scope apps and record groups to.
+            source_ids: Optional app/KB ids to narrow the result to.
+            transaction: Optional transaction id.
+
+        Returns:
+            ``None`` when the user does not exist, otherwise::
+
+                {
+                  "user_key": str,
+                  "apps": [{"id", "name", "type", "permissionModel"}],
+                  "record_group_ids": [str],
+                }
+
+        Raises:
+            Exception: on any query failure. Callers fail closed and report
+                the failure instead of treating it as "no access".
+        """
+        pass
+
+    @abstractmethod
     async def get_records_by_record_ids(
         self,
         record_ids: list[str],
@@ -4732,6 +4784,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         *,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> set[str]:
         """Return ids from ``nodes`` where the user has a non-empty KH permission_role.
 
@@ -4739,6 +4792,10 @@ class IGraphDBProvider(ABC):
         Reuses the same ``_get_permission_role_*`` fragments as
         ``get_knowledge_hub_node_access`` (full inheritPermissions paths).
         Apps are not checked here — callers keep App trail segments via ACL.
+
+        A query failure returns ``set()`` unless ``raise_on_error`` is true,
+        in which case it is re-raised so the caller can tell a failure apart
+        from "no access".
         """
         pass
 
@@ -4775,5 +4832,129 @@ class IGraphDBProvider(ABC):
                 ],
               },
             }
+        """
+        pass
+
+    @abstractmethod
+    async def get_entities_for_sync(
+        self,
+        org_id: str,
+        entity_types: list[str] | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Org-scoped, paginated read of knowledge-graph entities for repair/
+        backfill sync into the entity vector store (see ``EntityVectorStore``
+        and ``api/routes/entity_sync.py``).
+
+            Supported ``entity_types`` values today (``EntityType`` in
+            ``app.models.entities``): ``record_group``, ``category``,
+            ``subcategory``, ``department``, ``topic``, ``language``.
+            Unknown or not-yet-implemented types are silently skipped rather
+            than raising, so callers can safely pass the full ``EntityType``
+            enum.
+
+        Taxonomy nodes (category/subcategory/department/topic/language) carry
+        no ``orgId`` field of their own — they are deduplicated globally by
+        name and shared across organisations at the graph layer. Org scoping
+        for these types is therefore derived by traversing from this org's
+        ``records`` through the corresponding ``belongsTo*`` edge, which also
+        means only taxonomy actually referenced by the org's own data is
+        returned (never another org's unrelated categories).
+
+        Args:
+            org_id:       Organisation to scope the read to. Always applied —
+                          never optional, to avoid a cross-tenant leak.
+            entity_types: Optional subset of ``EntityType`` values (lowercase
+                          strings) to restrict the read to. ``None`` means all
+                          supported types.
+            limit:        Max rows returned per call (page size).
+            offset:       Rows to skip, for pagination across repeated calls.
+
+        Returns:
+            List of dicts shaped like ``EntityRecord`` source fields:
+            ``{entityId, entityType, name, description?, aliases?,
+            connectorId?}``. Callers should keep paging (increasing
+            ``offset`` by ``limit``) until a page returns fewer than
+            ``limit`` rows.
+        """
+        pass
+
+    @abstractmethod
+    async def get_taxonomy_entities_for_record(
+        self,
+        record_key: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Taxonomy entities (category/subcategory/department/topic/language)
+        directly linked to a single record via its ``belongsTo*`` edges.
+
+        Unlike ``get_entities_for_sync``, this is not paginated and not
+        org-scoped by traversal — the record itself pins the scope. Used by
+        the MD5-dedup path (``SinkOrchestrator.sync_entities_for_duplicate``)
+        to re-project a deduplicated record's already-copied taxonomy edges
+        into the entities vector collection, so a shared category/topic/etc.
+        picks up the duplicate's ``connectorId``/``recordGroupId``.
+
+        Args:
+            record_key: The record's ``_key`` (Arango) / ``id`` (Neo4j).
+            transaction: Optional transaction ID.
+
+        Returns:
+            List of dicts shaped like ``EntityRecord`` source fields:
+            ``{entityId, entityType, name}``.
+        """
+        pass
+
+    @abstractmethod
+    async def get_entity_candidate_records(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        *,
+        record_types: list[str] | None = None,
+        limit_per_entity: int = 20,
+        offset: int = 0,
+        transaction: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Records linked to each knowledge-graph entity in ``refs``, scoped
+        to the org and to each ref's connectors. **No permission check** —
+        callers (``app.modules.retrieval.entity_permissions``) check every
+        row before exposing it.
+
+        Each ref is ``{"id": str, "type": str, "connectorIds": list[str]}``:
+          - taxonomy types (``department``/``category``/``subcategory``/
+            ``topic``/``language``): records with an outbound ``belongsTo*``
+            edge to the entity node; ``subcategory`` matches levels 1-3.
+          - ``record_group``: records with a ``belongsTo`` edge to the group
+            (direct members only), and the group itself must be in ``org_id``.
+          - ``record``: the record itself.
+          - any other type: no rows.
+
+        Every row satisfies ``orgId == org_id``, not deleted,
+        ``connectorId IN ref["connectorIds"]`` and, when ``record_types`` is
+        given, ``recordType IN record_types``. Rows are deduplicated per
+        entity, sorted by ``sourceLastModifiedTimestamp`` (falling back to
+        ``updatedAtTimestamp``) descending then key ascending, and paged per
+        entity with ``offset``/``limit_per_entity``. Runs at most one query
+        per entity type present in ``refs``; the type→collection/label/edge
+        mapping is fixed, never taken from caller input.
+
+        Args:
+            refs: Entities to list records for.
+            org_id: Organization scope. Empty returns ``{}`` without querying.
+            record_types: Optional record-type filter.
+            limit_per_entity: Max rows per entity.
+            offset: Rows to skip per entity.
+            transaction: Optional transaction id.
+
+        Returns:
+            ``{entity_id: [row, ...]}`` for every ref queried, where each row is
+            ``{"_key", "recordName", "recordType", "connectorId",
+            "virtualRecordId", "webUrl", "sourceLastModifiedTimestamp",
+            "updatedAtTimestamp"}``. A ref with no rows maps to ``[]``.
+
+        Raises:
+            Exception: on any query failure.
         """
         pass

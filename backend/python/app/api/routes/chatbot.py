@@ -1028,9 +1028,9 @@ async def _generate_chat_stream_via_agent_loop(
     user_id = user.get("userId")
     protocol = resolve_protocol(query_info.protocol, request)
 
-    # LLM init, system prompts and user/org enrichment are independent of each
-    # other and all sit before the first streamed byte, so they run as one wave
-    # instead of four serial round trips.
+    # LLM init, system prompts, user/org enrichment, and the entity vector
+    # store are independent of each other and all sit before the first
+    # streamed byte, so they run as one wave instead of serial round trips.
     llm_task = asyncio.ensure_future(
         get_llm_for_chat(
             config_service, query_info.modelKey, query_info.modelName, query_info.chatMode,
@@ -1040,6 +1040,18 @@ async def _generate_chat_stream_via_agent_loop(
     prompts_task = asyncio.ensure_future(load_system_prompts(config_service, logger_))
     user_doc_task = asyncio.ensure_future(_load_user_doc(graph_provider, user_id))
     org_doc_task = asyncio.ensure_future(_load_org_doc(graph_provider, org_id))
+    # Optional — backs the knowledgegraph search_entities /
+    # find_records_by_entity tools. When unavailable those tools are simply
+    # not granted, rather than blocking chat.
+    entity_vector_store_task = (
+        asyncio.ensure_future(container.entity_vector_store())
+        if hasattr(container, "entity_vector_store")
+        else None
+    )
+    background_tasks = [
+        t for t in (prompts_task, user_doc_task, org_doc_task, entity_vector_store_task)
+        if t is not None
+    ]
 
     try:
         llm_bundle = await llm_task
@@ -1047,9 +1059,9 @@ async def _generate_chat_stream_via_agent_loop(
             raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
         llm, model_config, ai_models_config = llm_bundle
     except Exception as exc:
-        for pending in (prompts_task, user_doc_task, org_doc_task):
+        for pending in background_tasks:
             pending.cancel()
-        await asyncio.gather(prompts_task, user_doc_task, org_doc_task, return_exceptions=True)
+        await asyncio.gather(*background_tasks, return_exceptions=True)
         logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
         if protocol == "agui":
             evt = frame(AGUIEventType.RUN_ERROR, message=str(exc), code="llm_initialization_failed")
@@ -1132,6 +1144,13 @@ async def _generate_chat_stream_via_agent_loop(
             "name": org_doc.get("name") or "",
         }
 
+    entity_vector_store = None
+    if entity_vector_store_task is not None:
+        try:
+            entity_vector_store = await entity_vector_store_task
+        except Exception as exc:
+            logger_.warning("entity_vector_store unavailable for chat: %s", exc)
+
     client_name = request.headers.get("client-name")
 
     async for event in run_chat_stream(
@@ -1145,6 +1164,7 @@ async def _generate_chat_stream_via_agent_loop(
         system_prompts_config=system_prompts_config, protocol=protocol,
         client_name=client_name,
         cancellation_registry=cancellation_registry,
+        entity_vector_store=entity_vector_store,
     ):
         yield event
 

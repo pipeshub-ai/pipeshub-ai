@@ -24,6 +24,7 @@ from app.modules.parsers.yaml.yaml_parser import YAMLParser
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.document_extraction import DocumentExtraction
+from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.vectorstore import VectorStore
@@ -167,14 +168,37 @@ class ContainerUtils:
         vector_store = VectorStore(logger, config_service, graph_provider, collection_registry, vector_db_service)
         return vector_store
 
+    async def create_entity_vector_store(
+        self, logger, config_service, vector_db_service, collection_name: str
+    ) -> EntityVectorStore:
+        """Async factory for EntityVectorStore"""
+        return EntityVectorStore(logger, config_service, vector_db_service, collection_name)
+
     async def create_graphdb(self, graph_provider, logger) -> GraphDBTransformer:
         """Async factory for GraphDB transformer (uses graph_provider for transactions)"""
         graphdb = GraphDBTransformer(graph_provider, logger)
         return graphdb
 
-    async def create_sink_orchestrator(self, logger: Logger, graphdb: GraphDBTransformer, blob_storage: BlobStorage, vector_store: VectorStore, graph_provider: IGraphDBProvider, config_service) -> SinkOrchestrator:
+    async def create_sink_orchestrator(
+        self,
+        logger: Logger,
+        graphdb: GraphDBTransformer,
+        blob_storage: BlobStorage,
+        vector_store: VectorStore,
+        graph_provider: IGraphDBProvider,
+        config_service: ConfigurationService,
+        entity_vector_store: EntityVectorStore | None = None,
+    ) -> SinkOrchestrator:
         """Async factory for SinkOrchestrator"""
-        orchestrator = SinkOrchestrator(graphdb=graphdb, blob_storage=blob_storage, vector_store=vector_store, graph_provider=graph_provider, logger=logger, config_service=config_service)
+        orchestrator = SinkOrchestrator(
+            graphdb=graphdb,
+            blob_storage=blob_storage,
+            vector_store=vector_store,
+            graph_provider=graph_provider,
+            logger=logger,
+            config_service=config_service,
+            entity_vector_store=entity_vector_store,
+        )
         return orchestrator
 
     async def create_document_extractor(self, logger, graph_provider: IGraphDBProvider, config_service) -> DocumentExtraction:
