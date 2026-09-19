@@ -105,32 +105,39 @@ jobs:
 
       - name: Create organization and admin user
         run: |
-          curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
+          # jq reads the credentials from the environment, so quotes or backslashes
+          # in a secret stay valid JSON and never appear on a command line.
+          jq -n --arg name "Smoke Test" --arg short "SMOKE" '{
+              accountType: "business",
+              adminFullName: "\($name) Admin",
+              contactEmail: $ENV.PIPESHUB_TEST_USER_EMAIL,
+              password: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              confirmPassword: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              registeredName: "\($name) Org",
+              shortName: $short
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
             -H "Content-Type: application/json" \
-            -d '{
-              "accountType": "business",
-              "adminFullName": "Smoke Test Admin",
-              "contactEmail": "'"${PIPESHUB_TEST_USER_EMAIL}"'",
-              "password": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
-              "confirmPassword": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
-              "registeredName": "Smoke Test Org",
-              "shortName": "SMOKE"
-            }' > /dev/null
+            --data-binary @- > /dev/null
 
       - name: Skip onboarding
         run: |
           HEADERS=$(mktemp)
-          curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+          jq -n '{email: $ENV.PIPESHUB_TEST_USER_EMAIL}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
             -H "Content-Type: application/json" \
-            -d "{\"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            --data-binary @- \
             -D "${HEADERS}" -o /dev/null
           SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
           rm -f "${HEADERS}"
 
-          ACCESS_TOKEN=$(curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+          ACCESS_TOKEN=$(jq -n '{
+              method: "password",
+              credentials: {password: $ENV.PIPESHUB_TEST_USER_PASSWORD},
+              email: $ENV.PIPESHUB_TEST_USER_EMAIL
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
             -H "Content-Type: application/json" \
             -H "x-session-token: ${SESSION_TOKEN}" \
-            -d "{\"method\": \"password\", \"credentials\": {\"password\": \"${PIPESHUB_TEST_USER_PASSWORD}\"}, \"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            --data-binary @- \
             | jq -r '.accessToken')
 
           curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
