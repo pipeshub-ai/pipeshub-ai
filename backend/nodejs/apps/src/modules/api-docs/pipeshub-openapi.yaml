@@ -13547,6 +13547,10 @@ components:
         subcategory:
           type: string
           nullable: true
+        name:
+          type: string
+          nullable: true
+          description: Optional kebab-case name to persist as. Rewrites SKILL.md frontmatter `name` so an import can avoid a reserved builtin.
 
     SkillImportPreview:
       type: object

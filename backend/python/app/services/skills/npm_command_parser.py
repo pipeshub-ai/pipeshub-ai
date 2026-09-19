@@ -163,7 +163,9 @@ def _strip_noise(text: str) -> str:
         if t in _NOISE_STANDALONE:
             i += 1
             continue
-        if t in _NOISE_VALUE_FLAGS and i + 1 < len(tokens):
+        if t in _NOISE_VALUE_FLAGS:
+            if i + 1 >= len(tokens) or tokens[i + 1].startswith("-"):
+                raise NpmCommandParseError(f"Flag {t!r} requires a value.")
             i += 2
             continue
         if t.startswith("-") and "=" in t:

@@ -78,7 +78,7 @@ export function SkillImportDialog() {
     if (!preview || finalizing || !isValidSkillName(importName)) return;
     setFinalizing(true);
     try {
-      await SkillsApi.finalizeImport(preview, undefined, undefined, importName);
+      await SkillsApi.finalizeImport({ ...preview, name: importName });
       toast.success(t('workspace.skills.toasts.imported', { name: importName }));
       const list = await SkillsApi.listSkills();
       setSkills(list);

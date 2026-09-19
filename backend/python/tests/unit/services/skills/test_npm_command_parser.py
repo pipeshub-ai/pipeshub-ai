@@ -385,6 +385,14 @@ class TestNoiseFlags:
         assert isinstance(result, UrlSpec)
         assert result.skill_filter == "frontend-design"
 
+    def test_value_flag_without_a_value_is_rejected(self) -> None:
+        with pytest.raises(NpmCommandParseError, match="requires a value"):
+            parse_npm_command("npx skills add pdf-skills --agent --list")
+
+    def test_value_flag_at_end_of_command_is_rejected(self) -> None:
+        with pytest.raises(NpmCommandParseError, match="requires a value"):
+            parse_npm_command("npx skills add pdf-skills --agent")
+
     def test_multiple_skill_flags_keeps_first(self) -> None:
         result = parse_npm_command(
             "npx skills add vercel-labs/agent-skills --skill frontend-design --skill skill-creator"

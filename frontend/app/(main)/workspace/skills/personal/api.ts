@@ -170,12 +170,17 @@ export const SkillsApi = {
     return data;
   },
 
-  async finalizeImport(preview: ImportPreview, category?: string, subcategory?: string): Promise<SkillMetadata> {
+  async finalizeImport(
+    preview: ImportPreview,
+    category?: string,
+    subcategory?: string,
+  ): Promise<SkillMetadata> {
     const { data } = await apiClient.post(`${BASE_URL}/import/finalize`, {
       content: preview.content,
       resources: preview.resources,
       category: category || null,
       subcategory: subcategory || null,
+      name: preview.name || null,
     });
     return data;
   },
