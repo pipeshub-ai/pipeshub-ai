@@ -235,6 +235,7 @@ def embedding_config_hash(embedding_configs: "list[dict[str, Any]] | None") -> s
             "model": configuration.get("model"),
             "endpoint": configuration.get("endpoint"),
             "dimensions": configuration.get("dimensions"),
+            "multimodalRequestFormat": configuration.get("multimodalRequestFormat") or "auto",
             "apiKey": configuration.get("apiKey"),
             "organizationId": configuration.get("organizationId"),
             "trustRemoteCode": configuration.get("trustRemoteCode"),

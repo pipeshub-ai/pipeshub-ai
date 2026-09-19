@@ -334,14 +334,19 @@ class TestGetEmbeddingModelInstance:
         assert vs.embedding_size == 1536
 
     @pytest.mark.asyncio
-    async def test_captures_base_url_for_local_endpoints(self):
+    @pytest.mark.parametrize("request_format", [None, "", "auto", "input", "vllm_messages"])
+    async def test_captures_base_url_for_local_endpoints(self, request_format):
         """Ollama / LM Studio / OpenAI-compatible multimodal providers need
         the configured endpoint on the instance to reach the right server."""
         vs = _make_vectorstore()
 
         config = {
             "provider": "ollama",
-            "configuration": {"endpoint": "http://localhost:11434", "model": "nomic-embed-text"},
+            "configuration": {
+                "endpoint": "http://localhost:11434",
+                "model": "nomic-embed-text",
+                "multimodalRequestFormat": request_format,
+            },
             "isDefault": True,
             "isMultimodal": True,
         }
@@ -358,6 +363,7 @@ class TestGetEmbeddingModelInstance:
             await vs.get_embedding_model_instance()
 
         assert vs.base_url == "http://localhost:11434"
+        assert vs.multimodal_request_format == (request_format or "auto")
 
     @pytest.mark.asyncio
     async def test_embed_query_failure_raises(self):
@@ -2188,6 +2194,7 @@ class TestMultimodalProviderConfig:
         vs.region_name = "us-east-1"
         vs.aws_access_key_id = "akid"
         vs.aws_secret_access_key = "secret"
+        vs.multimodal_request_format = "vllm_messages"
         vs.dense_embeddings = MagicMock()
 
         config = vs._multimodal_provider_config()
@@ -2198,6 +2205,7 @@ class TestMultimodalProviderConfig:
         assert config.region_name == "us-east-1"
         assert config.aws_access_key_id == "akid"
         assert config.aws_secret_access_key == "secret"
+        assert config.multimodal_request_format == "vllm_messages"
         assert config.dense_embeddings is vs.dense_embeddings
         assert config.logger is vs.logger
 
