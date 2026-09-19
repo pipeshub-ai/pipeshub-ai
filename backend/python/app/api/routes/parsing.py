@@ -84,6 +84,7 @@ async def parse_file(
     org_id: Annotated[str | None, Form(description="Organisation ID")] = None,
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
     skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,
+    file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
@@ -131,6 +132,8 @@ async def parse_file(
     config: dict = {"extension": extension}
     if skip_table_enrichment:
         config["skip_table_enrichment"] = True
+    if file_path:
+        config["file_path"] = file_path
 
     if provider_enum is None:
         return JSONResponse(

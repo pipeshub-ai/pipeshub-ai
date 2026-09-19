@@ -251,6 +251,17 @@ class MessagingUtils:
         )
 
     @staticmethod
+    async def create_code_graph_consumer_config(
+        app_container: ConnectorAppContainer,
+    ) -> KafkaConsumerConfig | RedisStreamsConfig:
+        return await MessagingUtils.create_consumer_config(
+            app_container,
+            "code_graph_consumer_client",
+            "code_graph_consumer_group",
+            [Topic.CODE_GRAPH_EVENTS.value],
+        )
+
+    @staticmethod
     async def create_record_consumer_config(
         app_container: IndexingAppContainer,
     ) -> KafkaConsumerConfig | RedisStreamsConfig:
