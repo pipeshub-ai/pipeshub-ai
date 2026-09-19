@@ -19,7 +19,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors
+from app.config.constants.arangodb import AppGroups, Connectors, PermissionModel
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -69,6 +69,7 @@ from app.services.notification.types import NotificationSeverity, NotificationTy
     )
     .with_categories(["IT Service Management", "Storage"])
     .with_scopes([ConnectorScope.PERSONAL.value])
+    .with_permission_model(PermissionModel.APP_LEVEL)
     .with_auth(
         [
             AuthBuilder.type(AuthType.OAUTH).oauth(
