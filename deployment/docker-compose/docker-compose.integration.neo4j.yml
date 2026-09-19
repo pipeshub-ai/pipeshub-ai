@@ -175,6 +175,11 @@ services:
         condition: service_healthy
       mailpit:
         condition: service_healthy
+      # Only started with the kafka profile (a Kafka run); required: false lets
+      # the default Redis Streams run start without it.
+      kafka-1:
+        condition: service_healthy
+        required: false
     volumes:
       - pipeshub_data:/data/pipeshub
       # Local FS connector tests write files here and the connector reads them
