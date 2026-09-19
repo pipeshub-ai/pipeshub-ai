@@ -29,6 +29,20 @@
     "missingAgentKey": "에이전트 키가 없습니다. 채팅 사이드바에서 에이전트를 열거나 유효한 링크를 사용하세요.",
     "loading": "로드 중…"
   },
+  "projects": {
+    "pageTitle": "프로젝트",
+    "searchPlaceholder": "프로젝트 검색…",
+    "emptyState": "아직 프로젝트가 없습니다",
+    "emptyStateHint": "채팅, 파일, 지침을 정리할 프로젝트를 만드세요.",
+    "failedToLoad": "프로젝트를 불러오지 못했습니다",
+    "chatCount_one": "채팅 {{count}}개",
+    "chatCount_other": "채팅 {{count}}개",
+    "lastActive": "{{date}} 활동",
+    "pinnedSection": "고정됨",
+    "allSection": "모든 프로젝트",
+    "backToAllProjects": "모든 프로젝트",
+    "loadMore": "더 보기"
+  },
   "timeGroup": {
     "today": "오늘",
     "yesterday": "어제",
@@ -212,6 +226,8 @@
     "moreConnectors": "더 많은 커넥터",
     "all": "전체",
     "agents": "에이전트",
+    "projects": "프로젝트",
+    "beta": "베타",
     "searchChats": "채팅 검색",
     "inbox": "받은 편지함",
     "notifications": "알림"
@@ -407,7 +423,11 @@
     "language": "언어",
     "english": "영어",
     "german": "독일어",
-    "rotateLandscape": "최적의 환경을 위해 기기를 가로로 돌려 주세요"
+    "rotateLandscape": "최적의 환경을 위해 기기를 가로로 돌려 주세요",
+    "beta": {
+      "label": "베타",
+      "tooltip": "이 기능은 베타 버전이며 변경될 수 있습니다."
+    }
   },
   "units": {
     "bytes": "바이트",
@@ -544,6 +564,13 @@
       "resetDefaults": "기본값으로 재설정",
       "knowledgeScopeClearedWarning": "이번 실행에는 포함된 지식 소스가 없으므로 에이전트가 답변을 위해 커넥터나 컬렉션을 검색하지 않습니다."
     },
+    "projectResources": {
+      "noConnectors": "이 프로젝트에 활성화된 커넥터가 없습니다.",
+      "noCollections": "이 프로젝트에 활성화된 컬렉션이 없습니다.",
+      "noActions": "이 프로젝트에 활성화된 액션(도구 세트)이 없습니다.",
+      "noMcpServers": "이 프로젝트에 활성화된 MCP 서버가 없습니다.",
+      "resetDefaults": "프로젝트 기본값으로 재설정"
+    },
     "aiModelsTooltip": "AI 모델",
     "attachmentTooltip": "파일 첨부",
     "micTooltip": "음성 입력",
@@ -555,6 +582,7 @@
     "loadingConversation": "대화를 불러오는 중...",
     "recents": "최근 항목",
     "sharedChats": "공유된 채팅",
+    "sharedBy": "{{name}}님이 공유함",
     "noSharedChats": "공유된 채팅이 없습니다",
     "yourChats": "내 채팅",
     "noChatsFound": "채팅을 찾을 수 없습니다",
@@ -790,7 +818,97 @@
         "알아 두어야 할 종속성이나 블로커가 있나요",
         "지금까지 어떤 교훈을 얻었나요"
       ]
-    ]
+    ],
+    "projects": {
+      "title": "프로젝트",
+      "newProject": "새 프로젝트",
+      "noProjects": "아직 프로젝트가 없습니다",
+      "failedToLoad": "프로젝트를 불러오지 못했습니다",
+      "moreProjects": "더 많은 프로젝트",
+      "moveToProject": "프로젝트로 이동",
+      "removeFromProject": "프로젝트에서 제거",
+      "pinProject": "고정",
+      "unpinProject": "고정 해제",
+      "archiveProject": "프로젝트 보관",
+      "unarchiveProject": "프로젝트 보관 해제",
+      "deleteProject": "프로젝트 삭제",
+      "shareProject": "프로젝트 공유",
+      "backToProjects": "모든 프로젝트",
+      "backToProject": "프로젝트로 돌아가기",
+      "newChatInProject": "새 채팅",
+      "recentChats": "최근 채팅",
+      "noChats": "이 프로젝트에 아직 채팅이 없습니다",
+      "startChatInProject": "이 프로젝트에서 채팅 시작",
+      "createDialog": {
+        "title": "새 프로젝트",
+        "nameLabel": "이름",
+        "namePlaceholder": "예: 3분기 마케팅 계획",
+        "descriptionLabel": "설명",
+        "descriptionPlaceholder": "이 프로젝트에 대해 설명해 주세요 (선택 사항)",
+        "instructionsLabel": "지침",
+        "instructionsPlaceholder": "이 프로젝트에서 어시스턴트가 항상 따라야 할 지침 (선택 사항)",
+        "create": "프로젝트 만들기",
+        "creating": "만드는 중…",
+        "nameRequired": "이름은 필수입니다"
+      },
+      "workspace": {
+        "failedToLoad": "이 프로젝트를 불러오지 못했습니다",
+        "instructionsTitle": "지침",
+        "instructionsPlaceholder": "이 프로젝트의 모든 채팅에서 어시스턴트가 따라야 할 지침을 추가하세요…",
+        "noInstructions": "아직 지침이 추가되지 않았습니다",
+        "save": "저장",
+        "saving": "저장 중…",
+        "editInstructions": "지침 편집",
+        "noDescription": "설명 없음",
+        "filesTitle": "파일",
+        "filesSubtitle": "여기 있는 파일은 이 프로젝트 내에서만 검색됩니다.",
+        "uploadFiles": "파일 업로드",
+        "uploading": "업로드 중…",
+        "noFiles": "아직 파일이 없습니다",
+        "removeFile": "파일 제거",
+        "connectorsTitle": "커넥터",
+        "connectorsSubtitle": "이 프로젝트의 채팅은 선택한 커넥터만 검색합니다.",
+        "noConnectorsAvailable": "추가할 커넥터가 아직 없습니다.",
+        "failedToLoadConnectors": "커넥터를 불러오지 못했습니다",
+        "updateConnectorsFailed": "커넥터를 업데이트하지 못했습니다",
+        "toolsTitle": "도구 및 MCP",
+        "noToolsAvailable": "추가할 수 있는 인증된 작업이나 MCP 서버가 아직 없습니다.",
+        "knowledgeBaseUnavailable": "이 프로젝트의 파일 저장소를 준비하지 못했습니다",
+        "uploadSessionLabel_one": "파일 {{count}}개",
+        "uploadSessionLabel_other": "파일 {{count}}개",
+        "membersTitle": "멤버",
+        "memberCount_one": "멤버 {{count}}명",
+        "memberCount_other": "멤버 {{count}}명",
+        "share": "공유",
+        "recentChatsTitle": "최근 채팅",
+        "seeAllChats": "모든 채팅 보기",
+        "saveInstructionsFailed": "지침을 저장하지 못했습니다",
+        "updateToolsFailed": "도구를 업데이트하지 못했습니다",
+        "updatePinFailed": "고정 상태를 업데이트하지 못했습니다",
+        "updateArchiveFailed": "보관 상태를 업데이트하지 못했습니다",
+        "shareRefreshFailed": "공유 세부정보를 새로고침하지 못했습니다",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
+      },
+      "moveDialog": {
+        "title": "프로젝트로 이동",
+        "noProjects": "아직 프로젝트가 없습니다",
+        "removeOption": "프로젝트 없음",
+        "moving": "이동 중…"
+      },
+      "deleteDialog": {
+        "title": "이 프로젝트를 삭제하시겠습니까?",
+        "description": "프로젝트가 삭제되고 채팅 연결이 해제됩니다. 채팅 자체는 삭제되지 않습니다.",
+        "confirm": "프로젝트 삭제",
+        "deleting": "삭제 중…",
+        "failed": "프로젝트를 삭제하지 못했습니다"
+      },
+      "roles": {
+        "owner": "소유자",
+        "editor": "편집자",
+        "viewer": "뷰어"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -2288,7 +2406,10 @@
         "rollbackError": "롤백하지 못했습니다",
         "candidateApproved": "\"{{name}}\"이(가) 승인되었습니다",
         "candidateRejected": "\"{{name}}\"이(가) 거부되었습니다",
-        "candidateActionError": "후보를 업데이트하지 못했습니다"
+        "candidateActionError": "후보를 업데이트하지 못했습니다",
+        "conflict": "이 스킬이 다른 곳에서 변경되었습니다",
+        "conflictDescription": "최신 버전을 다시 불러온 다음 수정 사항을 적용하세요.",
+        "conflictReload": "다시 불러오기"
       },
       "builtinReadOnly": "기본 제공 스킬이므로 편집할 수 없습니다.",
       "editorPanel": {
@@ -2932,6 +3053,8 @@
     "noCollections": "사용 가능한 컬렉션이 없습니다",
     "noSkills": "아직 스킬이 없습니다 — 내 스킬에서 생성하거나 가져오세요",
     "skillNodeTemplateDescription": "에이전트가 호출할 수 있는 사용자 지정 스킬",
+    "skillDeprecated": "이 스킬은 더 이상 사용되지 않습니다",
+    "skillDeprecatedReplacedBy": "이 스킬은 더 이상 사용되지 않습니다. 대신 {{name}}을(를) 사용하세요.",
     "collapse": "접기",
     "expand": "펼치기",
     "serviceAccountCreated": "서비스 에이전트가 생성되었습니다. 팔레트의 열쇠 아이콘으로 각 툴셋을 구성하세요.",
@@ -2998,6 +3121,7 @@
     "toolsetsSection": "툴셋",
     "mcpServersSection": "MCP 서버",
     "skillsSection": "스킬",
+    "noSkillsAvailable": "사용 가능한 스킬이 없습니다",
     "inputSection": "입력",
     "responseSection": "응답",
     "connectModel": "모델 연결",
@@ -3013,8 +3137,8 @@
     "lineCount": "{{count}}줄",
     "instructionsLabel": "지침",
     "startingMessageLabel": "시작 메시지",
-    "defaultReasoningEffortLabel": "기본 추론 수준",
-    "defaultReasoningEffortHint": "설정하지 않으면 기본값은 높음입니다.",
+    "defaultReasoningEffortLabel": "기본 추론 노력",
+    "defaultReasoningEffortHint": "사용자가 채팅에서 선택하지 않을 때 사용되는 대체 추론 노력입니다.",
     "moreItems": "+{{count}}개 더 보기",
     "toolsetNodeSubtitle": "툴셋",
     "toolsLabel": "도구",
@@ -3175,9 +3299,7 @@
     "deprecatedToolsBanner": "이 에이전트의 도구 {{count}}개가 지원 중단되었습니다. 제거하세요: {{tools}}",
     "removeDeprecatedTools": "지원 중단된 도구 제거",
     "showMore": "더 보기",
-    "showLess": "간략히 보기",
-    "defaultReasoningEffortLabel": "기본 추론 노력",
-    "defaultReasoningEffortHint": "사용자가 채팅에서 선택하지 않을 때 사용되는 대체 추론 노력입니다."
+    "showLess": "간략히 보기"
   },
   "recordView": {
     "sections": {

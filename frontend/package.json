@@ -15,6 +15,7 @@
     "test:unit:watch": "vitest",
     "deploy:dev": "bash scripts/deploy-dev.sh",
     "test:e2e": "npx playwright test",
+    "test:e2e:smoke": "npx playwright test --grep @smoke",
     "test:e2e:ui": "npx playwright test --ui",
     "test:e2e:headed": "npx playwright test --headed",
     "test:e2e:seed": "npx playwright test --project=seed",

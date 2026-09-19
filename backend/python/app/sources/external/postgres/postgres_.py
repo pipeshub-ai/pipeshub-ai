@@ -22,6 +22,92 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TABLE_ROW_FETCH_LIMIT = 1000
 
+# Constraints are read from pg_constraint rather than information_schema: the
+# information_schema views hide constraints from a user who can only SELECT the
+# table, and they join a constraint to its columns by name, which mixes up
+# same-named constraints and cross-multiplies multi-column foreign keys.
+_CONSTRAINTS_OF_TABLE = """
+    FROM pg_constraint con
+    JOIN pg_class c ON c.oid = con.conrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+"""
+
+
+# One row per column pair, in key order: unnest() walks conkey and confkey in step.
+_FOREIGN_KEYS_QUERY = """
+    SELECT
+        con.conname AS constraint_name,
+        a.attname AS column_name,
+        fn.nspname AS foreign_table_schema,
+        fc.relname AS foreign_table_name,
+        fa.attname AS foreign_column_name
+""" + _CONSTRAINTS_OF_TABLE + """
+    JOIN pg_class fc ON fc.oid = con.confrelid
+    JOIN pg_namespace fn ON fn.oid = fc.relnamespace
+    CROSS JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS k(attnum, fattnum, ord)
+    JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum
+    JOIN pg_attribute fa ON fa.attrelid = con.confrelid AND fa.attnum = k.fattnum
+    WHERE con.contype = 'f'
+      AND n.nspname = $1
+      AND c.relname = $2
+    ORDER BY con.conname, k.ord;
+"""
+
+
+def quote_ident(name: str) -> str:
+    """Quote an identifier for SQL, doubling any embedded double quote."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+# Bookkeeping columns fetch_table_rows adds and strips again.
+_ROW_NUMBER = "_pipeshub_row_number"
+_RUNNING_BYTES = "_pipeshub_running_bytes"
+_ROW_ALIAS = "_pipeshub_row"
+
+
+def _order_list(alias: str, columns: List[str]) -> str:
+    return ", ".join(f"{alias}.{quote_ident(col)}" for col in columns)
+
+
+def _sample_query(
+    schema_name: str,
+    table_name: str,
+    limit: Optional[int],
+    order_by: Optional[List[str]],
+    *,
+    by_row_text: bool = False,
+) -> str:
+    """The row sample: the first ``limit`` rows, in ``order_by`` order when given.
+
+    ``by_row_text`` orders a table without keys by each row's text form. That
+    works for every column type, and rows that tie are identical, so the
+    sample is the same on every read of unchanged data.
+    """
+    row_limit = int(limit if limit is not None else DEFAULT_TABLE_ROW_FETCH_LIMIT)
+    query = f"SELECT * FROM {quote_ident(schema_name)}.{quote_ident(table_name)}"
+    if order_by:
+        query += " ORDER BY " + ", ".join(quote_ident(col) for col in order_by)
+    elif by_row_text:
+        query += f" AS {_ROW_ALIAS} ORDER BY {_ROW_ALIAS}::text"
+    return query + f" LIMIT {row_limit}"
+
+
+def _byte_capped_query(sample: str, max_bytes: int, row_order: str) -> str:
+    """``sample``'s rows, in ``row_order``, until their text form reaches ``max_bytes``.
+
+    ``row_order`` must repeat the sample's own order: row_number() is not
+    bound to the order of the subquery it reads.
+    """
+    over = f"ORDER BY {row_order}" if row_order else ""
+    return f"""
+        SELECT * FROM (
+            SELECT numbered.*,
+                   sum(octet_length(numbered::text)) OVER (ORDER BY {_ROW_NUMBER}) AS {_RUNNING_BYTES}
+            FROM (SELECT sampled.*, row_number() OVER ({over}) AS {_ROW_NUMBER} FROM ({sample}) sampled) numbered
+        ) sized
+        WHERE {_RUNNING_BYTES} <= {int(max_bytes)}
+    """
+
 
 # ---------------------------------------------------------------------------
 # Pydantic models for structured data returned by PostgreSQL queries
@@ -113,6 +199,8 @@ class TableStats(BaseModel):
     model_config = ConfigDict(extra='allow')
     schema_name: str = ""
     table_name: str = ""
+    # pg_class.relkind: 'r' ordinary table, 'p' partitioned table
+    kind: str = "r"
     n_live_tup: int = 0
     n_tup_ins: int = 0
     n_tup_upd: int = 0
@@ -123,6 +211,8 @@ class TableStats(BaseModel):
 class _DDLColumnDef(BaseModel):
     model_config = ConfigDict(extra='allow')
     column_name: str = ""
+    quoted_name: str = ""
+    qualified_table: str = ""
     data_type: str = ""
     not_null: bool = False
     default_value: Optional[str] = None
@@ -132,7 +222,8 @@ class _DDLColumnDef(BaseModel):
 class _DDLConstraintDef(BaseModel):
     model_config = ConfigDict(extra='allow')
     constraint_name: str = ""
-    columns: str = ""
+    quoted_name: str = ""
+    definition: str = ""
 
 class PostgreSQLDataSource:
     """PostgreSQL DataSource for database operations.
@@ -210,6 +301,7 @@ class PostgreSQLDataSource:
                    schema_owner as owner
             FROM information_schema.schemata
             WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+              AND schema_name !~ '^pg_(toast_)?temp_'
             ORDER BY schema_name;
         """
         
@@ -312,31 +404,27 @@ class PostgreSQLDataSource:
             ORDER BY c.ordinal_position;
         """
         
-        # Get UNIQUE constraints (columns that are part of unique constraints)
+        # Columns that are part of a UNIQUE constraint
         unique_query = """
-            SELECT DISTINCT kcu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_name = kcu.constraint_name
-              AND tc.table_schema = kcu.table_schema
-            WHERE tc.constraint_type = 'UNIQUE'
-              AND tc.table_schema = $1
-              AND tc.table_name = $2;
+            SELECT DISTINCT a.attname AS column_name
+        """ + _CONSTRAINTS_OF_TABLE + """
+            JOIN pg_attribute a
+              ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
+            WHERE con.contype = 'u'
+              AND n.nspname = $1
+              AND c.relname = $2;
         """
-        
-        # Get CHECK constraints
+
+        # CHECK constraints (NOT NULL is not one; it has its own contype)
         check_query = """
             SELECT
-                cc.constraint_name,
-                cc.check_clause
-            FROM information_schema.check_constraints cc
-            JOIN information_schema.table_constraints tc
-              ON cc.constraint_name = tc.constraint_name
-              AND cc.constraint_schema = tc.table_schema
-            WHERE tc.table_schema = $1
-              AND tc.table_name = $2
-              AND tc.constraint_type = 'CHECK'
-              AND cc.check_clause NOT LIKE '%IS NOT NULL%';
+                con.conname AS constraint_name,
+                pg_get_expr(con.conbin, con.conrelid) AS check_clause
+        """ + _CONSTRAINTS_OF_TABLE + """
+            WHERE con.contype = 'c'
+              AND n.nspname = $1
+              AND c.relname = $2
+            ORDER BY con.conname;
         """
         
         try:
@@ -434,25 +522,8 @@ class PostgreSQLDataSource:
         """
         logger.debug(f"🔧 [PostgreSQLDataSource] get_foreign_keys called for {schema}.{table}")
         
-        query = """
-            SELECT
-                tc.constraint_name,
-                kcu.column_name,
-                ccu.table_schema AS foreign_table_schema,
-                ccu.table_name AS foreign_table_name,
-                ccu.column_name AS foreign_column_name
-            FROM information_schema.table_constraints AS tc
-            JOIN information_schema.key_column_usage AS kcu
-              ON tc.constraint_name = kcu.constraint_name
-              AND tc.table_schema = kcu.table_schema
-            JOIN information_schema.constraint_column_usage AS ccu
-              ON ccu.constraint_name = tc.constraint_name
-              AND ccu.table_schema = tc.table_schema
-            WHERE tc.constraint_type = 'FOREIGN KEY'
-              AND tc.table_schema = $1
-              AND tc.table_name = $2;
-        """
-        
+        query = _FOREIGN_KEYS_QUERY
+
         try:
             results = await self._client.execute_query(query, (schema, table))
             foreign_keys = [ForeignKeyInfo.model_validate(row) for row in results]
@@ -484,16 +555,15 @@ class PostgreSQLDataSource:
         logger.debug(f"🔧 [PostgreSQLDataSource] get_primary_keys called for {schema}.{table}")
         
         query = """
-            SELECT
-                kcu.column_name
-            FROM information_schema.table_constraints AS tc
-            JOIN information_schema.key_column_usage AS kcu
-              ON tc.constraint_name = kcu.constraint_name
-              AND tc.table_schema = kcu.table_schema
-            WHERE tc.constraint_type = 'PRIMARY KEY'
-              AND tc.table_schema = $1
-              AND tc.table_name = $2
-            ORDER BY kcu.ordinal_position;
+            SELECT a.attname AS column_name
+        """ + _CONSTRAINTS_OF_TABLE + """
+            CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
+            JOIN pg_attribute a
+              ON a.attrelid = con.conrelid AND a.attnum = k.attnum
+            WHERE con.contype = 'p'
+              AND n.nspname = $1
+              AND c.relname = $2
+            ORDER BY k.ord;
         """
         
         try:
@@ -539,6 +609,8 @@ class PostgreSQLDataSource:
         columns_query = """
             SELECT
                 a.attname as column_name,
+                quote_ident(a.attname) as quoted_name,
+                quote_ident(n.nspname) || '.' || quote_ident(c.relname) as qualified_table,
                 format_type(a.atttypid, a.atttypmod) as data_type,
                 a.attnotnull as not_null,
                 CASE
@@ -557,78 +629,26 @@ class PostgreSQLDataSource:
             ORDER BY a.attnum;
         """
         
-        # Get PRIMARY KEY constraint
-        pk_query = """
+        # Every PRIMARY KEY, UNIQUE, FOREIGN KEY and CHECK constraint, as
+        # Postgres itself would write it.
+        constraints_query = """
             SELECT
-                tc.constraint_name,
-                string_agg(kcu.column_name, ', ' ORDER BY kcu.ordinal_position) as columns
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_name = kcu.constraint_name
-              AND tc.table_schema = kcu.table_schema
-            WHERE tc.constraint_type = 'PRIMARY KEY'
-              AND tc.table_schema = $1
-              AND tc.table_name = $2
-            GROUP BY tc.constraint_name;
+                con.conname AS constraint_name,
+                quote_ident(con.conname) AS quoted_name,
+                pg_get_constraintdef(con.oid) AS definition
+        """ + _CONSTRAINTS_OF_TABLE + """
+            WHERE con.contype IN ('p', 'u', 'f', 'c')
+              AND n.nspname = $1
+              AND c.relname = $2
+            ORDER BY
+                CASE con.contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'f' THEN 2 ELSE 3 END,
+                con.conname;
         """
-        
-        # Get UNIQUE constraints (not already covered by primary key)
-        unique_query = """
-            SELECT
-                tc.constraint_name,
-                string_agg(kcu.column_name, ', ' ORDER BY kcu.ordinal_position) as columns
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_name = kcu.constraint_name
-              AND tc.table_schema = kcu.table_schema
-            WHERE tc.constraint_type = 'UNIQUE'
-              AND tc.table_schema = $1
-              AND tc.table_name = $2
-            GROUP BY tc.constraint_name;
-        """
-        
-        # Get FOREIGN KEY constraints
-        fk_query = """
-            SELECT
-                tc.constraint_name,
-                kcu.column_name,
-                ccu.table_schema AS foreign_table_schema,
-                ccu.table_name AS foreign_table_name,
-                ccu.column_name AS foreign_column_name
-            FROM information_schema.table_constraints AS tc
-            JOIN information_schema.key_column_usage AS kcu
-              ON tc.constraint_name = kcu.constraint_name
-              AND tc.table_schema = kcu.table_schema
-            JOIN information_schema.constraint_column_usage AS ccu
-              ON ccu.constraint_name = tc.constraint_name
-              AND ccu.table_schema = tc.table_schema
-            WHERE tc.constraint_type = 'FOREIGN KEY'
-              AND tc.table_schema = $1
-              AND tc.table_name = $2;
-        """
-        
-        # Get CHECK constraints
-        check_query = """
-            SELECT
-                cc.constraint_name,
-                cc.check_clause
-            FROM information_schema.check_constraints cc
-            JOIN information_schema.table_constraints tc
-              ON cc.constraint_name = tc.constraint_name
-              AND cc.constraint_schema = tc.table_schema
-            WHERE tc.table_schema = $1
-              AND tc.table_name = $2
-              AND tc.constraint_type = 'CHECK'
-              AND cc.check_clause NOT LIKE '%IS NOT NULL%';
-        """
-        
+
         try:
-            columns_raw, pk_raw, unique_raw, fk_raw, check_raw = await asyncio.gather(
+            columns_raw, constraints_raw = await asyncio.gather(
                 self._client.execute_query(columns_query, (schema, table)),
-                self._client.execute_query(pk_query, (schema, table)),
-                self._client.execute_query(unique_query, (schema, table)),
-                self._client.execute_query(fk_query, (schema, table)),
-                self._client.execute_query(check_query, (schema, table)),
+                self._client.execute_query(constraints_query, (schema, table)),
             )
 
             columns = [_DDLColumnDef.model_validate(c) for c in columns_raw]
@@ -638,37 +658,23 @@ class PostgreSQLDataSource:
                     error="Table not found",
                     message=f"Table {schema}.{table} not found"
                 )
-            
-            pk_constraints = [_DDLConstraintDef.model_validate(pk) for pk in pk_raw]
-            unique_constraints = [_DDLConstraintDef.model_validate(uq) for uq in unique_raw]
-            fk_entries = [ForeignKeyInfo.model_validate(fk) for fk in fk_raw]
-            check_entries = [CheckConstraintInfo.model_validate(chk) for chk in check_raw]
-            
-            ddl_lines = [f"CREATE TABLE {schema}.{table} ("]
-            
+
+            constraints = [_DDLConstraintDef.model_validate(con) for con in constraints_raw]
+
+            ddl_lines = [f"CREATE TABLE {columns[0].qualified_table} ("]
+
             col_defs = []
             for col in columns:
-                col_def = f"  {col.column_name} {col.data_type}"
+                col_def = f"  {col.quoted_name} {col.data_type}"
                 if col.not_null:
                     col_def += " NOT NULL"
                 if col.default_value:
                     col_def += f" DEFAULT {col.default_value}"
                 col_defs.append(col_def)
-            
-            if pk_constraints:
-                pk = pk_constraints[0]
-                col_defs.append(f"  CONSTRAINT {pk.constraint_name} PRIMARY KEY ({pk.columns})")
-            
-            for uq in unique_constraints:
-                col_defs.append(f"  CONSTRAINT {uq.constraint_name} UNIQUE ({uq.columns})")
-            
-            for fk in fk_entries:
-                fk_ref = f"{fk.foreign_table_schema}.{fk.foreign_table_name}({fk.foreign_column_name})"
-                col_defs.append(f"  CONSTRAINT {fk.constraint_name} FOREIGN KEY ({fk.column_name}) REFERENCES {fk_ref}")
-            
-            for chk in check_entries:
-                col_defs.append(f"  CONSTRAINT {chk.constraint_name} CHECK ({chk.check_clause})")
-            
+
+            for con in constraints:
+                col_defs.append(f"  CONSTRAINT {con.quoted_name} {con.definition}")
+
             ddl_lines.append(",\n".join(col_defs))
             ddl_lines.append(");")
             
@@ -722,6 +728,8 @@ class PostgreSQLDataSource:
         schema_name: str,
         table_name: str,
         limit: Optional[int] = None,
+        order_by: Optional[List[str]] = None,
+        max_bytes: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Return up to ``limit`` rows from a table (full row scan capped).
 
@@ -729,6 +737,10 @@ class PostgreSQLDataSource:
             schema_name: Schema name
             table_name: Table name
             limit: Max rows; defaults to ``DEFAULT_TABLE_ROW_FETCH_LIMIT``
+            order_by: Columns to order by. Without an order, which rows a capped
+                read returns can change between reads of unchanged data.
+            max_bytes: Stop once the rows' text form reaches this size. Counted
+                by Postgres, so rows past the budget never leave the server.
 
         Returns:
             List of row dicts.
@@ -738,9 +750,133 @@ class PostgreSQLDataSource:
             user, where swallowing the failure would serve a successful
             download of an empty table.
         """
-        row_limit = limit if limit is not None else DEFAULT_TABLE_ROW_FETCH_LIMIT
-        query = f'SELECT * FROM "{schema_name}"."{table_name}" LIMIT {row_limit}'
-        return await self._client.execute_query(query)
+        sample = _sample_query(schema_name, table_name, limit, order_by)
+        if max_bytes is None:
+            return await self._client.execute_query(sample)
+
+        row_order = _order_list("sampled", order_by) if order_by else ""
+        query = _byte_capped_query(sample, max_bytes, row_order) + f" ORDER BY {_ROW_NUMBER}"
+        rows = await self._client.execute_query(query)
+        for row in rows:
+            row.pop(_ROW_NUMBER, None)
+            row.pop(_RUNNING_BYTES, None)
+        return rows
+
+    async def get_sample_hash(
+        self,
+        schema_name: str,
+        table_name: str,
+        limit: Optional[int] = None,
+        order_by: Optional[List[str]] = None,
+        max_bytes: Optional[int] = None,
+    ) -> PostgreSQLResponse:
+        """MD5 of a table's row sample, capped like ``fetch_table_rows``, computed server-side.
+
+        A change signal for where the write counters stand still, such as a hot
+        standby: replayed writes do not advance them. Without ``order_by`` the
+        rows are ordered by their text, since a scan-order sample (and hash)
+        can change while the table does not.
+        """
+        sample = _sample_query(schema_name, table_name, limit, order_by, by_row_text=not order_by)
+        row_order = _order_list("sampled", order_by) if order_by else "sampled::text"
+        if max_bytes is None:
+            query = f"""
+                SELECT md5(coalesce(string_agg(sampled::text, E'\\n' ORDER BY {row_order}), '')) AS sample_hash
+                FROM ({sample}) sampled
+            """
+        else:
+            query = f"""
+                SELECT md5(coalesce(string_agg(sized::text, E'\\n' ORDER BY {_ROW_NUMBER}), '')) AS sample_hash
+                FROM ({_byte_capped_query(sample, max_bytes, row_order)}) sized
+            """
+        try:
+            rows = await self._client.execute_query(query)
+            return PostgreSQLResponse(success=True, data={"sample_hash": rows[0]["sample_hash"]})
+        except Exception as e:
+            logger.error(f"🔧 [PostgreSQLDataSource] get_sample_hash failed: {e}")
+            return PostgreSQLResponse(success=False, error=str(e), message="Failed to hash table sample")
+
+    async def is_in_recovery(self) -> PostgreSQLResponse:
+        """Whether the server is a standby replaying another server's writes."""
+        try:
+            rows = await self._client.execute_query("SELECT pg_is_in_recovery() AS in_recovery")
+            return PostgreSQLResponse(success=True, data={"in_recovery": bool(rows[0]["in_recovery"])})
+        except Exception as e:
+            logger.error(f"🔧 [PostgreSQLDataSource] is_in_recovery failed: {e}")
+            return PostgreSQLResponse(success=False, error=str(e), message="Failed to read recovery state")
+
+    async def get_columns(self, schemas: Optional[List[str]] = None) -> PostgreSQLResponse:
+        """Columns of every table in ``schemas`` (all user schemas if None), in one query.
+
+        Same per-column fields as ``get_table_info``, plus ``schema_name`` and
+        ``table_name``. Lets change detection read a whole catalog without a
+        round trip per table.
+        """
+        if schemas is not None and len(schemas) == 0:
+            return PostgreSQLResponse(success=True, data=[])
+
+        query = """
+            WITH unique_columns AS (
+                SELECT DISTINCT n.nspname, c.relname, a.attname
+        """ + _CONSTRAINTS_OF_TABLE + """
+                JOIN pg_attribute a
+                  ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
+                WHERE con.contype = 'u'
+            )
+            SELECT
+                col.table_schema AS schema_name,
+                col.table_name,
+                col.column_name AS name,
+                col.data_type,
+                col.udt_name,
+                col.character_maximum_length,
+                col.numeric_precision,
+                col.numeric_scale,
+                col.datetime_precision,
+                col.is_nullable = 'YES' AS nullable,
+                col.column_default AS "default",
+                u.attname IS NOT NULL AS is_unique
+            FROM information_schema.columns col
+            LEFT JOIN unique_columns u
+              ON u.nspname = col.table_schema
+             AND u.relname = col.table_name
+             AND u.attname = col.column_name
+            WHERE col.table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+        """
+        if schemas:
+            query += " AND col.table_schema = ANY($1::text[])"
+        query += " ORDER BY col.table_schema, col.table_name, col.ordinal_position;"
+
+        try:
+            rows = await self._client.execute_query(query, (list(schemas),) if schemas else None)
+            return PostgreSQLResponse(success=True, data=rows)
+        except Exception as e:
+            logger.error(f"🔧 [PostgreSQLDataSource] get_columns failed: {e}")
+            return PostgreSQLResponse(success=False, error=str(e), message="Failed to get columns")
+
+    async def get_primary_keys_by_table(self, schemas: Optional[List[str]] = None) -> PostgreSQLResponse:
+        """Primary-key columns of every table in ``schemas``, in key order, in one query."""
+        if schemas is not None and len(schemas) == 0:
+            return PostgreSQLResponse(success=True, data=[])
+
+        query = """
+            SELECT n.nspname AS schema_name, c.relname AS table_name, a.attname AS column_name
+        """ + _CONSTRAINTS_OF_TABLE + """
+            CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
+            JOIN pg_attribute a
+              ON a.attrelid = con.conrelid AND a.attnum = k.attnum
+            WHERE con.contype = 'p'
+        """
+        if schemas:
+            query += " AND n.nspname = ANY($1::text[])"
+        query += " ORDER BY n.nspname, c.relname, k.ord;"
+
+        try:
+            rows = await self._client.execute_query(query, (list(schemas),) if schemas else None)
+            return PostgreSQLResponse(success=True, data=rows)
+        except Exception as e:
+            logger.error(f"🔧 [PostgreSQLDataSource] get_primary_keys_by_table failed: {e}")
+            return PostgreSQLResponse(success=False, error=str(e), message="Failed to get primary keys")
 
     async def get_table_stats(self, schemas: Optional[List[str]] = None) -> PostgreSQLResponse:
         """Get table statistics for change detection.
@@ -769,21 +905,51 @@ class PostgreSQLDataSource:
                 message="Successfully retrieved stats for 0 tables"
             )
 
+        # Driven by pg_class so it holds exactly the tables list_tables sees in
+        # information_schema.tables: ordinary and partitioned tables the user
+        # holds some privilege on. A partitioned table's own counters never
+        # move (its rows live in its partitions), so it gets their totals.
         query = """
+            WITH RECURSIVE partition_tree AS (
+                SELECT c.oid AS root, c.oid AS relid FROM pg_class c WHERE c.relkind = 'p'
+                UNION ALL
+                SELECT t.root, i.inhrelid
+                FROM partition_tree t JOIN pg_inherits i ON i.inhparent = t.relid
+            ),
+            partition_totals AS (
+                SELECT t.root,
+                       sum(st.n_live_tup) AS n_live_tup,
+                       sum(st.n_tup_ins) AS n_tup_ins,
+                       sum(st.n_tup_upd) AS n_tup_upd,
+                       sum(st.n_tup_del) AS n_tup_del
+                FROM partition_tree t JOIN pg_stat_all_tables st ON st.relid = t.relid
+                GROUP BY t.root
+            )
             SELECT
-                schemaname as schema_name,
-                relname as table_name,
-                n_live_tup,
-                n_tup_ins,
-                n_tup_upd,
-                n_tup_del
-            FROM pg_stat_user_tables
-            WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                n.nspname AS schema_name,
+                c.relname AS table_name,
+                c.relkind::text AS kind,
+                coalesce(pt.n_live_tup, st.n_live_tup, 0)::bigint AS n_live_tup,
+                coalesce(pt.n_tup_ins, st.n_tup_ins, 0)::bigint AS n_tup_ins,
+                coalesce(pt.n_tup_upd, st.n_tup_upd, 0)::bigint AS n_tup_upd,
+                coalesce(pt.n_tup_del, st.n_tup_del, 0)::bigint AS n_tup_del
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_stat_all_tables st ON st.relid = c.oid
+            LEFT JOIN partition_totals pt ON pt.root = c.oid
+            WHERE c.relkind IN ('r', 'p')
+              AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+              AND n.nspname !~ '^pg_(toast_)?temp_'
+              AND (
+                  pg_has_role(c.relowner, 'USAGE')
+                  OR has_table_privilege(c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+                  OR has_any_column_privilege(c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')
+              )
         """
 
         if schemas:
-            query += " AND schemaname = ANY($1::text[])"
-        query += " ORDER BY schemaname, relname;"
+            query += " AND n.nspname = ANY($1::text[])"
+        query += " ORDER BY n.nspname, c.relname;"
 
         try:
             params = (list(schemas),) if schemas else None

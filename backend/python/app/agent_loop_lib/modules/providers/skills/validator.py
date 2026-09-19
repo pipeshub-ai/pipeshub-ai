@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import posixpath
 import re
 from typing import Any
 
@@ -7,6 +8,7 @@ from pydantic import BaseModel
 
 from app.agent_loop_lib.core.exceptions import AgentLoopError
 from app.agent_loop_lib.modules.providers.skills.base import Skill
+from app.utils.env_config import env_int
 
 """Deterministic, stateless spec enforcement for skills — extracted from the
 original loader.py so both the loader (reading) and the store/manager
@@ -24,6 +26,17 @@ MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 MAX_BODY_LENGTH = 200_000  # generous cap against a runaway learning-loop write
 MAX_CATEGORY_LENGTH = 64
+MAX_RESOURCE_PATH_LENGTH = 255
+# Per-file and per-skill caps on bundled resources (scripts/references/assets/...).
+# `agentSkills.resourceContents` is a graph-doc string field (see graph_store.py),
+# not a blob store, so these stay small; env-overridable for deployments that
+# need more headroom before the blob-storage follow-up lands.
+MAX_RESOURCE_FILE_BYTES = max(
+    1, env_int("PIPESHUB_SKILLS_MAX_RESOURCE_FILE_BYTES", 1024 * 1024)
+)
+MAX_SKILL_RESOURCE_BYTES = max(
+    1, env_int("PIPESHUB_SKILLS_MAX_RESOURCE_BYTES", 2 * 1024 * 1024)
+)
 
 _NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _CATEGORY_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -90,6 +103,56 @@ class SkillValidator:
             raise SkillFormatError("SKILL.md body must be non-empty")
         if len(body) > MAX_BODY_LENGTH:
             raise SkillFormatError(f"SKILL.md body exceeds the {MAX_BODY_LENGTH}-character limit")
+
+    def validate_resource_path(self, path: object) -> None:
+        """Guards every bundled-resource write path (graph store, filesystem
+        store, the package importer's collection loop, the REST `resource`
+        route, and `skill_manage`'s `write_file`/`remove_file` actions) —
+        the single source of truth so a traversal/absolute path can never
+        reach `_upload_staged_files` at sandbox-upload time, where it would
+        raise mid-run and abort every later `run_code` call in that agent
+        turn instead of failing fast at write time."""
+        if not isinstance(path, str) or not path:
+            raise SkillFormatError("Resource path must be a non-empty string")
+        if len(path) > MAX_RESOURCE_PATH_LENGTH:
+            raise SkillFormatError(
+                f"Resource path {path!r} exceeds the {MAX_RESOURCE_PATH_LENGTH}-character limit"
+            )
+        if any(ord(ch) < 0x20 for ch in path):
+            raise SkillFormatError(f"Resource path {path!r} contains control characters")
+        if "\\" in path:
+            raise SkillFormatError(f"Resource path {path!r} must use forward slashes, not backslashes")
+        if path.startswith("/"):
+            raise SkillFormatError(f"Resource path {path!r} must be relative, not absolute")
+        normalized = posixpath.normpath(path)
+        if normalized != path or normalized == ".." or normalized.startswith("../"):
+            raise SkillFormatError(f"Resource path {path!r} must not contain '..' traversal segments")
+        if normalized == "SKILL.md":
+            raise SkillFormatError(
+                "Resource path must not be 'SKILL.md' — that name is reserved for the "
+                "skill's own instructions file"
+            )
+
+    def validate_resource_budget(self, resources: dict[str, str]) -> None:
+        """Per-file and per-skill byte caps on bundled resources — called
+        after `validate_resource_path` on every write path that persists a
+        full `{path: content}` map (create/update with `resources=`, the
+        importer's preview, and each store's `write_resource` post-merge
+        check)."""
+        total = 0
+        for path, content in resources.items():
+            size = len(content.encode("utf-8"))
+            if size > MAX_RESOURCE_FILE_BYTES:
+                raise SkillFormatError(
+                    f"Resource {path!r} is {size} bytes, exceeding the "
+                    f"{MAX_RESOURCE_FILE_BYTES}-byte per-file limit"
+                )
+            total += size
+        if total > MAX_SKILL_RESOURCE_BYTES:
+            raise SkillFormatError(
+                f"Bundled resources total {total} bytes, exceeding the "
+                f"{MAX_SKILL_RESOURCE_BYTES}-byte per-skill limit"
+            )
 
     def validate_frontmatter(self, data: dict[str, Any]) -> None:
         """Structural validation of a raw parsed-YAML frontmatter dict —

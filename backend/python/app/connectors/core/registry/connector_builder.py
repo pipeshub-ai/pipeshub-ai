@@ -18,8 +18,10 @@ from app.connectors.core.registry.filters import (
     FilterField,
     FilterOption,
     FilterType,
+    ListOperator,
     MultiselectOperator,
     OptionSourceType,
+    SyncFilterKey,
 )
 from app.edition_services import get_oauth_config_registry
 from app.connectors.core.registry.types import AuthField, CustomField, DocumentationLink
@@ -769,6 +771,26 @@ class CommonFields:
             description=f"The base URL of your {service_name} instance",
             field_type="URL",
             max_length=2000
+        )
+
+    @staticmethod
+    def folder_paths_filter(container: str = "bucket") -> FilterField:
+        """Folders inside a bucket, container or share to sync (typed paths).
+
+        Empty syncs everything, as before. See FolderScope for the matching rules.
+        """
+        return FilterField(
+            name=SyncFilterKey.FOLDER_PATHS.value,
+            display_name="Folders",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            description=(
+                f"Folder paths inside each {container} to sync, such as reports/2026. "
+                "Include syncs only these folders; Exclude syncs everything except them. "
+                f"Leave empty to sync the whole {container}."
+            ),
+            default_operator=ListOperator.IN.value,
+            option_source_type=OptionSourceType.MANUAL,
         )
 
     @staticmethod

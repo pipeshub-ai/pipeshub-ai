@@ -35,6 +35,7 @@ import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
+import { bareToolFullName } from './tool-groups';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
 const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
@@ -186,25 +187,27 @@ export function buildStreamChatRequestForSlot(
 
   const isUniversalAgentMode =
     !effectiveAgentId && currentState.settings.queryMode === 'agent';
+  // Project context is hydrated from the URL/workspace (`useProjectScopeHydration`), the same
+  // way `agentId` is read from the URL above. The server re-applies the allow-list regardless.
+  const projectScope = effectiveAgentId ? null : currentState.projectScope;
 
   const toolsSel = effectiveAgentId
     ? currentState.agentStreamTools
     : isUniversalAgentMode
-      ? currentState.universalAgentStreamTools
+      ? projectScope
+        ? currentState.projectStreamTools
+        : currentState.universalAgentStreamTools
       : null;
 
   const toolCatalog = effectiveAgentId
     ? currentState.agentToolCatalogFullNames
-    : currentState.universalAgentToolCatalogFullNames;
-
-  const stripInstancePrefix = (key: string) => {
-    const colon = key.indexOf(':');
-    return colon >= 0 ? key.slice(colon + 1) : key;
-  };
+    : projectScope
+      ? projectScope.toolCatalogFullNames
+      : currentState.universalAgentToolCatalogFullNames;
 
   const streamTools =
     effectiveAgentId || isUniversalAgentMode
-      ? [...new Set((toolsSel === null ? [...toolCatalog] : [...toolsSel]).map(stripInstancePrefix))]
+      ? [...new Set((toolsSel === null ? [...toolCatalog] : [...toolsSel]).map(bareToolFullName))]
       : [];
 
   const modelCtxKey = ctxKeyFromAgent(effectiveAgentId ?? null);
@@ -233,16 +236,25 @@ export function buildStreamChatRequestForSlot(
   const resolvedAgentKnowledge =
     isAgent && knowledgeScope === null ? knowledgeDefaults : knowledgeScope;
 
-  const resolvedFilters = isAgent
+  const isWebSearch = currentState.settings.queryMode === 'web-search';
+  const resolvedScopedKnowledge = isAgent
+    ? resolvedAgentKnowledge
+    : projectScope && !isWebSearch
+      ? (currentState.projectKnowledgeScope ?? projectScope.knowledgeDefaults)
+      : null;
+
+  const resolvedFilters = resolvedScopedKnowledge
     ? {
-        apps: (resolvedAgentKnowledge?.apps ?? []).filter(
+        apps: resolvedScopedKnowledge.apps.filter(
           (id): id is string => typeof id === 'string' && id.trim().length > 0
         ),
-        kb: (resolvedAgentKnowledge?.kb ?? []).filter(
+        kb: resolvedScopedKnowledge.kb.filter(
           (id): id is string => typeof id === 'string' && id.trim().length > 0
         ),
       }
-    : buildAssistantApiFilters(assistantFilters);
+    : isAgent
+      ? { apps: [], kb: [] }
+      : buildAssistantApiFilters(assistantFilters);
 
   const metaCache = currentState.collectionMetaCache;
   const buildAppliedFilterNodes = (ids: string[]): AppliedFilterNode[] =>
@@ -278,6 +290,11 @@ export function buildStreamChatRequestForSlot(
     filters: resolvedFilters,
     ...(appliedFilters ? { appliedFilters } : {}),
     conversationId: currentSlot.convId || undefined,
+    // Only meaningful for a brand-new conversation — once `convId` exists the
+    // session row is the source of truth and this is ignored server-side.
+    ...(!currentSlot.convId && currentSlot.projectId
+      ? { projectId: currentSlot.projectId }
+      : {}),
     ...(effectiveAgentId
       ? {
           agentId: effectiveAgentId,
@@ -384,6 +401,12 @@ export function loadHistoricalMessages(
           : undefined;
 
       const answerText = extractFinalAnswer(msg.parts, msg.content);
+      // A run stopped before any text arrived is saved as an empty stopped
+      // reply. The live view drops that row (`buildStoppedMessages`); showing
+      // it after a reload would add an empty "Stopped" bubble the user never saw.
+      if (msg.status === 'stopped' && !answerText.trim() && !msg.parts?.length && !capturedPayload) {
+        continue;
+      }
       result.push({
         id: msg._id,
         role: 'assistant' as const,
@@ -500,8 +523,9 @@ export function buildExternalStoreConfig(
       const currentState = useChatStore.getState();
       const currentSlot = currentState.slots[targetSlotId];
       if (!currentSlot) return;
-      // Safety net: ChatInputWrapper blocks user sends while streaming; only programmatic api call `threadRuntime.append` reaches here.
-      if (currentSlot.isStreaming) return;
+      // Stop then send: `stopping` means the user already cancelled this run
+      // and a follow-up is allowed to start before the grace timer settles it.
+      if (currentSlot.isStreaming && !currentSlot.stopping) return;
 
       const msgAttachments = msgAttachmentsEarly;
 

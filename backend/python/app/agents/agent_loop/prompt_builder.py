@@ -65,6 +65,12 @@ _AGENT_IDENTITY = (
     "tool calls against live service APIs — never guess at data you can look up."
 )
 
+# Keys `_build_blocks` lifts out of `extra_sections` into their own named
+# template section (see `section_order.py`) instead of leaving them in the
+# `extra_sections` catch-all — both are written by PRE_AGENT middleware
+# (`skill_preloading.py` / `tool_preloading.py`), never by this builder.
+_PROMOTED_EXTRA_SECTIONS = ("preloaded_skills", "preloaded_tools")
+
 
 def _render_goal_brief(goal: "Goal") -> str | None:
     """Renders the structured goal section so the model sees what it must
@@ -547,6 +553,17 @@ class PipesHubPromptBuilder:
             else None
         ))
 
+        # ── Project instructions (author-set, from a linked Project) ───────
+        # Additive only — never overrides `agent_instructions`/`system_prompt`,
+        # so a custom Agent Builder agent's identity is untouched even when
+        # its conversation is linked to a project. See `AgentContext.
+        # project_instructions`.
+        tpl.set("project_instructions", (
+            f"## Project Instructions\n{self._context.project_instructions.strip()}"
+            if self._context.project_instructions and self._context.project_instructions.strip()
+            else None
+        ))
+
         # ── Org-level custom instructions (Chat Assistant + Universal Agent) ─
         # Populated by `chat_modes.bridge` (/chat/stream) or `agent.py` for
         # `agentIdPlaceholder` (Universal Agent Mode). Never set for real
@@ -667,8 +684,21 @@ class PipesHubPromptBuilder:
         attachment_ctx = _build_attachment_context(state.get("attachments"))
         tpl.set("attachments", attachment_ctx or None)
 
-        # Collect extra_sections as one block
-        extra_content = "\n\n".join(v for v in extra_sections.values() if v)
+        # Promote the two hook-written preloaded sections out of the
+        # extra_sections catch-all into their own named slots (see
+        # `section_order.py`, which places each adjacent to its Band B
+        # catalog) — `.get()`, never `.pop()`: `AgentTool._inherit_parent_skills`
+        # reads `extra_sections["preloaded_skills"]` later in this same turn
+        # to forward it to a delegated child, so this builder must not
+        # mutate the caller's dict.
+        for name in _PROMOTED_EXTRA_SECTIONS:
+            tpl.set(name, extra_sections.get(name) or None)
+
+        # Collect whatever else is in extra_sections as one block
+        extra_content = "\n\n".join(
+            v for k, v in extra_sections.items()
+            if v and k not in _PROMOTED_EXTRA_SECTIONS
+        )
         tpl.set("extra_sections", extra_content or None)
 
         # ── Render: split stable (Band A+B) from volatile (Band C) ───────────

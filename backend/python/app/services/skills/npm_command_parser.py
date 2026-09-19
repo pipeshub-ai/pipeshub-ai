@@ -1,5 +1,6 @@
 """Parses a pasted npm-ecosystem install command (or a bare package name)
-into a `PackageSpec` — PURE STRING PARSING, the command is NEVER executed.
+into a `PackageSpec` or `UrlSpec` — PURE STRING PARSING, the command is
+NEVER executed.
 
 Users paste exactly what a skill's README tells them to run: `npx skills
 add @anthropic/pdf-skills`, `npm install @acme/skill-pack@1.2.0`, `npx
@@ -7,6 +8,14 @@ add @anthropic/pdf-skills`, `npm install @acme/skill-pack@1.2.0`, `npx
 `@scope/name`/`name`. This module strips the known runner/subcommand
 prefixes and extracts a single registry package spec (name + optional
 `@version`/`@tag`, defaulting to `latest`).
+
+URLs (including GitHub repo links) are also accepted: the parser recognises
+them after stripping the runner prefix and returns a `UrlSpec` so the caller
+can route to the URL-based import path instead of the npm registry.
+
+The ``--skill <name>`` flag (used by the `skills` CLI to select one skill
+from a multi-skill package) is extracted as ``skill_filter`` on both result
+types so the caller can narrow the preview if needed.
 
 Mirrored on the frontend (`frontend/app/(main)/workspace/skills/personal/
 npm-command-parser.ts`) for instant dialog feedback — this backend parser is
@@ -17,8 +26,15 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Union
 
-__all__ = ["PackageSpec", "NpmCommandParseError", "parse_npm_command"]
+__all__ = [
+    "PackageSpec",
+    "UrlSpec",
+    "ParseResult",
+    "NpmCommandParseError",
+    "parse_npm_command",
+]
 
 # Every known way a skill's README says "run this to install me". Ordered
 # longest-prefix-first so e.g. "npm install" doesn't get chopped by a
@@ -41,21 +57,38 @@ _PACKAGE_SPEC_RE = re.compile(
 # Anything containing these is unambiguously NOT a single safe package spec —
 # shell metacharacters, flags, or multiple tokens after the runner prefix is
 # stripped. Rejected with a clear message rather than guessed at.
+# NOTE: forward-slash (/) is intentionally allowed so URLs survive this check.
 _UNSAFE_CHARS_RE = re.compile(r"[;&|`$(){}<>\"'\\\n\r]")
+
+_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+# Known flags that carry a value and should be extracted, not rejected.
+_SKILL_FLAG_RE = re.compile(r"--skill\s+(\S+)")
 
 
 class NpmCommandParseError(ValueError):
-    """The input isn't reducible to a single registry package spec."""
+    """The input isn't reducible to a single registry package spec or URL."""
 
 
 @dataclass(frozen=True)
 class PackageSpec:
     name: str
     version: str = "latest"
+    skill_filter: str | None = None
 
     @property
     def registry_spec(self) -> str:
         return f"{self.name}@{self.version}"
+
+
+@dataclass(frozen=True)
+class UrlSpec:
+    """The user pasted a URL (GitHub repo, direct archive link, etc.)."""
+    url: str
+    skill_filter: str | None = None
+
+
+ParseResult = Union[PackageSpec, UrlSpec]
 
 
 def _strip_runner_prefix(command: str) -> str:
@@ -66,14 +99,34 @@ def _strip_runner_prefix(command: str) -> str:
     return command
 
 
-def parse_npm_command(raw: str) -> PackageSpec:
-    """Parse `raw` (a bare package name OR a full install command) into a
-    `PackageSpec`. Never executes anything — this is regex/string parsing
-    only. Raises `NpmCommandParseError` with a user-actionable message for
-    anything that isn't reducible to exactly one registry package spec
-    (shell metacharacters, unrecognized flags like `--registry`, multiple
-    packages in one command, etc.) — callers should surface that message
-    and suggest the user paste the bare package name instead.
+def _extract_known_flags(text: str) -> tuple[str, str | None]:
+    """Strip ``--skill <name>`` from *text*, returning (remainder, skill_name).
+
+    Other flags (``--registry``, ``--save-dev``, …) are left in place so the
+    later validation still rejects them with a clear message.
+    """
+    skill_match = _SKILL_FLAG_RE.search(text)
+    skill_filter: str | None = None
+    if skill_match:
+        skill_filter = skill_match.group(1)
+        text = (text[: skill_match.start()] + text[skill_match.end() :]).strip()
+    return text, skill_filter
+
+
+def parse_npm_command(raw: str) -> ParseResult:
+    """Parse *raw* into a `PackageSpec` (npm registry lookup) or a `UrlSpec`
+    (direct URL download).  Never executes anything — this is regex/string
+    parsing only.
+
+    Recognised inputs (after optional runner-prefix stripping):
+
+    * A bare package name: ``pdf-skills``, ``@acme/skill-pack@1.2.0``
+    * An ``npm install`` / ``yarn add`` / ``npx skills add`` command
+    * Any of the above with a ``--skill <name>`` flag
+    * An ``https://`` URL (GitHub repo, direct archive link, etc.)
+
+    Raises `NpmCommandParseError` with a user-actionable message for
+    anything that can't be reduced to one of those forms.
     """
     if not raw or not raw.strip():
         raise NpmCommandParseError("Enter a package name or an install command.")
@@ -86,13 +139,19 @@ def parse_npm_command(raw: str) -> PackageSpec:
         )
 
     remainder = _strip_runner_prefix(text)
-    if remainder is text and " " in text:
-        # No known runner prefix matched, but there's whitespace — could
-        # still be an unrecognized runner ("bun add ...") or genuinely
-        # multiple tokens. Try stripping one leading word (the runner) and
-        # see if what's left parses as a bare package spec.
+    prefix_was_stripped = remainder is not text
+    remainder, skill_filter = _extract_known_flags(remainder)
+
+    if _URL_RE.match(remainder):
+        return UrlSpec(url=remainder, skill_filter=skill_filter)
+
+    if not prefix_was_stripped and " " in text:
         first, _, rest = text.partition(" ")
         rest = rest.strip()
+        rest, skill_filter_fallback = _extract_known_flags(rest)
+        skill_filter = skill_filter or skill_filter_fallback
+        if _URL_RE.match(rest):
+            return UrlSpec(url=rest, skill_filter=skill_filter)
         if rest and " " not in rest and not rest.startswith("-"):
             remainder = rest
         else:
@@ -120,4 +179,8 @@ def parse_npm_command(raw: str) -> PackageSpec:
             f"{remainder!r} doesn't look like a valid npm package spec "
             "(lowercase letters, digits, '.', '_', '-', optional '@scope/', optional '@version')."
         )
-    return PackageSpec(name=match.group("name"), version=match.group("version") or "latest")
+    return PackageSpec(
+        name=match.group("name"),
+        version=match.group("version") or "latest",
+        skill_filter=skill_filter,
+    )

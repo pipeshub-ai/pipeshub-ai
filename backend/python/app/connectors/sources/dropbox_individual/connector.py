@@ -972,9 +972,12 @@ class DropboxIndividualConnector(BaseConnector):
         """Handle different types of record updates (new, updated, deleted)."""
         try:
             if record_update.is_deleted:
-                await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
+                # The update carries the source's id; records are deleted by their key.
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
                 )
+                if existing_record:
+                    await self.data_entities_processor.on_record_deleted(record_id=existing_record.id)
             elif record_update.is_new:
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
             elif record_update.is_updated:

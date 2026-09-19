@@ -17,6 +17,8 @@ import {
   buildMessageSortOptions,
   buildConversationResponse,
   addComputedFields,
+  attachSharedBy,
+  attachSharedByIfRecipient,
   buildFilter,
   initializeSSEResponse,
   sendSSEErrorEvent,
@@ -41,6 +43,7 @@ import { InternalServerError, BadRequestError } from '../../../../src/libs/error
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { AGUI_PROTOCOL, LEGACY_PROTOCOL } from '../../../../src/modules/enterprise_search/utils/agui'
 import { CONVERSATION_STATUS } from '../../../../src/modules/enterprise_search/constants/constants'
 
@@ -789,6 +792,60 @@ describe('Enterprise Search Utils', () => {
       }
       const result = addComputedFields(conversation, VALID_OID)
       expect(result.accessLevel).to.equal('write')
+    })
+  })
+
+  describe('attachSharedBy', () => {
+    it('returns the same array when there are no conversations', async () => {
+      const result = await attachSharedBy([], VALID_OID2)
+      expect(result).to.deep.equal([])
+    })
+
+    it('resolves initiator names in one lookup', async () => {
+      const initiatorId = new mongoose.Types.ObjectId(VALID_OID)
+      const findChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([
+          {
+            _id: initiatorId,
+            fullName: 'Ada Lovelace',
+            email: 'ada@example.com',
+          },
+        ]),
+      }
+      sinon.stub(Users, 'find').returns(findChain as any)
+
+      const result = await attachSharedBy(
+        [{ initiator: initiatorId, title: 'Shared thread' }],
+        VALID_OID2,
+      )
+
+      expect(result[0].sharedBy).to.deep.equal({
+        userId: VALID_OID,
+        name: 'Ada Lovelace',
+      })
+    })
+
+    it('skips enrichment for conversations the caller owns', async () => {
+      const findStub = sinon.stub(Users, 'find')
+      const result = await attachSharedBy(
+        [{ initiator: new mongoose.Types.ObjectId(VALID_OID), isOwner: true }],
+        VALID_OID2,
+      )
+      expect(findStub.called).to.be.false
+      expect(result[0]).to.not.have.property('sharedBy')
+    })
+  })
+
+  describe('attachSharedByIfRecipient', () => {
+    it('skips lookup for the owner', async () => {
+      const conversation = {
+        initiator: VALID_OID,
+        access: { isOwner: true },
+      }
+      const result = await attachSharedByIfRecipient(conversation, VALID_OID2)
+      expect(result).to.equal(conversation)
     })
   })
 
@@ -2602,6 +2659,92 @@ describe('Enterprise Search Utils - coverage', () => {
   })
 
   // -----------------------------------------------------------------------
+  // buildFilter / buildAgentConversationFilter - project access branch
+  // -----------------------------------------------------------------------
+  describe('buildFilter - project access', () => {
+    it('does not add a project $or branch when accessibleProjectIds is omitted', () => {
+      const req = createMockRequest({ query: {} })
+      const result = buildFilter(req, VALID_OID2, VALID_OID, undefined, true, true)
+      expect(result.$or.some((clause: any) => 'projectId' in clause)).to.equal(false)
+    })
+
+    it('does not add a project $or branch when accessibleProjectIds is empty', () => {
+      const req = createMockRequest({ query: {} })
+      const result = buildFilter(req, VALID_OID2, VALID_OID, undefined, true, true, undefined, [])
+      expect(result.$or.some((clause: any) => 'projectId' in clause)).to.equal(false)
+    })
+
+    it('adds a projectId $in / projectVisibility:project branch when accessibleProjectIds is non-empty', () => {
+      const projectId = new mongoose.Types.ObjectId()
+      const req = createMockRequest({ query: {} })
+      const result = buildFilter(req, VALID_OID2, VALID_OID, undefined, true, true, undefined, [projectId])
+      const branch = result.$or.find((clause: any) => 'projectId' in clause)
+      expect(branch).to.exist
+      expect(branch.projectId.$in).to.deep.equal([projectId])
+      expect(branch.projectVisibility).to.equal('project')
+    })
+
+    it('omits the project branch entirely when shared=false, even with accessibleProjectIds', () => {
+      const projectId = new mongoose.Types.ObjectId()
+      const req = createMockRequest({ query: {} })
+      const result = buildFilter(req, VALID_OID2, VALID_OID, undefined, true, false, undefined, [projectId])
+      expect(result.$or.some((clause: any) => 'projectId' in clause)).to.equal(false)
+    })
+
+    it('applies ?projectId=<id> as an exact filter', () => {
+      const projectId = new mongoose.Types.ObjectId().toString()
+      const req = createMockRequest({ query: { projectId } })
+      const result = buildFilter(req, VALID_OID2, VALID_OID)
+      expect(result.projectId.toString()).to.equal(projectId)
+    })
+
+    it('applies ?projectId=unassigned as an $exists:false filter', () => {
+      const req = createMockRequest({ query: { projectId: 'unassigned' } })
+      const result = buildFilter(req, VALID_OID2, VALID_OID)
+      expect(result.projectId).to.deep.equal({ $exists: false })
+    })
+
+    it('silently ignores a malformed ?projectId= value', () => {
+      const req = createMockRequest({ query: { projectId: 'not-an-object-id' } })
+      const result = buildFilter(req, VALID_OID2, VALID_OID)
+      expect(result.projectId).to.be.undefined
+    })
+  })
+
+  describe('buildAgentConversationFilter - project access', () => {
+    it('adds the project access branch when accessibleProjectIds is non-empty', () => {
+      const projectId = new mongoose.Types.ObjectId()
+      const req = createMockRequest({ query: {} })
+      const result = buildAgentConversationFilter(
+        req,
+        VALID_OID2,
+        VALID_OID,
+        'agent-key',
+        undefined,
+        undefined,
+        [projectId],
+      )
+      const branch = result.$or.find((clause: any) => 'projectId' in clause)
+      expect(branch).to.exist
+      expect(branch.projectId.$in).to.deep.equal([projectId])
+      expect(branch.projectVisibility).to.equal('project')
+    })
+
+    it('only ORs the owner clause when accessibleProjectIds is empty/omitted', () => {
+      const req = createMockRequest({ query: {} })
+      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key')
+      expect(result.$or).to.have.lengthOf(1)
+      expect(result.$or[0].userId).to.exist
+    })
+
+    it('applies ?projectId=unassigned to agent conversation filters too', () => {
+      const req = createMockRequest({ query: { projectId: 'unassigned' } })
+      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key')
+      expect(result.projectId).to.deep.equal({ $exists: false })
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // sortMessages
   // -----------------------------------------------------------------------
   describe('sortMessages', () => {
@@ -2795,6 +2938,59 @@ describe('Enterprise Search Utils - coverage', () => {
       expect(result.title).to.equal('Test')
       expect(result.messages).to.have.lengthOf(2)
       expect(result.access.isOwner).to.be.true
+    })
+
+    it('should pass through projectId and projectVisibility when the session is linked to a project', () => {
+      const projectId = new mongoose.Types.ObjectId()
+      const conversation = {
+        _id: new mongoose.Types.ObjectId(),
+        title: 'Project chat',
+        initiator: new mongoose.Types.ObjectId(VALID_OID),
+        createdAt: new Date(),
+        isShared: false,
+        sharedWith: [],
+        status: 'complete',
+        failReason: undefined,
+        modelInfo: {},
+        projectId,
+        projectVisibility: 'project',
+      }
+      const pagination = {
+        page: 1,
+        limit: 20,
+        skip: 0,
+        totalMessages: 0,
+        hasNextPage: false,
+        hasPrevPage: false,
+      }
+      const result = buildConversationResponse(conversation as any, VALID_OID, pagination, [])
+      expect(result.projectId).to.equal(projectId)
+      expect(result.projectVisibility).to.equal('project')
+    })
+
+    it('should leave projectId/projectVisibility undefined for a plain (non-project) session', () => {
+      const conversation = {
+        _id: new mongoose.Types.ObjectId(),
+        title: 'Plain chat',
+        initiator: new mongoose.Types.ObjectId(VALID_OID),
+        createdAt: new Date(),
+        isShared: false,
+        sharedWith: [],
+        status: 'complete',
+        failReason: undefined,
+        modelInfo: {},
+      }
+      const pagination = {
+        page: 1,
+        limit: 20,
+        skip: 0,
+        totalMessages: 0,
+        hasNextPage: false,
+        hasPrevPage: false,
+      }
+      const result = buildConversationResponse(conversation as any, VALID_OID, pagination, [])
+      expect(result.projectId).to.be.undefined
+      expect(result.projectVisibility).to.be.undefined
     })
 
     it('should set isOwner false for non-initiator', () => {

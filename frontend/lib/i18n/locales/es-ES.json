@@ -16,6 +16,20 @@
     "missingAgentKey": "Falta la clave del agente. Abra un agente desde la barra lateral del chat o use un enlace válido.",
     "loading": "Cargando…"
   },
+  "projects": {
+    "pageTitle": "Proyectos",
+    "searchPlaceholder": "Buscar proyectos…",
+    "emptyState": "Aún no hay proyectos",
+    "emptyStateHint": "Crea un proyecto para organizar chats, archivos e instrucciones.",
+    "failedToLoad": "No se pudieron cargar los proyectos",
+    "chatCount_one": "{{count}} chat",
+    "chatCount_other": "{{count}} chats",
+    "lastActive": "Activo {{date}}",
+    "pinnedSection": "Fijados",
+    "allSection": "Todos los proyectos",
+    "backToAllProjects": "Todos los proyectos",
+    "loadMore": "Cargar más"
+  },
   "timeGroup": {
     "today": "Hoy",
     "yesterday": "Ayer",
@@ -198,6 +212,8 @@
     "moreConnectors": "Más conectores",
     "all": "Todos",
     "agents": "Agentes",
+    "projects": "Proyectos",
+    "beta": "Beta",
     "searchChats": "Buscar chats",
     "inbox": "Bandeja de entrada",
     "notifications": "Notificaciones"
@@ -394,7 +410,11 @@
     "english": "Inglés",
     "german": "Alemán",
     "rotateLandscape": "Gire su dispositivo para una mejor experiencia",
-    "errorOccurred": "Se produjo un error. Inténtelo de nuevo."
+    "errorOccurred": "Se produjo un error. Inténtelo de nuevo.",
+    "beta": {
+      "label": "Beta",
+      "tooltip": "Esta función está en beta y puede cambiar."
+    }
   },
   "units": {
     "bytes": "Bytes",
@@ -526,6 +546,13 @@
       "resetDefaults": "Restablecer valores predeterminados",
       "knowledgeScopeClearedWarning": "No hay fuentes de conocimiento incluidas en esta ejecución, por lo que el agente no buscará en sus conectores ni en sus colecciones para responder."
     },
+    "projectResources": {
+      "noConnectors": "No hay conectores habilitados para este proyecto.",
+      "noCollections": "No hay colecciones habilitadas para este proyecto.",
+      "noActions": "No hay acciones (conjuntos de herramientas) habilitadas para este proyecto.",
+      "noMcpServers": "No hay servidores MCP habilitados para este proyecto.",
+      "resetDefaults": "Restablecer a los valores del proyecto"
+    },
     "aiModelsTooltip": "Modelos de IA",
     "attachmentTooltip": "Adjuntar archivos",
     "micTooltip": "Entrada de voz",
@@ -537,6 +564,7 @@
     "loadingConversation": "Cargando conversación...",
     "recents": "Recientes",
     "sharedChats": "Chats compartidos",
+    "sharedBy": "Compartido por {{name}}",
     "noSharedChats": "No hay chats compartidos",
     "yourChats": "Tus chats",
     "noChatsFound": "No se encontraron chats",
@@ -772,7 +800,97 @@
     "failedToDeleteAgent": "No se pudo eliminar el agente",
     "failedToRename": "Error al renombrar el chat",
     "rename": "Renombrar",
-    "renaming": "Renombrando…"
+    "renaming": "Renombrando…",
+    "projects": {
+      "title": "Proyectos",
+      "newProject": "Nuevo proyecto",
+      "noProjects": "Aún no hay proyectos",
+      "failedToLoad": "Error al cargar los proyectos",
+      "moreProjects": "Más proyectos",
+      "moveToProject": "Mover a proyecto",
+      "removeFromProject": "Quitar del proyecto",
+      "pinProject": "Fijar",
+      "unpinProject": "Desfijar",
+      "archiveProject": "Archivar proyecto",
+      "unarchiveProject": "Desarchivar proyecto",
+      "deleteProject": "Eliminar proyecto",
+      "shareProject": "Compartir proyecto",
+      "backToProjects": "Todos los proyectos",
+      "backToProject": "Volver al proyecto",
+      "newChatInProject": "Nuevo chat",
+      "recentChats": "Chats recientes",
+      "noChats": "Aún no hay chats en este proyecto",
+      "startChatInProject": "Iniciar un chat en este proyecto",
+      "createDialog": {
+        "title": "Nuevo proyecto",
+        "nameLabel": "Nombre",
+        "namePlaceholder": "p. ej. Plan de marketing Q3",
+        "descriptionLabel": "Descripción",
+        "descriptionPlaceholder": "¿De qué trata este proyecto? (opcional)",
+        "instructionsLabel": "Instrucciones",
+        "instructionsPlaceholder": "Instrucciones que el asistente debe seguir siempre en este proyecto (opcional)",
+        "create": "Crear proyecto",
+        "creating": "Creando…",
+        "nameRequired": "El nombre es obligatorio"
+      },
+      "workspace": {
+        "failedToLoad": "Error al cargar este proyecto",
+        "instructionsTitle": "Instrucciones",
+        "instructionsPlaceholder": "Añadir instrucciones que el asistente debe seguir en cada chat de este proyecto…",
+        "noInstructions": "Aún no se han añadido instrucciones",
+        "save": "Guardar",
+        "saving": "Guardando…",
+        "editInstructions": "Editar instrucciones",
+        "noDescription": "Sin descripción",
+        "filesTitle": "Archivos",
+        "filesSubtitle": "Los archivos aquí solo se buscan dentro de este proyecto.",
+        "uploadFiles": "Subir archivos",
+        "uploading": "Subiendo…",
+        "noFiles": "Aún no hay archivos",
+        "removeFile": "Eliminar archivo",
+        "connectorsTitle": "Conectores",
+        "connectorsSubtitle": "Los chats de este proyecto buscan solo en estos conectores.",
+        "noConnectorsAvailable": "Aún no hay conectores para añadir.",
+        "failedToLoadConnectors": "No se pudieron cargar los conectores",
+        "updateConnectorsFailed": "No se pudieron actualizar los conectores",
+        "toolsTitle": "Herramientas y MCP",
+        "noToolsAvailable": "Aún no hay acciones autenticadas ni servidores MCP para añadir.",
+        "knowledgeBaseUnavailable": "No se pudo preparar el almacenamiento de archivos de este proyecto",
+        "uploadSessionLabel_one": "{{count}} archivo",
+        "uploadSessionLabel_other": "{{count}} archivos",
+        "membersTitle": "Miembros",
+        "memberCount_one": "{{count}} miembro",
+        "memberCount_other": "{{count}} miembros",
+        "share": "Compartir",
+        "recentChatsTitle": "Chats recientes",
+        "seeAllChats": "Ver todos los chats",
+        "saveInstructionsFailed": "No se pudieron guardar las instrucciones",
+        "updateToolsFailed": "No se pudieron actualizar las herramientas",
+        "updatePinFailed": "No se pudo actualizar el estado de fijado",
+        "updateArchiveFailed": "No se pudo actualizar el estado de archivado",
+        "shareRefreshFailed": "No se pudieron actualizar los detalles de uso compartido",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
+      },
+      "moveDialog": {
+        "title": "Mover a proyecto",
+        "noProjects": "Aún no tienes ningún proyecto",
+        "removeOption": "Sin proyecto",
+        "moving": "Moviendo…"
+      },
+      "deleteDialog": {
+        "title": "¿Eliminar este proyecto?",
+        "description": "Se eliminará el proyecto y se desvincularán sus chats. Los chats en sí no se eliminan.",
+        "confirm": "Eliminar proyecto",
+        "deleting": "Eliminando…",
+        "failed": "No se pudo eliminar el proyecto"
+      },
+      "roles": {
+        "owner": "Propietario",
+        "editor": "Editor",
+        "viewer": "Lector"
+      }
+    }
   },
   "workspaceSettings": {
     "title": "Configuración del espacio de trabajo"
@@ -2563,7 +2681,7 @@
     },
     "oauthApps": {
       "title": "Apps OAuth",
-      "subtitle": "Gestione las credenciales OAuth para conectores y acciones. Las apps marcadas como \u00abPredeterminada\u00bb se usan automáticamente para nuevas conexiones, salvo que se sobrescriban.",
+      "subtitle": "Gestione las credenciales OAuth para conectores y acciones. Las apps marcadas como «Predeterminada» se usan automáticamente para nuevas conexiones, salvo que se sobrescriban.",
       "addButton": "Agregar app OAuth",
       "tabs": {
         "connectors": "Conectores",
@@ -2572,15 +2690,15 @@
       "typeSelector": {
         "connectorLabel": "Tipo de conector",
         "toolsetLabel": "Tipo de acción",
-        "loading": "Cargando\u2026"
+        "loading": "Cargando…"
       },
       "scope": {
         "team": "Equipo",
         "personal": "Personal"
       },
-      "loading": "Cargando\u2026",
+      "loading": "Cargando…",
       "search": {
-        "placeholder": "Buscar apps\u2026"
+        "placeholder": "Buscar apps…"
       },
       "empty": {
         "title": "No hay apps OAuth para {{typeLabel}}",
@@ -2610,19 +2728,19 @@
         "cancelButton": "Cancelar",
         "createButton": "Crear",
         "saveButton": "Guardar cambios",
-        "savingLabel": "Guardando\u2026",
+        "savingLabel": "Guardando…",
         "schemaError": "No se pudo cargar el esquema para este tipo.",
         "genericError": "Se produjo un error. Inténtelo de nuevo."
       },
       "delete": {
-        "title": "¿Eliminar \u00ab{{name}}\u00bb?",
+        "title": "¿Eliminar «{{name}}»?",
         "message": "Esta app OAuth se eliminará permanentemente. Es posible que las instancias de conectores que la utilicen dejen de funcionar.",
         "confirmLabel": "Eliminar",
         "forceDeleteButton": "Forzar eliminación",
-        "forceTitle": "¿Forzar eliminación de \u00ab{{name}}\u00bb?",
+        "forceTitle": "¿Forzar eliminación de «{{name}}»?",
         "forceMessage": "Esta app OAuth está en uso. Forzar su eliminación la quitará y puede interrumpir las conexiones de conectores existentes que dependan de ella. Esta acción no se puede deshacer.",
         "forceConfirmLabel": "Forzar eliminación",
-        "successMessage": "App OAuth \u00ab{{name}}\u00bb eliminada."
+        "successMessage": "App OAuth «{{name}}» eliminada."
       },
       "errors": {
         "loadTypes": "No se pudieron cargar los tipos de app OAuth disponibles.",
@@ -2711,6 +2829,11 @@
     "modelSection": "Modelo",
     "toolsetsSection": "Conjuntos de herramientas",
     "mcpServersSection": "Servidores MCP",
+    "skillsSection": "Skills",
+    "noSkillsAvailable": "No hay Skills disponibles",
+    "skillNodeTemplateDescription": "Habilidad personalizada que su agente puede invocar",
+    "skillDeprecated": "Esta habilidad se ha marcado como obsoleta",
+    "skillDeprecatedReplacedBy": "Esta habilidad se ha marcado como obsoleta. Use {{name}} en su lugar.",
     "inputSection": "Entrada",
     "responseSection": "Respuesta",
     "connectModel": "Conectar un modelo",
@@ -2727,7 +2850,7 @@
     "instructionsLabel": "Instrucciones",
     "startingMessageLabel": "Mensaje inicial",
     "defaultReasoningEffortLabel": "Esfuerzo de razonamiento predeterminado",
-    "defaultReasoningEffortHint": "El valor predeterminado es Alto si no se establece.",
+    "defaultReasoningEffortHint": "Esfuerzo de razonamiento de respaldo cuando el usuario no elige uno en el chat.",
     "moreItems": "+{{count}} más",
     "toolsetNodeSubtitle": "Conjunto de herramientas",
     "toolsLabel": "Herramientas",
@@ -2943,9 +3066,7 @@
     "deprecatedToolsBanner": "{{count}} herramienta(s) de este agente están obsoletas, elimínalas: {{tools}}",
     "removeDeprecatedTools": "Eliminar herramientas obsoletas",
     "showMore": "Mostrar más",
-    "showLess": "Mostrar menos",
-    "defaultReasoningEffortLabel": "Esfuerzo de razonamiento predeterminado",
-    "defaultReasoningEffortHint": "Esfuerzo de razonamiento de respaldo cuando el usuario no elige uno en el chat."
+    "showLess": "Mostrar menos"
   },
   "recordView": {
     "sections": {

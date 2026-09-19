@@ -125,7 +125,8 @@ class TestAzureBlobConnector:
         before_count = await settle_record_baseline(
             pipeshub_client, graph_provider, connector_id
         )
-        new_files = unique_incremental_csv_files()
+        # Under this run's folder: the connector syncs only that folder.
+        new_files = {f"{azure_blob_connector['folder']}{k}": v for k, v in unique_incremental_csv_files().items()}
         new_names = record_names_from_keys(new_files)
         for blob_key, file_bytes in new_files.items():
             azure_blob_storage.upload_blob(
@@ -327,7 +328,7 @@ class TestAzureBlobConnector:
         move_name = azure_blob_connector["move_source_name"]
 
         new_prefix = "moved-folder"
-        new_key = f"{new_prefix}/{move_name}"
+        new_key = f"{azure_blob_connector['folder']}{new_prefix}/{move_name}"
 
         logger.info(
             "Moving %s/%s -> %s (connector %s)",

@@ -41,6 +41,10 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # ── Band A — static ──────────────────────────────────────────────────────
     ("identity",                   Volatility.STATIC),
     ("agent_instructions",         Volatility.STATIC),
+    # Author-set instructions from a linked Project (Node ProjectService) —
+    # set for any conversation (Chat Assistant, Universal Agent Mode, or a
+    # real Agent Builder agent) that is linked to a project.
+    ("project_instructions",       Volatility.STATIC),
     # Org-level "Custom Instructions" (workspace settings), mode-resolved by
     # `chat_modes.bridge` — Chat Assistant only, never set for Agent Builder.
     ("custom_instructions",        Volatility.STATIC),
@@ -61,12 +65,23 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("knowledge_sources",          Volatility.CONV),
     ("capability_summary",         Volatility.CONV),
     ("user_context",               Volatility.CONV),
-    ("skills_overview",            Volatility.CONV),
     ("answer_confidence",          Volatility.CONV),
     # Worked examples — injected for SMALL and MID tiers only; omitted for
     # FRONTIER where the function schemas are sufficient scaffolding.
     ("worked_traces",              Volatility.CONV),
+    # Last Band B section, deliberately: `preloaded_skills` (the first Band
+    # C section below) is this turn's "here's the one that actually
+    # matched" follow-up to this catalog — keeping any other CONV section
+    # between them would put unrelated content in the way of a reader
+    # connecting the two.
+    ("skills_overview",            Volatility.CONV),
     # ── Band C — turn-volatile ────────────────────────────────────────────────
+    # Adjacent to `skills_overview` above (see its comment) — written by the
+    # `skill_preloading` PRE_AGENT middleware, never by this builder.
+    ("preloaded_skills",           Volatility.TURN),
+    # Same relationship to `available_tools` (Band B) that `preloaded_skills`
+    # has to `skills_overview` — written by the `tool_preloading` middleware.
+    ("preloaded_tools",            Volatility.TURN),
     ("time_context",               Volatility.TURN),
     ("request_context",            Volatility.TURN),
     ("attachments",                Volatility.TURN),

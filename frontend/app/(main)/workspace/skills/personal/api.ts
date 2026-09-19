@@ -47,8 +47,22 @@ export const SkillsApi = {
     return data;
   },
 
-  async updateSkill(name: string, payload: SkillWritePayload): Promise<SkillMetadata> {
-    const { data } = await apiClient.put(`${BASE_URL}/${encodeURIComponent(name)}`, payload);
+    async updateSkill(
+    name: string,
+    payload: SkillWritePayload,
+    expectedUpdatedAt?: string | number | null,
+  ): Promise<SkillMetadata> {
+    const headers: Record<string, string> = {};
+    if (expectedUpdatedAt !== undefined) {
+      const token = String(expectedUpdatedAt ?? '');
+      if (token.length === 0) {
+        throw new Error('Skill update requires a last-seen updatedAt (If-Match)');
+      }
+      headers['If-Match'] = token;
+    }
+    const { data } = await apiClient.put(`${BASE_URL}/${encodeURIComponent(name)}`, payload, {
+      headers,
+    });
     return data;
   },
 
@@ -57,6 +71,18 @@ export const SkillsApi = {
       reason,
       replaced_by: replacedBy || null,
     });
+  },
+
+  /** Reversible mute — hides the skill from every agent-facing surface without touching content/version. */
+  async disableSkill(name: string): Promise<SkillMetadata> {
+    const { data } = await apiClient.post(`${BASE_URL}/${encodeURIComponent(name)}/disable`);
+    return data;
+  },
+
+  /** Reverses `disableSkill`. Never un-deprecates. */
+  async enableSkill(name: string): Promise<SkillMetadata> {
+    const { data } = await apiClient.post(`${BASE_URL}/${encodeURIComponent(name)}/enable`);
+    return data;
   },
 
   async getUsage(name: string): Promise<SkillUsage> {
@@ -161,3 +187,12 @@ export const SkillsApi = {
     return data?.skills ?? [];
   },
 };
+
+/** PUT /skills/:name 409 whose body carries `currentUpdatedAt` — a concurrent edit, not a name clash. */
+export function isSkillConflictError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const response = (error as { response?: { status?: number; data?: { detail?: unknown } } }).response;
+  if (response?.status !== 409) return false;
+  const detail = response.data?.detail;
+  return Boolean(detail && typeof detail === 'object' && detail !== null && 'currentUpdatedAt' in detail);
+}

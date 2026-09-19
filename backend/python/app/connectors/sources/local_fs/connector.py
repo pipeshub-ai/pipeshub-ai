@@ -68,6 +68,7 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
+    MultiselectOperator,
     SyncFilterKey,
     load_connector_filters,
 )
@@ -512,13 +513,16 @@ class LocalFsConnector(BaseConnector):
 
     @staticmethod
     def _extension_allowed(path: Path, sync_filters: FilterCollection) -> bool:
-        raw = sync_filters.get_value(SyncFilterKey.FILE_EXTENSIONS)
-        if not raw:
+        extensions_filter = sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+        if extensions_filter is None or extensions_filter.is_empty():
             return True
+        raw = extensions_filter.value
         items = raw if isinstance(raw, (list, tuple, set)) else [raw]
-        allowed = {str(x).lower().lstrip(".") for x in items}
-        ext = path.suffix.lower().lstrip(".") or ""
-        return ext in allowed
+        listed = {str(x).lower().lstrip(".") for x in items}
+        ext = path.suffix.lower().lstrip(".")
+        if extensions_filter.operator_value == MultiselectOperator.NOT_IN.value:
+            return ext not in listed
+        return ext in listed
 
     def _iter_file_paths(self, root: Path) -> List[Path]:
         out: List[Path] = []

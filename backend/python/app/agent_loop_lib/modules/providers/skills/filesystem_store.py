@@ -13,9 +13,11 @@ from app.agent_loop_lib.modules.providers.skills.base import (
     matches_filter,
 )
 from app.agent_loop_lib.modules.providers.skills.loader import (
+    discover_resources,
     iter_skill_dirs,
     load_skill_file,
     parse_skill_md,
+    read_resources,
     render_skill_md,
 )
 from app.agent_loop_lib.modules.providers.skills.store import SkillStore
@@ -166,16 +168,46 @@ class FilesystemSkillStore(SkillStore):
 
     # ---- SkillWriter ----------------------------------------------------
 
+    def _validate_resources(self, resources: dict[str, str]) -> None:
+        for path in resources:
+            self._validator.validate_resource_path(path)
+        self._validator.validate_resource_budget(resources)
+
+    def _write_resources(self, skill_dir: str, resources: dict[str, str]) -> None:
+        for path, file_content in resources.items():
+            full = _safe_join(skill_dir, path)
+            if full is None:
+                continue
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(file_content)
+
+    def _replace_resource_tree(self, skill_dir: str, resources: dict[str, str]) -> None:
+        for entry in os.listdir(skill_dir):
+            if entry == "SKILL.md":
+                continue
+            path = os.path.join(skill_dir, entry)
+            if os.path.islink(path) or os.path.isfile(path):
+                os.remove(path)
+            elif os.path.isdir(path):
+                shutil.rmtree(path)
+        self._write_resources(skill_dir, resources)
+
     async def create_skill(
         self, name: str, content: str, category: str | None = None, subcategory: str | None = None,
+        resources: dict[str, str] | None = None,
     ) -> SkillMetadata:
         if name in self._locations:
             raise RegistryError(f"Skill {name!r} already exists")
         skill = parse_skill_md(content, expected_name=name, validator=self._validator)
         self._validator.validate_skill(skill, expected_name=name)
+        if resources:
+            self._validate_resources(resources)
         skill_dir = self._dir_for(name, category, subcategory)
         os.makedirs(skill_dir, exist_ok=True)
         self._write_raw(skill_dir, content)
+        if resources:
+            self._write_resources(skill_dir, resources)
         self._locations[name] = skill_dir
         self._categories[name] = (category, subcategory)
 
@@ -193,7 +225,19 @@ class FilesystemSkillStore(SkillStore):
             skill = skill.model_copy(update={"metadata": skill.metadata.model_copy(update=meta_updates)})
         return skill.metadata
 
-    async def update_skill(self, name: str, content: str) -> SkillMetadata:
+    async def update_skill(
+        self,
+        name: str,
+        content: str,
+        resources: dict[str, str] | None = None,
+        expected_updated_at: int | None = None,
+    ) -> SkillMetadata:
+        """`resources`, when given, replaces the entire bundled resource
+        tree (same contract as `SkillWriter.update_skill` / `GraphSkillStore`);
+        `None` leaves existing files unchanged. `SKILL.md` is never deleted.
+
+        `expected_updated_at` is ignored — the filesystem store has no
+        mutation timestamp to compare against."""
         skill_dir = self._locations.get(name)
         if skill_dir is None:
             raise RegistryError(f"Skill {name!r} not found")
@@ -201,10 +245,20 @@ class FilesystemSkillStore(SkillStore):
             raise SkillFormatError(f"Skill {name!r} lives in a read-only root and cannot be modified")
         skill = parse_skill_md(content, expected_name=name, validator=self._validator)
         self._validator.validate_skill(skill, expected_name=name)
+        if resources is not None:
+            self._validate_resources(resources)
         self._write_raw(skill_dir, content)
+        if resources is not None:
+            self._replace_resource_tree(skill_dir, resources)
         return skill.metadata
 
-    async def patch_skill(self, name: str, old_string: str, new_string: str) -> bool:
+    async def patch_skill(
+        self,
+        name: str,
+        old_string: str,
+        new_string: str,
+        expected_updated_at: int | None = None,
+    ) -> bool:
         skill_dir = self._locations.get(name)
         if skill_dir is None or not self._is_writable(skill_dir):
             return False
@@ -226,12 +280,16 @@ class FilesystemSkillStore(SkillStore):
         return True
 
     async def write_resource(self, skill_name: str, path: str, content: str) -> bool:
+        self._validator.validate_resource_path(path)
         skill_dir = self._locations.get(skill_name)
         if skill_dir is None or not self._is_writable(skill_dir):
             return False
         full = _safe_join(skill_dir, path)
         if full is None:
             return False
+        resulting = read_resources(skill_dir, discover_resources(skill_dir))
+        resulting[path] = content
+        self._validator.validate_resource_budget(resulting)
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
             f.write(content)
@@ -259,5 +317,25 @@ class FilesystemSkillStore(SkillStore):
             "deprecated_reason": reason,
             "replaced_by": replaced_by,
         })
+        self._persist(skill_dir, skill.model_copy(update={"metadata": updated_metadata}))
+        return True
+
+    async def set_skill_status(
+        self,
+        name: str,
+        status: SkillStatus,
+        from_status: SkillStatus | None = None,
+    ) -> bool:
+        """Enable/disable primitive — rewrites only frontmatter `status`,
+        never `deprecated_reason`/`replaced_by` (those are deprecate-only)."""
+        skill_dir = self._locations.get(name)
+        if skill_dir is None or not self._is_writable(skill_dir):
+            return False
+        skill = self._load(skill_dir)
+        if skill is None:
+            return False
+        if from_status is not None and skill.metadata.status != from_status:
+            return False
+        updated_metadata = skill.metadata.model_copy(update={"status": status})
         self._persist(skill_dir, skill.model_copy(update={"metadata": updated_metadata}))
         return True

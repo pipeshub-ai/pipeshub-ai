@@ -9,6 +9,7 @@ import {
   getVisibleRootParts,
   buildActivitySummary,
   CollapsibleActivitySection,
+  ToolCallCard,
 } from '../agent-activity';
 import type { MessagePart, StatusMessage } from '../../../types';
 
@@ -35,6 +36,10 @@ function renderTimeline(
       currentStatus: opts.currentStatus,
     })),
   );
+}
+
+function renderCard(part: MessagePart) {
+  return render(h(Theme, null, h(ToolCallCard, { part })));
 }
 
 const STATUS: StatusMessage = { id: 's1', status: 'executing', message: 'Using Jira Search...', timestamp: '' };
@@ -222,6 +227,16 @@ describe('AgentActivityTimeline — tool call grouping', () => {
     expect(screen.getByText('Ran 2 tools')).toBeTruthy();
   });
 
+  it('labels a burst of skill tool calls as "Used N skills", not "Explored N searches" — skill_search matches /search/i too', () => {
+    renderTimeline([
+      { type: 'tool_call', toolCallId: 'call-1', toolName: 'skill_search', status: 'completed' },
+      { type: 'tool_call', toolCallId: 'call-2', toolName: 'load_skill', status: 'completed' },
+    ]);
+
+    expect(screen.getByText('Used 2 skills')).toBeTruthy();
+    expect(screen.queryByText(/Explored \d+ searches/)).toBeNull();
+  });
+
   it('does not group tool calls separated by a text/reasoning part', () => {
     renderTimeline([
       { type: 'tool_call', toolCallId: 'call-1', toolName: 'web_search', displayName: 'Searched the web', status: 'completed' },
@@ -265,6 +280,66 @@ describe('toolActivityLabel — derived, model-independent labels', () => {
 
   it('falls back to a generic label when toolName is missing entirely', () => {
     expect(toolActivityLabel({ type: 'tool_call' })).toBe('Used a tool');
+  });
+
+  it('uses the skill label map when displayName is absent — chats persisted before display_name existed', () => {
+    expect(toolActivityLabel({ type: 'tool_call', toolName: 'load_skill' })).toBe('Loaded skill');
+    expect(toolActivityLabel({ type: 'tool_call', toolName: 'skill_search' })).toBe('Searched skills');
+    expect(toolActivityLabel({ type: 'tool_call', toolName: 'skills_list' })).toBe('Listed skills');
+    expect(toolActivityLabel({ type: 'tool_call', toolName: 'load_skill_resource' })).toBe('Loaded skill file');
+    expect(toolActivityLabel({ type: 'tool_call', toolName: 'skill_manage' })).toBe('Managed skill');
+  });
+
+  it('still prefers a backend-provided displayName over the skill label map', () => {
+    expect(
+      toolActivityLabel({ type: 'tool_call', toolName: 'load_skill', displayName: 'Loaded skill docx' }),
+    ).toBe('Loaded skill docx');
+  });
+});
+
+describe('ToolCallCard — skill tool result preview gating', () => {
+  it('hides the raw resultPreview for a skill tool call with no resultSummary (pre-summary chat)', () => {
+    renderCard({
+      type: 'tool_call',
+      toolCallId: 'call-1',
+      toolName: 'load_skill',
+      status: 'completed',
+      resultPreview: '# docx\n\nfull SKILL.md instructions body...',
+    });
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(screen.queryByText(/full SKILL\.md instructions body/)).toBeNull();
+  });
+
+  it('shows resultSummary (not the raw preview) for a skill tool call when both are present', () => {
+    renderCard({
+      type: 'tool_call',
+      toolCallId: 'call-1',
+      toolName: 'load_skill',
+      status: 'completed',
+      resultSummary: 'Loaded skill docx',
+      resultPreview: '# docx\n\nfull SKILL.md instructions body...',
+    });
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(screen.getByText('Loaded skill docx')).toBeTruthy();
+    expect(screen.queryByText(/full SKILL\.md instructions body/)).toBeNull();
+  });
+
+  it('keeps showing the raw resultPreview for a non-skill tool call with no resultSummary (regression guard)', () => {
+    renderCard({
+      type: 'tool_call',
+      toolCallId: 'call-1',
+      toolName: 'run_code',
+      status: 'completed',
+      resultPreview: '{"stdout": "hello"}',
+    });
+
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(screen.getByText('{"stdout": "hello"}')).toBeTruthy();
   });
 });
 

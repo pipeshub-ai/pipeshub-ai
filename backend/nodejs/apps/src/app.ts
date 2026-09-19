@@ -95,6 +95,8 @@ import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
+import { ProjectsContainer } from './modules/projects/container/project.container';
+import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 // Side-effect import: registers edition-specific Redis providers for this process.
 import './redisProviders';
@@ -131,6 +133,7 @@ export class Application {
   private skillsContainer!: Container;
   private oauthAppsContainer!: Container;
   private mcpServersContainer!: Container;
+  private projectsContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
 
@@ -250,6 +253,10 @@ export class Application {
       );
       this.mcpServersContainer = await McpServersContainer.initialize(
         configurationManagerConfig,
+      );
+      this.projectsContainer = await ProjectsContainer.initialize(
+        configurationManagerConfig,
+        appConfig,
       );
 
       await this.addOAuthServicesToAuthMiddleware();
@@ -613,6 +620,12 @@ export class Application {
     this.app.use(
       '/api/v1/mcp-servers',
       createMcpServersRouter(this.mcpServersContainer)
+    );
+
+    // Projects — workspaces grouping chat/agent conversations, instructions, files, and scope
+    this.app.use(
+      '/api/v1/projects',
+      createProjectsRouter(this.projectsContainer),
     );
 
     this.app.use(

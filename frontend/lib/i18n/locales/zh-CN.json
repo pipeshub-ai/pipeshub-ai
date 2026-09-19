@@ -29,6 +29,20 @@
     "missingAgentKey": "缺少智能体密钥。请从聊天侧边栏打开智能体，或使用有效的链接。",
     "loading": "正在加载…"
   },
+  "projects": {
+    "pageTitle": "项目",
+    "searchPlaceholder": "搜索项目…",
+    "emptyState": "暂无项目",
+    "emptyStateHint": "创建一个项目来整理聊天、文件和指令。",
+    "failedToLoad": "加载项目失败",
+    "chatCount_one": "{{count}} 个对话",
+    "chatCount_other": "{{count}} 个对话",
+    "lastActive": "活跃于 {{date}}",
+    "pinnedSection": "已置顶",
+    "allSection": "所有项目",
+    "backToAllProjects": "所有项目",
+    "loadMore": "加载更多"
+  },
   "timeGroup": {
     "today": "今天",
     "yesterday": "昨天",
@@ -212,6 +226,8 @@
     "moreConnectors": "更多连接器",
     "all": "全部",
     "agents": "智能体",
+    "projects": "项目",
+    "beta": "测试版",
     "searchChats": "搜索聊天",
     "inbox": "收件箱",
     "notifications": "通知"
@@ -407,7 +423,11 @@
     "language": "语言",
     "english": "英语",
     "german": "德语",
-    "rotateLandscape": "旋转您的设备以获得最佳体验"
+    "rotateLandscape": "旋转您的设备以获得最佳体验",
+    "beta": {
+      "label": "测试版",
+      "tooltip": "此功能处于测试阶段，可能会有变动。"
+    }
   },
   "units": {
     "bytes": "字节",
@@ -544,6 +564,13 @@
       "resetDefaults": "重置为默认值",
       "knowledgeScopeClearedWarning": "本次运行未包含任何知识来源，因此智能体不会搜索您的连接器或收藏集来查找答案。"
     },
+    "projectResources": {
+      "noConnectors": "此项目未启用任何连接器。",
+      "noCollections": "此项目未启用任何集合。",
+      "noActions": "此项目未启用任何操作（工具集）。",
+      "noMcpServers": "此项目未启用任何 MCP 服务器。",
+      "resetDefaults": "重置为项目默认值"
+    },
     "aiModelsTooltip": "AI 模型",
     "attachmentTooltip": "附加文件",
     "micTooltip": "语音输入",
@@ -555,6 +582,7 @@
     "loadingConversation": "正在加载对话…",
     "recents": "最近",
     "sharedChats": "共享的聊天",
+    "sharedBy": "由 {{name}} 共享",
     "noSharedChats": "没有共享的聊天",
     "yourChats": "您的聊天",
     "noChatsFound": "未找到聊天",
@@ -790,7 +818,97 @@
         "有没有需要注意的依赖项或阻碍",
         "到目前为止学到了哪些经验教训"
       ]
-    ]
+    ],
+    "projects": {
+      "title": "项目",
+      "newProject": "新建项目",
+      "noProjects": "暂无项目",
+      "failedToLoad": "加载项目失败",
+      "moreProjects": "更多项目",
+      "moveToProject": "移至项目",
+      "removeFromProject": "从项目中移除",
+      "pinProject": "置顶",
+      "unpinProject": "取消置顶",
+      "archiveProject": "归档项目",
+      "unarchiveProject": "取消归档",
+      "deleteProject": "删除项目",
+      "shareProject": "分享项目",
+      "backToProjects": "所有项目",
+      "backToProject": "返回项目",
+      "newChatInProject": "新对话",
+      "recentChats": "最近对话",
+      "noChats": "此项目中暂无对话",
+      "startChatInProject": "在此项目中开始对话",
+      "createDialog": {
+        "title": "新建项目",
+        "nameLabel": "名称",
+        "namePlaceholder": "例如：Q3 营销计划",
+        "descriptionLabel": "描述",
+        "descriptionPlaceholder": "这个项目是关于什么的？（可选）",
+        "instructionsLabel": "指令",
+        "instructionsPlaceholder": "助手在此项目中应始终遵循的指令（可选）",
+        "create": "创建项目",
+        "creating": "创建中…",
+        "nameRequired": "名称为必填项"
+      },
+      "workspace": {
+        "failedToLoad": "加载此项目失败",
+        "instructionsTitle": "指令",
+        "instructionsPlaceholder": "添加助手在此项目每次对话中应遵循的指令…",
+        "noInstructions": "尚未添加指令",
+        "save": "保存",
+        "saving": "保存中…",
+        "editInstructions": "编辑指令",
+        "noDescription": "无描述",
+        "filesTitle": "文件",
+        "filesSubtitle": "此处的文件仅在此项目内被搜索。",
+        "uploadFiles": "上传文件",
+        "uploading": "上传中…",
+        "noFiles": "暂无文件",
+        "removeFile": "移除文件",
+        "connectorsTitle": "连接器",
+        "connectorsSubtitle": "此项目中的对话仅搜索这些连接器。",
+        "noConnectorsAvailable": "暂无可添加的连接器。",
+        "failedToLoadConnectors": "加载连接器失败",
+        "updateConnectorsFailed": "更新连接器失败",
+        "toolsTitle": "工具和 MCP",
+        "noToolsAvailable": "暂无可添加的已认证操作或 MCP 服务器。",
+        "knowledgeBaseUnavailable": "无法准备此项目的文件存储",
+        "uploadSessionLabel_one": "{{count}} 个文件",
+        "uploadSessionLabel_other": "{{count}} 个文件",
+        "membersTitle": "成员",
+        "memberCount_one": "{{count}} 位成员",
+        "memberCount_other": "{{count}} 位成员",
+        "share": "分享",
+        "recentChatsTitle": "最近对话",
+        "seeAllChats": "查看所有对话",
+        "saveInstructionsFailed": "保存说明失败",
+        "updateToolsFailed": "更新工具失败",
+        "updatePinFailed": "更新置顶状态失败",
+        "updateArchiveFailed": "更新归档状态失败",
+        "shareRefreshFailed": "刷新共享详情失败",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
+      },
+      "moveDialog": {
+        "title": "移至项目",
+        "noProjects": "您还没有任何项目",
+        "removeOption": "无项目",
+        "moving": "移动中…"
+      },
+      "deleteDialog": {
+        "title": "删除此项目？",
+        "description": "这将删除项目并取消与对话的关联。对话本身不会被删除。",
+        "confirm": "删除项目",
+        "deleting": "删除中…",
+        "failed": "删除项目失败"
+      },
+      "roles": {
+        "owner": "拥有者",
+        "editor": "编辑者",
+        "viewer": "查看者"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -2288,7 +2406,10 @@
         "rollbackError": "回滚失败",
         "candidateApproved": "已批准“{{name}}”",
         "candidateRejected": "已拒绝“{{name}}”",
-        "candidateActionError": "更新候选技能失败"
+        "candidateActionError": "更新候选技能失败",
+        "conflict": "此技能已在其他位置被更改",
+        "conflictDescription": "请重新加载最新版本，然后再次应用您的编辑。",
+        "conflictReload": "重新加载"
       },
       "builtinReadOnly": "这是内置技能，无法编辑。",
       "editorPanel": {
@@ -2932,6 +3053,8 @@
     "noCollections": "没有可用的合集",
     "noSkills": "暂无技能——请在“您的技能”下创建或导入一个",
     "skillNodeTemplateDescription": "您的智能体可调用的自定义技能",
+    "skillDeprecated": "此技能已弃用",
+    "skillDeprecatedReplacedBy": "此技能已弃用。请改用 {{name}}。",
     "collapse": "收起",
     "expand": "展开",
     "serviceAccountCreated": "服务智能体已创建。请使用面板中的钥匙图标配置每个工具集。",
@@ -2998,6 +3121,7 @@
     "toolsetsSection": "工具集",
     "mcpServersSection": "MCP 服务器",
     "skillsSection": "技能",
+    "noSkillsAvailable": "没有可用的技能",
     "inputSection": "输入",
     "responseSection": "回复",
     "connectModel": "连接模型",
@@ -3013,8 +3137,8 @@
     "lineCount": "{{count}} 行",
     "instructionsLabel": "指令",
     "startingMessageLabel": "起始消息",
-    "defaultReasoningEffortLabel": "默认推理强度",
-    "defaultReasoningEffortHint": "未设置时默认为高。",
+    "defaultReasoningEffortLabel": "默认推理力度",
+    "defaultReasoningEffortHint": "当用户在聊天中未选择时使用的备用推理力度。",
     "moreItems": "还有 {{count}} 项",
     "toolsetNodeSubtitle": "工具集",
     "toolsLabel": "工具",
@@ -3175,9 +3299,7 @@
     "deprecatedToolsBanner": "此智能体上有 {{count}} 个工具已弃用，请移除它们：{{tools}}",
     "removeDeprecatedTools": "移除已弃用的工具",
     "showMore": "显示更多",
-    "showLess": "显示更少",
-    "defaultReasoningEffortLabel": "默认推理力度",
-    "defaultReasoningEffortHint": "当用户在聊天中未选择时使用的备用推理力度。"
+    "showLess": "显示更少"
   },
   "recordView": {
     "sections": {

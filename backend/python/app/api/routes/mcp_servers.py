@@ -292,7 +292,7 @@ _credentials_to_discovery_dict = mcp_service.credentials_to_discovery_dict
 # ============================================================================
 
 
-@router.get("/catalog", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/catalog", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
 async def list_catalog(
     request: Request,
     page: int = Query(default=1, ge=1),
@@ -315,7 +315,7 @@ async def list_catalog(
     }
 
 
-@router.get("/catalog/{type_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/catalog/{type_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
 async def get_catalog_template(request: Request, type_id: str) -> dict[str, Any]:
     _get_user_context(request)
     registry = _get_mcp_registry(request)
@@ -330,7 +330,7 @@ async def get_catalog_template(request: Request, type_id: str) -> dict[str, Any]
 # ============================================================================
 
 
-@router.get("/instances", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/instances", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
 async def list_instances(request: Request) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
@@ -351,7 +351,7 @@ async def list_instances(request: Request) -> dict[str, Any]:
 @router.post(
     "/instances",
     status_code=HttpStatusCode.CREATED.value,
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def create_instance(
     request: Request,
@@ -392,7 +392,7 @@ async def create_instance(
     return record
 
 
-@router.get("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
 async def get_instance(request: Request, instance_id: str) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
@@ -411,7 +411,7 @@ async def get_instance(request: Request, instance_id: str) -> dict[str, Any]:
     return instance
 
 
-@router.put("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def update_instance(
     request: Request,
     instance_id: str,
@@ -438,7 +438,7 @@ async def update_instance(
     return record
 
 
-@router.delete("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
+@router.delete("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_DELETE))])
 async def delete_instance(request: Request, instance_id: str) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
@@ -593,7 +593,7 @@ def _build_credential_record(instance: dict[str, Any], payload: AuthenticateRequ
 
 @router.post(
     "/instances/{instance_id}/authenticate",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def authenticate_instance(
     request: Request,
@@ -619,7 +619,7 @@ async def authenticate_instance(
 
 @router.put(
     "/instances/{instance_id}/credentials",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def update_credentials(
     request: Request,
@@ -633,7 +633,7 @@ async def update_credentials(
 
 @router.delete(
     "/instances/{instance_id}/credentials",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_DELETE))],
 )
 async def remove_credentials(request: Request, instance_id: str) -> dict[str, Any]:
     """Disconnect the caller's stored credentials/tokens, regardless of auth mode — an
@@ -667,7 +667,7 @@ async def remove_credentials(request: Request, instance_id: str) -> dict[str, An
 
 @router.post(
     "/instances/{instance_id}/auto-authenticate",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def auto_authenticate_instance(request: Request, instance_id: str) -> dict[str, Any]:
     """Adopt the admin's shared credential for a `useAdminAuth` instance (verifies it exists first)."""
@@ -693,7 +693,7 @@ async def auto_authenticate_instance(request: Request, instance_id: str) -> dict
 
 @router.post(
     "/instances/{instance_id}/reauthenticate",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def reauthenticate_instance(request: Request, instance_id: str) -> dict[str, Any]:
     """Clear the caller's stored credentials/tokens for this instance, forcing re-auth."""
@@ -910,7 +910,7 @@ async def _build_oauth_authorization_url(
 
 @router.get(
     "/instances/{instance_id}/oauth/authorize",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))],
 )
 async def get_oauth_authorization_url(
     request: Request,
@@ -931,7 +931,7 @@ async def get_oauth_authorization_url(
     )
 
 
-@router.post("/oauth/discover", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.post("/oauth/discover", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def discover_oauth_metadata_endpoint(request: Request, payload: OAuthDiscoveryRequest) -> dict[str, Any]:
     """Admin-only probe: does this MCP server support OAuth dynamic client registration,
     and if so, what are its real endpoints? Needed by the config panel in *create* mode,
@@ -1026,7 +1026,7 @@ async def _resolve_oauth_client_secret(
     raise ValueError("The OAuth app configuration for this instance changed during authorization.")
 
 
-@router.get("/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def handle_oauth_callback(
     request: Request,
     code: Optional[str] = Query(default=None),
@@ -1135,7 +1135,7 @@ async def handle_oauth_callback(
 
 @router.post(
     "/instances/{instance_id}/oauth/refresh",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, Any]:
     config_service = _get_config_service(request)
@@ -1175,7 +1175,7 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
 
 @router.get(
     "/instances/{instance_id}/oauth-config",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))],
 )
 async def get_oauth_config(request: Request, instance_id: str) -> dict[str, Any]:
     config_service = _get_config_service(request)
@@ -1209,7 +1209,7 @@ def _mask_secret(value: Optional[str]) -> Optional[str]:
 
 @router.put(
     "/instances/{instance_id}/oauth-config",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def update_oauth_config(
     request: Request,
@@ -1283,7 +1283,7 @@ async def _build_mcp_instance_entry(
     return entry
 
 
-@router.get("/my-mcp-servers", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/my-mcp-servers", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
 async def get_my_mcp_servers(
     request: Request,
     include_tools: bool = Query(default=True, alias="includeTools"),
@@ -1301,7 +1301,7 @@ async def get_my_mcp_servers(
 
 @router.get(
     "/instances/{instance_id}/tools",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))],
 )
 async def get_instance_tools(request: Request, instance_id: str) -> dict[str, Any]:
     config_service = _get_config_service(request)

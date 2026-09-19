@@ -103,12 +103,21 @@ async def create_knowledge_base(
                 detail="Knowledge base name is required (use 'name' or 'kbName' field)"
             )
 
+        raw_is_hidden = body.get("isHidden", False)
+        if not isinstance(raw_is_hidden, bool):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="'isHidden' must be a boolean",
+            )
+        is_hidden = raw_is_hidden
+
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         result = await kb_service.create_knowledge_base(
             user_id=user_id,
             org_id=org_id,
             name=name.strip(),
+            is_hidden=is_hidden,
         )
 
         if not result or result.get("success") is False:

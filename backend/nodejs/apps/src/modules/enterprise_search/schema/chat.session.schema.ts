@@ -92,6 +92,18 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
     compactedSummary: { type: String },
     compactedAtTurnIndex: { type: Number },
     compactedAtTimestamp: { type: Number },
+
+    // ---- Project linking (optional on both chat and agent sessions) ----
+    /** Reference to `projects` collection. Absent = not linked to a project. */
+    projectId: { type: Schema.Types.ObjectId, index: true },
+    /**
+     * Per-conversation override of the owning project's `chatSharing`
+     * default. 'project' exposes this chat to every project member with at
+     * least viewer access; 'private' (default) keeps it visible only to its
+     * owner even inside a shared project. See ProjectService.computeRole /
+     * getProjectConversations for the read-side of this rule.
+     */
+    projectVisibility: { type: String, enum: ['private', 'project'] },
   },
   { timestamps: true, collection: 'chatSessions' },
 );
@@ -107,6 +119,7 @@ chatSessionSchema.index({ sessionType: 1, orgId: 1, initiator: 1 });
 chatSessionSchema.index({ agentKey: 1, orgId: 1 });
 chatSessionSchema.index({ userId: 1, agentKey: 1 });
 chatSessionSchema.index({ isShared: 1 });
+chatSessionSchema.index({ projectId: 1, orgId: 1, isDeleted: 1, lastActivityAt: -1 });
 chatSessionSchema.index({ lastActivityAt: -1 });
 
 export const ChatSession: Model<IChatSessionDocument> =

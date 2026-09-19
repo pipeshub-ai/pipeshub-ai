@@ -378,6 +378,9 @@ class RSSConnector(BaseConnector):
         """Main sync method: parse feeds, crawl articles, and index content."""
         try:
             self.logger.info(f"🚀 Starting RSS sync for {len(self.feed_urls)} feed(s)")
+            # The instance outlives a sync (scheduled syncs reuse it), so a set left
+            # from the last run would skip every entry and no change would be indexed.
+            self.processed_urls.clear()
 
             if self.scope == ConnectorScope.TEAM.value:
                 await self.data_entities_processor.ensure_team_app_edge(

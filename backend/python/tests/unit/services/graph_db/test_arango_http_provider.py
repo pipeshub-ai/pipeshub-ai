@@ -936,6 +936,45 @@ class TestGetAccessibleVirtualRecordIds:
             assert result == {}
 
     @pytest.mark.asyncio
+    async def test_strict_scope_empty_filters_short_circuits(self, connected_provider):
+        """strictScope with no apps/kb must never fall back to the 'search
+        everything the user can access' scenario."""
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1"]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock,
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock,
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", filters={"strictScope": True}
+            )
+            assert result == {}
+            mock_connector.assert_not_awaited()
+            mock_kb.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_strict_scope_with_filters_still_queries(self, connected_provider):
+        """strictScope only short-circuits an *empty* effective scope — an
+        explicit kb selection (e.g. a project's own hidden KB) still runs."""
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["hidden-kb"]
+        ), patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"v1": "r1"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1",
+                filters={"strictScope": True, "kb": ["hidden-kb"]},
+            )
+            assert result == {"v1": "r1"}
+            mock_kb.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_knowledgebase_prefix_skipped(self, connected_provider):
         """KB apps now use UUID format and are processed like regular apps with type=KB"""
         kb_uuid = "550e8400-e29b-41d4-a716-446655440300"
@@ -10587,6 +10626,21 @@ class TestListUserKnowledgeBases:
         assert total == 0
 
     @pytest.mark.asyncio
+    async def test_query_excludes_hidden_kbs(self, connected_provider):
+        """Hidden KBs (e.g. a project's linked file collection) must never
+        surface in the Collections listing."""
+        connected_provider.http_client.execute_aql.side_effect = [[], [0], []]
+
+        await connected_provider.list_user_knowledge_bases(
+            "u1", "org1", skip=0, limit=10
+        )
+
+        main_query = connected_provider.http_client.execute_aql.await_args_list[0].args[0]
+        count_query = connected_provider.http_client.execute_aql.await_args_list[1].args[0]
+        assert main_query.count("FILTER kb.isHidden != true") == 2
+        assert count_query.count("FILTER kb.isHidden != true") == 2
+
+    @pytest.mark.asyncio
     async def test_with_search_filter(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
             [
@@ -11451,6 +11505,25 @@ class TestGetKbVirtualIds:
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         result = await connected_provider._get_kb_virtual_ids("u1", "org1")
         assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_excludes_hidden_when_unfiltered(self, connected_provider):
+        """The 'all accessible KBs' scenario (no kb_ids) must never surface a
+        hidden KB (e.g. a project's linked file collection)."""
+        connected_provider.http_client.execute_aql.return_value = []
+        await connected_provider._get_kb_virtual_ids("u1", "org1", kb_ids=None)
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        assert "FILTER kb.isHidden != true" in query
+
+    @pytest.mark.asyncio
+    async def test_explicit_filter_skips_hidden_exclusion(self, connected_provider):
+        """An explicit kb_ids list (a project chat reaching its own hidden
+        KB) is honoured as-is, without the hidden predicate."""
+        connected_provider.http_client.execute_aql.return_value = []
+        await connected_provider._get_kb_virtual_ids("u1", "org1", kb_ids=["hidden-kb"])
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        assert "FILTER kb._key IN @kb_ids" in query
+        assert "FILTER kb.isHidden != true" not in query
 
 
 # ---------------------------------------------------------------------------
@@ -12912,6 +12985,7 @@ class TestCreateKbPermissionsExtended:
             "user_operations": [],
             "team_operations": [],
             "users_to_insert": [{"user_key": "u2", "user_id": "u2"}],
+            "users_to_update": [],
             "teams_to_insert": [],
         }
         connected_provider.execute_query = AsyncMock(return_value=[query_result])
@@ -12962,6 +13036,48 @@ class TestCreateKbPermissionsExtended:
         )
         assert result["success"] is True
         assert result["grantedCount"] == 1
+
+    @pytest.mark.asyncio
+    async def test_role_update_for_existing_user(self, connected_provider):
+        """When a user already has a PERMISSION edge with a different role,
+        create_kb_permissions should UPDATE the existing edge rather than
+        silently skipping it (the 'operation == update' branch)."""
+        query_result = {
+            "is_valid": True,
+            "requester_found": True,
+            "kb_exists": True,
+            "user_operations": [
+                {"user_id": "u2", "user_key": "u2", "operation": "update",
+                 "current_role": "WRITER", "perm_key": "perm_123"},
+            ],
+            "team_operations": [],
+            "users_to_insert": [],
+            "users_to_update": [
+                {"user_id": "u2", "user_key": "u2", "operation": "update",
+                 "current_role": "WRITER", "perm_key": "perm_123"},
+            ],
+            "teams_to_insert": [],
+        }
+        call_count = 0
+        async def fake_execute(query, bind_vars=None, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [query_result]
+            return []
+
+        connected_provider.execute_query = AsyncMock(side_effect=fake_execute)
+        connected_provider.batch_create_edges = AsyncMock()
+        result = await connected_provider.create_kb_permissions(
+            "kb1", "u1", ["u2"], [], "READER"
+        )
+        assert result["success"] is True
+        assert result["updatedCount"] == 1
+        assert result["updatedUsers"] == ["u2"]
+        assert result["grantedCount"] == 0
+        assert connected_provider.execute_query.call_count == 2
+        update_call = connected_provider.execute_query.call_args_list[1]
+        assert update_call[1].get("bind_vars", update_call[0][1] if len(update_call[0]) > 1 else {}).get("role") == "READER"
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):

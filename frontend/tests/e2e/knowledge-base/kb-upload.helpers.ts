@@ -39,12 +39,18 @@ export async function createTestKb(
   return { id, name };
 }
 
-/** Delete a KB via the real API. Best-effort — does not throw on failure. */
+/**
+ * Delete a KB via the real API. Throws if the delete fails, so a leaked test KB
+ * shows up; 404 is accepted because a test may already have deleted it.
+ */
 export async function deleteTestKb(
   apiContext: APIRequestContext,
   kbId: string,
 ): Promise<void> {
-  await apiContext.delete(`/api/v1/knowledgeBase/${kbId}`).catch(() => undefined);
+  const response = await apiContext.delete(`/api/v1/knowledgeBase/${kbId}`);
+  if (!response.ok() && response.status() !== 404) {
+    throw new Error(`deleteTestKb ${kbId} failed [${response.status()}]: ${await response.text()}`);
+  }
 }
 
 /**
@@ -293,8 +299,9 @@ export function fitsInPlaywrightBuffer(sizeBytes: number): boolean {
  * that race, and is the correct end-to-end condition we actually need.
  */
 /**
- * Fixed timeouts for openUploadSidebar so a slow/unavailable backend causes
- * a quick `test.skip` instead of hanging for the caller's full test timeout.
+ * Fixed timeouts for openUploadSidebar so a slow/unavailable backend fails
+ * the caller's `not.toBeNull()` check quickly instead of hanging for its full
+ * test timeout.
  * Without these, `waitFor` inherits the test timeout — tests that set
  * `test.setTimeout(180_000)` would block for up to 3 minutes waiting for a
  * button that will never appear when the backend is down.

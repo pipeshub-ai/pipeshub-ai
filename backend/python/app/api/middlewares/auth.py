@@ -289,14 +289,20 @@ class AuthPolicy:
 
     kind: Literal["scopes", "service", "deny_service"]
     service_scopes: frozenset[str] = frozenset()
+    oauth_scopes: frozenset[str] = frozenset()
 
 
 def _tag_auth_policy(
     dependency: Callable[..., Any],
     kind: Literal["scopes", "service", "deny_service"],
     service_scopes: Iterable[ScopeLike] = (),
+    oauth_scopes: Iterable[ScopeLike] = (),
 ) -> Callable[..., Any]:
-    policy = AuthPolicy(kind, frozenset(scope_value(scope) for scope in service_scopes))
+    policy = AuthPolicy(
+        kind,
+        frozenset(scope_value(scope) for scope in service_scopes),
+        frozenset(scope_value(scope) for scope in oauth_scopes),
+    )
     setattr(dependency, AUTH_POLICY_ATTR, policy)
     return dependency
 
@@ -348,7 +354,7 @@ def require_scopes(
                 detail=f"Insufficient scope. Required: {' or '.join(required_scopes)}",
             )
 
-    return _tag_auth_policy(_check_scopes, "scopes", admitted_service_scopes)
+    return _tag_auth_policy(_check_scopes, "scopes", admitted_service_scopes, required_scopes)
 
 
 def require_service_token(*scopes: ScopeLike) -> Callable[..., Coroutine[Any, Any, Mapping[str, Any]]]:

@@ -2232,6 +2232,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Update node failed: {str(e)}")
             raise
 
+    async def update_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        node: dict,
+        match_field: str,
+        match_value: Any,
+        transaction: str | None = None,
+    ) -> bool:
+        """REPLACE the document only while `match_field` still equals
+        `match_value`. FILTER + REPLACE is one AQL statement so a concurrent
+        overwrite cannot sneak in between the check and the write."""
+        try:
+            arango_node = self._translate_node_to_arango(node)
+            arango_node["_key"] = key
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key == @key AND doc[@field] == @expected
+                REPLACE doc WITH @node IN @@collection
+                RETURN NEW._key
+            """
+            updated = await self.http_client.execute_aql(
+                query,
+                {
+                    "@collection": collection,
+                    "key": key,
+                    "field": match_field,
+                    "expected": match_value,
+                    "node": arango_node,
+                },
+                transaction,
+            )
+            return bool(updated)
+        except Exception as e:
+            self.logger.error("❌ Conditional node update failed: %s", str(e))
+            raise
+
     async def batch_update_nodes(
         self,
         nodes: list[dict],
@@ -10561,6 +10598,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER kb != null
                     FILTER kb.orgId == @org_id
                     FILTER kb.type == @kb_type
+                    FILTER kb.isHidden != true
                     {additional_filters}
                     RETURN {{
                         kb_id: kb._key,
@@ -10593,6 +10631,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER kb != null
                         FILTER kb.orgId == @org_id
                         FILTER kb.type == @kb_type
+                        FILTER kb.isHidden != true
                         {additional_filters}
                         RETURN {{
                             kb_id: kb._key,
@@ -10667,6 +10706,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER kb != null
                     FILTER kb.orgId == @count_org_id
                     FILTER kb.type == @count_kb_type
+                    FILTER kb.isHidden != true
                     {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
                     RETURN {{
                         kb_id: kb._key,
@@ -10698,6 +10738,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER kb != null
                         FILTER kb.orgId == @count_org_id
                         FILTER kb.type == @count_kb_type
+                        FILTER kb.isHidden != true
                         {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
                         RETURN {{
                             kb_id: kb._key,
@@ -10736,6 +10777,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER kb != null
                     FILTER kb.orgId == @filters_org_id
                     FILTER kb.type == @filters_kb_type
+                    FILTER kb.isHidden != true
                     RETURN {
                         kb_id: kb._key,
                         permission: perm.role,
@@ -10767,6 +10809,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER kb != null
                         FILTER kb.orgId == @filters_org_id
                         FILTER kb.type == @filters_kb_type
+                        FILTER kb.isHidden != true
                         RETURN {
                             kb_id: kb._key,
                             permission: team_info.role,
@@ -12454,6 +12497,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 user_operations: user_operations,
                 team_operations: team_operations,
                 users_to_insert: user_operations[* FILTER CURRENT.operation == "insert"],
+                users_to_update: user_operations[* FILTER CURRENT.operation == "update"],
                 teams_to_insert: team_operations[* FILTER CURRENT.operation == "insert"],
             }
             """
@@ -12479,6 +12523,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if not result.get("kb_exists"):
                     return {"success": False, "reason": "Knowledge base not found", "code": 404}
             users_to_insert = result.get("users_to_insert", [])
+            users_to_update = result.get("users_to_update", [])
             teams_to_insert = result.get("teams_to_insert", [])
             insert_docs = [
                 {
@@ -12511,11 +12556,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if insert_docs:
                 await self.batch_create_edges(insert_docs, CollectionNames.PERMISSION.value)
+
+            # Apply role changes for users whose PERMISSION edge already
+            # exists but carries a stale role (e.g. WRITER → READER on a
+            # project-member downgrade).  The detection AQL above already
+            # tagged these as operation == "update" with their perm_key.
+            if users_to_update:
+                perm_keys = [u["perm_key"] for u in users_to_update]
+                update_query = """
+                FOR key IN @perm_keys
+                    UPDATE key WITH { role: @role, updatedAtTimestamp: @timestamp } IN @@permissions_collection
+                """
+                await self.execute_query(
+                    update_query,
+                    bind_vars={
+                        "perm_keys": perm_keys,
+                        "role": role,
+                        "timestamp": timestamp,
+                        "@permissions_collection": CollectionNames.PERMISSION.value,
+                    },
+                )
+
             granted_count = len(users_to_insert) + len(teams_to_insert)
+            updated_count = len(users_to_update)
             return {
                 "success": True,
                 "grantedCount": granted_count,
+                "updatedCount": updated_count,
                 "grantedUsers": [u["user_id"] for u in users_to_insert],
+                "updatedUsers": [u["user_id"] for u in users_to_update],
                 "grantedTeams": [t["team_id"] for t in teams_to_insert],
                 "role": role,
                 "kbId": kb_id,
@@ -12919,7 +12988,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER kbEdge.type == "USER"
                     FILTER kbEdge.role IN @kb_permissions
                     LET kb = DOCUMENT(kbEdge._to)
-                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB"
+                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true
                     RETURN {{ kb_id: kb._key, kb_doc: kb, role: kbEdge.role }}
             )
             LET teamKbAccess = (
@@ -12927,7 +12996,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER teamKbPerm.type == "TEAM"
                     FILTER STARTS_WITH(teamKbPerm._to, "apps/")
                     LET kb = DOCUMENT(teamKbPerm._to)
-                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB"
+                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true
                     LET team_id = SPLIT(teamKbPerm._from, '/')[1]
                     LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN userTeamPerm.role)
                     FILTER user_team_perm != null
@@ -12961,8 +13030,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             count_query = """
             LET user_from = @user_from
             LET org_id = @org_id
-            LET directKbAccess = (FOR kbEdge IN @@permission FILTER kbEdge._from == user_from FILTER kbEdge.type == "USER" FILTER kbEdge.role IN @kb_permissions LET kb = DOCUMENT(kbEdge._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" RETURN { kb_doc: kb })
-            LET teamKbAccess = (FOR teamKbPerm IN @@permission FILTER teamKbPerm.type == "TEAM" FILTER STARTS_WITH(teamKbPerm._to, "apps/") LET kb = DOCUMENT(teamKbPerm._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" LET team_id = SPLIT(teamKbPerm._from, '/')[1] LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN 1) FILTER user_team_perm != null RETURN { kb_doc: kb })
+            LET directKbAccess = (FOR kbEdge IN @@permission FILTER kbEdge._from == user_from FILTER kbEdge.type == "USER" FILTER kbEdge.role IN @kb_permissions LET kb = DOCUMENT(kbEdge._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true RETURN { kb_doc: kb })
+            LET teamKbAccess = (FOR teamKbPerm IN @@permission FILTER teamKbPerm.type == "TEAM" FILTER STARTS_WITH(teamKbPerm._to, "apps/") LET kb = DOCUMENT(teamKbPerm._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true LET team_id = SPLIT(teamKbPerm._from, '/')[1] LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN 1) FILTER user_team_perm != null RETURN { kb_doc: kb })
             LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_doc._key == t.kb_doc._key RETURN 1) == 0 RETURN t))
             LET kbCount = LENGTH(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" RETURN 1)
             LET connectorCount = LENGTH(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" RETURN 1)
@@ -13920,6 +13989,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR app IN apps
                 FILTER app._key IN @user_app_ids
                 FILTER app.type == "KB" OR NOT (app.hideConnector == true)
+                FILTER NOT (app.type == "KB" AND app.isHidden == true)
                 // KB apps have records pointing directly to them via belongsTo;
                 // external connector apps have recordGroups pointing to them.
                 LET has_children = app.type == "KB" ? (LENGTH(
@@ -14495,12 +14565,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
         // ========== KB APP-BASED SEED (paths 8-9) ==========
+        // Hidden collections (a project's linked file KB) must not seed records into
+        // Knowledge Hub search; they stay reachable when named by id.
         LET seed_apps_direct = (
             FOR perm IN permission
                 FILTER perm._from == user_from AND perm.type == "USER"
                 FILTER STARTS_WITH(perm._to, "apps/")
                 LET app = DOCUMENT(perm._to)
-                FILTER app != null AND app.orgId == @org_id AND app.type == "KB"
+                FILTER app != null AND app.orgId == @org_id AND app.type == "KB" AND app.isHidden != true
                 RETURN app
         )
 
@@ -14512,7 +14584,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER appPerm._from == teamPerm._to AND appPerm.type == "TEAM"
                     FILTER STARTS_WITH(appPerm._to, "apps/")
                     LET app = DOCUMENT(appPerm._to)
-                    FILTER app != null AND app.orgId == @org_id AND app.type == "KB"
+                    FILTER app != null AND app.orgId == @org_id AND app.type == "KB" AND app.isHidden != true
                     RETURN app
         )
 
@@ -15423,10 +15495,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_key: str,
         transaction: str | None = None
     ) -> list[str]:
-        """Get list of app IDs the user has access to: direct User->App and via User->Team->App."""
+        """Get list of app IDs the user has access to: direct User->App and via User->Team->App.
+
+        Only feeds Knowledge Hub browse/search (see `knowledge_hub_service.py`),
+        so hidden KBs (e.g. a project's linked file collection) are excluded
+        here rather than threading an extra flag through every caller.
+        """
         try:
             apps = await self.get_user_apps(user_key, transaction)
-            return [a.get("_key") or a.get("id") for a in apps if a and (a.get("_key") or a.get("id"))]
+            return [
+                a.get("_key") or a.get("id")
+                for a in apps
+                if a and (a.get("_key") or a.get("id")) and not a.get("isHidden")
+            ]
         except Exception as e:
             self.logger.error("❌ Failed to get user app ids: %s", str(e))
             return []
@@ -15442,6 +15523,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         instance-membership (USER_APP_RELATION) access. Any role counts —
         role enforcement for a specific KB happens elsewhere
         (get_user_kb_permission); this only decides visibility.
+
+        Only feeds Knowledge Hub browse/search (see `knowledge_hub_service.py`),
+        so hidden KBs (e.g. a project's linked file collection) are excluded
+        here rather than threading an extra flag through every caller.
         """
         try:
             query = f"""
@@ -15452,7 +15537,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER perm._from == user_from AND perm.type == "USER"
                     FILTER STARTS_WITH(perm._to, "{CollectionNames.APPS.value}/")
                     LET app = DOCUMENT(perm._to)
-                    FILTER app != null AND app.orgId == @org_id
+                    FILTER app != null AND app.orgId == @org_id AND app.isHidden != true
                     RETURN app._key
             )
 
@@ -15470,7 +15555,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER perm.type == "TEAM"
                         FILTER STARTS_WITH(perm._to, "{CollectionNames.APPS.value}/")
                         LET app = DOCUMENT(perm._to)
-                        FILTER app != null AND app.orgId == @org_id
+                        FILTER app != null AND app.orgId == @org_id AND app.isHidden != true
                         RETURN app._key
             )
 
@@ -18958,7 +19043,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Dict mapping virtualRecordId -> recordId for accessible KB records
         """
         try:
-            kb_filter_clause = "FILTER kb._key IN @kb_ids" if kb_ids else ""
+            # With no explicit kb_ids (the "all accessible KBs" scenario),
+            # hidden KBs (e.g. a project's linked file collection) are
+            # excluded so they never surface in unscoped search. An explicit
+            # kb_ids list — how a project chat reaches its own hidden KB —
+            # is honoured as-is.
+            kb_filter_clause = (
+                "FILTER kb._key IN @kb_ids"
+                if kb_ids
+                else "FILTER kb.isHidden != true"
+            )
             metadata_filter_lines = []
             if metadata_filters:
                 if metadata_filters.get("departments"):
@@ -19190,11 +19284,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             filters = filters or {}
             kb_ids = filters.get("kb")
             connector_ids_filter = filters.get("apps")
+            # Threaded through from ChatQuery.strictScope by the caller — a
+            # project-scoped chat sets this so an empty effective scope stays
+            # empty ("search everything the user can access" must never
+            # apply), instead of quietly widening back out.
+            strict_scope = bool(filters.get("strictScope"))
 
             # Extract metadata filters (everything except kb and apps)
             metadata_filters = {
                 k: v for k, v in filters.items()
-                if k not in ["kb", "apps"] and v
+                if k not in ["kb", "apps", "strictScope"] and v
             }
 
             tasks = []
@@ -19238,6 +19337,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             has_kb_filter = bool(kb_ids)
             has_app_filter = bool(connector_ids_filter)
+
+            if strict_scope and not has_kb_filter and not has_app_filter:
+                self.logger.info(
+                    "🔒 Strict scope with an empty effective apps/kb selection — "
+                    "returning no accessible records instead of the 'search "
+                    "everything' fallback"
+                )
+                return {}
 
             if has_app_filter and has_kb_filter:
                 connectors_to_query = [
@@ -20310,7 +20417,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         category: skill.category,
                         subcategory: skill.subcategory,
                         version: skill.version,
-                        status: skill.status
+                        status: skill.status,
+                        deprecatedReason: skill.deprecatedReason,
+                        replacedBy: skill.replacedBy
                     }}
             )
 

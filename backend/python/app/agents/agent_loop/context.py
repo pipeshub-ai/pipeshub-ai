@@ -114,6 +114,12 @@ class AgentContext(BaseModel):
     # (`agentIdPlaceholder` via `agent.py`). Real Agent Builder agents never
     # populate this field — they use their own `system_prompt`/`instructions`.
     custom_instructions: str | None = None
+    # Author-set instructions from a Project this conversation is linked to
+    # (Node `ProjectService.buildContext` -> `applyProjectContext` ->
+    # `ChatQuery.projectInstructions`). Rendered as its own prompt section
+    # (see `prompt_builder.py`), distinct from `instructions` (agent-specific)
+    # and `custom_instructions` (org-level) — never touches agent identity.
+    project_instructions: str | None = None
     timezone: str | None = None
     current_time: str | None = None
 
@@ -391,6 +397,7 @@ class AgentContext(BaseModel):
             system_prompt=state.get("system_prompt"),
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
+            project_instructions=state.get("project_instructions"),
             timezone=state.get("timezone"),
             current_time=state.get("current_time"),
             conversation_id=state.get("conversation_id"),
@@ -486,6 +493,7 @@ class AgentContext(BaseModel):
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,
+            "project_instructions": self.project_instructions,
             "timezone": self.timezone,
             "current_time": self.current_time,
             "previous_conversations": self.previous_conversations,

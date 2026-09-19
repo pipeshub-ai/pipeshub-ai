@@ -6,31 +6,28 @@
  * configured TTS/STT provider and fall back to the browser Web Speech API
  * otherwise.
  *
- * Written in vitest/jest-compatible style. They become executable the moment
- * a unit-test runner is added to `frontend` (only Playwright is
- * currently configured), matching the convention established by
- * `app/(main)/chat/utils/__tests__/parse-download-markers.test.ts`.
  */
 
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { renderHook } from '@testing-library/react';
 
 import { useChatSpeechRecognition } from '../use-chat-speech-recognition';
 import { useChatSpeechSynthesis } from '../use-chat-speech-synthesis';
 
-jest.mock('../use-chat-speech-config', () => ({
-  useChatSpeechConfig: jest.fn(),
+vi.mock('../use-chat-speech-config', () => ({
+  useChatSpeechConfig: vi.fn(),
 }));
-jest.mock('../use-speech-recognition', () => ({
-  useSpeechRecognition: jest.fn(),
+vi.mock('../use-speech-recognition', () => ({
+  useSpeechRecognition: vi.fn(),
 }));
-jest.mock('../use-server-speech-recognition', () => ({
-  useServerSpeechRecognition: jest.fn(),
+vi.mock('../use-server-speech-recognition', () => ({
+  useServerSpeechRecognition: vi.fn(),
 }));
-jest.mock('../use-speech-synthesis', () => ({
-  useSpeechSynthesis: jest.fn(),
+vi.mock('../use-speech-synthesis', () => ({
+  useSpeechSynthesis: vi.fn(),
 }));
-jest.mock('../use-server-speech-synthesis', () => ({
-  useServerSpeechSynthesis: jest.fn(),
+vi.mock('../use-server-speech-synthesis', () => ({
+  useServerSpeechSynthesis: vi.fn(),
 }));
 
 import { useChatSpeechConfig } from '../use-chat-speech-config';
@@ -39,11 +36,11 @@ import { useServerSpeechSynthesis } from '../use-server-speech-synthesis';
 import { useSpeechRecognition } from '../use-speech-recognition';
 import { useSpeechSynthesis } from '../use-speech-synthesis';
 
-const mockedConfig = useChatSpeechConfig as unknown as jest.Mock;
-const mockedBrowserStt = useSpeechRecognition as unknown as jest.Mock;
-const mockedServerStt = useServerSpeechRecognition as unknown as jest.Mock;
-const mockedBrowserTts = useSpeechSynthesis as unknown as jest.Mock;
-const mockedServerTts = useServerSpeechSynthesis as unknown as jest.Mock;
+const mockedConfig = useChatSpeechConfig as unknown as Mock;
+const mockedBrowserStt = useSpeechRecognition as unknown as Mock;
+const mockedServerStt = useServerSpeechRecognition as unknown as Mock;
+const mockedBrowserTts = useSpeechSynthesis as unknown as Mock;
+const mockedServerTts = useServerSpeechSynthesis as unknown as Mock;
 
 const originalUserAgent = navigator.userAgent;
 const originalBrave = (navigator as unknown as { brave?: unknown }).brave;
@@ -54,10 +51,10 @@ function makeSttResult(label: string) {
     isSupported: true,
     transcript: label,
     interimTranscript: '',
-    start: jest.fn(),
-    stop: jest.fn(),
-    toggle: jest.fn(),
-    resetTranscript: jest.fn(),
+    start: vi.fn(),
+    stop: vi.fn(),
+    toggle: vi.fn(),
+    resetTranscript: vi.fn(),
   };
 }
 
@@ -65,14 +62,14 @@ function makeTtsResult(label: string) {
   return {
     isSpeaking: false,
     isSupported: true,
-    speak: jest.fn().mockName(`${label}-speak`),
-    stop: jest.fn(),
+    speak: vi.fn().mockName(`${label}-speak`),
+    stop: vi.fn(),
   };
 }
 
 describe('useChatSpeechRecognition', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     Object.defineProperty(navigator, 'userAgent', {
       configurable: true,
       value: originalUserAgent,
@@ -146,7 +143,7 @@ describe('useChatSpeechRecognition', () => {
     });
     Object.defineProperty(navigator, 'brave', {
       configurable: true,
-      value: { isBrave: jest.fn() },
+      value: { isBrave: vi.fn() },
     });
 
     const { result } = renderHook(() => useChatSpeechRecognition());
@@ -195,7 +192,7 @@ describe('useChatSpeechRecognition', () => {
 
 describe('useChatSpeechSynthesis', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     mockedBrowserTts.mockReturnValue(makeTtsResult('browser'));
     mockedServerTts.mockReturnValue(makeTtsResult('server'));
   });

@@ -177,6 +177,9 @@ app_schema = {
             "orgId": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
             "hideConnector": {"type": ["boolean", "null"]},
+            # Excludes this KB from list/browse/unscoped-search surfaces even
+            # though it is a normal KB app; explicit filters.kb still resolves it.
+            "isHidden": {"type": ["boolean", "null"]},
         },
         "required": [
             "name",
@@ -1318,7 +1321,7 @@ agent_skills_schema = {
             "concepts": {"type": "array", "items": {"type": "string"}, "default": []},
             "related": {"type": "array", "items": {"type": "string"}, "default": []},
             "requires": {"type": "array", "items": {"type": "string"}, "default": []},
-            "status": {"type": "string", "enum": ["active", "deprecated"]},
+            "status": {"type": "string", "enum": ["active", "deprecated", "disabled"]},
             "source": {"type": "string"},
             "version": {"type": "string"},
             "deprecatedReason": {"type": ["string", "null"]},

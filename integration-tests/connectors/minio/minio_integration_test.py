@@ -109,7 +109,8 @@ class TestMinioConnector:
         before_count = await settle_record_baseline(
             pipeshub_client, graph_provider, connector_id
         )
-        new_files = unique_incremental_csv_files()
+        # Under this run's folder: the connector syncs only that folder.
+        new_files = {f"{minio_connector['folder']}{k}": v for k, v in unique_incremental_csv_files().items()}
         new_names = record_names_from_keys(new_files)
         for object_key, file_bytes in new_files.items():
             minio_storage.upload_object(

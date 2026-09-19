@@ -185,10 +185,11 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.PROJECT_IDS.value,
-            display_name="Repositories",
-            description="Limit sync to specific repositories (path_with_namespace, e.g. my-org/my-repo)",
-            filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
+            display_name="Repository",
+            description="Select the repository to sync.",
+            filter_type=FilterType.SELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
+            required=True,
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.MODIFIED.value,

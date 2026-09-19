@@ -33,6 +33,7 @@ End-to-end tests for the PipesHub frontend using [Playwright](https://playwright
 | Command | Description |
 |---------|-------------|
 | `npm run test:e2e` | Run all tests (starts dev server automatically) |
+| `npm run test:e2e:smoke` | Run only the `@smoke` tests: the few most important flows, in a few minutes |
 | `npm run test:e2e:ui` | Open Playwright UI for interactive debugging |
 | `npm run test:e2e:headed` | Run tests in a visible browser |
 | `npm run test:e2e:seed` | Seed bulk test data (30 users, 30 groups, 30 teams) |
@@ -43,6 +44,12 @@ End-to-end tests for the PipesHub frontend using [Playwright](https://playwright
 | `npm run test:e2e:report` | Open the HTML test report |
 | `npm run test:e2e:coverage` | Run all tests with V8 code coverage |
 | `npm run test:e2e:coverage-report` | Open the coverage HTML report |
+
+## Smoke tests
+
+Tests whose title ends in `@smoke` form a quick set covering the most important flows: signing in, pages loading, a chat answer, a knowledge-base upload, and the users, settings and service-health pages. CI runs them on every pull request in their own workflow (`.github/workflows/e2e-smoke.yml`), so a pull request gets a browser signal in minutes rather than after the full integration run. That workflow uses no repository secrets: it starts a throwaway stack and makes up its own admin login for each run. It skips pull requests opened from forks, because it runs on our self-hosted runner. The sign-in setup test is tagged too, because filtering by title would otherwise skip it. Keep the set small and fast; tag a test only if a failure there would block a release.
+
+A test should fail, not skip, when something it needs is missing from the page. Skip only for a genuine environment limit (for example, SMTP not configured, or an Enterprise-only feature), and give the reason.
 
 ## Code Coverage
 

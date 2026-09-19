@@ -108,6 +108,8 @@ async def postgres_connector(
         connector_name=f"postgres-lifecycle-test-{uuid.uuid4().hex[:8]}",
         connector_config=config,
         expected_records=len(SEED_TABLES),
+        # PostgreSQL is registered for team scope only; "personal" is rejected with a 400.
+        scope="team",
     )
 
     yield state

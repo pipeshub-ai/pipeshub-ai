@@ -13,13 +13,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
-from app.utils.stage_timer import StageTimer
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
@@ -30,7 +29,10 @@ from app.api.routes.chatbot import (
     load_system_prompts,
 )
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.ai_models import REASONING_EFFORT_VALUES, validate_reasoning_effort
+from app.config.constants.ai_models import (
+    REASONING_EFFORT_VALUES,
+    validate_reasoning_effort,
+)
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
@@ -54,6 +56,7 @@ from app.telemetry.identity import domain_from_email
 from app.utils.attachment_utils import (
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
+from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # `RouteDecision`/`_build_agent_capability_context`/`_build_prior_routing_messages`/
@@ -129,6 +132,11 @@ class ChatQuery(BaseModel):
     timezone: str | None = None
     currentTime: str | None = None
     conversationId: str | None = None
+    # Author-set instructions from the Project this conversation is linked
+    # to (Node `ProjectService.buildContext`). Additive — rendered as its
+    # own prompt section, never merged into the agent's system_prompt/
+    # instructions, so a real Agent Builder agent's identity is untouched.
+    projectInstructions: str | None = Field(default=None, max_length=8000)
     # End-user display name when JWT userId is synthetic (e.g. Slack) — see
     # _merge_end_user_into_service_account_user_info.
     callerDisplayName: str | None = None
@@ -152,6 +160,10 @@ class ChatQuery(BaseModel):
     # later `POST /chat/cancel {runId}` (`chatbot.py` — one endpoint for
     # both assistant and agent runs) can target it.
     runId: str | None = None
+    # Set by Node for a project-scoped chat (see `applyProjectScope`,
+    # project-context.ts). Threaded into `filters["strictScope"]` below —
+    # see `ChatQuery.strictScope` in chatbot.py for the full rationale.
+    strictScope: bool = False
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
@@ -1358,6 +1370,13 @@ async def _create_skill_edges(
             continue
         if skill_doc.get("source") != "builtin" and skill_doc.get("createdBy") != user_key:
             logger.warning(f"Skipping skill '{name}' not owned by user {user_key} for agent {agent_key}")
+            continue
+        if (skill_doc.get("status") or "active") != "active":
+            # Mirrors the picker (`GET /skills?status=active`, see
+            # `SkillsApi.listAssignableSkills`) — closes the gap where a
+            # direct API call could still newly assign a disabled or
+            # deprecated skill the UI never offers.
+            logger.warning(f"Skipping non-active skill '{name}' for agent {agent_key}")
             continue
         edges.append({
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
@@ -3347,7 +3366,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # loads an external toolset when it appears in `context.agent_toolsets`)
                 # loads none of them, regardless of what's attached.
                 if actions_enabled is None:
-                    from app.services.featureflag.platform_settings import is_actions_enabled
+                    from app.services.featureflag.platform_settings import (
+                        is_actions_enabled,
+                    )
 
                     actions_enabled = await is_actions_enabled(config_service)
                 agent_toolsets = agent.get("toolsets", []) if actions_enabled else []
@@ -3382,7 +3403,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     mcp_enabled = await is_mcp_enabled(config_service)
                 agent_mcp_servers = agent.get("mcpServers", []) if mcp_enabled else []
                 if chat_query.tools is not None:
-                    from app.agents.mcp.service import match_enabled_tools_for_mcp_server
+                    from app.agents.mcp.service import (
+                        match_enabled_tools_for_mcp_server,
+                    )
 
                     enabled_tools_set = set(chat_query.tools)
                     filtered_mcp_servers = []
@@ -3557,7 +3580,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 named_mcp_servers = [m for m in agent_mcp_servers if m.get("instanceId")]
                 if named_mcp_servers:
-                    import asyncio as _asyncio  # noqa: F401 — may not have run yet if named_toolsets was empty above
+                    import asyncio as _asyncio
 
                     from app.agents.mcp import service as mcp_service
                     from app.edition_config import get_mcp_instance_resolved
@@ -3686,6 +3709,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 if not filters.get("kb") and agent_id != "agentIdPlaceholder":
                     filters["kb"] = [NO_KB_SELECTED_FILTER]
 
+                # A project-scoped chat sets this so an empty effective
+                # apps/kb selection stays empty at retrieval time instead of
+                # `get_accessible_virtual_record_ids` falling back to
+                # "search everything the user can access".
+                if chat_query.strictScope:
+                    filters["strictScope"] = True
+
                 agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
 
                 logger.info(f"Filters: {filters}")
@@ -3754,6 +3784,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "systemPrompt": agent.get("systemPrompt"),
                     "instructions": agent.get("instructions"),
                     "custom_instructions": custom_instructions,
+                    "projectInstructions": chat_query.projectInstructions,
                     "timezone": chat_query.timezone,
                     "currentTime": chat_query.currentTime,
                     "toolsets": agent_toolsets,
@@ -3881,8 +3912,8 @@ async def get_assistant_agent(
         chat handler can skip re-reading the identical etcd paths.
     """
     from app.agents.mcp.service import get_authenticated_mcp_servers, is_mcp_enabled
-    from app.edition_config import resolve_mcp_instances_with_inheritance
     from app.api.routes.toolsets import get_authenticated_toolsets, is_actions_enabled
+    from app.edition_config import resolve_mcp_instances_with_inheritance
 
     toolset_auth_by_instance: dict[str, dict[str, Any]] = {}
 

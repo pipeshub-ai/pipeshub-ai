@@ -2301,6 +2301,32 @@ class DataSourceEntitiesProcessor:
                 record_type=type_value,
             )
 
+    async def get_records_in_record_group(
+        self,
+        connector_id: str,
+        external_group_id: str,
+        limit: int,
+        after_key: str | None = None,
+    ) -> list[Record]:
+        """Return up to ``limit`` of this connector's records in one record group, ordered by id.
+
+        For the next page, pass the last returned record's id as ``after_key``.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            group = await tx_store.get_record_group_by_external_id(
+                connector_id=connector_id, external_id=external_group_id
+            )
+            if not group:
+                return []
+            return await tx_store.get_records_by_status(
+                org_id=self.org_id,
+                connector_id=connector_id,
+                status_filters=None,
+                record_group_id=group.id,
+                limit=limit,
+                after_key=after_key,
+            )
+
     async def get_placeholder_records(
         self,
         connector_id: str,

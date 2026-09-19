@@ -64,6 +64,7 @@ import Citation from '../../../../src/modules/enterprise_search/schema/citation.
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 
 // ---------------------------------------------------------------------------
@@ -121,6 +122,16 @@ function createMockAppConfig(): any {
     iamBackend: 'http://localhost:3001',
     frontendUrl: 'http://localhost:3000',
   }
+}
+
+function stubUsersFindForSharedBy(users: any[] = []) {
+  const findChain: any = {
+    select: sinon.stub().returnsThis(),
+    lean: sinon.stub().returnsThis(),
+    exec: sinon.stub().resolves(users),
+  }
+  sinon.stub(Users, 'find').returns(findChain as any)
+  return findChain
 }
 
 function createMockSession(): any {
@@ -313,6 +324,14 @@ describe('Enterprise Search Controller', () => {
     }
     if (!(ChatSessionMessage.aggregate as any).restore) {
       sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
+    }
+    // getConversationById / getAllConversations(source=shared) / getAllAgentConversations
+    // call this on every request to extend the access filter with
+    // project-shared conversations; default to "no accessible projects" so
+    // unrelated tests don't buffer against a real Mongo connection for 10s.
+    // Individual tests can `.resolves(...)` a different value after this.
+    if (!(ProjectService.getAccessibleProjectIds as any).restore) {
+      sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
     }
   })
 
@@ -4003,6 +4022,9 @@ describe('Enterprise Search Controller', () => {
       }
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
+      stubUsersFindForSharedBy([
+        { _id: VALID_OID3, fullName: 'Priya Sharma', email: 'priya@test.com' },
+      ])
 
       const req = createMockRequest({
         query: { page: '1', limit: '10', source: 'shared' },
@@ -4019,6 +4041,10 @@ describe('Enterprise Search Controller', () => {
         expect(response).to.have.property('conversations')
         expect(response).to.have.property('source', 'shared')
         expect(response).to.have.property('pagination')
+        expect(response.conversations[0].sharedBy).to.deep.equal({
+          userId: VALID_OID3,
+          name: 'Priya Sharma',
+        })
         // shared branch strips the sharedWith field from the projection
         expect(findChain.select.getCalls().some((c: any) => c.args[0] === '-sharedWith')).to.be.true
       }

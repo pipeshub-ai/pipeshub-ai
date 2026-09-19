@@ -35,12 +35,14 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import (
+    FailedItems,
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
 )
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.connectors.core.registry.folder_scope import FolderScope, clean_up_scope
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOption,
@@ -660,7 +662,19 @@ class S3CompatibleBaseConnector(BaseConnector):
         return self.region or "us-east-1"
 
     async def _sync_bucket(self, bucket_name: str) -> None:
-        """Sync objects from a specific bucket with pagination support and incremental sync."""
+        """Sync a bucket, or only the folders the folder filter names."""
+        sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
+        scope = FolderScope.from_filters(sync_filters)
+        if not scope.is_everything:
+            self.logger.info(f"Folder filter for bucket {bucket_name}: {scope.describe()}")
+        for prefix in scope.list_prefixes:
+            await self._sync_bucket_prefix(bucket_name, prefix, scope)
+        await clean_up_scope(
+            self.data_entities_processor, self.record_sync_point, self.connector_id, bucket_name, scope, self.logger
+        )
+
+    async def _sync_bucket_prefix(self, bucket_name: str, prefix: str, scope: FolderScope) -> None:
+        """Sync objects under one prefix of a bucket ("" for all of it), with pagination and incremental sync."""
         if not self.data_source:
             raise ConnectionError(f"{self.connector_name} connector is not initialized.")
 
@@ -687,8 +701,9 @@ class S3CompatibleBaseConnector(BaseConnector):
 
         modified_after_ms, modified_before_ms, created_after_ms, created_before_ms = self._get_date_filters()
 
+        # Each listed prefix keeps its own continuation token and last sync time.
         sync_point_key = generate_record_sync_point_key(
-            RecordType.FILE.value, "bucket", bucket_name
+            RecordType.FILE.value, "bucket", f"{bucket_name}/{prefix}" if prefix else bucket_name
         )
         sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
         continuation_token = sync_point.get("continuation_token") if sync_point else None
@@ -707,6 +722,8 @@ class S3CompatibleBaseConnector(BaseConnector):
 
         batch_records = []
         has_more = True
+        listing_failed = False
+        failed = FailedItems()
         max_timestamp = last_sync_time if last_sync_time else 0
 
         while has_more:
@@ -716,6 +733,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                         Bucket=bucket_name,
                         MaxKeys=self.batch_size,
                         ContinuationToken=continuation_token,
+                        Prefix=prefix or None,
                     )
 
                     if not response.success:
@@ -748,6 +766,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                                 message=f"Failed to list objects in bucket '{bucket_name}': {error_msg}",
                                 severity=NotificationSeverity.ERROR,
                             )
+                        listing_failed = True
                         has_more = False
                         continue
 
@@ -763,10 +782,14 @@ class S3CompatibleBaseConnector(BaseConnector):
                     )
 
                     for obj in objects:
+                        obj_ts = cutoff_ts = None
                         try:
                             key = obj.get("Key", "")
 
                             is_folder = key.endswith("/")
+
+                            if not (scope.includes_folder(key) if is_folder else scope.includes_file(key)):
+                                continue
 
                             if not is_folder and allowed_extensions:
                                 ext = get_file_extension(key)
@@ -792,6 +815,8 @@ class S3CompatibleBaseConnector(BaseConnector):
                                 if obj_ts is not None:
                                     max_timestamp = max(max_timestamp, obj_ts)
 
+                            cutoff_ts = None if is_folder else obj_ts
+
                             # Ensure folder hierarchy exists from file path (S3 has no folder objects)
                             if not is_folder:
                                 path_segments = get_folder_path_segments_from_key(key)
@@ -809,11 +834,15 @@ class S3CompatibleBaseConnector(BaseConnector):
                                         batch_records
                                     )
                                     batch_records = []
+                            elif key.lstrip("/"):
+                                # The processor returns no record for a real key only on an error.
+                                failed.add(cutoff_ts)
                         except Exception as e:
                             self.logger.error(
                                 f"Error processing object {obj.get('Key', 'unknown')}: {e}",
                                 exc_info=True,
                             )
+                            failed.add(cutoff_ts)
                             continue
 
                     has_more = objects_data.get("IsTruncated", False)
@@ -828,15 +857,38 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.error(
                     f"Error during bucket sync for {bucket_name}: {e}", exc_info=True
                 )
+                listing_failed = True
                 has_more = False
 
         if batch_records:
-            await self.data_entities_processor.on_new_records(batch_records)
+            try:
+                await self.data_entities_processor.on_new_records(batch_records)
+            except Exception:
+                # The unsaved records sit on pages a resume token would skip, so
+                # clear it and let the error fail the sync; no checkpoint is written.
+                try:
+                    await self.record_sync_point.update_sync_point(sync_point_key, {"continuation_token": None})
+                except Exception as clear_error:
+                    self.logger.error(
+                        f"Failed to clear the resume token for bucket {bucket_name}: {clear_error}"
+                    )
+                raise
 
-        if max_timestamp > 0:
+        # Objects are listed by name, not time, so a checkpoint after a partial
+        # listing would skip the older objects it never reached. The saved
+        # continuation_token lets the next run resume.
+        if failed.count:
+            self.logger.warning(
+                f"{failed.count} objects in bucket {bucket_name} failed to process; "
+                "the next sync retries them"
+            )
+            # A saved resume token would skip the pages holding the failures.
+            await self.record_sync_point.update_sync_point(sync_point_key, {"continuation_token": None})
+        checkpoint = failed.checkpoint(max_timestamp)
+        if checkpoint and checkpoint > 0 and not listing_failed:
             await self.record_sync_point.update_sync_point(
                 sync_point_key, {
-                    "last_sync_time": max_timestamp,
+                    "last_sync_time": checkpoint,
                     "continuation_token": None
                 }
             )

@@ -565,6 +565,16 @@ describe('ConfigurationManager Routes', () => {
       expect(featureFlags).to.exist
     })
 
+    it('should register the effective platform feature flags route', () => {
+      const router = createConfigurationManagerRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+      const effectiveFlags = routes.find((r: any) => r.path === '/platform/feature-flags/effective' && r.methods.get)
+      expect(effectiveFlags).to.exist
+    })
+
     it('should register metrics collection CRUD routes', () => {
       const router = createConfigurationManagerRouter(container)
       const routes = router.stack

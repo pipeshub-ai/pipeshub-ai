@@ -16,6 +16,20 @@
     "missingAgentKey": "Agentenschlüssel fehlt. Öffnen Sie einen Agenten über die Chat-Seitenleiste oder verwenden Sie einen gültigen Link.",
     "loading": "Wird geladen…"
   },
+  "projects": {
+    "pageTitle": "Projekte",
+    "searchPlaceholder": "Projekte durchsuchen…",
+    "emptyState": "Noch keine Projekte",
+    "emptyStateHint": "Erstelle ein Projekt, um Chats, Dateien und Anweisungen zu organisieren.",
+    "failedToLoad": "Projekte konnten nicht geladen werden",
+    "chatCount_one": "{{count}} Chat",
+    "chatCount_other": "{{count}} Chats",
+    "lastActive": "Aktiv {{date}}",
+    "pinnedSection": "Angepinnt",
+    "allSection": "Alle Projekte",
+    "backToAllProjects": "Alle Projekte",
+    "loadMore": "Mehr laden"
+  },
   "timeGroup": {
     "today": "Heute",
     "yesterday": "Gestern",
@@ -199,6 +213,8 @@
     "moreConnectors": "Weitere Konnektoren",
     "all": "Alle",
     "agents": "Agenten",
+    "projects": "Projekte",
+    "beta": "Beta",
     "searchChats": "Chats suchen",
     "inbox": "Posteingang",
     "notifications": "Benachrichtigungen"
@@ -395,7 +411,11 @@
     "english": "Englisch",
     "german": "Deutsch",
     "rotateLandscape": "Drehen Sie Ihr Gerät für das beste Erlebnis",
-    "errorOccurred": "Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut."
+    "errorOccurred": "Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.",
+    "beta": {
+      "label": "Beta",
+      "tooltip": "Diese Funktion befindet sich in der Beta-Phase und kann sich noch ändern."
+    }
   },
   "units": {
     "bytes": "Bytes",
@@ -527,6 +547,13 @@
       "resetDefaults": "Auf Standard zurücksetzen",
       "knowledgeScopeClearedWarning": "Für diesen Durchlauf sind keine Wissensquellen ausgewählt — der Agent durchsucht Ihre Konnektoren und Sammlungen nicht nach Antworten."
     },
+    "projectResources": {
+      "noConnectors": "Für dieses Projekt sind keine Konnektoren aktiviert.",
+      "noCollections": "Für dieses Projekt sind keine Sammlungen aktiviert.",
+      "noActions": "Für dieses Projekt sind keine Aktionen (Toolsets) aktiviert.",
+      "noMcpServers": "Für dieses Projekt sind keine MCP-Server aktiviert.",
+      "resetDefaults": "Auf Projektstandard zurücksetzen"
+    },
     "aiModelsTooltip": "KI-Modelle",
     "attachmentTooltip": "Dateien anhängen",
     "micTooltip": "Spracheingabe",
@@ -538,6 +565,7 @@
     "loadingConversation": "Gespräch wird geladen...",
     "recents": "Kürzlich",
     "sharedChats": "Geteilte Chats",
+    "sharedBy": "Geteilt von {{name}}",
     "noSharedChats": "Keine geteilten Chats",
     "yourChats": "Ihre Chats",
     "noChatsFound": "Keine Chats gefunden",
@@ -773,7 +801,97 @@
     "failedToDeleteAgent": "Agent konnte nicht gelöscht werden",
     "failedToRename": "Chat konnte nicht umbenannt werden",
     "rename": "Umbenennen",
-    "renaming": "Umbenennen…"
+    "renaming": "Umbenennen…",
+    "projects": {
+      "title": "Projekte",
+      "newProject": "Neues Projekt",
+      "noProjects": "Noch keine Projekte",
+      "failedToLoad": "Projekte konnten nicht geladen werden",
+      "moreProjects": "Weitere Projekte",
+      "moveToProject": "In Projekt verschieben",
+      "removeFromProject": "Aus Projekt entfernen",
+      "pinProject": "Anheften",
+      "unpinProject": "Lösen",
+      "archiveProject": "Projekt archivieren",
+      "unarchiveProject": "Projekt wiederherstellen",
+      "deleteProject": "Projekt löschen",
+      "shareProject": "Projekt teilen",
+      "backToProjects": "Alle Projekte",
+      "backToProject": "Zurück zum Projekt",
+      "newChatInProject": "Neuer Chat",
+      "recentChats": "Letzte Chats",
+      "noChats": "Noch keine Chats in diesem Projekt",
+      "startChatInProject": "Einen Chat in diesem Projekt starten",
+      "createDialog": {
+        "title": "Neues Projekt",
+        "nameLabel": "Name",
+        "namePlaceholder": "z. B. Marketingplan Q3",
+        "descriptionLabel": "Beschreibung",
+        "descriptionPlaceholder": "Worum geht es in diesem Projekt? (optional)",
+        "instructionsLabel": "Anweisungen",
+        "instructionsPlaceholder": "Anweisungen, die der Assistent in diesem Projekt immer befolgen soll (optional)",
+        "create": "Projekt erstellen",
+        "creating": "Wird erstellt…",
+        "nameRequired": "Name ist erforderlich"
+      },
+      "workspace": {
+        "failedToLoad": "Dieses Projekt konnte nicht geladen werden",
+        "instructionsTitle": "Anweisungen",
+        "instructionsPlaceholder": "Anweisungen hinzufügen, die der Assistent bei jedem Chat in diesem Projekt befolgen soll…",
+        "noInstructions": "Noch keine Anweisungen hinzugefügt",
+        "save": "Speichern",
+        "saving": "Wird gespeichert…",
+        "editInstructions": "Anweisungen bearbeiten",
+        "noDescription": "Keine Beschreibung",
+        "filesTitle": "Dateien",
+        "filesSubtitle": "Dateien hier werden nur innerhalb dieses Projekts durchsucht.",
+        "uploadFiles": "Dateien hochladen",
+        "uploading": "Wird hochgeladen…",
+        "noFiles": "Noch keine Dateien",
+        "removeFile": "Datei entfernen",
+        "connectorsTitle": "Konnektoren",
+        "connectorsSubtitle": "Chats in diesem Projekt durchsuchen nur diese Konnektoren.",
+        "noConnectorsAvailable": "Noch keine Konnektoren zum Hinzufügen.",
+        "failedToLoadConnectors": "Konnektoren konnten nicht geladen werden",
+        "updateConnectorsFailed": "Konnektoren konnten nicht aktualisiert werden",
+        "toolsTitle": "Tools & MCP",
+        "noToolsAvailable": "Noch keine authentifizierten Aktionen oder MCP-Server verfügbar.",
+        "knowledgeBaseUnavailable": "Der Dateispeicher dieses Projekts konnte nicht vorbereitet werden",
+        "uploadSessionLabel_one": "{{count}} Datei",
+        "uploadSessionLabel_other": "{{count}} Dateien",
+        "membersTitle": "Mitglieder",
+        "memberCount_one": "{{count}} Mitglied",
+        "memberCount_other": "{{count}} Mitglieder",
+        "share": "Teilen",
+        "recentChatsTitle": "Letzte Chats",
+        "seeAllChats": "Alle Chats anzeigen",
+        "saveInstructionsFailed": "Anweisungen konnten nicht gespeichert werden",
+        "updateToolsFailed": "Tools konnten nicht aktualisiert werden",
+        "updatePinFailed": "Pin-Status konnte nicht aktualisiert werden",
+        "updateArchiveFailed": "Archivierungsstatus konnte nicht aktualisiert werden",
+        "shareRefreshFailed": "Freigabedetails konnten nicht aktualisiert werden",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
+      },
+      "moveDialog": {
+        "title": "In Projekt verschieben",
+        "noProjects": "Sie haben noch keine Projekte",
+        "removeOption": "Kein Projekt",
+        "moving": "Wird verschoben…"
+      },
+      "deleteDialog": {
+        "title": "Dieses Projekt löschen?",
+        "description": "Das Projekt wird entfernt und die Verknüpfung mit den Chats aufgehoben. Die Chats selbst werden nicht gelöscht.",
+        "confirm": "Projekt löschen",
+        "deleting": "Wird gelöscht…",
+        "failed": "Projekt konnte nicht gelöscht werden"
+      },
+      "roles": {
+        "owner": "Eigentümer",
+        "editor": "Bearbeiter",
+        "viewer": "Betrachter"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -2566,7 +2684,7 @@
     },
     "oauthApps": {
       "title": "OAuth-Apps",
-      "subtitle": "Verwalten Sie OAuth-Zugangsdaten für Connectors und Aktionen. Als \u201eStandard\u201c markierte Apps werden automatisch für neue Verbindungen verwendet, sofern nicht überschrieben.",
+      "subtitle": "Verwalten Sie OAuth-Zugangsdaten für Connectors und Aktionen. Als „Standard“ markierte Apps werden automatisch für neue Verbindungen verwendet, sofern nicht überschrieben.",
       "addButton": "OAuth-App hinzufügen",
       "tabs": {
         "connectors": "Connectors",
@@ -2618,14 +2736,14 @@
         "genericError": "Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut."
       },
       "delete": {
-        "title": "\u201e{{name}}\u201c l\u00f6schen?",
-        "message": "Diese OAuth-App wird dauerhaft gel\u00f6scht. Connector-Instanzen, die sie derzeit verwenden, funktionieren m\u00f6glicherweise nicht mehr.",
-        "confirmLabel": "L\u00f6schen",
-        "forceDeleteButton": "Erzwungen l\u00f6schen",
-        "forceTitle": "\u201e{{name}}\u201c erzwungen l\u00f6schen?",
-        "forceMessage": "Diese OAuth-App wird derzeit verwendet. Das erzwungene L\u00f6schen entfernt sie und kann bestehende Connector-Verbindungen, die darauf basieren, unterbrechen. Diese Aktion kann nicht r\u00fckg\u00e4ngig gemacht werden.",
-        "forceConfirmLabel": "Erzwungen l\u00f6schen",
-        "successMessage": "OAuth-App \u201e{{name}}\u201c wurde gel\u00f6scht."
+        "title": "„{{name}}“ löschen?",
+        "message": "Diese OAuth-App wird dauerhaft gelöscht. Connector-Instanzen, die sie derzeit verwenden, funktionieren möglicherweise nicht mehr.",
+        "confirmLabel": "Löschen",
+        "forceDeleteButton": "Erzwungen löschen",
+        "forceTitle": "„{{name}}“ erzwungen löschen?",
+        "forceMessage": "Diese OAuth-App wird derzeit verwendet. Das erzwungene Löschen entfernt sie und kann bestehende Connector-Verbindungen, die darauf basieren, unterbrechen. Diese Aktion kann nicht rükgängig gemacht werden.",
+        "forceConfirmLabel": "Erzwungen löschen",
+        "successMessage": "OAuth-App „{{name}}“ wurde gelöscht."
       },
       "errors": {
         "loadTypes": "Verfügbare OAuth-App-Typen konnten nicht geladen werden.",
@@ -2714,6 +2832,11 @@
     "modelSection": "Modell",
     "toolsetsSection": "Toolsets",
     "mcpServersSection": "MCP-Server",
+    "skillsSection": "Skills",
+    "noSkillsAvailable": "Keine Skills verfügbar",
+    "skillNodeTemplateDescription": "Benutzerdefinierte Skill, die Ihr Agent aufrufen kann",
+    "skillDeprecated": "Diese Skill wurde als veraltet markiert",
+    "skillDeprecatedReplacedBy": "Diese Skill wurde als veraltet markiert. Verwenden Sie stattdessen {{name}}.",
     "inputSection": "Eingabe",
     "responseSection": "Antwort",
     "connectModel": "Modell verbinden",
@@ -2729,8 +2852,8 @@
     "lineCount": "{{count}} Zeilen",
     "instructionsLabel": "Anweisungen",
     "startingMessageLabel": "Startnachricht",
-    "defaultReasoningEffortLabel": "Standard-Reasoning-Aufwand",
-    "defaultReasoningEffortHint": "Standard ist Hoch, wenn nichts gesetzt ist.",
+    "defaultReasoningEffortLabel": "Standard-Denkaufwand",
+    "defaultReasoningEffortHint": "Ersatz-Denkaufwand, der verwendet wird, wenn der Benutzer im Chat keinen auswählt.",
     "moreItems": "+{{count}} weitere",
     "toolsetNodeSubtitle": "Toolset",
     "toolsLabel": "Tools",
@@ -2947,9 +3070,7 @@
     "deprecatedToolsBanner": "{{count}} Tool(s) auf diesem Agenten sind veraltet, entferne sie: {{tools}}",
     "removeDeprecatedTools": "Veraltete Tools entfernen",
     "showMore": "Mehr anzeigen",
-    "showLess": "Weniger anzeigen",
-    "defaultReasoningEffortLabel": "Standard-Denkaufwand",
-    "defaultReasoningEffortHint": "Ersatz-Denkaufwand, der verwendet wird, wenn der Benutzer im Chat keinen auswählt."
+    "showLess": "Weniger anzeigen"
   },
   "recordView": {
     "sections": {

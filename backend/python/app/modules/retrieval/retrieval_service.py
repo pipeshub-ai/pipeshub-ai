@@ -390,6 +390,13 @@ class RetrievalService:
             filters = {}
             if filter_groups:  # Only process if filter_groups is not empty
                 for key, values in filter_groups.items():
+                    # strictScope is a control flag, not a metadata filter
+                    # key — lowercasing it to "strictscope" would silently
+                    # break the empty-project-scope short-circuit in
+                    # get_accessible_virtual_record_ids.
+                    if key == "strictScope":
+                        filters[key] = values
+                        continue
                     # Convert key to match collection naming
                     metadata_key = key.lower()  # e.g., 'departments', 'categories', etc.
                     filters[metadata_key] = values

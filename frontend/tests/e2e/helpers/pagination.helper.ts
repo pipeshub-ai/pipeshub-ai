@@ -57,15 +57,38 @@ export async function getCurrentPage(page: Page): Promise<number> {
   return parseInt(text ?? '1', 10);
 }
 
-/** Change the items-per-page limit via the dropdown */
-export async function changeLimit(page: Page, limit: 10 | 25 | 50 | 100): Promise<void> {
-  // Click the limit dropdown trigger (shows current limit number)
-  const limitTrigger = page.locator('text="per page"').locator('..');
-  // The trigger is the parent flex containing the current number
-  await limitTrigger.locator('..').click();
+/** The collapsed page-size control, showing the current limit. "N per page" exists only in its menu. */
+function limitTrigger(page: Page): Locator {
+  return page.getByTestId('page-size-trigger');
+}
 
-  // Click the desired value in the dropdown
-  await page.locator(`[role="menuitem"]`).filter({ hasText: `${limit} per page` }).click();
+/**
+ * Change the items-per-page limit, and assert it took effect: the control shows
+ * the new number and the "Showing" line starts at 1 and stops at that limit (or
+ * the total). Callers should pick a limit other than the current one, so a click
+ * that changed nothing can't pass.
+ */
+export async function changeLimit(page: Page, limit: 10 | 25 | 50 | 100): Promise<void> {
+  const trigger = limitTrigger(page);
+  await expect(trigger, 'the page-size control should be shown').toBeVisible({ timeout: 10_000 });
+  await trigger.click();
+  await page.getByRole('menuitem', { name: `${limit} per page` }).click();
+
+  await expect(trigger, `the page-size control should show ${limit}`).toHaveText(
+    // The number is followed directly by the icon's ligature text ("50expand_less").
+    new RegExp(`^\\s*${limit}(?!\\d)`),
+    { timeout: 10_000 },
+  );
+  await expect
+    .poll(
+      async () => {
+        const { from, to, total } = await getShowingRange(page);
+        return from === 1 && to === Math.min(limit, total) ? 'ok' : `Showing ${from}-${to} of ${total}`;
+      },
+      { timeout: 10_000, message: `the list should show the first ${limit} items` },
+    )
+    .toBe('ok');
+  expect(await page.locator('[role="row"]').count()).toBeLessThanOrEqual(limit);
 }
 
 /** Assert the "Showing X-Y of Z" text matches expected range */

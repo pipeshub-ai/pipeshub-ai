@@ -8,32 +8,37 @@ search, and the three-source package importer (npm / URL / upload).
 
 Every route uses `build_management_skill_manager`, the creator-scoped
 profile (see that factory's docstring) — a user only ever sees/edits their
-own skills here, plus org-wide `builtin` ones (read-only in practice: the
-underlying store still enforces ownership on write, so a non-owner attempt
-to edit a builtin surfaces as a 404/403 from the store's `RegistryError`,
-never silently succeeds).
+own custom skills here, plus org-wide `builtin` ones. Content mutations
+(update/patch/rollback/deprecate/delete) and resource write/delete of a
+builtin still 403; enable/disable of a builtin is allowed for org admins
+only (`fetch_caller_role`). A non-owner attempt to mutate someone else's
+custom skill is invisible (404) because the store's `visibility_scope`
+filters on `createdBy`.
 
 Authorization: `SKILL_READ`/`SKILL_WRITE` OAuth scopes (mirrors every other
 resource in this service — see `AGENT_READ`/`AGENT_WRITE` in `agent.py`).
 Safe-delete additionally checks REFERENTIAL integrity against
 `AGENT_HAS_SKILL` (agents using this skill) and `agentSkillRelation`
-`requires` edges (other skills depending on this one) — see `_check_usage`.
+`requires` edges (other skills depending on this one) — see
+`SkillManager.delete` / `collect_referential_usage`.
 """
 
 from __future__ import annotations
 
 from logging import Logger
-from typing import Any
+from typing import Annotated, Any
 
 import yaml
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import (
     Skill,
+    SkillConflictError,
     SkillFilter,
+    SkillInUseError,
     SkillMetadata,
     SkillSource,
     SkillStatus,
@@ -41,21 +46,44 @@ from app.agent_loop_lib.modules.providers.skills.base import (
 from app.agent_loop_lib.modules.providers.skills.loader import render_skill_md
 from app.agent_loop_lib.modules.providers.skills.manager import SkillManager
 from app.agent_loop_lib.modules.providers.skills.validator import SkillFormatError
-from app.agents.agent_loop.skills.manager_factory import build_management_skill_manager
+from app.agents.agent_loop.skills.manager_factory import (
+    build_management_skill_manager,
+    get_builtin_seeder,
+    sync_builtin_skills,
+)
+from app.agents.agent_loop.skills.graph_store import collect_referential_usage, edge_source_key
 from app.api.middlewares.auth import require_scopes
-from app.config.constants.arangodb import CollectionNames
+from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.constants.service import OAuthScopes
+from app.services.featureflag.platform_settings import is_skills_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.skills.npm_command_parser import NpmCommandParseError, parse_npm_command
-from app.services.skills.package_importer import ImportPreview, PackageImportError, SkillPackageImporter
+from app.services.skills.npm_command_parser import (
+    NpmCommandParseError,
+    UrlSpec,
+    parse_npm_command,
+)
+from app.services.skills.package_importer import (
+    ImportPreview,
+    PackageImportError,
+    SkillPackageImporter,
+)
 from app.telemetry.identity import domain_from_email
 
-router = APIRouter()
 
-_SKILLS = CollectionNames.AGENT_SKILLS.value
-_AGENT_HAS_SKILL = CollectionNames.AGENT_HAS_SKILL.value
-_AGENT_SKILL_RELATION = CollectionNames.AGENT_SKILL_RELATION.value
-_AGENT_INSTANCES = CollectionNames.AGENT_INSTANCES.value
+async def _require_skills_enabled(request: Request) -> None:
+    """FastAPI dependency — rejects the request with 403 when the
+    ``ENABLE_SKILLS`` platform feature flag is disabled for the calling org.
+    Applied to every Skills endpoint (router-level) so UI visibility, REST,
+    and agent-runtime wiring (`factory.py`) are gated consistently. Mirrors
+    `mcp_servers.py`'s `_require_mcp_enabled`; `request.app.container` is how
+    `agent.py`'s `get_services` obtains `config_service` in this same
+    service."""
+    config_service = request.app.container.config_service()
+    if not await is_skills_enabled(config_service):
+        raise HTTPException(status_code=403, detail="Skills are disabled for this organization.")
+
+
+router = APIRouter(dependencies=[Depends(_require_skills_enabled)])
 
 
 # ============================================================================
@@ -163,12 +191,20 @@ def _preview_to_dict(preview: ImportPreview) -> dict[str, Any]:
     }
 
 
-def _build_content(payload: SkillWriteRequest, *, name: str) -> str:
+def _build_content(payload: SkillWriteRequest, *, name: str, existing: SkillMetadata | None = None) -> str:
     """Structured form fields -> a full, spec-compliant SKILL.md string.
     The one place a `SkillWriteRequest` becomes YAML frontmatter — mirrors
     `SkillMetadata.to_frontmatter_dict`'s shape exactly so validation
     (`SkillValidator`, invoked by the store on every create/update) sees
-    the same document a hand-authored SKILL.md would produce."""
+    the same document a hand-authored SKILL.md would produce.
+
+    `existing`, when given (every `update_skill` call — never `create_skill`,
+    which has no prior state), carries the current `source`/`status`/
+    `deprecated_reason`/`replaced_by` forward into the rendered SKILL.md so
+    a plain content/metadata edit through this structured form can never
+    silently re-activate a disabled or deprecated skill: `GraphSkillStore.
+    _skill_to_doc` writes the graph `status`/`source` columns straight from
+    whatever metadata this function's caller passes to `manager.update`."""
     metadata = SkillMetadata(
         name=name,
         description=payload.description,
@@ -181,7 +217,10 @@ def _build_content(payload: SkillWriteRequest, *, name: str) -> str:
         related=payload.related,
         requires=payload.requires,
         concepts=payload.concepts,
-        source=SkillSource.MANUAL,
+        source=existing.source if existing is not None else SkillSource.MANUAL,
+        status=existing.status if existing is not None else SkillStatus.ACTIVE,
+        deprecated_reason=existing.deprecated_reason if existing is not None else None,
+        replaced_by=existing.replaced_by if existing is not None else None,
     )
     skill = Skill(metadata=metadata, body=payload.body)
     return render_skill_md(skill)
@@ -193,8 +232,114 @@ def _handle_registry_error(e: RegistryError) -> HTTPException:
     return HTTPException(status_code=status_code, detail=message)
 
 
+def _handle_conflict_error(e: SkillConflictError) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "message": str(e),
+            "currentUpdatedAt": e.current_updated_at,
+            "currentVersion": e.current_version,
+        },
+    )
+
+
+def _handle_in_use_error(e: SkillInUseError) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "message": str(e),
+            "usedByAgents": e.used_by_agents,
+            "requiredBySkills": e.required_by_skills,
+        },
+    )
+
+
+def _parse_if_match(raw: str | None) -> int | None:
+    """Parse an HTTP If-Match token into the skill's `updatedAtTimestamp`.
+    Absence, empty, or `*` means last-write-wins. Quoted / weak ETags
+    (`W/"123"`) are accepted. Non-integer tokens are 400."""
+    if raw is None or not isinstance(raw, str):
+        return None
+    token = raw.strip()
+    if not token or token == "*":
+        return None
+    if token.startswith("W/"):
+        token = token[2:].strip()
+    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+        token = token[1:-1]
+    try:
+        return int(token)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="If-Match must be the skill's updatedAt timestamp",
+        ) from None
+
+
 def _handle_format_error(e: SkillFormatError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(e))
+
+
+def _reject_if_builtin_name(name: str) -> None:
+    """Blocks a custom skill from being created under a name reserved for a
+    builtin pack — a policy decision (which names are protected), so it
+    lives in the router, not `GraphSkillStore`. Without this, a user could
+    create a custom skill named e.g. `pdf` before `sync_builtin_skills` ever
+    runs for their org; the seeder's `_is_unmodified` check would then treat
+    the real builtin as "has org edits" and never seed it (see
+    `builtin_seeder.py`)."""
+    seeder = get_builtin_seeder()
+    if seeder is not None and name in seeder.pack_versions:
+        raise HTTPException(status_code=409, detail=f"{name!r} is a built-in skill name.")
+
+
+async def _load_skill_metadata(manager: SkillManager, name: str) -> SkillMetadata:
+    """Load-or-404 used by write routes. Honors the management store's
+    creator `visibility_scope`, so a co-worker's custom skill is
+    indistinguishable from a missing one (404), while org-wide builtins
+    remain loadable by every member. Uses `get_skill` (not
+    `activate_skill`) so a disabled skill can still be inspected,
+    updated, or re-enabled."""
+    try:
+        skill = await manager.get_skill(name)
+    except RegistryError as e:
+        raise _handle_registry_error(e) from e
+    return skill.metadata
+
+
+async def _reject_if_builtin_skill(manager: SkillManager, name: str) -> SkillMetadata:
+    """Blocks a content `SKILL_WRITE` mutation (update/patch/rollback/
+    deprecate/delete, or resource write/delete) against an EXISTING
+    builtin-sourced skill — the counterpart to `_reject_if_builtin_name`
+    above, which only blocks *creating* a new skill under a reserved
+    name. Enable/disable is the exception: those routes call
+    `_require_admin_for_builtin_availability` instead, so an org admin
+    can mute a builtin without being able to edit its SKILL.md.
+    Returns the fetched metadata so callers that also need it (e.g.
+    `update_skill`, to preserve lifecycle fields — see `_build_content`)
+    don't have to load the skill twice. Raises 404/409 (via
+    `_handle_registry_error`) if the skill doesn't exist, or 403 if it's
+    a builtin."""
+    metadata = await _load_skill_metadata(manager, name)
+    if metadata.source == SkillSource.BUILTIN:
+        raise HTTPException(status_code=403, detail=f"{name!r} is a built-in skill and cannot be modified.")
+    return metadata
+
+
+async def _require_admin_for_builtin_availability(request: Request, metadata: SkillMetadata) -> None:
+    """Enable/disable of a custom skill is creator-gated by the store's
+    visibility scope (non-owners never load the doc). Enable/disable of a
+    builtin is org-wide, so it additionally requires a live org-admin
+    role from Node (`fetch_caller_role`) — members get 403. Fail closed
+    if Node cannot answer."""
+    if metadata.source != SkillSource.BUILTIN:
+        return
+    config_service = request.app.container.config_service()
+    if not (await fetch_caller_role(request, config_service)).is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{metadata.name!r} is a built-in skill; only an organization admin can change its availability.",
+        )
 
 
 # ============================================================================
@@ -258,7 +403,13 @@ async def list_skills(
     tag: str | None = None,
     q: str | None = None,
 ) -> JSONResponse:
-    manager, _ctx = await _build_manager(request)
+    manager, ctx = await _build_manager(request)
+    # Only the read/list route seeds builtins (write routes stay pure): a
+    # fresh org otherwise sees no builtin skills until its first chat, since
+    # seeding is normally a runtime (agent-turn) side effect — see
+    # `manager_factory.build_runtime_skill_manager`. Version-gated and
+    # idempotent, so this is a no-op once the org's catalog is current.
+    await sync_builtin_skills(ctx["graph_provider"], ctx["orgId"], manager)
     filt = SkillFilter(
         query=q,
         category=category,
@@ -300,7 +451,7 @@ async def search_skills(
 async def get_skill(request: Request, name: str) -> JSONResponse:
     manager, _ctx = await _build_manager(request)
     try:
-        skill = await manager.activate_skill(name)
+        skill = await manager.get_skill(name)
     except RegistryError as e:
         raise _handle_registry_error(e) from e
     return JSONResponse(status_code=200, content=_skill_to_dict(skill))
@@ -310,7 +461,7 @@ async def get_skill(request: Request, name: str) -> JSONResponse:
 async def export_skill(request: Request, name: str) -> PlainTextResponse:
     manager, _ctx = await _build_manager(request)
     try:
-        skill = await manager.activate_skill(name)
+        skill = await manager.get_skill(name)
     except RegistryError as e:
         raise _handle_registry_error(e) from e
     return PlainTextResponse(
@@ -324,6 +475,7 @@ async def create_skill(request: Request, payload: SkillWriteRequest) -> JSONResp
     if not payload.name or not payload.name.strip():
         raise HTTPException(status_code=400, detail="'name' is required to create a skill.")
     name = payload.name.strip()
+    _reject_if_builtin_name(name)
     manager, _ctx = await _build_manager(request)
     content = _build_content(payload, name=name)
     try:
@@ -336,11 +488,21 @@ async def create_skill(request: Request, payload: SkillWriteRequest) -> JSONResp
 
 
 @router.put("/{name}", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
-async def update_skill(request: Request, name: str, payload: SkillWriteRequest) -> JSONResponse:
+async def update_skill(
+    request: Request,
+    name: str,
+    payload: SkillWriteRequest,
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> JSONResponse:
     manager, _ctx = await _build_manager(request)
-    content = _build_content(payload, name=name)
+    existing_metadata = await _reject_if_builtin_skill(manager, name)
+    content = _build_content(payload, name=name, existing=existing_metadata)
     try:
-        metadata = await manager.update(name, content)
+        metadata = await manager.update(
+            name, content, expected_updated_at=_parse_if_match(if_match),
+        )
+    except SkillConflictError as e:
+        raise _handle_conflict_error(e) from e
     except RegistryError as e:
         raise _handle_registry_error(e) from e
     except SkillFormatError as e:
@@ -349,9 +511,21 @@ async def update_skill(request: Request, name: str, payload: SkillWriteRequest) 
 
 
 @router.patch("/{name}/body", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
-async def patch_skill_body(request: Request, name: str, payload: PatchBodyRequest) -> JSONResponse:
+async def patch_skill_body(
+    request: Request,
+    name: str,
+    payload: PatchBodyRequest,
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> JSONResponse:
     manager, _ctx = await _build_manager(request)
-    ok = await manager.patch(name, payload.old_string, payload.new_string)
+    await _reject_if_builtin_skill(manager, name)
+    try:
+        ok = await manager.patch(
+            name, payload.old_string, payload.new_string,
+            expected_updated_at=_parse_if_match(if_match),
+        )
+    except SkillConflictError as e:
+        raise _handle_conflict_error(e) from e
     if not ok:
         raise HTTPException(
             status_code=400,
@@ -363,10 +537,41 @@ async def patch_skill_body(request: Request, name: str, payload: PatchBodyReques
 @router.post("/{name}/deprecate", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
 async def deprecate_skill(request: Request, name: str, payload: DeprecateRequest) -> JSONResponse:
     manager, _ctx = await _build_manager(request)
+    await _reject_if_builtin_skill(manager, name)
     ok = await manager.deprecate(name, payload.reason, payload.replaced_by)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Skill {name!r} not found.")
     return JSONResponse(status_code=200, content={"status": "success"})
+
+
+@router.post("/{name}/disable", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
+async def disable_skill(request: Request, name: str) -> JSONResponse:
+    """Reversible mute — see `SkillManager.disable`. Custom skills: the
+    creator (store visibility). Builtin skills: org admin only. An
+    illegal transition (already disabled, or deprecated) surfaces as 409
+    via `_handle_registry_error`."""
+    manager, _ctx = await _build_manager(request)
+    existing = await _load_skill_metadata(manager, name)
+    await _require_admin_for_builtin_availability(request, existing)
+    try:
+        metadata = await manager.disable(name)
+    except RegistryError as e:
+        raise _handle_registry_error(e) from e
+    return JSONResponse(status_code=200, content=_metadata_to_dict(metadata))
+
+
+@router.post("/{name}/enable", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
+async def enable_skill(request: Request, name: str) -> JSONResponse:
+    """Reverses `disable`. Never undeprecates — see `SkillManager.enable`.
+    Same authorization as `disable_skill`."""
+    manager, _ctx = await _build_manager(request)
+    existing = await _load_skill_metadata(manager, name)
+    await _require_admin_for_builtin_availability(request, existing)
+    try:
+        metadata = await manager.enable(name)
+    except RegistryError as e:
+        raise _handle_registry_error(e) from e
+    return JSONResponse(status_code=200, content=_metadata_to_dict(metadata))
 
 
 # ============================================================================
@@ -374,44 +579,16 @@ async def deprecate_skill(request: Request, name: str, payload: DeprecateRequest
 # ============================================================================
 
 def _edge_source_key(edge: dict[str, Any]) -> str:
-    """Extract an edge's source-node bare key, regardless of graph provider
-    shape: ArangoDB's `get_edges_to_node` returns raw documents with a full
-    `_from` id (`"collection/key"`), while Neo4j's returns a generic
-    `from_id` that is already the bare key (see `Neo4jProvider.get_edges_to_node`).
-    Returns "" if neither field is present/non-empty."""
-    from_id = edge.get("from_id")
-    if from_id:
-        return str(from_id)
-    return (edge.get("_from") or "").split("/", 1)[-1]
+    return edge_source_key(edge)
 
 
 async def _check_usage(name: str, org_id: str, graph_provider: IGraphDBProvider) -> dict[str, Any]:
-    """Referential-integrity check for `DELETE /{name}` — who's using this
-    skill right now. Two independent edges: `AGENT_HAS_SKILL` (an agent was
-    explicitly assigned this skill in Agent Builder) and `agentSkillRelation`
-    `type == "requires"` (another skill's frontmatter declares it depends on
-    this one). Either non-empty blocks a plain delete (see `delete_skill`
-    below)."""
-    skill_full_id = f"{_SKILLS}/{org_id}_{name}"
-
-    agent_edges = await graph_provider.get_edges_to_node(skill_full_id, _AGENT_HAS_SKILL)
-    used_by_agents: list[dict[str, Any]] = []
-    for edge in agent_edges:
-        agent_id = _edge_source_key(edge)
-        if not agent_id:
-            continue
-        agent_doc = await graph_provider.get_document(agent_id, _AGENT_INSTANCES)
-        if agent_doc:
-            used_by_agents.append({"id": agent_id, "name": agent_doc.get("name", agent_id)})
-
-    relation_edges = await graph_provider.get_edges_to_node(skill_full_id, _AGENT_SKILL_RELATION)
-    required_by_skills = sorted({
-        _edge_source_key(edge).removeprefix(f"{org_id}_")
-        for edge in relation_edges
-        if edge.get("type") == "requires" and _edge_source_key(edge)
-    })
-
-    return {"usedByAgents": used_by_agents, "requiredBySkills": required_by_skills}
+    """Referential-integrity snapshot for `GET /{name}/usage` and the
+    historical unit tests that call this helper directly. The *delete*
+    guard lives on `SkillManager.delete` so every caller (REST, tools)
+    gets it."""
+    usage = await collect_referential_usage(graph_provider, org_id, name)
+    return {"usedByAgents": usage.used_by_agents, "requiredBySkills": usage.required_by_skills}
 
 
 @router.get("/{name}/usage", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_READ))])
@@ -422,55 +599,20 @@ async def get_skill_usage(request: Request, name: str) -> JSONResponse:
 
 
 @router.delete("/{name}", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
-async def delete_skill(request: Request, name: str, detach: bool = Query(False)) -> JSONResponse:
+async def delete_skill(request: Request, name: str, detach: Annotated[bool, Query()] = False) -> JSONResponse:
     """Refuses to delete a skill that's in use (409, with structured
     `usedByAgents`/`requiredBySkills`) unless `detach=true` — and even
     then, a skill another skill `requires` can NEVER be force-deleted
     (only deprecated: `requires` is a content dependency, detaching it
     would leave the dependent skill's instructions pointing at nothing).
-    `detach=true` removes the `AGENT_HAS_SKILL` edges from any assigned
-    agents before deleting, after the frontend has shown the user exactly
-    which agents those are (via `GET /{name}/usage`) and gotten explicit
-    confirmation."""
-    manager, ctx = await _build_manager(request)
-    usage = await _check_usage(name, ctx["orgId"], ctx["graph_provider"])
-
-    if usage["requiredBySkills"]:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": (
-                    f"Skill {name!r} is required by other skill(s) and cannot be deleted. "
-                    "Deprecate it instead so dependents still resolve."
-                ),
-                **usage,
-            },
-        )
-    if usage["usedByAgents"] and not detach:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": (
-                    f"Skill {name!r} is assigned to {len(usage['usedByAgents'])} agent(s). "
-                    "Retry with detach=true to unassign it from them first, or deprecate it instead."
-                ),
-                **usage,
-            },
-        )
-
-    if usage["usedByAgents"] and detach:
-        skill_full_id = f"{_SKILLS}/{ctx['orgId']}_{name}"
-        edges_to_delete = [
-            {
-                "from_id": agent["id"], "from_collection": _AGENT_INSTANCES,
-                "to_id": f"{ctx['orgId']}_{name}", "to_collection": _SKILLS,
-            }
-            for agent in usage["usedByAgents"]
-        ]
-        await ctx["graph_provider"].batch_delete_edges(edges_to_delete, _AGENT_HAS_SKILL)
-        ctx["logger"].info(f"Detached skill {name!r} from {len(edges_to_delete)} agent(s) before delete: {skill_full_id}")
-
-    ok = await manager.delete(name)
+    The guard lives on `SkillManager.delete` so the `skill_manage` tool
+    cannot bypass it."""
+    manager, _ctx = await _build_manager(request)
+    await _reject_if_builtin_skill(manager, name)
+    try:
+        ok = await manager.delete(name, detach=detach)
+    except SkillInUseError as e:
+        raise _handle_in_use_error(e) from e
     if not ok:
         raise HTTPException(status_code=404, detail=f"Skill {name!r} not found.")
     return JSONResponse(status_code=200, content={"status": "success"})
@@ -511,6 +653,7 @@ async def get_version(request: Request, name: str, version: str) -> JSONResponse
 @router.post("/{name}/rollback", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
 async def rollback_skill(request: Request, name: str, payload: RollbackRequest) -> JSONResponse:
     manager, _ctx = await _build_manager(request)
+    await _reject_if_builtin_skill(manager, name)
     try:
         metadata = await manager.rollback(name, payload.version)
     except RegistryError as e:
@@ -535,7 +678,11 @@ async def get_resource(request: Request, name: str, path: str = Query(..., min_l
 @router.put("/{name}/resource", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
 async def write_resource(request: Request, name: str, payload: ResourceWriteRequest) -> JSONResponse:
     manager, _ctx = await _build_manager(request)
-    ok = await manager.write_resource(name, payload.path, payload.content)
+    await _reject_if_builtin_skill(manager, name)
+    try:
+        ok = await manager.write_resource(name, payload.path, payload.content)
+    except SkillFormatError as e:
+        raise _handle_format_error(e) from e
     if not ok:
         raise HTTPException(status_code=404, detail=f"Skill {name!r} not found.")
     return JSONResponse(status_code=200, content={"status": "success"})
@@ -544,6 +691,7 @@ async def write_resource(request: Request, name: str, payload: ResourceWriteRequ
 @router.delete("/{name}/resource", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
 async def remove_resource(request: Request, name: str, path: str = Query(..., min_length=1)) -> JSONResponse:
     manager, _ctx = await _build_manager(request)
+    await _reject_if_builtin_skill(manager, name)
     ok = await manager.remove_resource(name, path)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Resource {path!r} not found for skill {name!r}.")
@@ -590,7 +738,11 @@ async def preview_npm_import(request: Request, payload: NpmImportRequest) -> JSO
     except NpmCommandParseError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     try:
-        preview = await SkillPackageImporter().preview_npm(spec)
+        importer = SkillPackageImporter()
+        if isinstance(spec, UrlSpec):
+            preview = await importer.preview_url(spec.url)
+        else:
+            preview = await importer.preview_npm(spec)
     except PackageImportError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return JSONResponse(status_code=200, content=_preview_to_dict(preview))
@@ -630,6 +782,7 @@ async def finalize_import(request: Request, payload: FinalizeImportRequest) -> J
         raise HTTPException(status_code=400, detail=f"Could not read 'name' from the imported SKILL.md: {e}") from e
     if not name:
         raise HTTPException(status_code=400, detail="Imported SKILL.md is missing a 'name' field.")
+    _reject_if_builtin_name(name)
 
     try:
         metadata = await manager.create(name, payload.content, payload.category, payload.subcategory)

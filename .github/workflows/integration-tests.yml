@@ -19,14 +19,21 @@ on:
             - integration
             - s3
             - postgres
+            - mariadb
+            - nextcloud
+            - bookstack
             - minio
             - sharepoint
             - confluence
             - jira
             - linear
             - github_teams
+            - github
             - gitlab
             - notion
+            - web
+            - rss
+            - local_fs
             - google_drive_workspace
             - google_drive_individual
             - gcs
@@ -106,7 +113,7 @@ env:
 
 jobs:
   integration-tests:
-    name: Integration Tests (${{ matrix.graph_db }})
+    name: Integration Tests (${{ matrix.graph_db }} · ${{ matrix.shard }})
     if: ${{ github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 300
@@ -119,6 +126,16 @@ jobs:
         # it-neo4j / it-arango / it-parallel PR labels (default: sequential "both").
         # `strategy` can't read the job env block, so derive from inputs/labels here.
         graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
+        # Split the suite into parallel shards, each with its own stack, so the
+        # slow connector suites do not all serialize on one worker. Two connector
+        # shards (heavy suites balanced across them) plus a "core" shard for
+        # everything else. Each shard's marker is derived in the test step from
+        # CONN_SHARD_1 / CONN_SHARD_2 (one source of truth); "core" is everything
+        # those two do not own, so the three partition -m "integration" exactly.
+        # A workflow_dispatch of one marker (a single connector or suite rather
+        # than the whole of `integration`) runs as a single "dispatch" job that
+        # selects exactly that marker, so it runs once rather than on every shard.
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || '["connectors-1","connectors-2","core"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -149,6 +166,14 @@ jobs:
       POSTGRES_TEST_USER: pipeshubtest
       POSTGRES_TEST_PASSWORD: pipeshubtest123
       POSTGRES_TEST_DB: pipeshub_connector_test
+      # MariaDB, the same way: a source database in the compose stack.
+      MARIADB_TEST_HOST: localhost
+      MARIADB_TEST_PORT: '3307'
+      MARIADB_CONNECTOR_HOST: mariadb-source
+      MARIADB_CONNECTOR_PORT: '3306'
+      MARIADB_TEST_USER: pipeshubtest
+      MARIADB_TEST_PASSWORD: pipeshubtest123
+      MARIADB_TEST_DB: pipeshub_connector_test
       # MinIO runs in the integration compose stack, so these are fixed
       # test values rather than secrets. The connector runs inside the
       # compose network and reaches MinIO by service name; the test process
@@ -158,6 +183,20 @@ jobs:
       MINIO_ROOT_USER: pipeshubtest
       MINIO_ROOT_PASSWORD: pipeshubtest123
       MINIO_TEST_BUCKET: pipeshub-connector-test
+      # The Web and RSS connectors sync from the web-fixtures service in the
+      # integration stack: the connector by service name, the test process
+      # (which changes pages through its control API) on the published port.
+      WEB_FIXTURES_TEST_URL: http://localhost:8089
+      WEB_FIXTURES_CONNECTOR_URL: http://web-fixtures:8080
+      # Nextcloud and BookStack run in the compose stack too, behind the
+      # selfhosted-sources profile: only the shard that runs their tests
+      # (connectors-1, or a dispatch of just one of them) starts them.
+      NEXTCLOUD_TEST_URL: http://localhost:8090
+      NEXTCLOUD_CONNECTOR_URL: http://nextcloud-source
+      BOOKSTACK_TEST_URL: http://localhost:8094
+      BOOKSTACK_CONNECTOR_URL: http://bookstack-source
+      BOOKSTACK_DB_PORT: '3308'
+      COMPOSE_PROFILES: ${{ (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '' }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
@@ -218,9 +257,18 @@ jobs:
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
+      # Connector shards, one source of truth. The `core` shard is everything
+      # these two do not own, built in the test step from the same values.
+      # Heavy suites are balanced: confluence+github_teams here, jira+gitlab in 2.
+      CONN_SHARD_1: "confluence or github_teams or s3 or minio or gcs or postgres or mariadb or nextcloud or bookstack or notion"
+      CONN_SHARD_2: "jira or gitlab or linear or sharepoint or azure_blob or azure_files or google_drive_workspace or google_drive_individual or web or rss or local_fs or github"
+      # Routed through env (never interpolated into the shell) so untrusted
+      # dispatch input cannot inject; the test steps pick markers from these.
+      CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
+      SHARD: ${{ matrix.shard }}
       # Playwright runs once: on the neo4j/both leg, or the arango leg only when
       # arango is the sole backend (arango dispatch input, or it-arango alone).
-      RUN_PLAYWRIGHT: ${{ (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || (matrix.graph_db == 'arango' && (github.event.inputs.graph_db == 'arango' || (contains(github.event.pull_request.labels.*.name, 'it-arango') && !contains(github.event.pull_request.labels.*.name, 'it-neo4j') && !contains(github.event.pull_request.labels.*.name, 'it-parallel'))))) && 'true' || 'false' }}
+      RUN_PLAYWRIGHT: ${{ (matrix.shard == 'core' || matrix.shard == 'dispatch') && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || (matrix.graph_db == 'arango' && (github.event.inputs.graph_db == 'arango' || (contains(github.event.pull_request.labels.*.name, 'it-arango') && !contains(github.event.pull_request.labels.*.name, 'it-neo4j') && !contains(github.event.pull_request.labels.*.name, 'it-parallel'))))) && 'true' || 'false' }}
 
     steps:
       - name: Checkout code
@@ -367,11 +415,24 @@ jobs:
           TEST_GRAPH_DB_TYPE: neo4j
         run: |
           source .venv/bin/activate
-          MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
+          # Each shard runs its slice; `core` is everything the two connector
+          # lists do not own, built here so the lists live in one place. The
+          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
+          # the selected marker.
+          case "$SHARD" in
+            dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
+            connectors-1) MARKERS="$CONN_SHARD_1" ;;
+            connectors-2) MARKERS="$CONN_SHARD_2" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2)" ;;
+            *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
+          esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
           # distributed and skips teardown. -n 0 runs in-process and restores it.
           WORKERS="$PYTEST_WORKERS"
           if [ "$WORKERS" = "1" ]; then WORKERS=0; fi
+          # No exit-code special-casing: an empty selection (pytest exit 5) fails.
+          # On a normal run that means a shard's marker was dropped or renamed; on
+          # a dispatch it means the chosen marker matches no tests (e.g. messaging).
           pytest -m "$MARKERS" -v --tb=short \
             -n "$WORKERS" --dist loadgroup \
             --junitxml=reports/neo4j-results.xml 2>&1
@@ -379,7 +440,7 @@ jobs:
 
 
       - name: 'Neo4j: Run Playwright e2e tests'
-        if: ${{ !cancelled() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && env.RUN_PLAYWRIGHT == 'true' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
         working-directory: frontend
         env:
           CI: 'true'
@@ -495,11 +556,24 @@ jobs:
           TEST_ARANGO_DB_NAME: es
         run: |
           source .venv/bin/activate
-          MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
+          # Each shard runs its slice; `core` is everything the two connector
+          # lists do not own, built here so the lists live in one place. The
+          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
+          # the selected marker.
+          case "$SHARD" in
+            dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
+            connectors-1) MARKERS="$CONN_SHARD_1" ;;
+            connectors-2) MARKERS="$CONN_SHARD_2" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2)" ;;
+            *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
+          esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
           # distributed and skips teardown. -n 0 runs in-process and restores it.
           WORKERS="$PYTEST_WORKERS"
           if [ "$WORKERS" = "1" ]; then WORKERS=0; fi
+          # No exit-code special-casing: an empty selection (pytest exit 5) fails.
+          # On a normal run that means a shard's marker was dropped or renamed; on
+          # a dispatch it means the chosen marker matches no tests (e.g. messaging).
           pytest -m "$MARKERS" -v --tb=short \
             -n "$WORKERS" --dist loadgroup \
             --junitxml=reports/arango-results.xml 2>&1
@@ -710,7 +784,7 @@ jobs:
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests (${{ matrix.graph_db }}) — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
+                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests (${{ matrix.graph_db }} · ${{ matrix.shard }}) — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
                   }
                 },
                 {
@@ -820,7 +894,7 @@ jobs:
 
           RESPONSE=$(curl -s -X POST "https://slack.com/api/files.getUploadURLExternal" \
             -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-            -d "filename=integration-test-reports-${{ matrix.graph_db }}.zip" \
+            -d "filename=integration-test-reports-${{ matrix.graph_db }}-${{ matrix.shard }}.zip" \
             -d "length=$FILE_SIZE")
           OK=$(echo "$RESPONSE" | jq -r '.ok')
           if [ "$OK" != "true" ]; then
@@ -832,7 +906,7 @@ jobs:
 
           curl -s -X POST "$UPLOAD_URL" -F "file=@reports.zip"
 
-          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports (${{ matrix.graph_db }})\"}],\"channel_id\":\"$CHANNEL_ID\""
+          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports (${{ matrix.graph_db }} · ${{ matrix.shard }})\"}],\"channel_id\":\"$CHANNEL_ID\""
           if [ -n "$THREAD_TS" ]; then
             COMPLETE_PAYLOAD="$COMPLETE_PAYLOAD,\"thread_ts\":\"$THREAD_TS\""
           fi
@@ -918,6 +992,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: reports-${{ matrix.graph_db }}
+          name: reports-${{ matrix.graph_db }}-${{ matrix.shard }}
           path: integration-tests/reports/
           if-no-files-found: ignore

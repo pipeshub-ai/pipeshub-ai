@@ -259,8 +259,10 @@ class TestBookstackHandleRecordUpdates:
             metadata_changed=False, content_changed=False, permissions_changed=False,
             external_record_id="page/1",
         )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_called_once()
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(connector.connector_id, "page/1")
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
     async def test_new_record_logs_only(self, connector):
         from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -312,6 +314,7 @@ class TestBookstackHandleRecordUpdates:
 
     async def test_exception_handled(self, connector):
         from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         connector.data_entities_processor.on_record_deleted = AsyncMock(
             side_effect=RuntimeError("err")
         )
@@ -321,6 +324,7 @@ class TestBookstackHandleRecordUpdates:
             external_record_id="page/1",
         )
         await connector._handle_record_updates(update)  # Should not raise
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,20 @@
     "missingAgentKey": "Missing agent key. Open an agent from the chat sidebar or use a valid link.",
     "loading": "Loading…"
   },
+  "projects": {
+    "pageTitle": "Projects",
+    "searchPlaceholder": "Search projects…",
+    "emptyState": "No projects yet",
+    "emptyStateHint": "Create a project to organize chats, files, and instructions.",
+    "failedToLoad": "Failed to load projects",
+    "chatCount_one": "{{count}} chat",
+    "chatCount_other": "{{count}} chats",
+    "lastActive": "Active {{date}}",
+    "pinnedSection": "Pinned",
+    "allSection": "All projects",
+    "backToAllProjects": "All projects",
+    "loadMore": "Load more"
+  },
   "timeGroup": {
     "today": "Today",
     "yesterday": "Yesterday",
@@ -199,6 +213,8 @@
     "moreConnectors": "More Connectors",
     "all": "All",
     "agents": "Agents",
+    "projects": "Projects",
+    "beta": "Beta",
     "searchChats": "Search Chats",
     "inbox": "Inbox",
     "notifications": "Notifications"
@@ -395,7 +411,11 @@
     "english": "English",
     "german": "German",
     "rotateLandscape": "Rotate your device for the best experience",
-    "errorOccurred": "An error occurred. Please try again."
+    "errorOccurred": "An error occurred. Please try again.",
+    "beta": {
+      "label": "Beta",
+      "tooltip": "This feature is in beta and may change."
+    }
   },
   "units": {
     "bytes": "Bytes",
@@ -527,6 +547,13 @@
       "resetDefaults": "Reset to defaults",
       "knowledgeScopeClearedWarning": "No knowledge sources are included for this run, so the agent will not search your connectors or collections for answers."
     },
+    "projectResources": {
+      "noConnectors": "No connectors enabled for this project.",
+      "noCollections": "No collections enabled for this project.",
+      "noActions": "No actions (toolsets) enabled for this project.",
+      "noMcpServers": "No MCP servers enabled for this project.",
+      "resetDefaults": "Reset to project defaults"
+    },
     "aiModelsTooltip": "AI Models",
     "attachmentTooltip": "Attach files",
     "micTooltip": "Voice input",
@@ -538,6 +565,7 @@
     "loadingConversation": "Loading conversation...",
     "recents": "Recents",
     "sharedChats": "Shared Chats",
+    "sharedBy": "Shared by {{name}}",
     "noSharedChats": "No shared chats",
     "yourChats": "Your Chats",
     "noChatsFound": "No chats found",
@@ -773,7 +801,97 @@
     "failedToDeleteAgent": "Could not delete agent",
     "failedToRename": "Failed to rename chat",
     "rename": "Rename",
-    "renaming": "Renaming…"
+    "renaming": "Renaming…",
+    "projects": {
+      "title": "Projects",
+      "newProject": "New project",
+      "noProjects": "No projects yet",
+      "failedToLoad": "Failed to load projects",
+      "moreProjects": "More projects",
+      "moveToProject": "Move to project",
+      "removeFromProject": "Remove from project",
+      "pinProject": "Pin",
+      "unpinProject": "Unpin",
+      "archiveProject": "Archive project",
+      "unarchiveProject": "Unarchive project",
+      "deleteProject": "Delete project",
+      "shareProject": "Share project",
+      "backToProjects": "All projects",
+      "backToProject": "Back to project",
+      "newChatInProject": "New chat",
+      "recentChats": "Recent chats",
+      "noChats": "No chats yet in this project",
+      "startChatInProject": "Start a chat in this project",
+      "createDialog": {
+        "title": "New project",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. Q3 Marketing Plan",
+        "descriptionLabel": "Description",
+        "descriptionPlaceholder": "What's this project about? (optional)",
+        "instructionsLabel": "Instructions",
+        "instructionsPlaceholder": "Instructions the assistant should always follow in this project (optional)",
+        "create": "Create project",
+        "creating": "Creating…",
+        "nameRequired": "Name is required"
+      },
+      "workspace": {
+        "failedToLoad": "Failed to load this project",
+        "instructionsTitle": "Instructions",
+        "instructionsPlaceholder": "Add instructions the assistant should follow for every chat in this project…",
+        "noInstructions": "No instructions added yet",
+        "save": "Save",
+        "saving": "Saving…",
+        "editInstructions": "Edit instructions",
+        "noDescription": "No description",
+        "filesTitle": "Files",
+        "filesSubtitle": "Files here are searched only within this project.",
+        "uploadFiles": "Upload files",
+        "uploading": "Uploading…",
+        "noFiles": "No files yet",
+        "removeFile": "Remove file",
+        "connectorsTitle": "Connectors",
+        "connectorsSubtitle": "Chats in this project search only these connectors.",
+        "noConnectorsAvailable": "No connectors to add yet.",
+        "failedToLoadConnectors": "Failed to load connectors",
+        "updateConnectorsFailed": "Failed to update connectors",
+        "toolsTitle": "Tools & MCP",
+        "noToolsAvailable": "No authenticated actions or MCP servers to add yet.",
+        "knowledgeBaseUnavailable": "Could not prepare this project’s file storage",
+        "uploadSessionLabel_one": "{{count}} file",
+        "uploadSessionLabel_other": "{{count}} files",
+        "membersTitle": "Members",
+        "memberCount_one": "{{count}} member",
+        "memberCount_other": "{{count}} members",
+        "share": "Share",
+        "recentChatsTitle": "Recent chats",
+        "seeAllChats": "See all chats",
+        "saveInstructionsFailed": "Failed to save instructions",
+        "updateToolsFailed": "Failed to update tools",
+        "updatePinFailed": "Failed to update pin status",
+        "updateArchiveFailed": "Failed to update archive status",
+        "shareRefreshFailed": "Failed to refresh sharing details",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
+      },
+      "moveDialog": {
+        "title": "Move to project",
+        "noProjects": "You don't have any projects yet",
+        "removeOption": "No project",
+        "moving": "Moving…"
+      },
+      "deleteDialog": {
+        "title": "Delete this project?",
+        "description": "This removes the project and unlinks its chats. The chats themselves are not deleted.",
+        "confirm": "Delete project",
+        "deleting": "Deleting…",
+        "failed": "Failed to delete project"
+      },
+      "roles": {
+        "owner": "Owner",
+        "editor": "Editor",
+        "viewer": "Viewer"
+      }
+    }
   },
   "workspaceSettings": {
     "title": "Workspace Settings"
@@ -2712,6 +2830,11 @@
     "modelSection": "Model",
     "toolsetsSection": "Toolsets",
     "mcpServersSection": "MCP Servers",
+    "skillsSection": "Skills",
+    "noSkillsAvailable": "No skills available",
+    "skillNodeTemplateDescription": "Custom skill your agent can invoke",
+    "skillDeprecated": "This skill has been deprecated",
+    "skillDeprecatedReplacedBy": "This skill has been deprecated. Use {{name}} instead.",
     "inputSection": "Input",
     "responseSection": "Response",
     "connectModel": "Connect a model",
@@ -2727,8 +2850,8 @@
     "lineCount": "{{count}} lines",
     "instructionsLabel": "Instructions",
     "startingMessageLabel": "Starting message",
-    "defaultReasoningEffortLabel": "Default reasoning effort",
-    "defaultReasoningEffortHint": "Defaults to High when not set.",
+    "defaultReasoningEffortLabel": "Default Reasoning Effort",
+    "defaultReasoningEffortHint": "Fallback reasoning effort used when the user doesn't choose one in chat.",
     "moreItems": "+{{count}} more",
     "toolsetNodeSubtitle": "Toolset",
     "toolsLabel": "Tools",
@@ -2944,9 +3067,7 @@
     "deprecatedToolsBanner": "{{count}} tool(s) on this agent are deprecated remove them : {{tools}}",
     "removeDeprecatedTools": "Remove Deprecated Tools",
     "showMore": "Show more",
-    "showLess": "Show less",
-    "defaultReasoningEffortLabel": "Default Reasoning Effort",
-    "defaultReasoningEffortHint": "Fallback reasoning effort used when the user doesn't choose one in chat."
+    "showLess": "Show less"
   },
   "recordView": {
     "sections": {

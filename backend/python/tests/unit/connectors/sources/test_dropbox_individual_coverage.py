@@ -940,11 +940,11 @@ class TestRunSyncWithCursor:
 
         c._process_dropbox_items_generator = _deleted_gen
 
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await c._run_sync_with_cursor("uid", "u@test.com")
 
-        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(
-            record_id="id:deleted"
-        )
+        c.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(c.connector_id, "id:deleted")
+        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
     @pytest.mark.asyncio
     async def test_api_error_invalid_cursor_stops(self):

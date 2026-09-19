@@ -272,6 +272,37 @@ class TestLocalFsConnectorHelpers:
         assert folder_connector._extension_allowed(Path("x.pdf"), coll) is True
         assert folder_connector._extension_allowed(Path("x.md"), coll) is False
 
+    def test_extension_allowed_excluded(self, folder_connector: LocalFsConnector):
+        # "Exclude txt" must skip .txt files, not sync only them.
+        coll = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.FILE_EXTENSIONS.value,
+                    type=FilterType.MULTISELECT,
+                    operator=MultiselectOperator.NOT_IN,
+                    value=["txt"],
+                )
+            ]
+        )
+        assert folder_connector._extension_allowed(Path("notes.TXT"), coll) is False
+        assert folder_connector._extension_allowed(Path("guide.md"), coll) is True
+        assert folder_connector._extension_allowed(Path("Makefile"), coll) is True
+
+    def test_extension_allowed_included_skips_files_without_extension(
+        self, folder_connector: LocalFsConnector
+    ):
+        coll = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.FILE_EXTENSIONS.value,
+                    type=FilterType.MULTISELECT,
+                    operator=MultiselectOperator.IN,
+                    value=["md"],
+                )
+            ]
+        )
+        assert folder_connector._extension_allowed(Path("Makefile"), coll) is False
+
     def test_build_file_record_sets_indexing_off_when_files_disabled(
         self, folder_connector: LocalFsConnector, tmp_path: Path
     ):

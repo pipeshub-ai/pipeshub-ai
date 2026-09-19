@@ -10,9 +10,10 @@ Provides async wrapper methods for MariaDB operations:
 """
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.sources.client.mariadb.mariadb import MariaDBClient, MariaDBResponse
 
@@ -108,6 +109,12 @@ class TableStatsEntry(BaseModel):
     n_live_tup: int = 0
     last_updated: Optional[str] = None
     auto_increment: Optional[int] = None
+
+    @field_validator("last_updated", mode="before")
+    @classmethod
+    def _update_time_as_text(cls, value: object) -> object:
+        # The driver returns UPDATE_TIME as a datetime whenever it is set.
+        return value.isoformat() if isinstance(value, datetime) else value
 
 
 class MariaDBDataSource:

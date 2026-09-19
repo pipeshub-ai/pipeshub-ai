@@ -100,6 +100,12 @@ export interface SharedWithEntry {
   _id: string;
 }
 
+/** Initiator of a chat, present on conversations shared with the current user */
+export interface SharedByInfo {
+  userId: string;
+  name: string;
+}
+
 /**
  * Pagination metadata returned by the conversation detail API.
  * `hasNextPage` means there are older message batches to load;
@@ -133,6 +139,10 @@ export interface ConversationApiResponse {
   updatedAt: string;
   isOwner: boolean;
   accessLevel: string;
+  /** Present when this conversation is linked to a Project. */
+  projectId?: string;
+  projectVisibility?: 'private' | 'project';
+  sharedBy?: SharedByInfo;
 }
 
 export type ConversationSource = 'owned' | 'shared';
@@ -161,6 +171,10 @@ export interface Conversation {
   status?: string;
   modelInfo?: ModelInfo;
   isOwner?: boolean;
+  /** Present when this conversation is linked to a Project. */
+  projectId?: string;
+  projectVisibility?: 'private' | 'project';
+  sharedBy?: SharedByInfo;
 }
 
 export interface ChatSuggestion {
@@ -786,6 +800,8 @@ export interface ConversationCompleteData {
   createdAt: string;
   updatedAt: string;
   __v: number;
+  projectId?: string;
+  projectVisibility?: 'private' | 'project';
 }
 
 export interface SSECompleteEvent {
@@ -873,6 +889,14 @@ export interface StreamChatRequest {
    * see `cancelRunBodySchema` (Node) / `CancelRunRequest` (Python).
    */
   runId?: string;
+  /**
+   * Links a brand-new conversation to a Project. Only meaningful when
+   * `conversationId` is absent — once a session exists its `projectId` is
+   * the source of truth server-side and this field is ignored on follow-ups
+   * (see Node `es_controller.ts` / plan's "projectId on follow-up requests
+   * is ignored").
+   */
+  projectId?: string;
 }
 
 /**
@@ -970,6 +994,13 @@ export interface ChatSlot {
    * relying on the global `agentStreamTools` (which tracks the current URL agent only).
    */
   agentStreamTools: string[] | null;
+  /**
+   * Project this thread is linked to (`/chat?projectId=…`), or null.
+   * Only used to seed `StreamChatRequest.projectId` on the first message of
+   * a brand-new chat — once `convId` is assigned, the session row is the
+   * source of truth and this field is not sent on follow-ups.
+   */
+  projectId: string | null;
   /** True until the server assigns a real convId. */
   isTemp: boolean;
   /** True once messages have been loaded (or immediately for new chats). */

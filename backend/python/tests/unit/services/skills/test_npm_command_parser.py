@@ -5,6 +5,7 @@ import pytest
 from app.services.skills.npm_command_parser import (
     NpmCommandParseError,
     PackageSpec,
+    UrlSpec,
     parse_npm_command,
 )
 
@@ -23,7 +24,7 @@ class TestPackageSpec:
 class TestParseNpmCommandBarePackage:
     def test_bare_name(self) -> None:
         spec = parse_npm_command("pdf-skills")
-        assert spec == PackageSpec(name="pdf-skills", version="latest")
+        assert spec == PackageSpec(name="pdf-skills", version="latest", skill_filter=None)
 
     def test_bare_scoped_name(self) -> None:
         spec = parse_npm_command("@anthropic/pdf-skills")
@@ -95,6 +96,10 @@ class TestParseNpmCommandRunnerPrefixes:
         spec = parse_npm_command("bun pdf-skills")
         assert spec.name == "pdf-skills"
 
+    def test_unrecognized_runner_with_skill_flag_still_parses(self) -> None:
+        spec = parse_npm_command("bun --skill my-skill pdf-pack")
+        assert spec == PackageSpec(name="pdf-pack", version="latest", skill_filter="my-skill")
+
 
 class TestParseNpmCommandErrors:
     def test_empty_string_raises(self) -> None:
@@ -149,3 +154,77 @@ class TestParseNpmCommandErrors:
     def test_error_message_is_actionable(self) -> None:
         with pytest.raises(NpmCommandParseError, match="package name"):
             parse_npm_command("")
+
+
+class TestParseNpmCommandUrls:
+    """URLs pasted in the npm field should return a UrlSpec, not raise."""
+
+    def test_bare_github_url(self) -> None:
+        result = parse_npm_command("https://github.com/netresearch/jira-skill")
+        assert isinstance(result, UrlSpec)
+        assert result.url == "https://github.com/netresearch/jira-skill"
+        assert result.skill_filter is None
+
+    def test_github_url_with_trailing_slash(self) -> None:
+        result = parse_npm_command("https://github.com/acme/my-skill/")
+        assert isinstance(result, UrlSpec)
+        assert result.url == "https://github.com/acme/my-skill/"
+
+    def test_github_url_with_dot_git(self) -> None:
+        result = parse_npm_command("https://github.com/acme/my-skill.git")
+        assert isinstance(result, UrlSpec)
+
+    def test_direct_archive_url(self) -> None:
+        result = parse_npm_command("https://example.com/my-skill.tar.gz")
+        assert isinstance(result, UrlSpec)
+        assert result.url == "https://example.com/my-skill.tar.gz"
+
+    def test_url_after_runner_prefix(self) -> None:
+        result = parse_npm_command(
+            "npx skills add https://github.com/netresearch/jira-skill"
+        )
+        assert isinstance(result, UrlSpec)
+        assert result.url == "https://github.com/netresearch/jira-skill"
+
+    def test_npm_install_github_url(self) -> None:
+        result = parse_npm_command(
+            "npm install https://github.com/acme/my-skill"
+        )
+        assert isinstance(result, UrlSpec)
+
+    def test_url_with_http(self) -> None:
+        result = parse_npm_command("http://example.com/skill.zip")
+        assert isinstance(result, UrlSpec)
+
+
+class TestParseNpmCommandSkillFlag:
+    """The --skill flag should be extracted and stored, not rejected."""
+
+    def test_skill_flag_with_npm_package(self) -> None:
+        result = parse_npm_command("npx skills add jira-pack --skill jira-communication")
+        assert isinstance(result, PackageSpec)
+        assert result.name == "jira-pack"
+        assert result.skill_filter == "jira-communication"
+
+    def test_skill_flag_with_github_url(self) -> None:
+        result = parse_npm_command(
+            "npx skills add https://github.com/netresearch/jira-skill --skill jira-communication"
+        )
+        assert isinstance(result, UrlSpec)
+        assert result.url == "https://github.com/netresearch/jira-skill"
+        assert result.skill_filter == "jira-communication"
+
+    def test_skill_flag_before_package(self) -> None:
+        result = parse_npm_command("npx skills add --skill my-skill pdf-pack")
+        assert isinstance(result, PackageSpec)
+        assert result.name == "pdf-pack"
+        assert result.skill_filter == "my-skill"
+
+    def test_no_skill_flag_means_none(self) -> None:
+        result = parse_npm_command("pdf-skills")
+        assert isinstance(result, PackageSpec)
+        assert result.skill_filter is None
+
+    def test_unknown_flags_still_rejected(self) -> None:
+        with pytest.raises(NpmCommandParseError):
+            parse_npm_command("npm install pdf-skills --registry https://evil.com")

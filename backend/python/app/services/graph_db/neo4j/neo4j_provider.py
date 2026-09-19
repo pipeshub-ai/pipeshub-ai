@@ -1028,6 +1028,45 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Update node failed: {str(e)}")
             raise
 
+    async def update_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        node: dict,
+        match_field: str,
+        match_value: Any,
+        transaction: str | None = None,
+    ) -> bool:
+        """Replace node properties only while `match_field` still equals
+        `match_value`. MATCH + WHERE + SET is one Cypher statement so a
+        concurrent overwrite cannot sneak in between the check and the write."""
+        try:
+            label = collection_to_label(collection)
+            neo4j_node = self._arango_to_neo4j_node(node, collection)
+            if "id" not in neo4j_node:
+                neo4j_node["id"] = key
+            self.validator.validate_node_update(collection, neo4j_node)
+            query = f"""
+            MATCH (n:{label} {{id: $key}})
+            WHERE n[$field] = $expected
+            SET n = $node
+            RETURN n.id AS id
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "key": key,
+                    "field": match_field,
+                    "expected": match_value,
+                    "node": neo4j_node,
+                },
+                txn_id=transaction,
+            )
+            return bool(results)
+        except Exception as e:
+            self.logger.error("❌ Conditional node update failed: %s", str(e))
+            raise
+
     async def batch_update_nodes(
         self,
         nodes: list[dict],
@@ -4776,10 +4815,16 @@ class Neo4jProvider(IGraphDBProvider):
             if metadata_conditions:
                 metadata_filter_clause = " AND " + " AND ".join(metadata_conditions)
 
-            # Build KB filter clause
+            # Build KB filter clause. With no explicit kb_ids (the "all
+            # accessible KBs" scenario), hidden KBs (e.g. a project's linked
+            # file collection) are excluded so they never surface in
+            # unscoped search. An explicit kb_ids list — how a project chat
+            # reaches its own hidden KB — is honoured as-is.
             kb_filter_clause = ""
             if kb_ids:
                 kb_filter_clause = " WHERE kb.id IN $kb_ids"
+            else:
+                kb_filter_clause = " WHERE coalesce(kb.isHidden, false) = false"
 
             # Prepare parameters (populated further below, and mutated by time-range conditions)
             parameters = {
@@ -4816,7 +4861,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Teams)
                 WHERE ute.type = "USER"
                 OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:App {{type: "KB"}})
-                WHERE tke.type = "TEAM" {' AND kb.id IN $kb_ids' if kb_ids else ''}
+                WHERE tke.type = "TEAM" {' AND kb.id IN $kb_ids' if kb_ids else ' AND coalesce(kb.isHidden, false) = false'}
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
                 WHERE r.indexingStatus = $completedStatus
                   AND r.origin = "UPLOAD"
@@ -4872,13 +4917,21 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return {}
 
-    async def _get_accessible_kb_ids(self, user_id: str) -> list[str]:
+    async def _get_accessible_kb_ids(
+        self, user_id: str, *, include_hidden: bool = False
+    ) -> list[str]:
         """KB App ids this user can reach, directly or through a team.
 
         Mirrors the access paths `_get_kb_virtual_ids` resolves inline, so that
         the per-KB record maps can be cached org-wide while *which* KBs a user
         may see stays a live check. Raises on failure so callers can fall back
         to the uncached path rather than silently narrowing the result.
+
+        By default, excludes hidden KBs (project-linked Collections) so they
+        never surface in unscoped search.  Pass ``include_hidden=True`` when the
+        caller already has explicit ``kb_ids`` — the intersection in
+        ``_get_kb_virtual_ids_cached`` must not discard a hidden KB that the
+        caller explicitly requested.
         """
         query = """
         MATCH (userDoc:User {userId: $userId})
@@ -4886,6 +4939,7 @@ class Neo4jProvider(IGraphDBProvider):
         CALL {
             WITH userDoc
             OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:App {type: "KB"})
+            WHERE $includeHidden OR coalesce(kb.isHidden, false) = false
             RETURN collect(DISTINCT kb.id) AS directIds
         }
 
@@ -4894,7 +4948,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Teams)
             WHERE ute.type = "USER"
             OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:App {type: "KB"})
-            WHERE tke.type = "TEAM"
+            WHERE tke.type = "TEAM" AND ($includeHidden OR coalesce(kb.isHidden, false) = false)
             RETURN collect(DISTINCT kb.id) AS teamIds
         }
 
@@ -4903,7 +4957,9 @@ class Neo4jProvider(IGraphDBProvider):
         WITH kbId WHERE kbId IS NOT NULL
         RETURN DISTINCT kbId AS kbId
         """
-        results = await self.client.execute_query(query, parameters={"userId": user_id})
+        results = await self.client.execute_query(
+            query, parameters={"userId": user_id, "includeHidden": include_hidden}
+        )
         return [r.get("kbId") for r in results if r.get("kbId")]
 
     async def _get_kb_virtual_ids_for_kb(self, kb_id: str) -> dict[str, str]:
@@ -5008,7 +5064,9 @@ class Neo4jProvider(IGraphDBProvider):
         narrowing what the user can search.
         """
         try:
-            accessible = await self._get_accessible_kb_ids(user_id)
+            accessible = await self._get_accessible_kb_ids(
+                user_id, include_hidden=bool(kb_ids)
+            )
             accessible_set = set(accessible)
             targets = [kb for kb in kb_ids if kb in accessible_set] if kb_ids else accessible
 
@@ -5135,11 +5193,16 @@ class Neo4jProvider(IGraphDBProvider):
             filters = filters or {}
             kb_ids = filters.get("kb")
             connector_ids_filter = filters.get("apps")
+            # Threaded through from ChatQuery.strictScope by the caller — a
+            # project-scoped chat sets this so an empty effective scope stays
+            # empty (Scenario 3's implicit "search everything the user can
+            # access" must never apply), instead of quietly widening back out.
+            strict_scope = bool(filters.get("strictScope"))
 
             # Extract metadata filters (departments, categories, etc.)
             metadata_filters = {
                 k: v for k, v in filters.items()
-                if k not in ["kb", "apps"] and v
+                if k not in ["kb", "apps", "strictScope"] and v
             }
 
             # Reclassify KB app IDs that arrived in the apps filter.
@@ -5171,6 +5234,14 @@ class Neo4jProvider(IGraphDBProvider):
                 f"App filter: {has_app_filter} (Connector IDs: {connector_ids_filter}), "
                 f"Metadata filters: {list(metadata_filters.keys())}"
             )
+
+            if strict_scope and not has_kb_filter and not has_app_filter:
+                self.logger.info(
+                    "🔒 Strict scope with an empty effective apps/kb selection — "
+                    "returning no accessible records instead of Scenario 3's "
+                    "'search everything'"
+                )
+                return {}
 
             # Metadata filters change what each query returns, so they bypass the
             # cache entirely rather than needing them in every cache key.
@@ -9854,6 +9925,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (u)-[r:PERMISSION {{type: "USER"}}]->(kb:App)
             WHERE kb.orgId = $org_id
                 AND kb.type = $kb_type
+                AND coalesce(kb.isHidden, false) = false
                 {additional_filters}
             WITH u, kb, r.role AS direct_role,
                  CASE r.role
@@ -9870,6 +9942,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (team)-[r2:PERMISSION {{type: "TEAM"}}]->(kb2:App)
             WHERE kb2.orgId = $org_id
                 AND kb2.type = $kb_type
+                AND coalesce(kb2.isHidden, false) = false
                 {additional_filters}
 
             // Emit both direct and team KBs so team-only KBs are not lost (COALESCE would drop them)
@@ -9950,6 +10023,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (u)-[r:PERMISSION {{type: "USER"}}]->(kb:App)
             WHERE kb.orgId = $org_id
                 AND kb.type = $kb_type
+                AND coalesce(kb.isHidden, false) = false
                 {additional_filters}
             WITH kb, r.role AS direct_role,
                  CASE r.role
@@ -9966,6 +10040,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (team)-[r2:PERMISSION {{type: "TEAM"}}]->(kb2:App)
             WHERE kb2.orgId = $org_id
                 AND kb2.type = $kb_type
+                AND coalesce(kb2.isHidden, false) = false
                 {additional_filters}
             WITH kb, kb2, direct_role, direct_priority, is_direct,
                  r1.role AS team_role,
@@ -10012,6 +10087,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (u)-[r:PERMISSION {type: "USER"}]->(kb:App)
             WHERE kb.orgId = $org_id
                 AND kb.type = $kb_type
+                AND coalesce(kb.isHidden, false) = false
             WITH kb, r.role AS direct_role,
                  CASE r.role
                      WHEN "OWNER" THEN 4
@@ -10026,6 +10102,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (team)-[r2:PERMISSION {type: "TEAM"}]->(kb2:App)
             WHERE kb2.orgId = $org_id
                 AND kb2.type = $kb_type
+                AND coalesce(kb2.isHidden, false) = false
             WITH kb, kb2, direct_role, direct_priority, is_direct,
                  r1.role AS team_role,
                  CASE WHEN r1.role IS NOT NULL THEN
@@ -11624,11 +11701,12 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE kb.orgId = $org_id
                     AND kb.type = "KB"
                     AND kbEdge.role IN $kb_permissions
+                    AND coalesce(kb.isHidden, false) = false
                 WITH u, COLLECT({{kb: kb, role: kbEdge.role}}) AS directKbs
 
                 OPTIONAL MATCH (u)-[userTeamPerm:PERMISSION {{type: "USER"}}]->(team:Teams)
                 OPTIONAL MATCH (team)-[teamKbPerm:PERMISSION {{type: "TEAM"}}]->(kb2:App)
-                WHERE kb2.orgId = $org_id AND kb2.type = "KB"
+                WHERE kb2.orgId = $org_id AND kb2.type = "KB" AND coalesce(kb2.isHidden, false) = false
                 WITH u, directKbs, COLLECT({{kb: kb2, role: userTeamPerm.role}}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
@@ -11735,11 +11813,12 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE kb.orgId = $org_id
                     AND kb.type = "KB"
                     AND kbEdge.role IN $kb_permissions
+                    AND coalesce(kb.isHidden, false) = false
                 WITH u, COLLECT({{kb: kb}}) AS directKbs
 
                 OPTIONAL MATCH (u)-[userTeamPerm:PERMISSION {{type: "USER"}}]->(team:Teams)
                 OPTIONAL MATCH (team)-[teamKbPerm:PERMISSION {{type: "TEAM"}}]->(kb2:App)
-                WHERE kb2.orgId = $org_id AND kb2.type = "KB"
+                WHERE kb2.orgId = $org_id AND kb2.type = "KB" AND coalesce(kb2.isHidden, false) = false
                 WITH u, directKbs, COLLECT({{kb: kb2}}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
@@ -11794,11 +11873,12 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE kb.orgId = $org_id
                     AND kb.type = "KB"
                     AND kbEdge.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
+                    AND coalesce(kb.isHidden, false) = false
                 WITH u, COLLECT({kb: kb, role: kbEdge.role}) AS directKbs
 
                 OPTIONAL MATCH (u)-[userTeamPerm:PERMISSION {type: "USER"}]->(team:Teams)
                 OPTIONAL MATCH (team)-[teamKbPerm:PERMISSION {type: "TEAM"}]->(kb2:App)
-                WHERE kb2.orgId = $org_id AND kb2.type = "KB"
+                WHERE kb2.orgId = $org_id AND kb2.type = "KB" AND coalesce(kb2.isHidden, false) = false
                 WITH u, directKbs, COLLECT({kb: kb2, role: userTeamPerm.role}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
@@ -13470,6 +13550,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (app:App)
             WHERE app.id IN $user_app_ids
             AND (app.type = 'KB' OR NOT coalesce(app.hideConnector, false))
+            AND NOT (app.type = 'KB' AND coalesce(app.isHidden, false))
 
             // For KB apps, check if any records link via BELONGS_TO; for others check RecordGroups
             OPTIONAL MATCH (rg:RecordGroup)
@@ -14260,7 +14341,12 @@ class Neo4jProvider(IGraphDBProvider):
         user_key: str,
         transaction: str | None = None
     ) -> list[str]:
-        """Get list of app IDs the user has access to."""
+        """Get list of app IDs the user has access to.
+
+        Only feeds Knowledge Hub browse/search (see `knowledge_hub_service.py`),
+        so hidden KBs (e.g. a project's linked file collection) are excluded
+        here rather than threading an extra flag through every caller.
+        """
         try:
             query = """
             MATCH (u:User {id: $user_key})
@@ -14268,7 +14354,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
             WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
             UNWIND app_list AS app
-            WITH app WHERE app IS NOT NULL
+            WITH app WHERE app IS NOT NULL AND coalesce(app.isHidden, false) = false
             RETURN DISTINCT app.id AS app_id
             """
             results = await self.client.execute_query(
@@ -14288,7 +14374,11 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None
     ) -> list[str]:
         """Get app IDs the user can access via a direct or team-based PERMISSION
-        grant (i.e. sharing)
+        grant (i.e. sharing).
+
+        Only feeds Knowledge Hub browse/search (see `knowledge_hub_service.py`),
+        so hidden KBs (e.g. a project's linked file collection) are excluded
+        here rather than threading an extra flag through every caller.
         """
         try:
             query = """
@@ -14300,7 +14390,7 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE app2.orgId = $org_id
             WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
             UNWIND app_list AS app
-            WITH app WHERE app IS NOT NULL
+            WITH app WHERE app IS NOT NULL AND coalesce(app.isHidden, false) = false
             RETURN DISTINCT app.id AS app_id
             """
             results = await self.client.execute_query(
@@ -17674,7 +17764,8 @@ class Neo4jProvider(IGraphDBProvider):
         query = f"""
         MATCH (agent:{agent_label} {{id: $agent_id}})-[:{agent_has_skill_rel}]->(skill:{skill_label})
         RETURN skill.name AS name, skill.description AS description, skill.category AS category,
-               skill.subcategory AS subcategory, skill.version AS version, skill.status AS status
+               skill.subcategory AS subcategory, skill.version AS version, skill.status AS status,
+               skill.deprecatedReason AS deprecatedReason, skill.replacedBy AS replacedBy
         """
         result = await self.client.execute_query(
             query, parameters={"agent_id": agent_id}, txn_id=transaction
@@ -17687,6 +17778,8 @@ class Neo4jProvider(IGraphDBProvider):
                 "subcategory": row["subcategory"],
                 "version": row["version"],
                 "status": row["status"],
+                "deprecatedReason": row.get("deprecatedReason"),
+                "replacedBy": row.get("replacedBy"),
             }
             for row in result or []
         ]

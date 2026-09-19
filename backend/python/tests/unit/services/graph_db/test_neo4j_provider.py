@@ -293,7 +293,8 @@ class TestGetAgent:
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge
                 [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
                 [{"name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
-                  "subcategory": None, "version": "1.0.0", "status": "active"}],  # skills
+                  "subcategory": None, "version": "1.0.0", "status": "active",
+                  "deprecatedReason": None, "replacedBy": None}],  # skills
                 [],  # mcp servers projection
                 [{"share_with_org": True}],  # org share query
             ]
@@ -312,6 +313,7 @@ class TestGetAgent:
         assert result["skills"] == [{
             "name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
             "subcategory": None, "version": "1.0.0", "status": "active",
+            "deprecatedReason": None, "replacedBy": None,
         }]
         assert result["shareWithOrg"] is True
 
@@ -397,6 +399,7 @@ class TestProjectAgentSkills:
                     "name": "csv-cleaner", "description": "Cleans CSV data",
                     "category": "docs", "subcategory": None,
                     "version": "2.0.0", "status": "deprecated",
+                    "deprecatedReason": "superseded", "replacedBy": "csv-cleaner-v2",
                 },
             ]
         )
@@ -408,14 +411,19 @@ class TestProjectAgentSkills:
                 "name": "pdf-extractor", "description": "Extracts tables",
                 "category": "docs", "subcategory": "tables",
                 "version": "1.2.0", "status": "active",
+                "deprecatedReason": None, "replacedBy": None,
             },
             {
                 "name": "csv-cleaner", "description": "Cleans CSV data",
                 "category": "docs", "subcategory": None,
                 "version": "2.0.0", "status": "deprecated",
+                "deprecatedReason": "superseded", "replacedBy": "csv-cleaner-v2",
             },
         ]
         call_args = neo4j_provider.client.execute_query.await_args
+        query = call_args.args[0]
+        assert "skill.deprecatedReason AS deprecatedReason" in query
+        assert "skill.replacedBy AS replacedBy" in query
         assert call_args.kwargs["parameters"] == {"agent_id": "agent-1"}
         assert call_args.kwargs["txn_id"] == "txn-1"
 
@@ -2625,6 +2633,47 @@ class TestVirtualAccessAndRecordLookup:
         assert await neo4j_provider._get_kb_virtual_ids("user-1", "org-1") == {}
 
     @pytest.mark.asyncio
+    async def test_get_kb_virtual_ids_excludes_hidden_when_unfiltered(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """The 'all accessible KBs' scenario (no kb_ids) must never surface a
+        hidden KB (e.g. a project's linked file collection)."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        await neo4j_provider._get_kb_virtual_ids("user-1", "org-1", kb_ids=None)
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert query.count("coalesce(kb.isHidden, false) = false") == 2
+
+    @pytest.mark.asyncio
+    async def test_get_kb_virtual_ids_explicit_filter_skips_hidden_exclusion(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """An explicit kb_ids list (a project chat reaching its own hidden KB)
+        is honoured as-is, without the hidden predicate."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        await neo4j_provider._get_kb_virtual_ids("user-1", "org-1", kb_ids=["hidden-kb"])
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "kb.id IN $kb_ids" in query
+        assert "coalesce(kb.isHidden, false) = false" not in query
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_kb_ids_excludes_hidden_by_default(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider._get_accessible_kb_ids("user-1")
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert params["includeHidden"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_kb_ids_includes_hidden_when_flagged(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider._get_accessible_kb_ids("user-1", include_hidden=True)
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert params["includeHidden"] is True
+
+    @pytest.mark.asyncio
     async def test_get_accessible_virtual_record_ids_returns_empty_when_user_missing(
         self, neo4j_provider: Neo4jProvider
     ):
@@ -2706,6 +2755,50 @@ class TestVirtualAccessAndRecordLookup:
         assert result == {"v1": "r1"}
         neo4j_provider._get_virtual_ids_for_connector.assert_awaited_once()
         neo4j_provider._get_kb_virtual_ids.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_strict_scope_empty_filters_short_circuits(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """strictScope with no apps/kb must never fall back to Scenario 3's
+        'search everything the user can access'."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "conn-1", "type": "google"}]
+        )
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock()  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock()  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1",
+            "org-1",
+            filters={"strictScope": True},
+        )
+
+        assert result == {}
+        neo4j_provider._get_virtual_ids_for_connector.assert_not_called()
+        neo4j_provider._get_kb_virtual_ids.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_strict_scope_with_filters_still_queries(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """strictScope only short-circuits an *empty* effective scope — an
+        explicit kb/apps selection (e.g. a project's own hidden KB) still runs."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "hidden-kb", "type": "KB"}]
+        )
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={"v1": "r1"})  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1",
+            "org-1",
+            filters={"strictScope": True, "kb": ["hidden-kb"]},
+        )
+
+        assert result == {"v1": "r1"}
+        neo4j_provider._get_kb_virtual_ids.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_get_accessible_virtual_record_ids_no_tasks_returns_empty(
@@ -3984,6 +4077,25 @@ class TestListUserKnowledgeBases:
         main_query = neo4j_provider.client.execute_query.call_args_list[0][0][0]
         # With new KB architecture, id field is projected (not connectorId)
         assert "id: kb.id" in main_query
+
+    @pytest.mark.asyncio
+    async def test_query_excludes_hidden_kbs(self, neo4j_provider: Neo4jProvider):
+        """Hidden KBs (e.g. a project's linked file collection) must never
+        surface in the Collections listing."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[[], [{"total": 0}], []]
+        )
+
+        await neo4j_provider.list_user_knowledge_bases(
+            "user1", "org1", skip=0, limit=10
+        )
+
+        main_query = neo4j_provider.client.execute_query.call_args_list[0][0][0]
+        count_query = neo4j_provider.client.execute_query.call_args_list[1][0][0]
+        assert main_query.count("coalesce(kb.isHidden, false) = false") == 1
+        assert main_query.count("coalesce(kb2.isHidden, false) = false") == 1
+        assert count_query.count("coalesce(kb.isHidden, false) = false") == 1
+        assert count_query.count("coalesce(kb2.isHidden, false) = false") == 1
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self, neo4j_provider: Neo4jProvider):

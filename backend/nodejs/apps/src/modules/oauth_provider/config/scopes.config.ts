@@ -180,6 +180,46 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     requiresUserConsent: true,
   },
 
+  // MCP Servers
+  'mcp:read': {
+    name: 'mcp:read',
+    description: 'Read MCP servers and their tools',
+    category: 'MCP Servers',
+    requiresUserConsent: true,
+  },
+  'mcp:write': {
+    name: 'mcp:write',
+    description: 'Add, configure and authenticate MCP servers',
+    category: 'MCP Servers',
+    requiresUserConsent: true,
+  },
+  'mcp:delete': {
+    name: 'mcp:delete',
+    description: 'Remove MCP servers and their credentials',
+    category: 'MCP Servers',
+    requiresUserConsent: true,
+  },
+
+  // Projects
+  'project:read': {
+    name: 'project:read',
+    description: 'Read projects and their conversations',
+    category: 'Projects',
+    requiresUserConsent: true,
+  },
+  'project:write': {
+    name: 'project:write',
+    description: 'Create, update and share projects',
+    category: 'Projects',
+    requiresUserConsent: true,
+  },
+  'project:delete': {
+    name: 'project:delete',
+    description: 'Delete projects',
+    category: 'Projects',
+    requiresUserConsent: true,
+  },
+
   // Connectors
   'connector:read': {
     name: 'connector:read',
@@ -325,6 +365,8 @@ export const ScopeCategories = [
   'Semantic',
   'Conversations',
   'Agents',
+  'MCP Servers',
+  'Projects',
   'Connectors',
   'Configuration',
   'Crawling',

@@ -1396,8 +1396,33 @@ class TestHandleRecordUpdates:
             content_changed=False,
             permissions_changed=False,
         )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=MagicMock(id="rec-key-1")
+        )
         await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_called_once_with(record_id="ext-1")
+        # Deleted by the record's key, not by the Graph item id.
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(
+            connector.connector_id, "ext-1"
+        )
+        connector.data_entities_processor.on_record_deleted.assert_called_once_with(record_id="rec-key-1")
+
+    @pytest.mark.asyncio
+    async def test_deleted_record_never_indexed(self):
+        connector = _make_connector()
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        update = RecordUpdate(
+            record=None,
+            external_record_id="ext-unknown",
+            is_new=False,
+            is_updated=False,
+            is_deleted=True,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_metadata_changed(self):

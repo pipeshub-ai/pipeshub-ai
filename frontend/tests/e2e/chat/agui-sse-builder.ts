@@ -29,6 +29,74 @@ export interface AguiConversationOptions {
 }
 
 /**
+ * A conversation as the API stores it: the `conversation` inside RUN_FINISHED,
+ * and the body of GET /conversations/:id/. Leave out `answer` for a turn whose
+ * reply has not been stored yet — one still streaming, or stopped before any
+ * answer was persisted. Set `stopped` for a reply the user stopped: it is stored
+ * with `status: 'stopped'`, which the page renders as the Stopped marker.
+ */
+export function buildAguiConversation(
+  opts: Omit<AguiConversationOptions, 'answer' | 'botMessageId' | 'requestId'> & {
+    answer?: string;
+    botMessageId?: string;
+    stopped?: boolean;
+  },
+): { _id: string; messages: Record<string, unknown>[] } & Record<string, unknown> {
+  const { conversationId, userMessageId, botMessageId, question, answer, modelInfo, stopped } = opts;
+  const now = new Date().toISOString();
+  const messages: Record<string, unknown>[] = [
+    {
+      _id: userMessageId,
+      messageType: 'user_query',
+      content: question,
+      contentFormat: 'MARKDOWN',
+      citations: [],
+      followUpQuestions: [],
+      referenceData: [],
+      modelInfo,
+      createdAt: now,
+      updatedAt: now,
+      feedback: [],
+    },
+  ];
+  if (answer !== undefined) {
+    messages.push({
+      _id: botMessageId ?? `${userMessageId}-reply`,
+      messageType: 'bot_response',
+      content: answer,
+      contentFormat: 'MARKDOWN',
+      citations: [],
+      ...(stopped ? { status: 'stopped' } : { confidence: 'High' }),
+      followUpQuestions: [],
+      referenceData: [],
+      modelInfo,
+      createdAt: now,
+      updatedAt: now,
+      feedback: [],
+    });
+  }
+  return {
+    _id: conversationId,
+    userId: 'user-e2e',
+    orgId: 'org-e2e',
+    title: question.slice(0, 60),
+    initiator: 'main',
+    messages,
+    isShared: false,
+    isDeleted: false,
+    isArchived: false,
+    lastActivityAt: Date.now(),
+    status: stopped ? 'Stopped' : 'active',
+    modelInfo,
+    sharedWith: [],
+    conversationErrors: [],
+    createdAt: now,
+    updatedAt: now,
+    __v: 0,
+  };
+}
+
+/**
  * Full happy-path AG-UI event sequence, equivalent to the legacy
  * connected -> status -> answer_chunk -> complete sequence used before the
  * AG-UI migration. `RUN_FINISHED`'s `result` is exactly the payload Node's
@@ -36,64 +104,10 @@ export interface AguiConversationOptions {
  * re-emits after persisting — see `es_controller.ts`.
  */
 export function buildAguiSseBody(opts: AguiConversationOptions): string {
-  const {
-    conversationId,
-    userMessageId,
-    botMessageId,
-    question,
-    answer,
-    modelInfo,
-    requestId,
-  } = opts;
+  const { conversationId, question, answer, requestId } = opts;
 
   const responsePayload = {
-    conversation: {
-      _id: conversationId,
-      userId: 'user-e2e',
-      orgId: 'org-e2e',
-      title: question.slice(0, 60),
-      initiator: 'main',
-      messages: [
-        {
-          _id: userMessageId,
-          messageType: 'user_query',
-          content: question,
-          contentFormat: 'MARKDOWN',
-          citations: [],
-          followUpQuestions: [],
-          referenceData: [],
-          modelInfo,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          feedback: [],
-        },
-        {
-          _id: botMessageId,
-          messageType: 'bot_response',
-          content: answer,
-          contentFormat: 'MARKDOWN',
-          citations: [],
-          confidence: 'High',
-          followUpQuestions: [],
-          referenceData: [],
-          modelInfo,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          feedback: [],
-        },
-      ],
-      isShared: false,
-      isDeleted: false,
-      isArchived: false,
-      lastActivityAt: Date.now(),
-      status: 'active',
-      modelInfo,
-      sharedWith: [],
-      conversationErrors: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      __v: 0,
-    },
+    conversation: buildAguiConversation(opts),
     meta: {
       requestId: requestId ?? 'req-e2e-agui',
       timestamp: new Date().toISOString(),
@@ -141,56 +155,10 @@ export function buildAguiPartialSseBody(conversationId: string, partialText: str
  * being open when the test clicks Stop.
  */
 export function buildAguiStoppedSseBody(opts: AguiConversationOptions): string {
-  const { conversationId, userMessageId, botMessageId, question, answer, modelInfo, requestId } = opts;
+  const { conversationId, question, answer, requestId } = opts;
 
   const responsePayload = {
-    conversation: {
-      _id: conversationId,
-      userId: 'user-e2e',
-      orgId: 'org-e2e',
-      title: question.slice(0, 60),
-      initiator: 'main',
-      messages: [
-        {
-          _id: userMessageId,
-          messageType: 'user_query',
-          content: question,
-          contentFormat: 'MARKDOWN',
-          citations: [],
-          followUpQuestions: [],
-          referenceData: [],
-          modelInfo,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          feedback: [],
-        },
-        {
-          _id: botMessageId,
-          messageType: 'bot_response',
-          content: answer,
-          contentFormat: 'MARKDOWN',
-          citations: [],
-          status: 'stopped',
-          followUpQuestions: [],
-          referenceData: [],
-          modelInfo,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          feedback: [],
-        },
-      ],
-      isShared: false,
-      isDeleted: false,
-      isArchived: false,
-      lastActivityAt: Date.now(),
-      status: 'Stopped',
-      modelInfo,
-      sharedWith: [],
-      conversationErrors: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      __v: 0,
-    },
+    conversation: buildAguiConversation({ ...opts, stopped: true }),
     meta: {
       requestId: requestId ?? 'req-e2e-agui-stopped',
       timestamp: new Date().toISOString(),

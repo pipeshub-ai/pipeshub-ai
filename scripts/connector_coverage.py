@@ -39,6 +39,7 @@ ALIASES = {
     "postgresql": {"postgres"},
     "azureblob": {"azure_blob"},
     "azurefiles": {"azure_files"},
+    "localfs": {"local_fs"},
     "sharepointonline": {"sharepoint"},
     "confluencedatacenter": {"confluence"},
     "confluencedatacenterpersonal": {"confluence"},
@@ -49,6 +50,8 @@ ALIASES = {
     "notionpersonal": {"notion"},
     "dropboxpersonal": {"dropbox"},
     "gitlabpersonal": {"gitlab"},
+    # Not "github": a test directory by that name would shadow the PyGithub package.
+    "github": {"github_personal"},
     "githubteams": {"github", "github_teams"},
     "slackworkspace": {"slack"},
     "outlookpersonal": {"outlook"},
@@ -58,9 +61,39 @@ ALIASES = {
 NOT_A_CONNECTOR = {"kb"}
 
 
+def _imported_from(factory_src: str) -> dict[str, Path]:
+    """Class name -> source file, from the factory's `from app... import` lines."""
+    found: dict[str, Path] = {}
+    imports = re.findall(r"^from (app\.[\w.]+) import \(([^)]*)\)", factory_src, re.M)
+    imports += re.findall(r"^from (app\.[\w.]+) import ([\w, ]+)$", factory_src, re.M)
+    for module, names in imports:
+        path = REPO / "backend/python" / (module.replace(".", "/") + ".py")
+        for name in re.findall(r"\w+", names):
+            found[name] = path
+    return found
+
+
+def _sync_disabled(cls: str, path: Path | None) -> bool:
+    """Whether `cls` is declared with `with_sync_support(False)`: a placeholder with nothing to sync."""
+    if path is None or not path.is_file():
+        return False
+    src = path.read_text(encoding="utf-8")
+    m = re.search(rf"@ConnectorBuilder\((.*?)\n(?:@[^\n]*\n)*class {cls}\b", src, re.S)
+    if not m:
+        return False
+    # The decorator body can span other classes' decorators; keep only the last one.
+    decorator = m.group(1).rsplit("@ConnectorBuilder(", 1)[-1]
+    return re.search(r"with_sync_support\(\s*False\s*\)", decorator) is not None
+
+
 def registered_connectors() -> dict[str, str]:
-    """Registry key -> class name, for the main and beta registries."""
+    """Registry key -> class name, for the main and beta registries.
+
+    Connectors declared without sync support are left out: they are placeholders
+    with nothing an integration test could check.
+    """
     src = FACTORY.read_text(encoding="utf-8")
+    sources = _imported_from(src)
     found: dict[str, str] = {}
     for block in ("_connector_registry", "_beta_connector_definitions"):
         m = re.search(rf"{block}[^=]*=\s*\{{(.*?)\n    \}}", src, re.S)
@@ -68,7 +101,10 @@ def registered_connectors() -> dict[str, str]:
             continue
         for key, cls in re.findall(r"""['"]([a-z0-9_]+)['"]\s*:\s*(\w+)""", m.group(1)):
             found[key] = cls
-    return {k: v for k, v in found.items() if k not in NOT_A_CONNECTOR}
+    return {
+        k: v for k, v in found.items()
+        if k not in NOT_A_CONNECTOR and not _sync_disabled(v, sources.get(v))
+    }
 
 
 def tested_connectors() -> set[str]:

@@ -25,6 +25,17 @@ function sha256Hex(value: string): string {
 }
 
 describe('OAuthDeviceService', () => {
+  // Stubs a Mongoose `findOne(...).select().lean().exec()` chain resolving to `doc`.
+  type LookupChain = { select: sinon.SinonStub; lean: sinon.SinonStub; exec: sinon.SinonStub }
+  const stubLookup = (model: { findOne(...args: unknown[]): unknown }, doc: object | null) => {
+    const chain: LookupChain = {
+      select: sinon.stub().returnsThis(),
+      lean: sinon.stub().returnsThis(),
+      exec: sinon.stub().resolves(doc),
+    }
+    return sinon.stub(model, 'findOne').returns(chain)
+  }
+
   let service: OAuthDeviceService
   let mockLogger: MockLogger
   let mockOAuthAppService: any
@@ -147,13 +158,8 @@ describe('OAuthDeviceService', () => {
       scopes: ['user:read'],
       clientId: 'cid',
     } as any)
-    const chainable = {
-      select: sinon.stub().returnsThis(),
-      lean: sinon.stub().returnsThis(),
-      exec: sinon.stub().resolves(null),
-    }
-    sinon.stub(Users, 'findOne').returns(chainable as any)
-    sinon.stub(Org, 'findOne').returns(chainable as any)
+    stubLookup(Users, { fullName: 'Ada' })
+    stubLookup(Org, { accountType: 'business' })
     sinon.stub(OAuthDeviceCode, 'findOneAndDelete').callsFake((query: any) => {
       expect(query.status).to.equal(OAuthDeviceCodeStatus.APPROVED)
       expect(query.expiresAt.$gt).to.be.instanceOf(Date)
@@ -179,6 +185,35 @@ describe('OAuthDeviceService', () => {
       null,
     )
   })
+
+  for (const gone of ['user', 'org'] as const) {
+    it(`should refuse to mint tokens when the approving ${gone} was deleted before the poll`, async () => {
+      const userId = new Types.ObjectId()
+      const orgId = new Types.ObjectId()
+      const record = {
+        _id: new Types.ObjectId(),
+        status: OAuthDeviceCodeStatus.APPROVED,
+        expiresAt: new Date(Date.now() + 60_000),
+        userId,
+        orgId,
+        scopes: ['user:read'],
+        clientId: 'cid',
+      }
+      sinon.stub(OAuthDeviceCode, 'findOne').resolves(record as any)
+      sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(record as any)
+      stubLookup(Users, gone === 'user' ? null : { fullName: 'Ada' })
+      stubLookup(Org, gone === 'org' ? null : { accountType: 'business' })
+
+      try {
+        await service.poll('cid', undefined, 'device-code')
+        expect.fail('should have thrown')
+      } catch (err) {
+        expect(err).to.be.instanceOf(DeviceGrantError)
+        expect((err as DeviceGrantError).oauthError).to.equal('access_denied')
+      }
+      expect(mockOAuthTokenService.generateTokens.called).to.be.false
+    })
+  }
 
   it('should not mint tokens when a concurrent poll already claimed the code', async () => {
     const userId = new Types.ObjectId()
