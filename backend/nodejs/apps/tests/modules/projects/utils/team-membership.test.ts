@@ -1,9 +1,11 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
-import { resolveCallerTeamIds } from '../../../../src/modules/projects/utils/team-membership';
-import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command';
-import { Logger } from '../../../../src/libs/services/logger.service';
+import { createMockLogger } from '../../../helpers/mock-logger';
+
+const MODULE = '../../../../src/modules/projects/utils/team-membership';
+const LOGGER_MODULE = '../../../../src/libs/services/logger.service';
+const COMMAND_MODULE = '../../../../src/libs/commands/ai_service/ai.service.command';
 
 const appConfig = { connectorBackend: 'http://localhost:8088' } as any;
 
@@ -13,10 +15,41 @@ function makeRequest(headers: Record<string, string> = { authorization: 'Bearer 
 }
 
 describe('resolveCallerTeamIds', () => {
-  let warnStub: sinon.SinonStub;
+  // The module captures its logger when it loads. Under `--parallel` a worker
+  // shares one module cache across files, so a copy loaded by an earlier file
+  // may hold a logger this file cannot observe. Load our own copy with a known
+  // logger, resolving its collaborators at the same moment it does.
+  let resolveCallerTeamIds: typeof import('../../../../src/modules/projects/utils/team-membership').resolveCallerTeamIds;
+  let AIServiceCommand: typeof import('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
+  const logger = createMockLogger();
+  const warnStub = logger.warn;
+  const resolved = require.resolve(MODULE);
+  const previousModule = require.cache[resolved];
+
+  before(() => {
+    const { Logger } = require(LOGGER_MODULE);
+    ({ AIServiceCommand } = require(COMMAND_MODULE));
+    const getInstanceStub = sinon.stub(Logger, 'getInstance').returns(logger);
+    try {
+      delete require.cache[resolved];
+      ({ resolveCallerTeamIds } = require(MODULE));
+    } finally {
+      getInstanceStub.restore();
+    }
+  });
+
+  after(() => {
+    // Put the original copy back so modules that already imported it and any
+    // later test file keep sharing one instance.
+    if (previousModule) {
+      require.cache[resolved] = previousModule;
+    } else {
+      delete require.cache[resolved];
+    }
+  });
 
   beforeEach(() => {
-    warnStub = sinon.stub(Logger.prototype, 'warn');
+    warnStub.resetHistory();
   });
 
   afterEach(() => {
