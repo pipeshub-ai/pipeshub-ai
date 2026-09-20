@@ -5,6 +5,7 @@ import { AuthMiddleware } from '../../../config'
 import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware'
 import { Logger } from '../../../libs/services/logger.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
+import { refuseServiceAccountCaller } from '../../user_management/middlewares/refuseServiceAccountCaller'
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
   appIdParamsSchema,
@@ -27,6 +28,11 @@ export function createOAuthClientsRouter(container: Container): Router {
   router.use(authMiddleware.authenticate.bind(authMiddleware))
   // All routes are rate limited
   router.use(oauthClientRateLimiter)
+  // And none of them are for service accounts. Registering an app is another
+  // way to obtain a credential: `agent:execute` is not admin-only and members
+  // may ask for `client_credentials`, so a read-only service token could
+  // otherwise register its way to a write-capable one.
+  router.use(refuseServiceAccountCaller)
 
   /**
    * GET /oauth-clients

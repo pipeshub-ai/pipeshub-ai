@@ -40,6 +40,7 @@ function makeService(overrides: { mcpScopes?: string[] } = {}) {
     listAccessTokensForUser: sinon.stub().resolves([]),
     revokeAccessTokenById: sinon.stub().resolves(true),
     revokeAllTokensForUser: sinon.stub().resolves(),
+    revokeEveryTokenForUser: sinon.stub().resolves(),
   };
   const scopeValidator = { validateScopesForApp: sinon.stub() };
   return {
@@ -192,22 +193,27 @@ describe('ServiceTokenService', () => {
       // Called when an account is deleted and again if it is restored, so it
       // deliberately does not require the account to exist or be enabled.
       const { service, tokens } = makeService();
-      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: 'x' } as any);
 
       await service.revokeAllForServiceAccount(orgId, accountId);
 
-      expect(tokens.revokeAllTokensForUser.calledOnce).to.equal(true);
-      expect(tokens.revokeAllTokensForUser.firstCall.args[1]).to.equal(
+      expect(tokens.revokeEveryTokenForUser.calledOnce).to.equal(true);
+      expect(tokens.revokeEveryTokenForUser.firstCall.args[0]).to.equal(
         accountId,
       );
     });
 
-    it('does nothing when the org has never minted a service token', async () => {
+    it('reaches tokens issued under other clients, not just the service-token app', async () => {
+      // A credential stored under pat-system: or an app's own clientId is
+      // still one this identity holds. Restoring the account reuses the
+      // record, so anything left alive would start working for whoever
+      // reused the name.
       const { service, tokens } = makeService();
-      sinon.stub(OAuthApp, 'findOne').resolves(null);
 
       await service.revokeAllForServiceAccount(orgId, accountId);
 
+      expect(tokens.revokeEveryTokenForUser.calledOnce).to.equal(true);
+      // Keyed on the user alone: no clientId narrows it.
+      expect(tokens.revokeEveryTokenForUser.firstCall.args).to.have.length(1);
       expect(tokens.revokeAllTokensForUser.called).to.equal(false);
     });
   });

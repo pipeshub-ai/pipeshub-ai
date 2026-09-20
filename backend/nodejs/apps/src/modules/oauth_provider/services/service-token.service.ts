@@ -348,17 +348,14 @@ export class ServiceTokenService {
     orgId: string,
     serviceAccountId: string,
   ): Promise<void> {
-    const clientId = serviceTokenClientId(orgId);
-    const app = await OAuthApp.findOne({ clientId });
-    if (!app) {
-      // No service token has ever been minted in this org.
-      return;
-    }
-
-    await this.oauthTokenService.revokeAllTokensForUser(
-      clientId,
-      serviceAccountId,
-    );
+    // Across every client, not only the service-token app. A service token is
+    // not necessarily the only credential the account holds: one minted
+    // before the rule against service accounts minting their own, or an
+    // access token from an app it was once pointed at, is stored under a
+    // different clientId. Leaving those alive is exactly the failure this
+    // method exists to prevent, since restoring the account reuses the
+    // record and they would start working again for whoever reused the name.
+    await this.oauthTokenService.revokeEveryTokenForUser(serviceAccountId);
     this.logger.info('Revoked every token held by a service account', {
       orgId,
       serviceAccountId,

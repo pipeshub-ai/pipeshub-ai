@@ -366,6 +366,27 @@ export class OAuthTokenService {
   /**
    * Revoke all tokens for a user in an app
    */
+  /**
+   * Revoke every token held by a user, under every client.
+   *
+   * The per-client version below is for "this app no longer speaks for you".
+   * This one is for "this identity is gone", where leaving a credential alive
+   * because it was issued by a different client would defeat the point.
+   */
+  async revokeEveryTokenForUser(userId: string): Promise<void> {
+    const userObjId = new Types.ObjectId(userId)
+    await Promise.all([
+      OAuthAccessToken.updateMany(
+        { userId: { $eq: userObjId }, isRevoked: { $eq: false } },
+        { isRevoked: true, revokedAt: new Date() },
+      ),
+      OAuthRefreshToken.updateMany(
+        { userId: { $eq: userObjId }, isRevoked: { $eq: false } },
+        { isRevoked: true, revokedAt: new Date() },
+      ),
+    ])
+  }
+
   async revokeAllTokensForUser(
     clientId: string,
     userId: string,
