@@ -20097,9 +20097,12 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ServiceAccount'
+                type: object
+                properties:
+                  serviceAccounts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ServiceAccount'
         '400':
           description: Admin access required
         '401':
@@ -20270,9 +20273,12 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ServiceToken'
+                type: object
+                properties:
+                  tokens:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ServiceToken'
         '400':
           description: Admin access required
         '401':
@@ -20310,7 +20316,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ServiceTokenWithSecret'
+                type: object
+                properties:
+                  message:
+                    type: string
+                  token:
+                    $ref: '#/components/schemas/ServiceTokenWithSecret'
         '400':
           description: |
             No scopes chosen, a scope this instance does not allow,

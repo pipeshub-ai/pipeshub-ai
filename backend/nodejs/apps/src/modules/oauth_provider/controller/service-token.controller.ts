@@ -27,7 +27,10 @@ export class ServiceTokenController {
         request,
       );
       // The raw token appears in this response and nowhere else, ever.
-      res.status(201).json(token);
+      res.status(201).json({
+        message: 'Service token created successfully',
+        token,
+      });
     } catch (error) {
       next(error);
     }
@@ -43,7 +46,8 @@ export class ServiceTokenController {
         this.orgId(req),
         req.query.serviceAccountId as string,
       );
-      res.json(tokens);
+      // Wrapped, matching the personal access token endpoints next door.
+      res.json({ tokens });
     } catch (error) {
       next(error);
     }

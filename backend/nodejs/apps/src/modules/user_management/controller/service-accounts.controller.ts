@@ -37,7 +37,8 @@ export class ServiceAccountsController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      res.json(await this.serviceAccounts.list(this.orgId(req)));
+      const serviceAccounts = await this.serviceAccounts.list(this.orgId(req));
+      res.json({ serviceAccounts });
     } catch (error) {
       next(error);
     }
