@@ -17,7 +17,7 @@ import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
-import { PAT_TOKEN_PREFIX } from '../../modules/oauth_provider/constants/constants';
+import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
@@ -341,14 +341,13 @@ export class AuthMiddleware {
     const [bearer, token] = authHeader.split(' ');
     if (bearer !== 'Bearer' || !token) return null;
 
-    // Personal access tokens carry a display-only phpat_ prefix ahead of the
-    // underlying JWT. Strip it here, at the single entry point, so the
-    // token-type peek in authenticate() and every downstream verifier see a
-    // bare JWT — every other token type never has this prefix, so this is a
-    // no-op for them.
-    if (!token.startsWith(PAT_TOKEN_PREFIX)) return token;
-
-    const bare = token.slice(PAT_TOKEN_PREFIX.length);
+    // Personal access tokens and service tokens carry a display-only prefix
+    // ahead of the underlying JWT. Strip it here, at the single entry point,
+    // so the token-type peek in authenticate() and every downstream verifier
+    // see a bare JWT — every other token type never has a prefix, so this is
+    // a no-op for them.
+    const bare = stripTokenDisplayPrefix(token);
+    if (bare === token) return token;
     // Normalise the header too, not just the return value. Several controllers
     // forward req.headers.authorization verbatim to the Python services, which
     // have no notion of the prefix and fail JWT decode on it. Rewriting it here

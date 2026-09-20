@@ -28,6 +28,7 @@ import {
   ALLOWED_CUSTOM_REDIRECT_URIS,
   FIRST_PARTY_DEVICE_CLIENT_ID,
   PAT_APP_CLIENT_ID_PREFIX,
+  SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
 } from '../constants/constants'
 
 const CLIENT_SECRET_LENGTH = 32
@@ -58,7 +59,9 @@ export class OAuthAppService {
       createdBy: new Types.ObjectId(userId),
       clientId: {
         $nin: [FIRST_PARTY_DEVICE_CLIENT_ID],
-        $not: new RegExp(`^${PAT_APP_CLIENT_ID_PREFIX}`),
+        $not: new RegExp(
+          `^(?:${PAT_APP_CLIENT_ID_PREFIX}|${SERVICE_TOKEN_APP_CLIENT_ID_PREFIX})`,
+        ),
       },
       isDynamic: { $ne: true },
     }

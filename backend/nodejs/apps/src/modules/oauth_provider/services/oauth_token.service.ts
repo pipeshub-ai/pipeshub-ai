@@ -22,7 +22,7 @@ import {
   TokenListItem,
 } from '../types/oauth.types'
 import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig'
-import { PAT_TOKEN_PREFIX } from '../constants/constants'
+import { stripTokenDisplayPrefix } from '../constants/constants'
 
 @injectable()
 export class OAuthTokenService {
@@ -165,13 +165,11 @@ export class OAuthTokenService {
    */
   async verifyAccessToken(token: string): Promise<OAuthTokenPayload> {
     try {
-      // Personal access tokens carry a display-only phpat_ prefix ahead of
-      // the underlying JWT (see PAT_TOKEN_PREFIX) so they're grep-able in
+      // Personal access tokens and service tokens carry a display-only
+      // prefix ahead of the underlying JWT so they're grep-able in
       // logs/files. Strip it before verifying/hashing — every other token
-      // type never has this prefix, so this is a no-op for them.
-      const rawToken = token.startsWith(PAT_TOKEN_PREFIX)
-        ? token.slice(PAT_TOKEN_PREFIX.length)
-        : token
+      // type never has a prefix, so this is a no-op for them.
+      const rawToken = stripTokenDisplayPrefix(token)
 
       const payload = jwt.verify(rawToken, this.verifyKey, {
         algorithms: [this.algorithm],

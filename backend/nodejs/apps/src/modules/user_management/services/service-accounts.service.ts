@@ -43,6 +43,21 @@ export interface CreateServiceAccountInput {
   description?: string;
 }
 
+/**
+ * The part of the token service this one needs.
+ *
+ * Service accounts and the tokens they hold are owned by different modules,
+ * with their own dependency containers, so the connection is made explicitly
+ * at wiring time rather than by reaching across. Stated as the one operation
+ * that is needed, so what this service can do to tokens is visible here.
+ */
+export interface ServiceAccountTokenRevoker {
+  revokeAllForServiceAccount(
+    orgId: string,
+    serviceAccountId: string,
+  ): Promise<void>;
+}
+
 export interface UpdateServiceAccountInput {
   fullName?: string;
   description?: string;
@@ -100,6 +115,17 @@ export class ServiceAccountsService {
     @inject('EntitiesEventProducer')
     private readonly eventService: EntitiesEventProducer,
   ) {}
+
+  private tokenRevoker?: ServiceAccountTokenRevoker;
+
+  /**
+   * Supplied once both containers exist. Until it is, deleting a service
+   * account still stops its tokens, because the auth middleware refuses a
+   * deleted account — revocation is what makes that survive a restore.
+   */
+  setTokenRevoker(revoker: ServiceAccountTokenRevoker): void {
+    this.tokenRevoker = revoker;
+  }
 
   async create(
     orgId: string,
@@ -263,6 +289,11 @@ export class ServiceAccountsService {
       );
     }
 
+    // Before the identity is handed back. Restoring reuses the original
+    // record, so a token minted before the deletion would otherwise start
+    // working again for whoever reused the name.
+    await this.tokenRevoker?.revokeAllForServiceAccount(orgId, idOf(restored));
+
     await UserGroups.updateOne(
       { orgId: restored.orgId, type: 'everyone' },
       { $addToSet: { users: restored._id } },
@@ -350,6 +381,8 @@ export class ServiceAccountsService {
 
     account.isDeleted = true;
     await account.save();
+
+    await this.tokenRevoker?.revokeAllForServiceAccount(orgId, idOf(account));
 
     await UserGroups.updateMany(
       { orgId: account.orgId },

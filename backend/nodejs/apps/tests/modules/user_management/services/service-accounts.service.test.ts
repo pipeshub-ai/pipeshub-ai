@@ -18,10 +18,10 @@ function makeService() {
     stop: sinon.stub().resolves(),
     publishEvent: sinon.stub().resolves(),
   };
-  return {
-    service: new ServiceAccountsService(logger as any, events as any),
-    events,
-  };
+  const revoker = { revokeAllForServiceAccount: sinon.stub().resolves() };
+  const service = new ServiceAccountsService(logger as any, events as any);
+  service.setTokenRevoker(revoker as any);
+  return { service, events, revoker };
 }
 
 describe('ServiceAccountsService', () => {
@@ -223,6 +223,37 @@ describe('ServiceAccountsService', () => {
       expect(events.publishEvent.called).to.equal(false);
     });
 
+    it('does not let a restored account inherit the tokens it had before', async () => {
+      // Restoring reuses the record, so its old tokens would otherwise come
+      // back with the name — for whoever reused it, who need not be the
+      // person who held them.
+      const { service, revoker } = makeService();
+      const deleted = {
+        _id: id,
+        email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
+        orgId,
+        isDeleted: true,
+        kind: 'service',
+      };
+      sinon
+        .stub(Users, 'findOne')
+        .returns({ exec: sinon.stub().resolves(deleted) } as any);
+      sinon.stub(Users, 'findOneAndUpdate').returns({
+        exec: sinon.stub().resolves({ ...deleted, isDeleted: false }),
+      } as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+
+      await service.create(orgId, {
+        slug: 'nightly-sync',
+        fullName: 'Nightly sync',
+      });
+
+      expect(revoker.revokeAllForServiceAccount.calledOnce).to.equal(true);
+      expect(
+        revoker.revokeAllForServiceAccount.firstCall.args,
+      ).to.deep.equal([orgId, id]);
+    });
+
     it('turns a duplicate-key race into a conflict rather than a 500', async () => {
       const { service } = makeService();
       sinon
@@ -280,6 +311,28 @@ describe('ServiceAccountsService', () => {
         expect((error as Error).message).to.equal('Service account not found');
       }
       expect(findOne.called).to.equal(false);
+    });
+  });
+
+  describe('remove', () => {
+    it('revokes every token the account held', async () => {
+      const { service, revoker } = makeService();
+      const account: any = {
+        _id: id,
+        orgId,
+        email: `svc-x-${orgId}@service.pipeshub.internal`,
+        isDeleted: false,
+        save: sinon.stub().resolvesThis(),
+      };
+      sinon
+        .stub(Users, 'findOne')
+        .returns({ exec: sinon.stub().resolves(account) } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+
+      await service.remove(orgId, id);
+
+      expect(account.isDeleted).to.equal(true);
+      expect(revoker.revokeAllForServiceAccount.calledOnce).to.equal(true);
     });
   });
 

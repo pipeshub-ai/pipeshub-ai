@@ -12,6 +12,7 @@ import { OAuthTokenService } from '../services/oauth_token.service'
 import { AuthorizationCodeService } from '../services/authorization_code.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
 import { PatService } from '../services/pat.service'
+import { ServiceTokenService } from '../services/service-token.service'
 import { OAuthDcrService } from '../services/oauth.dcr.service'
 import { OAuthDeviceService } from '../services/oauth.device.service'
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service'
@@ -19,6 +20,7 @@ import { OAuthAppController } from '../controller/oauth.app.controller'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
 import { PatController } from '../controller/pat.controller'
+import { ServiceTokenController } from '../controller/service-token.controller'
 import { OAuthAuthMiddleware } from '../middlewares/oauth.auth.middleware'
 
 const loggerConfig = {
@@ -154,6 +156,20 @@ export class OAuthProviderContainer {
         scopeValidatorService,
       )
       container.bind<PatService>('PatService').toConstantValue(patService)
+
+      const serviceTokenService = new ServiceTokenService(
+        logger,
+        encryptionService,
+        configService,
+        oauthTokenService,
+        scopeValidatorService,
+      )
+      container
+        .bind<ServiceTokenService>('ServiceTokenService')
+        .toConstantValue(serviceTokenService)
+      container
+        .bind<ServiceTokenController>('ServiceTokenController')
+        .toConstantValue(new ServiceTokenController(serviceTokenService))
 
       const oauthDcrService = new OAuthDcrService(
         logger,
