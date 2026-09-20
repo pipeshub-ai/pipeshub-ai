@@ -196,7 +196,7 @@ class CollectionNames(Enum):
     SQL_VIEWS = "sqlViews"
 
     # Users and groups
-    PEOPLE = "people"
+    PEOPLE = "person"
     USERS = "users"
     GROUPS = "groups"
     ROLES = "roles"
@@ -697,3 +697,34 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "SQL_VIEW": CollectionNames.SQL_VIEWS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }
+
+
+# Person -> User promotion (see docs/external-user-support-plan.md, D4).
+#
+# One definition for both graph backends so they cannot drift: a Person that carries any
+# CRM edge is a Salesforce contact as well as a collaborator, so the two identities split
+# rather than merge - the collaborator edges move to the User and the Person survives
+# holding only its CRM edges. A Person with no CRM edge migrates outright and is deleted.
+#
+# Direction matters and differs: the transferable edges always have the Person as _from,
+# while `lead`/`contact` point AT the Person and only `memberOf` points away from it - so
+# the CRM check has to look both ways.
+PERSON_TRANSFERABLE_EDGES = (
+    CollectionNames.PERMISSION.value,
+    CollectionNames.USER_APP_RELATION.value,
+)
+
+PERSON_CRM_EDGES_OUTBOUND = (CollectionNames.MEMBER_OF.value,)
+PERSON_CRM_EDGES_INBOUND = (
+    CollectionNames.LEAD.value,
+    CollectionNames.CONTACT.value,
+)
+PERSON_CRM_EDGES = PERSON_CRM_EDGES_OUTBOUND + PERSON_CRM_EDGES_INBOUND
+
+
+class PersonMigrationMode:
+    """Outcome of migrate_person_to_user. Distinguished so callers can log which of the
+    two very different things happened."""
+
+    MIGRATED = "migrated"  # no CRM edges: everything moved, Person node deleted
+    SPLIT = "split"  # CRM edges present: collaborator edges moved, Person kept
