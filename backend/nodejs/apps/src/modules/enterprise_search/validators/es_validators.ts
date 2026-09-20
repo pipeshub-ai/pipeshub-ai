@@ -624,6 +624,7 @@ const createAgentBodySchema = z
     defaultReasoningEffort: z
       .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
       .optional(),
+    sendUserContext: z.boolean().optional(),
   });
 
 export const createAgentSchema = z.object({
@@ -660,6 +661,7 @@ const updateAgentBodySchema = z
     defaultReasoningEffort: z
       .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
       .optional(),
+    sendUserContext: z.boolean().optional(),
   });
 
 export const updateAgentSchema = z.object({

@@ -9574,6 +9574,12 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        sendUserContext:
+          type: boolean
+          description: |
+            When true (default), the agent's system prompt includes the current
+            user's name, email, and organization. When false, the agent relies
+            on tools, actions, and knowledge sources without that profile data.
         tags:
           type: array
           items:
@@ -9753,6 +9759,9 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        sendUserContext:
+          type: boolean
+          description: When false, this agent omits user name/email/org from its system prompt.
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the organization.
@@ -10133,6 +10142,13 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        sendUserContext:
+          type: boolean
+          default: true
+          description: |
+            When true (default), include the current user's name, email, and
+            organization in this agent's system prompt. When false, omit that
+            profile data.
 
     AgentCreateWarning:
       type: object
@@ -10311,6 +10327,9 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        sendUserContext:
+          type: boolean
+          description: When false, this agent omits user name/email/org from its system prompt.
         isActive:
           type: boolean
         isServiceAccount:
@@ -10453,6 +10472,12 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        sendUserContext:
+          type: boolean
+          description: |
+            When true (default), include the current user's name, email, and
+            organization in this agent's system prompt. When false, omit that
+            profile data.
 
     AgentUpdateResponse:
       type: object
@@ -12622,9 +12647,11 @@ components:
             - ENABLE_ACTIONS: Allow agents to use toolset actions and show Actions management in the UI
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
+            - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
           example:
             ENABLE_BETA_CONNECTORS: false
             ENABLE_SKILLS: true
+            ENABLE_USER_CONTEXT: true
         updatedAt:
           type: string
           format: date-time
@@ -13305,7 +13332,8 @@ components:
           type: string
           description: |
             Unique feature flag key. Current keys: ENABLE_BETA_CONNECTORS,
-            ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_SKILLS.
+            ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_SKILLS,
+            ENABLE_USER_CONTEXT.
           example: "ENABLE_BETA_CONNECTORS"
         label:
           type: string
@@ -38612,6 +38640,7 @@ paths:
         - ENABLE_ACTIONS: Enable toolset actions (default: true)
         - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
+        - ENABLE_USER_CONTEXT: Include user name, email, and organization in default assistant / Universal Agent system prompts (default: true)
       operationId: setPlatformSettings
       security:
         - bearerAuth: []
@@ -38756,6 +38785,7 @@ paths:
                       ENABLE_ACTIONS: true
                       ENABLE_VECTOR_STORE_REBUILD: false
                       ENABLE_SKILLS: true
+                      ENABLE_USER_CONTEXT: true
         '401':
           description: Unauthorized
 

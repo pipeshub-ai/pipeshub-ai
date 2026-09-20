@@ -2864,6 +2864,8 @@
     "startingMessageLabel": "Mensaje inicial",
     "defaultReasoningEffortLabel": "Esfuerzo de razonamiento predeterminado",
     "defaultReasoningEffortHint": "Esfuerzo de razonamiento de respaldo cuando el usuario no elige uno en el chat.",
+    "sendUserContextLabel": "Enviar contexto de usuario y organización",
+    "sendUserContextHint": "Si está desactivado, este agente no recibirá el nombre, el correo ni la organización del usuario en el prompt del sistema. Usará solo herramientas, acciones y fuentes de conocimiento.",
     "moreItems": "+{{count}} más",
     "toolsetNodeSubtitle": "Conjunto de herramientas",
     "toolsLabel": "Herramientas",

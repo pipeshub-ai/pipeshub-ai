@@ -1568,3 +1568,68 @@ class TestAgentCreatedByMongoId:
              ), \
              pytest.raises(InvalidRequestError):
             await create_agent(request)
+
+    @pytest.mark.asyncio
+    async def test_create_agent_persists_send_user_context_false(self) -> None:
+        from app.api.routes.agent import create_agent
+
+        graph_provider = AsyncMock()
+        graph_provider.begin_transaction = AsyncMock(return_value="txn-1")
+        graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        graph_provider.commit_transaction = AsyncMock()
+
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+        request = MagicMock()
+        body = (
+            '{"name":"A1","models":[{"modelKey":"mk1","modelName":"mn1","isReasoning":true}],'
+            '"sendUserContext":false}'
+        )
+        request.body = AsyncMock(return_value=body.encode())
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": "u1", "orgId": "org-1"},
+             ), \
+             patch(
+                 "app.api.routes.agent._get_user_document",
+                 new_callable=AsyncMock,
+                 return_value={"email": "a@b.com", "_key": "k1"},
+             ):
+            response = await create_agent(request)
+
+        body_json = json.loads(response.body)
+        assert body_json["agent"]["sendUserContext"] is False
+        upserted = graph_provider.batch_upsert_nodes.await_args.args[0][0]
+        assert upserted["sendUserContext"] is False
+
+    @pytest.mark.asyncio
+    async def test_create_agent_defaults_send_user_context_true(self) -> None:
+        from app.api.routes.agent import create_agent
+
+        graph_provider = AsyncMock()
+        graph_provider.begin_transaction = AsyncMock(return_value="txn-1")
+        graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        graph_provider.commit_transaction = AsyncMock()
+
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+        request = MagicMock()
+        body = '{"name":"A1","models":[{"modelKey":"mk1","modelName":"mn1","isReasoning":true}]}'
+        request.body = AsyncMock(return_value=body.encode())
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": "u1", "orgId": "org-1"},
+             ), \
+             patch(
+                 "app.api.routes.agent._get_user_document",
+                 new_callable=AsyncMock,
+                 return_value={"email": "a@b.com", "_key": "k1"},
+             ):
+            response = await create_agent(request)
+
+        body_json = json.loads(response.body)
+        assert body_json["agent"]["sendUserContext"] is True

@@ -3155,6 +3155,8 @@
     "startingMessageLabel": "起始訊息",
     "defaultReasoningEffortLabel": "預設推理力度",
     "defaultReasoningEffortHint": "當使用者在聊天中未選擇時使用的備用推理力度。",
+    "sendUserContextLabel": "傳送使用者與組織內容",
+    "sendUserContextHint": "關閉後，此代理不會在系統提示中收到使用者的姓名、電子郵件或組織名稱，將僅依賴工具、動作與知識來源。",
     "moreItems": "還有 {{count}} 個",
     "toolsetNodeSubtitle": "工具組",
     "toolsLabel": "工具",

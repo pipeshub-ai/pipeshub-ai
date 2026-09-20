@@ -2865,6 +2865,8 @@
     "startingMessageLabel": "प्रारंभिक संदेश",
     "defaultReasoningEffortLabel": "डिफ़ॉल्ट रीज़निंग प्रयास",
     "defaultReasoningEffortHint": "जब उपयोगकर्ता चैट में कोई विकल्प नहीं चुनता तब उपयोग किया जाने वाला फ़ॉलबैक रीज़निंग प्रयास।",
+    "sendUserContextLabel": "उपयोगकर्ता और संगठन संदर्भ भेजें",
+    "sendUserContextHint": "बंद होने पर यह एजेंट सिस्टम प्रॉम्प्ट में उपयोगकर्ता का नाम, ईमेल या संगठन नहीं पाएगा। यह टूल, एक्शन और ज्ञान स्रोतों पर निर्भर करेगा।",
     "moreItems": "+{{count}} और",
     "toolsetNodeSubtitle": "टूलसेट",
     "toolsLabel": "टूल",

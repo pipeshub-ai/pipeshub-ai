@@ -42,6 +42,7 @@ class AgentContext(BaseModel):
     user_info: dict[str, Any] = Field(default_factory=dict)
     org_info: dict[str, Any] = Field(default_factory=dict)
     is_service_account: bool = False
+    send_user_info: bool = True
 
     # Services (injected, not serializable)
     retrieval_service: Any = None
@@ -368,6 +369,7 @@ class AgentContext(BaseModel):
             user_info=state.get("user_info") or {},
             org_info=state.get("org_info") or {},
             is_service_account=bool(state.get("is_service_account", False)),
+            send_user_info=state.get("send_user_info", True) is not False,
             retrieval_service=state.get("retrieval_service"),
             graph_provider=state.get("graph_provider"),
             config_service=state.get("config_service"),
@@ -468,6 +470,7 @@ class AgentContext(BaseModel):
             "user_info": self.user_info,
             "org_info": self.org_info,
             "is_service_account": self.is_service_account,
+            "send_user_info": self.send_user_info,
             "conversation_id": self.conversation_id,
             "has_ui_client": self.has_ui_client,
             "agent_toolsets": self.agent_toolsets,

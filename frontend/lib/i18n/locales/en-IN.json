@@ -2865,6 +2865,8 @@
     "startingMessageLabel": "Starting message",
     "defaultReasoningEffortLabel": "Default Reasoning Effort",
     "defaultReasoningEffortHint": "Fallback reasoning effort used when the user doesn't choose one in chat.",
+    "sendUserContextLabel": "Send user & organisation context",
+    "sendUserContextHint": "When off, this agent will not receive the user's name, email, or organisation in its system prompt. It will rely on tools, actions, and knowledge sources instead.",
     "moreItems": "+{{count}} more",
     "toolsetNodeSubtitle": "Toolset",
     "toolsLabel": "Tools",

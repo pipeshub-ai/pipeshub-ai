@@ -777,6 +777,7 @@ export function useAgentBuilderReconstruction(): {
             instructions: agent.instructions ?? '',
             startMessage: agent.startMessage || t('agentBuilder.defaultStartMessage'),
             defaultReasoningEffort: agent.defaultReasoningEffort ?? null,
+            sendUserContext: agent.sendUserContext !== false,
             routing: 'auto',
             allowMultipleLLMs: true,
           },

@@ -3155,6 +3155,8 @@
     "startingMessageLabel": "시작 메시지",
     "defaultReasoningEffortLabel": "기본 추론 노력",
     "defaultReasoningEffortHint": "사용자가 채팅에서 선택하지 않을 때 사용되는 대체 추론 노력입니다.",
+    "sendUserContextLabel": "사용자 및 조직 컨텍스트 보내기",
+    "sendUserContextHint": "끄면 이 에이전트는 시스템 프롬프트에 사용자의 이름, 이메일, 조직 정보를 받지 않으며 도구, 액션, 지식 소스만 사용합니다.",
     "moreItems": "+{{count}}개 더 보기",
     "toolsetNodeSubtitle": "툴셋",
     "toolsLabel": "도구",

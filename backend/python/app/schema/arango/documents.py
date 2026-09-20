@@ -893,6 +893,7 @@ agent_schema = {
             },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
+            "sendUserContext": {"type": "boolean", "default": True},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},

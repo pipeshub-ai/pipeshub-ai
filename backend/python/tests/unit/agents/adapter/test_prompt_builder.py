@@ -567,6 +567,17 @@ class TestIdentityAndOperatingRules:
         section_without = without_tool.split("## Operating Rules", 1)[1].split("\n## ", 1)[0]
         assert section_with == section_without
 
+    def test_org_scope_rule_present_when_user_context_enabled(self) -> None:
+        context = make_context(send_user_info=True)
+        result = _build(context)
+        assert "Organization scope" in result
+        assert "Current User Information" in result
+
+    def test_org_scope_rule_absent_when_user_context_disabled(self) -> None:
+        context = make_context(send_user_info=False)
+        result = _build(context)
+        assert "Organization scope" not in result
+
 
 class TestToolReferenceSection:
     """"Available Tools" must reflect what `spec.tool_names` actually

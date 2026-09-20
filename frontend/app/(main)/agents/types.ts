@@ -202,6 +202,8 @@ export interface AgentDetail {
   can_view: boolean;
   /** Agent-level fallback used when a chat request omits its own reasoningEffort. */
   defaultReasoningEffort?: ReasoningEffort | null;
+  /** When false, the agent system prompt omits user name/email/org. Defaults to true. */
+  sendUserContext?: boolean;
 }
 
 // ── Builder catalog rows (tool list + KB) ───────────────────────

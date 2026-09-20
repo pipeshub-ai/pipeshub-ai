@@ -2867,6 +2867,8 @@
     "startingMessageLabel": "Startnachricht",
     "defaultReasoningEffortLabel": "Standard-Denkaufwand",
     "defaultReasoningEffortHint": "Ersatz-Denkaufwand, der verwendet wird, wenn der Benutzer im Chat keinen auswählt.",
+    "sendUserContextLabel": "Benutzer- und Organisationskontext senden",
+    "sendUserContextHint": "Wenn deaktiviert, erhält dieser Agent nicht den Namen, die E-Mail-Adresse oder die Organisation des Nutzers im System-Prompt. Er stützt sich dann auf Tools, Aktionen und Wissensquellen.",
     "moreItems": "+{{count}} weitere",
     "toolsetNodeSubtitle": "Toolset",
     "toolsLabel": "Tools",

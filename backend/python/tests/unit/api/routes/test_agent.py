@@ -1392,6 +1392,22 @@ class TestGetUserContextExtended:
         assert ctx["userId"] == "u1"
 
 
+class TestApplyUserContextGate:
+    def test_disabled_sets_send_user_info_false(self) -> None:
+        from app.api.routes.agent import _apply_user_context_gate
+
+        info = {"userId": "u1", "sendUserInfo": True}
+        _apply_user_context_gate(info, enabled=False)
+        assert info["sendUserInfo"] is False
+
+    def test_enabled_leaves_existing_value(self) -> None:
+        from app.api.routes.agent import _apply_user_context_gate
+
+        info = {"userId": "u1", "sendUserInfo": True}
+        _apply_user_context_gate(info, enabled=True)
+        assert info["sendUserInfo"] is True
+
+
 # ---------------------------------------------------------------------------
 # _filter_knowledge_by_enabled_sources (extended)
 # ---------------------------------------------------------------------------

@@ -111,3 +111,15 @@ async def is_skills_enabled(config_service: Optional["ConfigurationService"] = N
     skills to run.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_SKILLS, default=True)
+
+
+async def is_user_context_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+    """Org-level gate for injecting user/org profile into the default
+    assistant and Universal Agent Mode system prompts. Source of truth is
+    the ``ENABLE_USER_CONTEXT`` platform feature flag. Defaults to ENABLED
+    — this is pre-existing prompt behaviour; admins may opt out from Labs.
+
+    Agent Builder agents do not use this flag. Each stored agent has its
+    own ``sendUserContext`` field.
+    """
+    return await _platform_flag(config_service, CONFIG.ENABLE_USER_CONTEXT, default=True)

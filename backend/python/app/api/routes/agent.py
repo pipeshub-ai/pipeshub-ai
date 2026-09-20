@@ -282,6 +282,12 @@ def _get_user_context(request: Request) -> dict[str, Any]:
     }
 
 
+def _apply_user_context_gate(user_info: dict[str, Any], *, enabled: bool) -> None:
+    """When disabled, omit name/email/org from the agent system prompt."""
+    if not enabled:
+        user_info["sendUserInfo"] = False
+
+
 
 def _merge_end_user_into_service_account_user_info(
     creator_enriched: dict[str, Any],
@@ -1752,6 +1758,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "defaultReasoningEffort": default_reasoning_effort,
             "isActive": True,
             "isServiceAccount": is_service_account,
+            "sendUserContext": bool(body.get("sendUserContext", True)),
             "createdBy": user_key,
             "updatedBy": None,
             "createdAtTimestamp": time,
@@ -3245,19 +3252,23 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         if agent_id == "agentIdPlaceholder":
             # Lazy: `app.api.routes.toolsets` imports back into this module.
             from app.agents.mcp.service import is_mcp_enabled
-            from app.services.featureflag.platform_settings import is_actions_enabled
+            from app.services.featureflag.platform_settings import (
+                is_actions_enabled,
+                is_user_context_enabled,
+            )
 
             toolset_registry = getattr(request.app.state, "toolset_registry", None)
-            # One wave: org lookup, the user document, and both platform flags
+            # One wave: org lookup, the user document, and platform flags
             # are mutually independent. The flags are resolved here and threaded
             # through because they are deliberately uncached live reads (see
             # `is_actions_enabled`) that `get_assistant_agent` and the toolset/
             # MCP blocks below each used to read again.
-            org_info, actions_enabled, mcp_enabled, user_doc = await asyncio.gather(
+            org_info, actions_enabled, mcp_enabled, user_doc, user_context_enabled = await asyncio.gather(
                 _get_org_info(user_context, graph_provider, logger),
                 is_actions_enabled(config_service),
                 is_mcp_enabled(config_service),
                 _get_user_document(user_context["userId"], graph_provider, logger),
+                is_user_context_enabled(config_service),
             )
             # Built inside the stream below: this is the expensive half of the
             # request (toolset + MCP + knowledge fan-out) and nothing above it
@@ -3265,6 +3276,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             agent = None
             prefetched_toolset_auth: dict[str, dict[str, Any]] = {}
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
+            _apply_user_context_gate(enriched_user_info, enabled=user_context_enabled)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
             is_service_account = False
 
@@ -3295,6 +3307,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
                 if not perm:
                     raise AgentNotFoundError(agent_id)
+
+            _apply_user_context_gate(
+                enriched_user_info,
+                enabled=bool(agent.get("sendUserContext", True)),
+            )
 
         async def _run() -> AsyncGenerator[str, None]:
             """Everything below the authorization checks. Runs after the

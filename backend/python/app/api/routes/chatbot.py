@@ -40,6 +40,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import TransformContext
+from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model_async
 from app.utils.attachment_mime_types import (
@@ -1076,6 +1077,7 @@ async def _generate_chat_stream_via_agent_loop(
     prompts_task = asyncio.ensure_future(load_system_prompts(config_service, logger_))
     user_doc_task = asyncio.ensure_future(_load_user_doc(graph_provider, user_id))
     org_doc_task = asyncio.ensure_future(_load_org_doc(graph_provider, org_id))
+    user_context_flag_task = asyncio.ensure_future(is_user_context_enabled(config_service))
 
     try:
         llm_bundle = await llm_task
@@ -1083,9 +1085,12 @@ async def _generate_chat_stream_via_agent_loop(
             raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
         llm, model_config, ai_models_config = llm_bundle
     except Exception as exc:
-        for pending in (prompts_task, user_doc_task, org_doc_task):
+        for pending in (prompts_task, user_doc_task, org_doc_task, user_context_flag_task):
             pending.cancel()
-        await asyncio.gather(prompts_task, user_doc_task, org_doc_task, return_exceptions=True)
+        await asyncio.gather(
+            prompts_task, user_doc_task, org_doc_task, user_context_flag_task,
+            return_exceptions=True,
+        )
         logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
         error_code, user_message = classify_exception(exc)
         if error_code == "unknown":
@@ -1147,8 +1152,8 @@ async def _generate_chat_stream_via_agent_loop(
     }
 
     org_info: dict[str, Any] | None = None
-    user_doc, org_doc = await asyncio.gather(
-        user_doc_task, org_doc_task, return_exceptions=True,
+    user_doc, org_doc, user_context_flag = await asyncio.gather(
+        user_doc_task, org_doc_task, user_context_flag_task, return_exceptions=True,
     )
     if isinstance(user_doc, BaseException):
         logger_.debug("Failed to load user doc for prompt enrichment", exc_info=user_doc)
@@ -1170,6 +1175,17 @@ async def _generate_chat_stream_via_agent_loop(
             "accountType": raw_account_type if raw_account_type in ("enterprise", "individual") else "",
             "name": org_doc.get("name") or "",
         }
+
+    if isinstance(user_context_flag, BaseException):
+        logger_.debug(
+            "Failed to read ENABLE_USER_CONTEXT; defaulting to enabled",
+            exc_info=user_context_flag,
+        )
+        user_context_enabled = True
+    else:
+        user_context_enabled = bool(user_context_flag)
+    if not user_context_enabled:
+        user_info["sendUserInfo"] = False
 
     client_name = request.headers.get("client-name")
 

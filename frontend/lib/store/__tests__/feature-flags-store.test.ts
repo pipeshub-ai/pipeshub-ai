@@ -14,6 +14,7 @@ import {
   selectActionsEnabled,
   selectVectorStoreRebuildEnabled,
   selectSkillsEnabled,
+  selectUserContextEnabled,
 } from '../feature-flags-store';
 
 describe('feature-flags-store selectors', () => {
@@ -93,6 +94,22 @@ describe('feature-flags-store selectors', () => {
     it('is false only when explicitly false (admin opt-out)', () => {
       useFeatureFlagsStore.setState({ flags: { ENABLE_SKILLS: false } });
       expect(selectSkillsEnabled(useFeatureFlagsStore.getState())).toBe(false);
+    });
+  });
+
+  describe('selectUserContextEnabled (defaults to enabled)', () => {
+    it('is true when flags is null (unloaded must not read as disabled)', () => {
+      expect(selectUserContextEnabled(useFeatureFlagsStore.getState())).toBe(true);
+    });
+
+    it('is true when the key is absent from a loaded flags map', () => {
+      useFeatureFlagsStore.setState({ flags: {} });
+      expect(selectUserContextEnabled(useFeatureFlagsStore.getState())).toBe(true);
+    });
+
+    it('is false only when explicitly false', () => {
+      useFeatureFlagsStore.setState({ flags: { ENABLE_USER_CONTEXT: false } });
+      expect(selectUserContextEnabled(useFeatureFlagsStore.getState())).toBe(false);
     });
   });
 });

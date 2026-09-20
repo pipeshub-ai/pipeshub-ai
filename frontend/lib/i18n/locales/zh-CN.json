@@ -3155,6 +3155,8 @@
     "startingMessageLabel": "起始消息",
     "defaultReasoningEffortLabel": "默认推理力度",
     "defaultReasoningEffortHint": "当用户在聊天中未选择时使用的备用推理力度。",
+    "sendUserContextLabel": "发送用户和组织上下文",
+    "sendUserContextHint": "关闭后，此智能体不会在系统提示中收到用户的姓名、邮箱或组织名称，将仅依赖工具、操作和知识来源。",
     "moreItems": "还有 {{count}} 项",
     "toolsetNodeSubtitle": "工具集",
     "toolsLabel": "工具",
