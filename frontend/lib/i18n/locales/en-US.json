@@ -925,7 +925,7 @@
         "toolsStatusCount_one": "{{count}} enabled",
         "toolsStatusCount_other": "{{count}} enabled",
         "membersStatusOnlyYou": "Only you",
-        "suggestSummariseDocument": "Summarise a document",
+        "suggestSummariseDocument": "Summarize a document",
         "suggestPlanWork": "Plan a piece of work",
         "suggestWriteInstructions": "Write the project instructions",
         "suggestSummariseDocumentPrompt": "Summarize the most important document in this project's files.",

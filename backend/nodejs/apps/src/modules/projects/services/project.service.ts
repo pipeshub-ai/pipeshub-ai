@@ -234,7 +234,8 @@ export class ProjectService {
       $or: scopeOr,
     };
     if (opts.isArchived !== undefined) {
-      filter.isArchived = opts.isArchived;
+      // Compare rather than assign so no request-derived value reaches the query.
+      filter.isArchived = opts.isArchived === true;
     } else if (!opts.includeArchived) {
       filter.isArchived = false;
     }

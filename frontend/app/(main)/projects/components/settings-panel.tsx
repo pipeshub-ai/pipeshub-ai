@@ -30,12 +30,15 @@ interface SetupRowProps {
   /** When false, the row never expands — `onToggle` is the click action (e.g. open a drawer). */
   expandable?: boolean;
   clickable?: boolean;
+  /** Mount the body only once the row is first expanded. For bodies that fetch on mount and report nothing while collapsed. */
+  lazy?: boolean;
 }
 
 /**
- * One row in the "Project setup" list. The expandable body stays mounted
- * (just visually hidden) so `FilesCard`'s file count keeps reporting to the
- * parent even while its row is collapsed — see `onSummaryChange` below.
+ * One row in the "Project setup" list. Once mounted, the expandable body
+ * stays mounted (just visually hidden) so `FilesCard`'s file count keeps
+ * reporting to the parent even while its row is collapsed — see
+ * `onSummaryChange` below.
  */
 function SetupRow({
   icon,
@@ -48,8 +51,14 @@ function SetupRow({
   children,
   expandable = true,
   clickable = true,
+  lazy = false,
 }: SetupRowProps) {
   const expanded = expandable && isExpanded;
+  // Set during render, not in an effect, so the first expansion never paints an empty body.
+  const [hasExpanded, setHasExpanded] = useState(expanded);
+  if (expanded && !hasExpanded) {
+    setHasExpanded(true);
+  }
   return (
     <Box style={{ borderTop: isFirst ? 'none' : '1px solid var(--olive-4)' }}>
       <Flex
@@ -62,6 +71,9 @@ function SetupRow({
         onKeyDown={
           clickable
             ? (e) => {
+                // A key pressed on the nested `action` button bubbles here; handling it
+                // would cancel that button's own activation and toggle the row instead.
+                if (e.target !== e.currentTarget) return;
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
                   onToggle();
@@ -111,7 +123,7 @@ function SetupRow({
           )}
         </Flex>
       </Flex>
-      {expandable && (
+      {expandable && (!lazy || hasExpanded) && (
         <Box style={{ display: expanded ? 'block' : 'none', paddingBottom: 'var(--space-3)' }}>{children}</Box>
       )}
     </Box>
@@ -347,6 +359,7 @@ export function ProjectSettingsPanel({
           isFirst={false}
           isExpanded={expandedSection === 'connectors'}
           onToggle={() => toggleSection('connectors')}
+          lazy
         >
           <ConnectorsCard
             selectedAppIds={project.knowledgeScope?.apps ?? []}
@@ -370,6 +383,7 @@ export function ProjectSettingsPanel({
           isFirst={false}
           isExpanded={expandedSection === 'tools'}
           onToggle={() => toggleSection('tools')}
+          lazy
         >
           <ToolsMcpCard selectedTools={project.tools ?? []} canEdit={canEdit} onChange={onToolsChange} />
         </SetupRow>

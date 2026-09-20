@@ -114,8 +114,8 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     setLoadError(false);
     try {
       // Conversation rows render in the left sidebar
-      // (`ProjectConversationsSidebar`). The total also gates the Chat
-      // defaults card and the projects-list "N chats" badge after pin/unpin.
+      // (`ProjectConversationsSidebar`); only the total is needed here, to keep
+      // the projects-list "N chats" badge correct after pin/unpin.
       const [detail, conv] = await Promise.all([
         ProjectApi.get(projectId),
         ProjectApi.listConversations(projectId, { page: 1, limit: 1 }),
@@ -430,7 +430,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
               )}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
-          <Link href="/workspace/profile/" aria-label="Open profile" style={{ lineHeight: 0 }}>
+          <Link href="/workspace/profile/" aria-label={t('workspace.sidebar.nav.profile')} style={{ lineHeight: 0 }}>
             <UserAvatar
               fullName={profile?.fullName}
               firstName={profile?.firstName}
