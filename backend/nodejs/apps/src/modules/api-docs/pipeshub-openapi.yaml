@@ -20090,14 +20090,16 @@ paths:
         exists for the job, holds only what someone granted it, and survives
         any one person leaving.
 
-        Takes effect for tokens **already issued**. The identity is read from
-        the application record on each request rather than from what the token
-        was minted with, because a change that waited for every outstanding
-        token to expire would not stop those tokens acting as a person, which
-        is the reason for making it.
+        **This revokes the tokens the application has already issued.** They
+        were minted carrying the previous identity, and the Python services
+        read that claim to decide whose documents a request may reach — so
+        leaving them alive would mean the application went on acting as the
+        previous identity until they expired, which is the situation this call
+        is made to end. Whatever uses the application needs a new token
+        afterwards.
 
         Pass `serviceAccountId: null` to put the application back to acting as
-        its creator.
+        its creator. That revokes outstanding tokens too.
 
         This does not change who manages the application. The creator still
         owns it in Developer Settings — moving that would leave the
@@ -20106,6 +20108,7 @@ paths:
       operationId: setOAuthAppTokenIdentity
       security:
         - bearerAuth: []
+        - oauth2: [user:write]
       parameters:
         - name: appId
           in: path
@@ -20135,6 +20138,8 @@ paths:
           description: The service account is disabled, or admin access required
         '401':
           description: Not authenticated
+        '403':
+          description: Token lacks the required scope
         '404':
           description: No such application, or no such service account in this organisation
 
