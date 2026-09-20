@@ -378,13 +378,23 @@ describe('MCP Controller — handleMCPRequest', () => {
   // =========================================================================
   describe('request-ID logging', () => {
     let infoStub: sinon.SinonStub
-    const loggerInstance = Logger.getInstance()
 
     beforeEach(() => {
-      if ('restore' in loggerInstance.info) {
-        (loggerInstance.info as sinon.SinonStub).restore()
+      sinon.restore()
+
+      const logger = {
+        info: sinon.stub(),
+        debug: sinon.stub(),
+        warn: sinon.stub(),
+        error: sinon.stub(),
       }
-      infoStub = sinon.stub(loggerInstance, 'info')
+
+      infoStub = logger.info
+      sinon.stub(Logger, 'getInstance').returns(logger as unknown as Logger)
+    })
+
+    afterEach(() => {
+      sinon.restore()
     })
 
     it('should log incoming request when x-pipeshub-request-id is present', async () => {
