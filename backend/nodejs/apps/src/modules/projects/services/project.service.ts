@@ -54,6 +54,7 @@ export interface ListProjectsOptions {
   search?: string;
   scope: 'mine' | 'shared' | 'all';
   includeArchived: boolean;
+  isArchived?: boolean;
 }
 
 const ROLE_RANK: Record<ProjectRole, number> = {
@@ -232,7 +233,9 @@ export class ProjectService {
       isDeleted: false,
       $or: scopeOr,
     };
-    if (!opts.includeArchived) {
+    if (opts.isArchived !== undefined) {
+      filter.isArchived = opts.isArchived;
+    } else if (!opts.includeArchived) {
       filter.isArchived = false;
     }
     if (opts.search) {

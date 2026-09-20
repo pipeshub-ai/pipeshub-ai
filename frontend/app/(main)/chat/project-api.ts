@@ -50,6 +50,9 @@ export const ProjectApi = {
         ...(params.includeArchived !== undefined
           ? { includeArchived: params.includeArchived }
           : {}),
+        ...(params.isArchived !== undefined
+          ? { isArchived: params.isArchived }
+          : {}),
       },
     });
     return data;

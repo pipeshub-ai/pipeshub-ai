@@ -28929,10 +28929,19 @@ paths:
             default: mine
         - name: includeArchived
           in: query
+          description: Include archived projects alongside active projects.
           schema:
             type: string
             enum: ['true', 'false']
             default: 'false'
+        - name: isArchived
+          in: query
+          description: |
+            Filter by exact archive status. When provided, this takes
+            precedence over `includeArchived`.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Paginated project list

@@ -225,6 +225,27 @@ describe('projects/validators/project.validators', () => {
       const result = listProjectsQuerySchema.safeParse({ query: { includeArchived: 'yes' } })
       expect(result.success).to.equal(false)
     })
+
+    it('transforms isArchived "true"/"false" strings while preserving an omitted value', () => {
+      const trueResult = listProjectsQuerySchema.safeParse({
+        query: { isArchived: 'true' },
+      })
+      const falseResult = listProjectsQuerySchema.safeParse({
+        query: { isArchived: 'false' },
+      })
+      const omittedResult = listProjectsQuerySchema.safeParse({ query: {} })
+
+      expect(trueResult.success && trueResult.data.query.isArchived).to.equal(true)
+      expect(falseResult.success && falseResult.data.query.isArchived).to.equal(false)
+      expect(
+        omittedResult.success && omittedResult.data.query.isArchived,
+      ).to.equal(undefined)
+    })
+
+    it('rejects a non-boolean-string isArchived', () => {
+      const result = listProjectsQuerySchema.safeParse({ query: { isArchived: 'yes' } })
+      expect(result.success).to.equal(false)
+    })
   })
 
   describe('listProjectConversationsQuerySchema', () => {

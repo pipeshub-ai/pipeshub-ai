@@ -41,7 +41,11 @@
     "pinnedSection": "고정됨",
     "allSection": "모든 프로젝트",
     "backToAllProjects": "모든 프로젝트",
-    "loadMore": "더 보기"
+    "loadMore": "더 보기",
+    "tabYourProjects": "내 프로젝트",
+    "tabArchived": "보관됨",
+    "archivedEmptyState": "보관된 프로젝트가 없습니다",
+    "archivedEmptyStateHint": "보관한 프로젝트가 여기에 표시됩니다."
   },
   "timeGroup": {
     "today": "오늘",
@@ -832,6 +836,7 @@
       "unpinProject": "고정 해제",
       "archiveProject": "프로젝트 보관",
       "unarchiveProject": "프로젝트 보관 해제",
+      "restoreSuccess": "프로젝트가 복원되었습니다",
       "deleteProject": "프로젝트 삭제",
       "shareProject": "프로젝트 공유",
       "backToProjects": "모든 프로젝트",
@@ -881,8 +886,6 @@
         "memberCount_one": "멤버 {{count}}명",
         "memberCount_other": "멤버 {{count}}명",
         "share": "공유",
-        "recentChatsTitle": "최근 채팅",
-        "seeAllChats": "모든 채팅 보기",
         "saveInstructionsFailed": "지침을 저장하지 못했습니다",
         "updateToolsFailed": "도구를 업데이트하지 못했습니다",
         "updatePinFailed": "고정 상태를 업데이트하지 못했습니다",

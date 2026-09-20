@@ -97,6 +97,13 @@ interface ChatInputProps {
   isAgentChat?: boolean;
   /** Agent ID for filtering models to only those configured for the agent */
   agentId?: string | null;
+  /**
+   * Seeds the composer's text once per unique `key` (e.g. a quick-start
+   * suggestion chip rendered outside this component). Bump `key` to re-seed
+   * with the same `text` twice in a row; typing in the composer afterwards
+   * is never overwritten since the effect only fires on `key` changes.
+   */
+  prefill?: { text: string; key: number } | null;
 }
 
 function formatFileSize(bytes: number): string {
@@ -166,6 +173,7 @@ export function ChatInput({
   expandable = false,
   isAgentChat = false,
   agentId,
+  prefill,
 }: ChatInputProps) {
   const router = useRouter();
   const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
@@ -201,6 +209,17 @@ export function ChatInput({
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const chipsScrollRef = useRef<HTMLDivElement>(null);
+
+  // `prefill` seeds the composer from an external suggestion chip. Keyed by
+  // `prefill.key` (not `prefill.text`) so clicking the same suggestion twice
+  // re-seeds even if the user hadn't changed the text.
+  const lastPrefillKeyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!prefill || prefill.key === lastPrefillKeyRef.current) return;
+    lastPrefillKeyRef.current = prefill.key;
+    setMessage(prefill.text);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [prefill]);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   /**

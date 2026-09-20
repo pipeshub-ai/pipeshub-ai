@@ -278,6 +278,36 @@ describe('ProjectService', () => {
       expect(filter).to.not.have.property('isArchived');
     });
 
+    it('filters to archived projects when isArchived is true', async () => {
+      const findStub = stubFindChain([]);
+      sinon.stub(Project, 'countDocuments').resolves(0);
+
+      await ProjectService.list(ORG_ID, OWNER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'all',
+        includeArchived: false,
+        isArchived: true,
+      });
+
+      expect(findStub.firstCall.args[0].isArchived).to.equal(true);
+    });
+
+    it('filters to active projects when isArchived is false', async () => {
+      const findStub = stubFindChain([]);
+      sinon.stub(Project, 'countDocuments').resolves(0);
+
+      await ProjectService.list(ORG_ID, OWNER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'all',
+        includeArchived: true,
+        isArchived: false,
+      });
+
+      expect(findStub.firstCall.args[0].isArchived).to.equal(false);
+    });
+
     it('adds a fourth team-membership branch in scope "all" when callerTeamIds is non-empty', async () => {
       const findStub = stubFindChain([]);
       sinon.stub(Project, 'countDocuments').resolves(0);

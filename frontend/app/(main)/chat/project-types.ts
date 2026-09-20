@@ -91,6 +91,7 @@ export interface ListProjectsParams {
   search?: string;
   scope?: ProjectListScope;
   includeArchived?: boolean;
+  isArchived?: boolean;
 }
 
 export interface ProjectsListResult {

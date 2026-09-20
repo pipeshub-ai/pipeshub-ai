@@ -2,7 +2,14 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Box, Flex, Text, TextField } from '@radix-ui/themes';
+import {
+  Box,
+  DropdownMenu,
+  Flex,
+  SegmentedControl,
+  Text,
+  TextField,
+} from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -11,13 +18,31 @@ import { ProjectApi } from '@/chat/project-api';
 import type { ProjectSummary } from '@/chat/project-types';
 import { useChatStore } from '@/chat/store';
 import { CreateProjectDialog } from '@/chat/sidebar/dialogs';
+import { toast } from '@/lib/store/toast-store';
 import { formatRelativeTime } from '@/lib/utils/formatters';
 import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 
 const PROJECT_LIST_PAGE_SIZE = 30;
+type ProjectListTab = 'active' | 'archived';
 
-function ProjectCard({ project, onOpen }: { project: ProjectSummary; onOpen: () => void }) {
+interface ProjectCardProps {
+  project: ProjectSummary;
+  onOpen: () => void;
+  archived?: boolean;
+  onUnarchive?: () => void;
+  isUnarchiving?: boolean;
+}
+
+function ProjectCard({
+  project,
+  onOpen,
+  archived = false,
+  onUnarchive,
+  isUnarchiving = false,
+}: ProjectCardProps) {
   const { t } = useTranslation();
+  const [isHovered, setIsHovered] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   return (
     <Box
@@ -30,6 +55,8 @@ function ProjectCard({ project, onOpen }: { project: ProjectSummary; onOpen: () 
           onOpen();
         }
       }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
       style={{
         background: 'var(--olive-2)',
         border: '1px solid var(--olive-4)',
@@ -63,6 +90,71 @@ function ProjectCard({ project, onOpen }: { project: ProjectSummary; onOpen: () 
           <Text size="1" style={{ color: 'var(--slate-10)' }}>
             {t(`chat.projects.roles.${project.role === 'none' ? 'viewer' : project.role}`)}
           </Text>
+          {archived && (
+            <Box style={{ width: 22, height: 22, flexShrink: 0 }}>
+              {(isHovered || isMenuOpen) && (
+                <DropdownMenu.Root
+                  open={isMenuOpen}
+                  onOpenChange={setIsMenuOpen}
+                  modal={false}
+                >
+                  <DropdownMenu.Trigger>
+                    <button
+                      type="button"
+                      aria-label={t('chat.projects.unarchiveProject')}
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => event.stopPropagation()}
+                      style={{
+                        appearance: 'none',
+                        border: 'none',
+                        background: isMenuOpen
+                          ? 'var(--olive-5)'
+                          : 'transparent',
+                        borderRadius: 'var(--radius-1)',
+                        padding: 2,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <MaterialIcon
+                        name="more_horiz"
+                        size={18}
+                        color="var(--slate-11)"
+                      />
+                    </button>
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Content
+                    side="bottom"
+                    align="end"
+                    sideOffset={4}
+                    style={{ minWidth: 170 }}
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => event.stopPropagation()}
+                  >
+                    <DropdownMenu.Item
+                      disabled={isUnarchiving}
+                      onSelect={() => onUnarchive?.()}
+                    >
+                      <Flex align="center" gap="2">
+                        <MaterialIcon
+                          name="unarchive"
+                          size={16}
+                          color="var(--slate-11)"
+                        />
+                        <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                          {isUnarchiving
+                            ? t('action.loading')
+                            : t('chat.projects.unarchiveProject')}
+                        </Text>
+                      </Flex>
+                    </DropdownMenu.Item>
+                  </DropdownMenu.Content>
+                </DropdownMenu.Root>
+              )}
+            </Box>
+          )}
         </Flex>
       </Flex>
       <Text
@@ -110,6 +202,7 @@ export function ProjectList() {
   const { t } = useTranslation();
 
   const upsertProjectInList = useChatStore((s) => s.upsertProjectInList);
+  const bumpProjectsVersion = useChatStore((s) => s.bumpProjectsVersion);
 
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -119,12 +212,18 @@ export function ProjectList() {
   const [createOpen, setCreateOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
+  const [activeTab, setActiveTab] = useState<ProjectListTab>('active');
+  const [unarchivingId, setUnarchivingId] = useState<string | null>(null);
 
   // Guards against an in-flight request for a stale query/page overwriting
   // the result of a newer one that resolves first.
   const requestIdRef = useRef(0);
 
-  const load = useCallback(async (query: string, targetPage: number) => {
+  const load = useCallback(async (
+    query: string,
+    targetPage: number,
+    tab: ProjectListTab,
+  ) => {
     const requestId = ++requestIdRef.current;
     if (targetPage === 1) setIsLoading(true);
     else setIsLoadingMore(true);
@@ -134,7 +233,7 @@ export function ProjectList() {
         scope: 'all',
         page: targetPage,
         limit: PROJECT_LIST_PAGE_SIZE,
-        includeArchived: false,
+        isArchived: tab === 'archived',
         ...(query.trim() ? { search: query.trim() } : {}),
       });
       if (requestId !== requestIdRef.current) return;
@@ -154,17 +253,35 @@ export function ProjectList() {
   }, []);
 
   useEffect(() => {
-    const handle = setTimeout(() => void load(search, 1), search ? 250 : 0);
+    const handle = setTimeout(
+      () => void load(search, 1, activeTab),
+      search ? 250 : 0,
+    );
     return () => clearTimeout(handle);
-  }, [search, load]);
+  }, [search, activeTab, load]);
 
   const loadMore = () => {
     if (isLoadingMore || !hasMore) return;
-    void load(search, page + 1);
+    void load(search, page + 1, activeTab);
   };
 
   const openProject = (projectId: string) => {
     router.push(`/chat/?projectId=${encodeURIComponent(projectId)}`);
+  };
+
+  const handleUnarchive = async (projectId: string) => {
+    if (unarchivingId) return;
+    setUnarchivingId(projectId);
+    try {
+      await ProjectApi.unarchive(projectId);
+      setProjects((prev) => prev.filter((project) => project._id !== projectId));
+      bumpProjectsVersion();
+      toast.success(t('chat.projects.restoreSuccess'));
+    } catch {
+      toast.error(t('chat.projects.workspace.updateArchiveFailed'));
+    } finally {
+      setUnarchivingId(null);
+    }
   };
 
   const sorted = [...projects].sort((a, b) => {
@@ -189,6 +306,20 @@ export function ProjectList() {
         </LoadingButton>
       </Flex>
 
+      <SegmentedControl.Root
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as ProjectListTab)}
+        size="2"
+        style={{ alignSelf: 'flex-start' }}
+      >
+        <SegmentedControl.Item value="active">
+          {t('projects.tabYourProjects')}
+        </SegmentedControl.Item>
+        <SegmentedControl.Item value="archived">
+          {t('projects.tabArchived')}
+        </SegmentedControl.Item>
+      </SegmentedControl.Root>
+
       <TextField.Root
         placeholder={t('projects.searchPlaceholder')}
         value={search}
@@ -212,10 +343,18 @@ export function ProjectList() {
         <Flex direction="column" align="center" gap="2" style={{ padding: 'var(--space-8) 0' }}>
           <MaterialIcon name="folder_open" size={40} color="var(--slate-8)" />
           <Text size="3" weight="medium" style={{ color: 'var(--slate-11)' }}>
-            {t('projects.emptyState')}
+            {t(
+              activeTab === 'archived'
+                ? 'projects.archivedEmptyState'
+                : 'projects.emptyState',
+            )}
           </Text>
           <Text size="2" style={{ color: 'var(--slate-9)' }}>
-            {t('projects.emptyStateHint')}
+            {t(
+              activeTab === 'archived'
+                ? 'projects.archivedEmptyStateHint'
+                : 'projects.emptyStateHint',
+            )}
           </Text>
         </Flex>
       ) : (
@@ -228,7 +367,14 @@ export function ProjectList() {
             }}
           >
             {sorted.map((project) => (
-              <ProjectCard key={project._id} project={project} onOpen={() => openProject(project._id)} />
+              <ProjectCard
+                key={project._id}
+                project={project}
+                archived={activeTab === 'archived'}
+                isUnarchiving={unarchivingId === project._id}
+                onOpen={() => openProject(project._id)}
+                onUnarchive={() => void handleUnarchive(project._id)}
+              />
             ))}
           </Box>
           {hasMore && (

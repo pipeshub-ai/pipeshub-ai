@@ -41,7 +41,11 @@
     "pinnedSection": "已置顶",
     "allSection": "所有项目",
     "backToAllProjects": "所有项目",
-    "loadMore": "加载更多"
+    "loadMore": "加载更多",
+    "tabYourProjects": "您的项目",
+    "tabArchived": "已归档",
+    "archivedEmptyState": "暂无归档项目",
+    "archivedEmptyStateHint": "您归档的项目会显示在这里。"
   },
   "timeGroup": {
     "today": "今天",
@@ -832,6 +836,7 @@
       "unpinProject": "取消置顶",
       "archiveProject": "归档项目",
       "unarchiveProject": "取消归档",
+      "restoreSuccess": "项目已恢复",
       "deleteProject": "删除项目",
       "shareProject": "分享项目",
       "backToProjects": "所有项目",
@@ -881,8 +886,6 @@
         "memberCount_one": "{{count}} 位成员",
         "memberCount_other": "{{count}} 位成员",
         "share": "分享",
-        "recentChatsTitle": "最近对话",
-        "seeAllChats": "查看所有对话",
         "saveInstructionsFailed": "保存说明失败",
         "updateToolsFailed": "更新工具失败",
         "updatePinFailed": "更新置顶状态失败",

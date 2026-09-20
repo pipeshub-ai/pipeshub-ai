@@ -389,15 +389,13 @@ test.describe('Projects — sharing (owner)', () => {
     await mockSharingApis(page);
   });
 
-  test('owner can open Share, add a member, and see them in the member count', async ({ page }) => {
+  test('owner can open Share from Members, add a member, and see them in the drawer', async ({ page }) => {
     await page.goto(`/projects/?projectId=${PROJECT_ID}`);
     await page.waitForSelector('textarea', { timeout: 15_000 });
 
-    // makeProjectDetail() sets role: 'owner', so the Members card has a Share
-    // action (settings-panel.tsx only renders it for isOwner), shown once the
-    // card, collapsed by default, is expanded.
+    // makeProjectDetail() sets role: 'owner', so the Members row opens the
+    // share drawer directly (settings-panel.tsx gates the click on isOwner).
     await page.getByText('Members', { exact: true }).first().click();
-    await page.getByRole('button', { name: 'Share', exact: true }).click();
 
     // Generic ShareSidebar (app/components/share/) driven by createProjectShareAdapter.
     const dialog = page.getByRole('dialog');

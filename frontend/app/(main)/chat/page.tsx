@@ -1378,11 +1378,6 @@ function ChatContent() {
                       </Text>
                       <MaterialIcon name="settings" size={16} color="var(--slate-9)" />
                     </Flex>
-                    <Box style={{ textAlign: 'center', marginBottom: isMobile ? 'var(--space-5)' : 'var(--space-6)', fontFamily: 'Manrope, sans-serif' }}>
-                      <Text size="3" style={{ color: 'var(--slate-10)' }}>
-                        {t('chat.projects.newChatInProject')}
-                      </Text>
-                    </Box>
                   </>
                 ) : (
                   <>

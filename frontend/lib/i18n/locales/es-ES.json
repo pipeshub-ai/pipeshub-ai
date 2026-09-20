@@ -28,7 +28,11 @@
     "pinnedSection": "Fijados",
     "allSection": "Todos los proyectos",
     "backToAllProjects": "Todos los proyectos",
-    "loadMore": "Cargar más"
+    "loadMore": "Cargar más",
+    "tabYourProjects": "Tus proyectos",
+    "tabArchived": "Archivados",
+    "archivedEmptyState": "No hay proyectos archivados",
+    "archivedEmptyStateHint": "Los proyectos que archives aparecerán aquí."
   },
   "timeGroup": {
     "today": "Hoy",
@@ -814,6 +818,7 @@
       "unpinProject": "Desfijar",
       "archiveProject": "Archivar proyecto",
       "unarchiveProject": "Desarchivar proyecto",
+      "restoreSuccess": "Proyecto restaurado",
       "deleteProject": "Eliminar proyecto",
       "shareProject": "Compartir proyecto",
       "backToProjects": "Todos los proyectos",
@@ -863,8 +868,6 @@
         "memberCount_one": "{{count}} miembro",
         "memberCount_other": "{{count}} miembros",
         "share": "Compartir",
-        "recentChatsTitle": "Chats recientes",
-        "seeAllChats": "Ver todos los chats",
         "saveInstructionsFailed": "No se pudieron guardar las instrucciones",
         "updateToolsFailed": "No se pudieron actualizar las herramientas",
         "updatePinFailed": "No se pudo actualizar el estado de fijado",

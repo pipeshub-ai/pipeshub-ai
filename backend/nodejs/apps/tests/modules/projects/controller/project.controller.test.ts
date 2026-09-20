@@ -153,6 +153,34 @@ describe('project.controller', () => {
       expect(body.pagination).to.deep.equal({ page: 1, limit: 10, totalCount: 25, totalPages: 3 })
     })
 
+    it('passes the exact archive filter through to ProjectService.list', async () => {
+      stubNoTeamMemberships()
+      const listStub = sinon.stub(ProjectService, 'list').resolves({
+        projects: [],
+        totalCount: 0,
+      })
+
+      const req = createMockRequest({
+        query: {
+          page: 1,
+          limit: 10,
+          scope: 'all',
+          includeArchived: false,
+          isArchived: true,
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await listProjects(createMockAppConfig())(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(listStub.firstCall.args[2]).to.deep.include({
+        includeArchived: false,
+        isArchived: true,
+      })
+    })
+
     it('forwards service errors to next', async () => {
       stubNoTeamMemberships()
       const error = new Error('db down')

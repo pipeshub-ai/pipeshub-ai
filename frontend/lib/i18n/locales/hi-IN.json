@@ -28,7 +28,11 @@
     "pinnedSection": "पिन किया गया",
     "allSection": "सभी प्रोजेक्ट",
     "backToAllProjects": "सभी प्रोजेक्ट",
-    "loadMore": "और लोड करें"
+    "loadMore": "और लोड करें",
+    "tabYourProjects": "आपके प्रोजेक्ट",
+    "tabArchived": "संग्रहित",
+    "archivedEmptyState": "कोई संग्रहित प्रोजेक्ट नहीं",
+    "archivedEmptyStateHint": "आपके द्वारा संग्रहित प्रोजेक्ट यहाँ दिखाई देंगे।"
   },
   "timeGroup": {
     "today": "आज",
@@ -815,6 +819,7 @@
       "unpinProject": "अनपिन करें",
       "archiveProject": "प्रोजेक्ट संग्रहित करें",
       "unarchiveProject": "प्रोजेक्ट पुनर्स्थापित करें",
+      "restoreSuccess": "प्रोजेक्ट पुनर्स्थापित किया गया",
       "deleteProject": "प्रोजेक्ट हटाएँ",
       "shareProject": "प्रोजेक्ट साझा करें",
       "backToProjects": "सभी प्रोजेक्ट",
@@ -864,8 +869,6 @@
         "memberCount_one": "{{count}} सदस्य",
         "memberCount_other": "{{count}} सदस्य",
         "share": "साझा करें",
-        "recentChatsTitle": "हाल की चैट",
-        "seeAllChats": "सभी चैट देखें",
         "saveInstructionsFailed": "निर्देश सहेजने में विफल",
         "updateToolsFailed": "टूल अपडेट करने में विफल",
         "updatePinFailed": "पिन स्थिति अपडेट करने में विफल",
