@@ -115,19 +115,12 @@ export class OAuthProviderContainer {
         .bind<AuthorizationCodeService>('AuthorizationCodeService')
         .toConstantValue(authorizationCodeService)
 
-      const oauthAppService = new OAuthAppService(
-        logger,
-        encryptionService,
-        scopeValidatorService,
-      )
-      container
-        .bind<OAuthAppService>('OAuthAppService')
-        .toConstantValue(oauthAppService)
-
       // Get JWT configuration from platform config
       const jwtConfig = await getJwtConfig(logger)
       container.bind<JwtConfig>('JwtConfig').toConstantValue(jwtConfig)
 
+      // Built before the app service, which needs it to revoke an app's
+      // outstanding tokens when its identity changes.
       const oauthTokenService = new OAuthTokenService(
         logger,
         jwtConfig,
@@ -136,6 +129,16 @@ export class OAuthProviderContainer {
       container
         .bind<OAuthTokenService>('OAuthTokenService')
         .toConstantValue(oauthTokenService)
+
+      const oauthAppService = new OAuthAppService(
+        logger,
+        encryptionService,
+        scopeValidatorService,
+        oauthTokenService,
+      )
+      container
+        .bind<OAuthAppService>('OAuthAppService')
+        .toConstantValue(oauthAppService)
 
       // Initialize OAuth Auth Middleware
       const oauthAuthMiddleware = new OAuthAuthMiddleware(

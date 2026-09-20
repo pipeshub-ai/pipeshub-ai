@@ -5,6 +5,7 @@ import { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
 import { EncryptionService } from '../../../libs/encryptor/encryptor'
 import { ScopeValidatorService } from './scope.validator.service'
+import { OAuthTokenService } from './oauth_token.service'
 import {
   OAuthApp,
   IOAuthApp,
@@ -41,6 +42,8 @@ export class OAuthAppService {
     @inject('EncryptionService') private encryptionService: EncryptionService,
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
+    @inject('OAuthTokenService')
+    private oauthTokenService: OAuthTokenService,
   ) {}
 
   /**
@@ -196,6 +199,18 @@ export class OAuthAppService {
     }
 
     await app.save()
+
+    // Every token this app has already issued was minted carrying the old
+    // identity, and that claim is what the Python services read to decide
+    // whose documents a request may reach. Leaving them alive would mean the
+    // application went on acting as the previous identity until they expired
+    // — the very situation an administrator makes this change to end.
+    //
+    // It is also the honest reading of what just happened: the application is
+    // no longer the same principal, so its credentials should not be either.
+    // Whatever uses it needs a new token.
+    await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
+
     this.logger.info('OAuth app token identity changed', {
       appId,
       orgId,

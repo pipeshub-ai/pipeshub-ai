@@ -90,7 +90,17 @@ export class OAuthTokenService {
       tokenType: 'oauth',
       fullName,
       accountType,
-      createdBy: app.createdBy?.toString(),
+      // The identity a client_credentials token acts as: the app's chosen one
+      // when it has been pointed at a service account, its creator otherwise.
+      // The Python services read this claim to decide whose documents a
+      // request may reach, so it has to carry the answer rather than the
+      // creator — baking the creator in and resolving it only in Node would
+      // leave search and the connectors acting as the person while the Node
+      // routes acted as the service account.
+      //
+      // Changing an app's identity revokes its outstanding tokens, so none
+      // minted under the previous answer survives to be honoured.
+      createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
     }
 
     const signOptions: jwt.SignOptions = { algorithm: this.algorithm }
@@ -135,7 +145,8 @@ export class OAuthTokenService {
         isRefreshToken: true,
         fullName,
         accountType,
-        createdBy: app.createdBy?.toString(),
+        // Same resolved identity as the access token above.
+        createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
       }
 
       const refreshToken = jwt.sign(refreshTokenPayload, this.signingKey, signOptions)

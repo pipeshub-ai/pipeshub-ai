@@ -13,11 +13,14 @@ function makeService() {
     warn: sinon.stub(),
     error: sinon.stub(),
   };
-  return new OAuthAppService(
+  const tokens = { revokeAllTokensForApp: sinon.stub().resolves() };
+  const service = new OAuthAppService(
     logger as any,
     { encrypt: sinon.stub().returns('enc'), decrypt: sinon.stub() } as any,
     { getAllowedScopeNamesForRole: sinon.stub().returns([]) } as any,
+    tokens as any,
   );
+  return { service, tokens };
 }
 
 function stubUser(doc: Record<string, unknown> | null) {
@@ -56,7 +59,7 @@ describe('pointing an OAuth app at a service account', () => {
   it('points the app at a service account', async () => {
     stubUser({ isDisabled: false });
 
-    await makeService().setTokenIdentity(appId, orgId, userId, serviceAccountId);
+    await makeService().service.setTokenIdentity(appId, orgId, userId, serviceAccountId);
 
     expect(app.tokenIdentityUserId.toString()).to.equal(serviceAccountId);
     expect(app.save.calledOnce).to.equal(true);
@@ -67,7 +70,7 @@ describe('pointing an OAuth app at a service account', () => {
     // everyone, because nobody can sign in as a service account.
     stubUser({ isDisabled: false });
 
-    await makeService().setTokenIdentity(appId, orgId, userId, serviceAccountId);
+    await makeService().service.setTokenIdentity(appId, orgId, userId, serviceAccountId);
 
     expect(app.createdBy.toString()).to.equal(userId);
   });
@@ -75,7 +78,7 @@ describe('pointing an OAuth app at a service account', () => {
   it('puts the app back to acting as its creator when passed null', async () => {
     app.tokenIdentityUserId = new Types.ObjectId(serviceAccountId);
 
-    await makeService().setTokenIdentity(appId, orgId, userId, null);
+    await makeService().service.setTokenIdentity(appId, orgId, userId, null);
 
     expect(app.tokenIdentityUserId).to.equal(undefined);
   });
@@ -86,7 +89,7 @@ describe('pointing an OAuth app at a service account', () => {
     const findOne = stubUser(null);
 
     try {
-      await makeService().setTokenIdentity(appId, orgId, userId, serviceAccountId);
+      await makeService().service.setTokenIdentity(appId, orgId, userId, serviceAccountId);
       expect.fail('expected a non-service account to be refused');
     } catch (error) {
       expect((error as Error).message).to.equal('Service account not found');
@@ -98,10 +101,33 @@ describe('pointing an OAuth app at a service account', () => {
     stubUser({ isDisabled: true });
 
     try {
-      await makeService().setTokenIdentity(appId, orgId, userId, serviceAccountId);
+      await makeService().service.setTokenIdentity(appId, orgId, userId, serviceAccountId);
       expect.fail('expected a disabled service account to be refused');
     } catch (error) {
       expect((error as Error).message).to.contain('disabled');
     }
+  });
+
+  it('revokes the tokens the app had already issued', async () => {
+    // Those were minted carrying the previous identity, and that claim is
+    // what the Python services read to decide whose documents a request may
+    // reach. Left alive, the application would go on acting as the previous
+    // identity until they expired — the situation this change exists to end.
+    stubUser({ isDisabled: false });
+    const { service, tokens } = makeService();
+
+    await service.setTokenIdentity(appId, orgId, userId, serviceAccountId);
+
+    expect(tokens.revokeAllTokensForApp.calledOnce).to.equal(true);
+    expect(tokens.revokeAllTokensForApp.firstCall.args[0]).to.equal('client123');
+  });
+
+  it('revokes on the way back to the creator too', async () => {
+    const { service, tokens } = makeService();
+    app.tokenIdentityUserId = new Types.ObjectId(serviceAccountId);
+
+    await service.setTokenIdentity(appId, orgId, userId, null);
+
+    expect(tokens.revokeAllTokensForApp.calledOnce).to.equal(true);
   });
 });

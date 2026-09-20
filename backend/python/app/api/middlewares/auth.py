@@ -88,6 +88,15 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
         payload["isOAuth"] = True
         payload["oauthScopes"] = payload.get("scope", "").split(" ")
         payload["oauthClientId"] = payload.get("client_id")
+        # A client_credentials token has no caller of its own: its userId is
+        # the client id. The `createdBy` claim carries the identity it acts
+        # as, which Node resolves when minting the token — the application's
+        # chosen service account where one has been set, and its creator
+        # otherwise. The claim keeps its original name for tokens already in
+        # circulation; it means "the identity", not "who made the app".
+        #
+        # Pointing an application at a different identity revokes the tokens
+        # it has already issued, so a claim reaching here is never stale.
         if payload.get("userId") == payload.get("client_id") and payload.get("createdBy"):
             payload["userId"] = payload["createdBy"]
 

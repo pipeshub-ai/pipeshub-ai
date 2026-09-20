@@ -7,6 +7,8 @@ import { Logger } from '../../../libs/services/logger.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck'
 import { refuseServiceAccountCaller } from '../../user_management/middlewares/refuseServiceAccountCaller'
+import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware'
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum'
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
   appIdParamsSchema,
@@ -66,6 +68,12 @@ export function createOAuthClientsRouter(container: Container): Router {
    */
   router.put(
     '/:appId/token-identity',
+    // Both gates, as on /service-accounts: the admin check asks about the
+    // person, the scope check asks what the credential may do, and neither
+    // covers the other. Without the second, an administrator's narrowly
+    // scoped token could change whose documents this application's tokens
+    // reach — including passing null to point them back at the administrator.
+    requireScopes(OAuthScopeNames.USER_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(setAppTokenIdentitySchema),
     (req, res, next) => controller.setTokenIdentity(req, res, next),
