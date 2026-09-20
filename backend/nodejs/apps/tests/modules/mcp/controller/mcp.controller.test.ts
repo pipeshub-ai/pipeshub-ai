@@ -374,6 +374,57 @@ describe('MCP Controller — handleMCPRequest', () => {
   })
 
   // =========================================================================
+  // Request-ID logging
+  // =========================================================================
+  describe('request-ID logging', () => {
+    let infoStub: sinon.SinonStub
+    const loggerInstance = Logger.getInstance()
+
+    beforeEach(() => {
+      if (typeof (loggerInstance.info as any).restore === 'function') {
+        (loggerInstance.info as any).restore()
+      }
+      infoStub = sinon.stub(loggerInstance, 'info')
+    })
+
+    it('should log incoming request when x-pipeshub-request-id is present', async () => {
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves() },
+      })
+
+      const req = createMockRequest({
+        headers: { 'x-pipeshub-request-id': 'req-123' },
+        body: {},
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res as any, next)
+
+      expect(infoStub.calledWithMatch('Incoming MCP request', { 'x-pipeshub-request-id': 'req-123' })).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('should not log incoming request when x-pipeshub-request-id is missing', async () => {
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves() },
+      })
+
+      const req = createMockRequest({
+        headers: {},
+        body: {},
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res as any, next)
+
+      expect(infoStub.calledWithMatch('Incoming MCP request')).to.be.false
+      expect(next.called).to.be.false
+    })
+  })
+
+  // =========================================================================
   // Successful flow
   // =========================================================================
   describe('successful request flow', () => {
