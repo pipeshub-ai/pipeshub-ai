@@ -19,6 +19,7 @@ from langchain_core.embeddings.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.config.constants.ai_models import (
+    ATLASCLOUD_BASE_URL,
     AZURE_EMBEDDING_API_VERSION,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_REASONING_EFFORT,
@@ -169,6 +170,7 @@ def is_local_cpu_embedding_provider(
 
 class LLMProvider(Enum):
     ANTHROPIC = "anthropic"
+    ATLASCLOUD = "atlascloud"
     AWS_BEDROCK = "bedrock"
     AZURE_AI = "azureAI"
     AZURE_OPENAI = "azureOpenAI"
@@ -840,10 +842,10 @@ _OLLAMA_EFFORT_MAP: Dict[str, bool | str] = {
 }
 
 # Providers that speak OpenAI's `reasoning_effort` string values as-is
-# (none/low/medium/high/xhigh). OpenRouter and LiteLLM proxy are passthrough
-# layers so they get the OpenAI value set; providers with their own
-# documented reasoning tiers (Fireworks, MiniMax, XAI) use dedicated maps
-# below instead, since they reject 'xhigh'.
+# (none/low/medium/high/xhigh). OpenRouter, Atlas Cloud, and LiteLLM proxy
+# are passthrough layers so they get the OpenAI value set; providers with
+# their own documented reasoning tiers (Fireworks, MiniMax, XAI) use
+# dedicated maps below instead, since they reject 'xhigh'.
 _OPENAI_FAMILY = frozenset({
     LLMProvider.OPENAI.value,
     LLMProvider.AZURE_OPENAI.value,
@@ -851,6 +853,7 @@ _OPENAI_FAMILY = frozenset({
     LLMProvider.OPENAI_COMPATIBLE.value,
     LLMProvider.LITELLM_PROXY.value,
     LLMProvider.OPENROUTER.value,
+    LLMProvider.ATLASCLOUD.value,
 })
 
 _GEMINI_FAMILY = frozenset({
@@ -1929,6 +1932,24 @@ def get_generator_model(
             base_url=OPENROUTER_BASE_URL, model_name=model_name, api_mode=api_mode,
         ))
         return ChatOpenAI(**openrouter_kwargs)
+
+    elif provider == LLMProvider.ATLASCLOUD.value:
+        from langchain_openai import ChatOpenAI
+
+        temperature = _default_temperature(configuration, config, model_name, provider=provider)
+        atlascloud_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=configuration["apiKey"],
+            base_url=ATLASCLOUD_BASE_URL,
+            stream_usage=True,
+        )
+        atlascloud_kwargs.update(_reasoning_effort_kwargs(
+            reasoning_effort, config, provider=provider,
+            base_url=ATLASCLOUD_BASE_URL, model_name=model_name, api_mode=api_mode,
+        ))
+        return ChatOpenAI(**atlascloud_kwargs)
 
     elif provider == LLMProvider.VERTEX_AI.value:
         from langchain_google_genai import ChatGoogleGenerativeAI
