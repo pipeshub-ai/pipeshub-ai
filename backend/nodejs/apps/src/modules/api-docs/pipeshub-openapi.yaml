@@ -20077,6 +20077,67 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== TEAMS ENDPOINTS ====================
+  /oauth-clients/{appId}/token-identity:
+    put:
+      tags:
+        - OAuth Apps
+      summary: Choose whose identity this app's client_credentials tokens carry
+      description: |
+        By default a `client_credentials` token acts as the person who created
+        the application, carrying their document access and their role, and it
+        stops working if their account is deleted. Pointing the application at
+        a service account instead means its tokens act as an identity that
+        exists for the job, holds only what someone granted it, and survives
+        any one person leaving.
+
+        Takes effect for tokens **already issued**. The identity is read from
+        the application record on each request rather than from what the token
+        was minted with, because a change that waited for every outstanding
+        token to expire would not stop those tokens acting as a person, which
+        is the reason for making it.
+
+        Pass `serviceAccountId: null` to put the application back to acting as
+        its creator.
+
+        This does not change who manages the application. The creator still
+        owns it in Developer Settings — moving that would leave the
+        application visible to nobody, since no person can sign in as a
+        service account.
+      operationId: setOAuthAppTokenIdentity
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: appId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - serviceAccountId
+              properties:
+                serviceAccountId:
+                  type: string
+                  nullable: true
+                  pattern: '^[0-9a-fA-F]{24}$'
+                  description: The service account, or null to revert to the creator
+      responses:
+        '200':
+          description: Identity changed
+        '400':
+          description: The service account is disabled, or admin access required
+        '401':
+          description: Not authenticated
+        '404':
+          description: No such application, or no such service account in this organisation
+
   /service-accounts:
     get:
       tags:

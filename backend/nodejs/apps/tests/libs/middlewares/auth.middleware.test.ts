@@ -560,7 +560,10 @@ describe('AuthMiddleware', () => {
       expect(req.user).to.deep.include({ userId: 'user1', orgId: 'org1', isOAuth: true })
     })
 
-    it('should resolve client_credentials JWT via createdBy', async () => {
+    it('resolves client_credentials from the app record, not the token payload', async () => {
+      // The token was minted carrying one owner; the app record now names
+      // another. The app wins, so an administrator pointing an application at
+      // a different identity takes effect for tokens already issued.
       sinon.stub(jwt, 'decode').returns({
         tokenType: 'oauth',
         client_id: 'client123',
@@ -572,10 +575,13 @@ describe('AuthMiddleware', () => {
         orgId: 'org1',
         client_id: 'client123',
         scope: 'kb:read',
-        createdBy: 'real-owner-id',
+        createdBy: 'stale-owner-in-token',
         accountType: 'premium',
       })
 
+      sinon
+        .stub(OAuthApp, 'findOne')
+        .returns(createMockQuery({ createdBy: 'real-owner-id' }))
       const userQuery = createMockQuery({ email: 'owner@example.com', fullName: 'Owner' })
       sinon.stub(Users, 'findOne').returns(userQuery)
 
@@ -587,6 +593,42 @@ describe('AuthMiddleware', () => {
 
       expect(next.firstCall.args).to.have.length(0)
       expect(req.user.userId).to.equal('real-owner-id')
+    })
+
+    it('prefers the app token identity over its creator', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'client123',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'kb:read',
+        accountType: 'premium',
+      })
+
+      sinon.stub(OAuthApp, 'findOne').returns(
+        createMockQuery({
+          createdBy: 'the-person-who-made-it',
+          tokenIdentityUserId: 'the-service-account',
+        }),
+      )
+      sinon
+        .stub(Users, 'findOne')
+        .returns(createMockQuery({ email: 'svc@service.pipeshub.internal', kind: 'service' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.user.userId).to.equal('the-service-account')
+      // A service account is never an admin, whatever the record says.
+      expect(req.user.role).to.equal('member')
     })
 
     it('should resolve client_credentials via OAuthApp when createdBy absent', async () => {
@@ -661,9 +703,12 @@ describe('AuthMiddleware', () => {
         orgId: 'org1',
         client_id: 'client123',
         scope: 'kb:read',
-        createdBy: 'owner-id',
       })
 
+      // The identity is read from the app record now, so it has to exist.
+      sinon
+        .stub(OAuthApp, 'findOne')
+        .returns(createMockQuery({ createdBy: 'owner-id' }))
       const userQuery = createMockQuery({ email: 'user@test.com', fullName: 'User' })
       sinon.stub(Users, 'findOne').returns(userQuery)
 

@@ -167,32 +167,38 @@ export class AuthMiddleware {
     const orgId = payload.orgId;
     let { fullName, accountType } = payload;
 
-    // for client_credentials tokens (userId === client_id), resolve the app owner
+    // for client_credentials tokens (userId === client_id), resolve the
+    // identity the token acts as.
+    //
+    // Read from the app record every time, rather than trusting the
+    // `createdBy` the token was minted with. An administrator can point an
+    // app at a service account, and that has to take effect for tokens
+    // already issued: the whole reason to do it is to stop those tokens
+    // acting as a person, and a change that waits for every outstanding token
+    // to be re-minted would not stop anything.
     const isClientCredentials = userId === payload.client_id;
     if (isClientCredentials) {
-      if (payload.createdBy) {
-        userId = payload.createdBy;
-      } else {
-        try {
-          const app = await OAuthApp.findOne({
-            clientId: payload.client_id,
-            isDeleted: false,
-          })
-            .select('createdBy')
-            .lean()
-            .exec();
-          if (app) {
-            userId = app.createdBy.toString();
-          } else {
-            throw new UnauthorizedError('OAuth app not found or revoked');
-          }
-        } catch (err) {
-          if (err instanceof UnauthorizedError) {
-            throw err;
-          }
-          this.logger.error('Failed to look up OAuth app owner', err);
-          throw new UnauthorizedError('Failed to look up OAuth app owner');
+      try {
+        const app = await OAuthApp.findOne({
+          clientId: payload.client_id,
+          isDeleted: false,
+        })
+          .select('createdBy tokenIdentityUserId')
+          .lean()
+          .exec();
+        if (app) {
+          // Absent means the creator, which is how every app behaves until
+          // someone points it at a service account.
+          userId = (app.tokenIdentityUserId ?? app.createdBy).toString();
+        } else {
+          throw new UnauthorizedError('OAuth app not found or revoked');
         }
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          throw err;
+        }
+        this.logger.error('Failed to look up OAuth app owner', err);
+        throw new UnauthorizedError('Failed to look up OAuth app owner');
       }
     }
 

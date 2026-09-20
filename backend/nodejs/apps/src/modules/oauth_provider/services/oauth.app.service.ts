@@ -16,6 +16,7 @@ import {
   InvalidRedirectUriError,
 } from '../../../libs/errors/oauth.errors'
 import { NotFoundError, BadRequestError } from '../../../libs/errors/http.errors'
+import { Users } from '../../user_management/schema/users.schema'
 import {
   CreateOAuthAppRequest,
   UpdateOAuthAppRequest,
@@ -126,6 +127,82 @@ export class OAuthAppService {
       ...this.toAppResponse(app),
       clientSecret,
     }
+  }
+
+  /**
+   * Point an app's `client_credentials` tokens at a service account, or put
+   * them back to acting as the app's creator.
+   *
+   * This is the way out of the problem the grant has: without it, a token
+   * minted from an app acts as whoever created that app, carrying their
+   * document access and their role, and stops working when they leave. Aimed
+   * at a service account instead, it acts as an identity that exists for the
+   * job, holds only what someone granted it, and survives any one person
+   * leaving.
+   *
+   * Takes effect for tokens already issued, because the middleware reads this
+   * field per request rather than trusting what the token was minted with. A
+   * change that waited for every outstanding token to expire would not stop
+   * those tokens acting as a person, which is the entire point of making it.
+   *
+   * The app's `createdBy` is untouched: that is who manages the app, and it
+   * is what Developer Settings filters on. Moving it would leave the app
+   * visible to nobody, since no person can sign in as a service account.
+   */
+  async setTokenIdentity(
+    appId: string,
+    orgId: string,
+    userId: string,
+    serviceAccountId: string | null,
+  ): Promise<OAuthAppResponse> {
+    if (!Types.ObjectId.isValid(appId)) {
+      throw new NotFoundError('OAuth app not found')
+    }
+    const app = await OAuthApp.findOne({
+      _id: new Types.ObjectId(appId),
+      ...this.buildAppFilter(orgId, userId),
+    })
+    if (!app) {
+      throw new NotFoundError('OAuth app not found')
+    }
+
+    if (serviceAccountId === null) {
+      app.tokenIdentityUserId = undefined
+    } else {
+      if (!Types.ObjectId.isValid(serviceAccountId)) {
+        throw new NotFoundError('Service account not found')
+      }
+      // `kind` is part of the query, so a colleague's user id cannot be used
+      // here to make an app's tokens act as them.
+      const serviceAccount = await Users.findOne({
+        _id: serviceAccountId,
+        orgId,
+        kind: 'service',
+        isDeleted: false,
+      })
+        .select('isDisabled')
+        .lean()
+        .exec()
+
+      if (!serviceAccount) {
+        throw new NotFoundError('Service account not found')
+      }
+      if (serviceAccount.isDisabled === true) {
+        throw new BadRequestError(
+          'That service account is disabled. Enable it before pointing an application at it.',
+        )
+      }
+      app.tokenIdentityUserId = new Types.ObjectId(serviceAccountId)
+    }
+
+    await app.save()
+    this.logger.info('OAuth app token identity changed', {
+      appId,
+      orgId,
+      changedBy: userId,
+      serviceAccountId,
+    })
+    return this.toAppResponse(app)
   }
 
   /**

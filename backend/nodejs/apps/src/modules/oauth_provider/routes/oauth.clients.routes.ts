@@ -5,10 +5,12 @@ import { AuthMiddleware } from '../../../config'
 import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware'
 import { Logger } from '../../../libs/services/logger.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
+import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck'
 import { refuseServiceAccountCaller } from '../../user_management/middlewares/refuseServiceAccountCaller'
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
   appIdParamsSchema,
+  setAppTokenIdentitySchema,
   createAppSchema,
   updateAppSchema,
   listAppsQuerySchema,
@@ -53,6 +55,20 @@ export function createOAuthClientsRouter(container: Container): Router {
     '/',
     ValidationMiddleware.validate(createAppSchema),
     (req, res, next) => controller.createApp(req, res, next),
+  )
+
+  /**
+   * PUT /oauth-clients/:appId/token-identity
+   * Point this app's client_credentials tokens at a service account, or pass
+   * serviceAccountId: null to put them back to acting as the app's creator.
+   *
+   * Admin-only: it decides whose documents the app's tokens can reach.
+   */
+  router.put(
+    '/:appId/token-identity',
+    userAdminCheck,
+    ValidationMiddleware.validate(setAppTokenIdentitySchema),
+    (req, res, next) => controller.setTokenIdentity(req, res, next),
   )
 
   /**
