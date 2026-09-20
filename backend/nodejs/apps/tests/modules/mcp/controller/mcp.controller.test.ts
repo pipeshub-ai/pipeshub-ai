@@ -401,8 +401,6 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       await handleMCPRequest(appConfig)(req, res, next)
 
-      console.log('INFO STUB ARGS:', infoStub.args)
-
       expect(infoStub.calledWithMatch('Incoming MCP request', { 'x-pipeshub-request-id': 'req-123' })).to.be.true
       expect(next.called).to.be.false
     })
@@ -439,8 +437,6 @@ describe('MCP Controller — handleMCPRequest', () => {
       const next = createMockNext()
 
       await handleMCPRequest(appConfig)(req, res, next)
-
-      console.log('INFO STUB ARGS 2:', infoStub.args)
 
       expect(infoStub.calledWithMatch('Incoming MCP request', { 'x-pipeshub-request-id': 'req-error-123' })).to.be.true
       expect(next.calledOnce).to.be.true
@@ -719,6 +715,14 @@ describe('MCP Controller — handleMCPRequest', () => {
   // Multiple sequential requests
   // =========================================================================
   describe('multiple requests', () => {
+    beforeEach(() => {
+      appConfig = createMockAppConfig()
+      // Reset core mock
+      mcpCoreExports.PipeshubCore = class FakePipeshubCore {
+        constructor(_opts?: any) {}
+      }
+    })
+
     it('should handle multiple sequential requests independently', async () => {
       const tokens: string[] = []
       mcpCoreExports.PipeshubCore = class {

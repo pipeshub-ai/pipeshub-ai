@@ -11,9 +11,7 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger, getLogLevel } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 
-const logger = Logger.getInstance({
-  service: 'MCPController',
-});
+
 
 // ESM-only modules — imported eagerly at module load, Node caches the result
 const mcpServerModule = import('@pipeshub-ai/mcp/esm/mcp-server/server.js');
@@ -22,7 +20,6 @@ const coreModule = import('@pipeshub-ai/mcp/esm/core.js');
 /**
  * Handle an MCP JSON-RPC request (initialize, tool calls, SSE, session termination).
  * Creates a stateless MCP server per request, connected to the PipeshubCore SDK
- * using the caller's bearer token.
  */
 export const handleMCPRequest =
   (appConfig: AppConfig) =>
@@ -31,6 +28,9 @@ export const handleMCPRequest =
     res: Response,
     next: NextFunction,
   ): Promise<void> => {
+    const logger = Logger.getInstance({
+      service: 'MCPController',
+    });
     try {
       const pipeshubRequestId = req.headers['x-pipeshub-request-id'];
       if (pipeshubRequestId) {
