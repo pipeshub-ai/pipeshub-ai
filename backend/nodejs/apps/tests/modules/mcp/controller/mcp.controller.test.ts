@@ -381,8 +381,8 @@ describe('MCP Controller — handleMCPRequest', () => {
     const loggerInstance = Logger.getInstance()
 
     beforeEach(() => {
-      if (typeof (loggerInstance.info as any).restore === 'function') {
-        (loggerInstance.info as any).restore()
+      if ('restore' in loggerInstance.info) {
+        (loggerInstance.info as sinon.SinonStub).restore()
       }
       infoStub = sinon.stub(loggerInstance, 'info')
     })
@@ -396,10 +396,12 @@ describe('MCP Controller — handleMCPRequest', () => {
         headers: { 'x-pipeshub-request-id': 'req-123' },
         body: {},
       })
-      const res = createMockResponse()
+      const res = createMockResponse() as unknown as import('express').Response
       const next = createMockNext()
 
-      await handleMCPRequest(appConfig)(req, res as any, next)
+      await handleMCPRequest(appConfig)(req, res, next)
+
+      console.log('INFO STUB ARGS:', infoStub.args)
 
       expect(infoStub.calledWithMatch('Incoming MCP request', { 'x-pipeshub-request-id': 'req-123' })).to.be.true
       expect(next.called).to.be.false
@@ -414,13 +416,35 @@ describe('MCP Controller — handleMCPRequest', () => {
         headers: {},
         body: {},
       })
-      const res = createMockResponse()
+      const res = createMockResponse() as unknown as import('express').Response
       const next = createMockNext()
 
-      await handleMCPRequest(appConfig)(req, res as any, next)
+      await handleMCPRequest(appConfig)(req, res, next)
 
       expect(infoStub.calledWithMatch('Incoming MCP request')).to.be.false
       expect(next.called).to.be.false
+    })
+
+    it('should log incoming request and call next(error) when server.connect rejects and x-pipeshub-request-id is present', async () => {
+      const error = new Error('connect failed')
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().rejects(error) },
+      })
+
+      const req = createMockRequest({
+        headers: { 'x-pipeshub-request-id': 'req-error-123' },
+        body: {},
+      })
+      const res = createMockResponse() as unknown as import('express').Response
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res, next)
+
+      console.log('INFO STUB ARGS 2:', infoStub.args)
+
+      expect(infoStub.calledWithMatch('Incoming MCP request', { 'x-pipeshub-request-id': 'req-error-123' })).to.be.true
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.equal(error)
     })
   })
 
