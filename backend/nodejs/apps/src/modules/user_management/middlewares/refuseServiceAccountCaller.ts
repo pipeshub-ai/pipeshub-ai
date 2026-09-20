@@ -1,6 +1,9 @@
 import { NextFunction, Response } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors';
+import {
+  ForbiddenError,
+  NotFoundError,
+} from '../../../libs/errors/http.errors';
 import { Users } from '../schema/users.schema';
 
 export const SERVICE_ACCOUNT_CANNOT_MINT_MESSAGE =
@@ -34,8 +37,8 @@ export const refuseServiceAccountCaller = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const userId = req.user?.userId;
-    if (!userId) {
+    const userId: unknown = req.user?.userId;
+    if (typeof userId !== 'string' || userId === '') {
       throw new NotFoundError('Account not found');
     }
 
