@@ -1258,6 +1258,90 @@ class TestRecursiveCrawlOrchestration:
         assert c.retry_urls[c._normalize_url("https://example.com/start")].status_code == 429
 
     @pytest.mark.asyncio
+    async def test_a_deferred_page_is_crawled_again_by_the_next_sync(self):
+        """The next sync rediscovers the page by link and fetches it, as failed pages recover today."""
+        c = _make_connector()
+        c.url = "https://example.com"
+        c.base_domain = "https://example.com"
+        c.max_depth = 2
+        c.max_pages = 10
+        c.max_size_mb = 10
+        c.follow_external = False
+        c.url_should_contain = []
+        c.session = MagicMock()
+        c.visited_urls = set()
+        c.retry_urls = {}
+        c.processed_urls = 0
+
+        home = FetchResponse(
+            status_code=200,
+            content_bytes=b'<html><body><a href="/slow">slow</a></body></html>',
+            headers={"Content-Type": "text/html"},
+            final_url="https://example.com",
+            strategy="aiohttp",
+        )
+        asked_for_an_hour = FetchResponse(
+            status_code=429, content_bytes=b"", headers={"Retry-After": "3600"},
+            final_url="https://example.com/slow", strategy="aiohttp", retry_after=3600.0,
+        )
+        slow_page_ok = FetchResponse(
+            status_code=200,
+            content_bytes=b"<html><body>slow page</body></html>",
+            headers={"Content-Type": "text/html"},
+            final_url="https://example.com/slow",
+            strategy="aiohttp",
+        )
+
+        clock = {"now": 1000.0}
+
+        async def advance_sleep(secs):
+            clock["now"] += secs
+
+        mock_loop = MagicMock()
+        mock_loop.time.side_effect = lambda: clock["now"]
+
+        async def crawl(slow_response):
+            async def fetch(url, **kwargs):
+                return home if url.rstrip("/") == "https://example.com" else slow_response
+
+            fetched: list[str] = []
+
+            async def record_fetch(url, **kwargs):
+                fetched.append(url)
+                return await fetch(url, **kwargs)
+
+            with patch(
+                "app.connectors.sources.web.connector.fetch_url_with_fallback",
+                side_effect=record_fetch,
+            ), patch(
+                "app.connectors.sources.web.connector.asyncio.sleep",
+                side_effect=advance_sleep,
+            ), patch(
+                "app.connectors.sources.web.connector.asyncio.get_event_loop",
+                return_value=mock_loop,
+            ), patch.object(
+                c, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None
+            ):
+                async for _ in c._crawl_recursive_generator("https://example.com", 0):
+                    pass
+            return fetched
+
+        first = await crawl(asked_for_an_hour)
+        assert any("/slow" in u for u in first), "the page was never tried in the first sync"
+        assert c.retry_urls[c._normalize_url("https://example.com/slow")].deferred
+
+        # A new sync starts from a clean slate, the way run_sync resets it.
+        c.visited_urls.clear()
+        c.retry_urls.clear()
+        c._domain_next_retry_at.clear()
+
+        second = await crawl(slow_page_ok)
+        assert any("/slow" in u for u in second), (
+            "the deferred page was not crawled again by the next sync"
+        )
+        assert c._normalize_url("https://example.com/slow") not in c.retry_urls
+
+    @pytest.mark.asyncio
     async def test_enqueues_discovered_links(self):
         c = _make_connector()
         c.url = "https://example.com"
