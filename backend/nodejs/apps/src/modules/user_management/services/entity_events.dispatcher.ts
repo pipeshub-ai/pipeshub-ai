@@ -1,4 +1,5 @@
 import { injectable, inject } from 'inversify';
+import { FilterQuery } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import { EntitiesEventProducer, ModelWithPendingEvents, Event } from './entity_events.service';
 import { Users } from '../schema/users.schema';
@@ -50,7 +51,7 @@ export class EntitiesEventDispatcher {
       for (const event of doc.pendingEvents) {
         if (event.status === 'processing' && event.claimedAt && new Date(event.claimedAt) < staleThreshold) {
           this.logger.warn(`Recovering stuck processing event ${event.eventId} for ${modelName} ${doc._id}`);
-          const query: any = { _id: doc._id, 'pendingEvents.eventId': event.eventId, 'pendingEvents.status': 'processing' };
+          const query: FilterQuery<ModelWithPendingEvents> = { _id: doc._id, 'pendingEvents.eventId': event.eventId, 'pendingEvents.status': 'processing' };
           if (event.claimToken) {
             query['pendingEvents.claimToken'] = event.claimToken;
           }

@@ -19562,3 +19562,95 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error("❌ Failed to get app creator user: %s", str(e))
             return None
+
+    async def claim_or_reclaim_entity_event(
+        self,
+        collection: str,
+        event_id: str,
+        claim_token: str,
+        stale_threshold_ms: int,
+        event_type: str,
+        transaction: str | None = None
+    ) -> str:
+        import time
+        current_time = int(time.time() * 1000)
+        stale_cutoff = current_time - stale_threshold_ms
+
+        # Cypher MERGE to handle upsert with conditional atomic updates
+        query = f"""
+        MERGE (n:{collection} {{id: $event_id}})
+        ON CREATE SET 
+            n.status = 'processing',
+            n.claimToken = $claim_token,
+            n.claimedAt = $current_time,
+            n.eventType = $event_type
+        ON MATCH SET
+            n.status = CASE 
+                WHEN n.status = 'completed' THEN n.status
+                WHEN n.status = 'processing' AND n.claimedAt > $stale_cutoff THEN n.status
+                ELSE 'processing'
+            END,
+            n.claimToken = CASE
+                WHEN n.status = 'completed' THEN n.claimToken
+                WHEN n.status = 'processing' AND n.claimedAt > $stale_cutoff THEN n.claimToken
+                ELSE $claim_token
+            END,
+            n.claimedAt = CASE
+                WHEN n.status = 'completed' THEN n.claimedAt
+                WHEN n.status = 'processing' AND n.claimedAt > $stale_cutoff THEN n.claimedAt
+                ELSE $current_time
+            END
+        RETURN n.status AS status, n.claimToken AS claimToken
+        """
+        params = {
+            "event_id": event_id,
+            "claim_token": claim_token,
+            "current_time": current_time,
+            "stale_cutoff": stale_cutoff,
+            "event_type": event_type
+        }
+        
+        try:
+            result = await self.client.execute_query(query, params, transaction)
+            if not result:
+                return "error"
+            
+            doc = result[0]
+            if doc.get("status") == "completed":
+                return "already_completed"
+            
+            if doc.get("claimToken") == claim_token:
+                return "claimed"
+            else:
+                return "actively_claimed"
+                
+        except Exception as e:
+            self.logger.error(f"Error claiming entity event {event_id}: {e}")
+            raise e
+
+    async def finalize_entity_event(
+        self,
+        collection: str,
+        event_id: str,
+        claim_token: str,
+        status: str,
+        transaction: str | None = None
+    ) -> bool:
+        query = f"""
+        MATCH (n:{collection} {{id: $event_id}})
+        WHERE n.claimToken = $claim_token
+        SET n.status = $status
+        RETURN n
+        """
+        params = {
+            "event_id": event_id,
+            "claim_token": claim_token,
+            "status": status
+        }
+        
+        try:
+            result = await self.client.execute_query(query, params, transaction)
+            return len(result) > 0
+        except Exception as e:
+            self.logger.error(f"Error finalizing entity event {event_id}: {e}")
+            raise e

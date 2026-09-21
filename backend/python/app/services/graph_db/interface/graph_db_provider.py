@@ -5122,3 +5122,36 @@ class IGraphDBProvider(ABC):
             }
         """
         pass
+
+    # ==================== Idempotency Operations ====================
+
+    @abstractmethod
+    async def claim_or_reclaim_entity_event(
+        self,
+        collection: str,
+        event_id: str,
+        claim_token: str,
+        stale_threshold_ms: int,
+        event_type: str,
+        transaction: str | None = None
+    ) -> str:
+        """
+        Atomically claim or reclaim an entity event.
+        Returns one of: 'claimed', 'already_completed', 'actively_claimed'.
+        """
+        pass
+
+    @abstractmethod
+    async def finalize_entity_event(
+        self,
+        collection: str,
+        event_id: str,
+        claim_token: str,
+        status: str,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Atomically update the final status of a claimed event, conditioned on claim_token.
+        Returns True if successful, False otherwise.
+        """
+        pass

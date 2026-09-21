@@ -104,8 +104,8 @@ describe('UserController', () => {
     mockEventService = {
       start: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
-      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
-      dispatchInline: (model: ModelWithPendingEvents, documentId: string, eventId: string, event: Event) => realEventService.dispatchInline(model, documentId, eventId, event),
+      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().callsFake((model: ModelWithPendingEvents, documentId: string, eventId: string, event: Event) => realEventService.dispatchInline(model, documentId, eventId, event)),
     };
 
     mockNotificationProducer = {

@@ -1,5 +1,5 @@
 import { PendingEvent } from '../schema/pendingEvent.schema';
-import { Document, Model } from 'mongoose';
+import { Document, Model, Types } from 'mongoose';
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.types';
@@ -107,7 +107,8 @@ export class EntitiesEventProducer {
     return this.producer.isConnected();
   }
 
-  async publishEvent(event: Event): Promise<void> {
+  async publishEvent(event: Event, eventId?: string): Promise<void> {
+    eventId = eventId || new Types.ObjectId().toString();
     const message: StreamMessage<string> = {
       key: event.eventType,
       value: JSON.stringify({ ...event, eventId }),
