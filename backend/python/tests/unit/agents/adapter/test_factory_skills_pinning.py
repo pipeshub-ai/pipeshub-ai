@@ -23,7 +23,7 @@ from app.agent_loop_lib.agent.tool_loop import initial_visible_tools
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.tools.base import Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.registry import ToolRegistry
-from app.agents.agent_loop.factory import PipesHubAgentFactory
+from app.agents.agent_loop.factory import PipesHubAgentFactory, _env_disabled_toolsets
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
@@ -276,3 +276,40 @@ class TestRenderedPromptCarriesNoSkillTextWhenDisabled:
         assert _SKILL_TOOL_NAMES <= registered
         assert all(name in prompt for name in _SKILL_READ_TOOL_NAMES)
         assert "skill_manage" not in prompt
+
+
+class TestEnvDisabledToolsets:
+    """`PIPESHUB_DISABLED_TOOLSETS` — the deployment-level tool denylist a
+    measurement harness needs to hold the tool surface fixed across systems.
+    Empty by default, so an ordinary deployment is unaffected."""
+
+    def test_unset_disables_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PIPESHUB_DISABLED_TOOLSETS", raising=False)
+        assert _env_disabled_toolsets() == set()
+
+    def test_parses_a_comma_separated_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PIPESHUB_DISABLED_TOOLSETS", "calculator, date_calculator ,")
+        assert _env_disabled_toolsets() == {"calculator", "date_calculator"}
+
+    async def test_a_disabled_app_does_not_reach_the_registry(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`_fake_load` registers a `jira` connector tool; naming that app in
+        the denylist must keep it out of `skip_apps`'s reach — asserted through
+        the real factory, not by re-reading the env var."""
+        monkeypatch.setenv("PIPESHUB_DISABLED_TOOLSETS", "jira")
+        seen: dict[str, set[str]] = {}
+
+        async def _capture(self, context, *, skip_apps=None):  # noqa: ANN001, ANN202
+            seen["skip_apps"] = set(skip_apps or set())
+            return await _fake_load(self, context, skip_apps=skip_apps)
+
+        monkeypatch.setattr(PipesHubToolLoader, "load", _capture)
+        monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "false")
+        context = make_context(llm=FakeChatModel())
+
+        await PipesHubAgentFactory().create(
+            context, context.llm, "quick", query="anything",
+        )
+
+        assert "jira" in seen["skip_apps"]

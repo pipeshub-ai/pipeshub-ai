@@ -258,6 +258,21 @@ def _composed_agents_enabled() -> bool:
     return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"
 
 
+def _env_disabled_toolsets() -> set[str]:
+    """Deployment-level toolset denylist, by app name (comma-separated, e.g.
+    `calculator,date_calculator`). Empty by default, so it costs a deployment
+    that does not set it nothing.
+
+    Exists for measurement harnesses that must hold the tool surface fixed
+    across systems: the FRAMES benchmark compares retrieval quality, so a
+    calculator only lets one system do arithmetic out-of-model that every
+    other system does in-model. `PIPESHUB_ENABLE_CODE_EXECUTION` already
+    covers the sandbox; this covers everything else without a flag per tool.
+    """
+    raw = os.getenv("PIPESHUB_DISABLED_TOOLSETS", "")
+    return {name.strip() for name in raw.split(",") if name.strip()}
+
+
 class PipesHubAgentFactory:
     """Creates an agent-loop `Agent` (+ its `AgentRuntime`) from PipesHub's
     per-request context. One instance is stateless and reusable across
@@ -409,6 +424,7 @@ class PipesHubAgentFactory:
         skip_apps: set[str] = {"coding_sandbox", "database_sandbox"}
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
+        skip_apps |= _env_disabled_toolsets()
         _mark("f:transports")
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,

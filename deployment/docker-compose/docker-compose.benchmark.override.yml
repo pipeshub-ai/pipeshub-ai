@@ -23,3 +23,8 @@ services:
     environment:
       - PIPESHUB_ENABLE_CODE_EXECUTION=false
       - PIPESHUB_ENABLE_SKILLS=false
+      # The benchmark measures retrieval quality. A calculator lets one system
+      # do out-of-model arithmetic that oracle and every RAG baseline do
+      # in-model, so `guard.py` counts it as a disallowed tool and fails the
+      # run — correctly. Withdraw the tool rather than widen the allowlist.
+      - PIPESHUB_DISABLED_TOOLSETS=calculator,date_calculator
