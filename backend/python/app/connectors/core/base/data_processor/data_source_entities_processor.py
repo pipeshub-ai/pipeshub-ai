@@ -44,7 +44,10 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.cache.invalidation_hooks import notify_kb_records_changed
+from app.services.cache.invalidation_hooks import (
+    notify_connector_sync_completed,
+    notify_kb_records_changed,
+)
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge
@@ -2195,6 +2198,47 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error(f"Transaction on_new_users failed: {str(e)}")
             raise e
+
+    @retry_on_deadlock()
+    async def link_authenticator_to_source_user(
+        self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: Connectors
+    ) -> None:
+        """Keep the link from the user who authenticated this connector to the source account it
+        is authenticated as: linked when that email differs from the user's own, removed when
+        it matches. Instances written before ``authenticatedBy`` existed fall back to the creator."""
+        link_changed = False
+        async with self.data_store_provider.transaction() as tx_store:
+            app = await tx_store.get_app_by_id(connector_id)
+            authenticated_by = (app.authenticated_by if app else None) or created_by
+            authenticator = await tx_store.get_user_by_user_id(authenticated_by) or {}
+            authenticator_key = authenticator.get("_key") or authenticator.get("id")
+            if not authenticator_key:
+                self.logger.warning(
+                    f"User {authenticated_by} not found; cannot link connector {connector_id} to {email}"
+                )
+            elif (authenticator.get("email") or "").lower() == email.lower():
+                link_changed = await tx_store.remove_authenticated_as(connector_id)
+            else:
+                source_user = await tx_store.get_user_by_email(email)
+                if source_user is None:
+                    # Same inactive stub + userAppRelation the user sync would create for this email
+                    await tx_store.batch_upsert_app_users([AppUser(
+                        app_name=app_name, connector_id=connector_id, source_user_id=source_user_id,
+                        email=email, full_name=email, org_id=self.org_id,
+                    )])
+                    source_user = await tx_store.get_user_by_email(email)
+                if source_user is None:
+                    raise RuntimeError(f"Could not create source user {email} for connector {connector_id}")
+
+                await tx_store.upsert_authenticated_as(authenticator_key, source_user.id, connector_id, self.org_id)
+                self.logger.info(f"Connector {connector_id}: user {authenticated_by} authenticated as {email}")
+                link_changed = True
+
+        if link_changed:
+            # Same drop a finished sync does, for the same reason: this connector's cached
+            # per-user record maps were built under the old link, so until they go a search
+            # misses the source account's records — or keeps serving them once it is gone.
+            await notify_connector_sync_completed(connector_id, self.org_id)
 
     @retry_on_deadlock()
     async def on_new_user_groups(self, user_groups: list[tuple[AppUserGroup, list[AppUser]]]) -> None:

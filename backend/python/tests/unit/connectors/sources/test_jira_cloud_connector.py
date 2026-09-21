@@ -3520,25 +3520,27 @@ class TestFetchIssuesBatchedFilters:
 class TestFallbackPermissionsForForbiddenSchemeCloud:
 
     @pytest.mark.asyncio
-    async def test_returns_user_permission_when_email_set(self):
+    async def test_returns_user_permission_for_authenticated_jira_account(self):
         conn = _make_connector()
         conn.creator_email = "owner@example.com"
+        conn._authenticated_jira_email = "dev@jira.com"
         result = await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
         assert len(result) == 1
         assert result[0].entity_type == EntityType.USER
-        assert result[0].email == "owner@example.com"
+        assert result[0].email == "dev@jira.com"
         assert result[0].type == PermissionType.READ
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_no_email(self):
+    async def test_returns_empty_when_jira_email_unknown_even_with_creator_email(self):
         conn = _make_connector()
-        conn.creator_email = None
+        conn.creator_email = "owner@example.com"
+        conn._authenticated_jira_email = None
         assert await conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
 
     @pytest.mark.asyncio
     async def test_works_for_both_401_and_403(self):
         conn = _make_connector()
-        conn.creator_email = "e@x.com"
+        conn._authenticated_jira_email = "e@x.com"
         for status in (401, 403):
             result = await conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
             assert len(result) == 1
@@ -3577,20 +3579,18 @@ class TestFallbackPermissionsForForbiddenSchemeCloud:
         assert "dev@jira.com" in message
         assert "admin@pipes.com" not in message
         assert len(result) == 1
-        assert result[0].email == "admin@pipes.com"
+        assert result[0].email == "dev@jira.com"
 
     @pytest.mark.asyncio
-    async def test_notify_message_generic_when_myself_email_not_cached(self):
+    async def test_no_notify_and_no_grant_when_myself_email_not_cached(self):
         conn = _make_connector()
         conn.creator_email = "admin@pipes.com"
         conn._authenticated_jira_email = None
         conn.site_url = "https://example.atlassian.net"
         conn.notify = AsyncMock()
-        await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
-        message = conn.notify.call_args.kwargs["message"]
-        assert "admin@pipes.com" not in message
-        assert "connector's Jira account" in message
-        assert "PROJ" in message
+        result = await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
+        assert result == []
+        conn.notify.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_init_caches_myself_email(self):
@@ -3646,7 +3646,7 @@ class TestFetchProjectPermissionScheme401403Cloud:
     @pytest.mark.asyncio
     async def test_scheme_403_returns_fallback_with_email(self):
         conn = _make_connector()
-        conn.creator_email = "admin@example.com"
+        conn._authenticated_jira_email = "admin@example.com"
         ds = MagicMock()
         ds.get_assigned_permission_scheme = AsyncMock(return_value=_err_resp_cloud(403, '{"errorMessages":["No permission"]}'))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
@@ -3679,7 +3679,7 @@ class TestFetchProjectPermissionScheme401403Cloud:
     @pytest.mark.asyncio
     async def test_grants_403_returns_fallback(self):
         conn = _make_connector()
-        conn.creator_email = "admin@example.com"
+        conn._authenticated_jira_email = "admin@example.com"
         ds = MagicMock()
         ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response(200, {"id": 7}))
         ds.get_permission_scheme_grants = AsyncMock(return_value=_err_resp_cloud(403, "Forbidden"))

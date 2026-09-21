@@ -438,6 +438,9 @@ class ConfluenceConnector(BaseConnector):
         self.external_client: ExternalConfluenceClient | None = None
         self.data_source: ConfluenceDataSource | None = None
         self.connector_id: str = connector_id
+        # Email from GET /wiki/rest/api/user/current (cached in init)
+        self._authenticated_confluence_email: str | None = None
+        self._authenticated_confluence_account_id: str | None = None
 
         # Initialize sync points for incremental sync
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -475,6 +478,7 @@ class ConfluenceConnector(BaseConnector):
 
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)
+            await self._cache_authenticated_confluence_email()
 
             self.logger.info("✅ Confluence connector initialized successfully")
             return True
@@ -487,6 +491,18 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Confluence connector: {e}", exc_info=True)
             return False
+
+    async def _cache_authenticated_confluence_email(self) -> None:
+        """Cache the email of the account the connector is authenticated as; never fails init."""
+        try:
+            response = await self.data_source.get_current_user_v1()
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                return
+            data = response.json() or {}
+            self._authenticated_confluence_email = (data.get("email") or "").strip() or None
+            self._authenticated_confluence_account_id = data.get("accountId")
+        except Exception as e:
+            self.logger.debug("Could not fetch authenticated Confluence user during init: %s", e)
 
     async def _notify_multi_site_ambiguity(self, error: AtlassianMultiSiteError) -> None:
         """Notify admin: account-level app reaches multiple sites — needs a new
@@ -605,6 +621,10 @@ class ConfluenceConnector(BaseConnector):
             # Ensure client is initialized
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
+
+            await self.register_authenticated_source_user(
+                self._authenticated_confluence_email, self._authenticated_confluence_account_id
+            )
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(

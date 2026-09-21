@@ -46,6 +46,10 @@ def provider(mock_logger, mock_config_service):
 @pytest.fixture
 def connected_provider(provider):
     provider.http_client = AsyncMock()
+    provider.get_authenticated_as = AsyncMock(return_value=[])
+    provider._get_authenticated_as_by_user_id = AsyncMock(return_value=[])
+    provider._resolve_acting_user_key_for_node = AsyncMock(side_effect=lambda user_key, *_: user_key)
+    provider._authenticated_as_apps = AsyncMock(return_value=[])
     return provider
 
 

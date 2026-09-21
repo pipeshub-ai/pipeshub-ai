@@ -165,6 +165,7 @@ app_schema = {
             "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
+            "authenticatedBy": {"type": ["string", "null"]},
             "lastSyncedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},

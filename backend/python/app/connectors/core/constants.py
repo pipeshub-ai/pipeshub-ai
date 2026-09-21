@@ -122,6 +122,7 @@ class ConnectorStateKeys:
     CREATED_BY = "createdBy"
     OWNER_DEVICE_ID = "ownerDeviceId"
     OWNER_DEVICE_NAME = "ownerDeviceName"
+    AUTHENTICATED_BY = "authenticatedBy"
 
 
 CONNECTOR_EMAIL_IDENTITY_INFO = (

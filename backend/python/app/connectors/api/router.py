@@ -4608,7 +4608,8 @@ async def update_connector_instance_auth_config(
             ConnectorStateKeys.IS_AUTHENTICATED: False,  # Will be set to True after successful toggle/enable
             ConnectorStateKeys.IS_ACTIVE: False,  # Disable if auth config changed - user must re-enable
             ConnectorStateKeys.UPDATED_AT_TIMESTAMP: get_epoch_timestamp_in_ms(),
-            ConnectorStateKeys.UPDATED_BY: user_id
+            ConnectorStateKeys.UPDATED_BY: user_id,
+            ConnectorStateKeys.AUTHENTICATED_BY: user_id,
         }
         updated_instance = await connector_registry.update_connector_instance(
             connector_id=connector_id,
@@ -5046,7 +5047,8 @@ async def update_connector_instance_config(
                 "isAuthenticated": False,  # Will be set to True after successful toggle/enable
                 "isActive": False,  # Disable if auth config changed - user must re-enable
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedBy": user_id
+                "updatedBy": user_id,
+                ConnectorStateKeys.AUTHENTICATED_BY: user_id,
             }
         else:
             # For filters/sync updates, keep connector active and authenticated
@@ -6033,8 +6035,10 @@ async def handle_oauth_callback(
             logger.error(f"❌ Could not schedule token refresh for {connector_id}: {sched_err}", exc_info=True)
 
         # Update instance authentication status
+        # The user completing the consent is the one whose source account the token belongs to
         updates = {
             "isAuthenticated": True,
+            ConnectorStateKeys.AUTHENTICATED_BY: user_id,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms()
         }
         await connector_registry.update_connector_instance(

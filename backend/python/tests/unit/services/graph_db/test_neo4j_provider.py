@@ -10,6 +10,9 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 def neo4j_provider() -> Neo4jProvider:
     provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
     provider.client = AsyncMock()
+    provider.get_authenticated_as = AsyncMock(return_value=[])
+    provider._resolve_acting_user_key_for_node = AsyncMock(side_effect=lambda user_key, *_: user_key)
+    provider._authenticated_as_apps = AsyncMock(return_value=[])
     return provider
 
 

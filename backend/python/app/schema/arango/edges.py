@@ -350,6 +350,25 @@ user_app_relation_schema = {
     "message": "Document does not match the user app relation schema.",
 }
 
+# User (connector creator) -> User (source account the connector authenticated as)
+authenticated_as_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "connectorId": {"type": "string", "minLength": 1},
+            "orgId": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["connectorId", "createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the authenticatedAs schema.",
+}
+
 # Agent -> Tool, Model, Workflow
 # Task -> agent
 basic_edge_schema = {
