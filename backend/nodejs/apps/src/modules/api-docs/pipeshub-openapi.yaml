@@ -41276,12 +41276,18 @@ paths:
                   email:
                     type: string
                     example: new@example.com
+                  mergedStubKeys:
+                    type: array
+                    items:
+                      type: string
         '400':
           description: Missing userId/orgId on the token or invalid email
         '403':
           description: Service token missing entity:user:write
         '404':
           description: Graph user not found for the token userId
+        '409':
+          description: Another real login graph user already has this email
         '500':
           description: Failed to write the graph user
   /connectors/internal/all-scheduled:

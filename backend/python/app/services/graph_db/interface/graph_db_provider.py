@@ -1968,6 +1968,24 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def apply_verified_user_email(
+        self,
+        user_id: str,
+        org_id: str,
+        email: str,
+    ) -> dict | None:
+        """
+        Set the login graph user's email after Mongo accepted a verified change.
+
+        Connector stub users that already hold this email are merged into the
+        login user. Another real login userId with this email is a conflict.
+
+        Returns:
+            Dict with email and mergedStubKeys, or None if the login user is missing.
+        """
+        pass
+
+    @abstractmethod
     async def get_graph_user_keys_by_mongo_user_ids(
         self,
         user_ids: list[str],
