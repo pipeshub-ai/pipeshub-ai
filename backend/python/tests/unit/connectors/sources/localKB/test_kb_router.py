@@ -721,6 +721,15 @@ class TestListKbRecords:
         resp = client.get("/api/v1/kb/kb1/records")
         assert resp.status_code == 200
 
+    def test_failure_is_an_http_error_not_an_empty_page(self):
+        app, kb_svc, _ = _make_app()
+        kb_svc.list_kb_records = AsyncMock(return_value={
+            "success": False, "code": 500, "reason": "Failed to list KB records: timeout",
+        })
+        resp = TestClient(app).get("/api/v1/kb/kb1/records")
+        assert resp.status_code == 500
+        assert "timeout" in resp.json()["detail"]
+
 
 class TestGetKbChildren:
     def test_success(self):

@@ -13603,15 +13603,14 @@ class TestListKbRecordsExtended:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.get_user_kb_permission = AsyncMock(side_effect=Exception("fail"))
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc"
-        )
-        assert records == []
-        assert total == 0
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.list_kb_records(
+                "kb1", "u1", "org1", skip=0, limit=10,
+                search=None, record_types=None, origins=None,
+                connectors=None, indexing_status=None,
+                date_from=None, date_to=None,
+                sort_by="recordName", sort_order="asc"
+            )
 
 
 # ---------------------------------------------------------------------------

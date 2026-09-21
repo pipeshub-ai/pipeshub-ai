@@ -939,7 +939,7 @@ async def list_kb_records(
 ) -> Dict[str, Any]:
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    return await kb_service.list_kb_records(
+    result = await kb_service.list_kb_records(
         kb_id=kb_id,
         user_id=user_id,
         org_id=org_id,
@@ -955,6 +955,13 @@ async def list_kb_records(
         sort_by=sort_by,
         sort_order=sort_order,
     )
+    if result.get("success") is False:
+        error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
+        raise HTTPException(
+            status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
+            detail=result.get("reason", "Unknown error"),
+        )
+    return result
 
 @kb_router.get(
     "/{kb_id}/children",

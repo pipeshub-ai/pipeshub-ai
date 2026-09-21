@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import express from 'express';
 import http from 'http';
+import { AddressInfo } from 'net';
 import { Container } from 'inversify';
 import { Application } from '../src/app';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
@@ -871,6 +872,32 @@ describe('Application', () => {
 
       // Should NOT throw — stop() has a try/catch for notification shutdown
       await app.stop();
+    });
+
+    it('should finish in-flight requests before disposing containers', async () => {
+      (app as any).notificationContainer = new Container();
+      const order: string[] = [];
+      (TokenManagerContainer.dispose as sinon.SinonStub).callsFake(async () => { order.push('dispose'); });
+      const server = http.createServer((_req, res) => {
+        setTimeout(() => { order.push('response'); res.end('ok'); }, 50);
+      });
+      (app as any).server = server;
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const { port } = server.address() as AddressInfo;
+      const inFlight = new Promise<string>((resolve, reject) => {
+        http.get(`http://127.0.0.1:${port}/`, (res) => {
+          let body = '';
+          res.on('data', (c) => { body += c; });
+          res.on('end', () => resolve(body));
+        }).on('error', reject);
+      });
+      await new Promise((r) => setTimeout(r, 10));
+
+      await app.stop();
+
+      expect(await inFlight).to.equal('ok');
+      expect(order).to.deep.equal(['response', 'dispose']);
+      expect(server.listening).to.be.false;
     });
 
     it('should throw if a container dispose fails', async () => {

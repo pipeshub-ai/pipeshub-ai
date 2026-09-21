@@ -361,9 +361,12 @@ def _inline_text(node: LexborNode) -> str:
 
 
 _TABLE_TAG_RE = re.compile(r"<table\b", re.IGNORECASE)
+# Nested-table serialization depth (see HtmlTableNormalizer): 3 keeps real
+# nested tables readable while bounding pathological nesting.
+_MAX_NESTED_TABLE_DEPTH = 3
 
 
-def _html_to_markdown(html: str) -> str:
+def _html_to_markdown(html: str, depth: int = 0) -> str:
     """Convert an HTML fragment to ATX-style markdown via ``markdownify``.
 
     Central HTML→markdown bridge for the parser. Called whenever inline
@@ -383,7 +386,7 @@ def _html_to_markdown(html: str) -> str:
     root = parser.css_first("ph-pipes-table-root")
     if root is None:
         return markdownify(html, heading_style="ATX").strip()
-    return _lexbor_subtree_to_markdown(root).strip()
+    return _lexbor_subtree_to_markdown(root, depth).strip()
 
 
 def _html_fragment_to_segments(
@@ -888,7 +891,15 @@ class HtmlTableNormalizer:
     Nested ``<table>`` elements are normalized recursively and rendered as
     markdown pipe tables inside the parent cell text.
     Inline / block markup inside cells is converted to markdown.
+
+    Nesting is capped (`_MAX_NESTED_TABLE_DEPTH`): every level re-serializes
+    everything below it, so deeply nested tables (Wikipedia taxonomy
+    cladograms nest ~17 deep) grow exponentially — one 17KB page produced a
+    36MB row. Past the cap a nested table contributes its plain text.
     """
+
+    def __init__(self, depth: int = 0) -> None:
+        self._depth = depth
 
     def normalize(self, table_node: LexborNode) -> NormalizedTable:
         """Expand rowspan/colspan into a grid, then collapse into logical columns.
@@ -1040,10 +1051,15 @@ class HtmlTableNormalizer:
         for child in _direct_children(cell_node):
             tag = _tag_name(child)
             if tag == "table":
-                nested = self.normalize(child)
-                serialized = normalized_table_to_markdown(nested)
-                if serialized:
-                    parts.append(serialized)
+                if self._depth >= _MAX_NESTED_TABLE_DEPTH:
+                    text = child.text(deep=True, strip=True).strip()
+                    if text:
+                        parts.append(text)
+                else:
+                    nested = HtmlTableNormalizer(self._depth + 1).normalize(child)
+                    serialized = normalized_table_to_markdown(nested)
+                    if serialized:
+                        parts.append(serialized)
             elif tag == "img" and is_header:
                 continue
             elif tag is None:
@@ -1051,7 +1067,9 @@ class HtmlTableNormalizer:
                 if text:
                     parts.append(text)
             else:
-                markdown = _html_to_markdown(child.html)
+                # Depth + 1: a nested table reached through this markup is one
+                # serialization level deeper (that recursion is what exploded).
+                markdown = _html_to_markdown(child.html, self._depth + 1)
                 if is_header:
                     markdown = _strip_inline_images_from_markdown(markdown)
                 if markdown:
@@ -1059,13 +1077,13 @@ class HtmlTableNormalizer:
         return "\n".join(parts).strip()
 
 
-def normalize_html_table(table_node: LexborNode) -> NormalizedTable:
+def normalize_html_table(table_node: LexborNode, depth: int = 0) -> NormalizedTable:
     """Public entry: normalize one ``<table>`` DOM node into collapsed logical columns.
 
     Thin wrapper around ``HtmlTableNormalizer`` for callers that need the
     collapsed grid without walking the full block conversion pipeline.
     """
-    return HtmlTableNormalizer().normalize(table_node)
+    return HtmlTableNormalizer(depth).normalize(table_node)
 
 
 def normalized_table_to_markdown(
@@ -1088,7 +1106,7 @@ def _distinct_lines(*texts: str) -> list[str]:
     return list(dict.fromkeys(stripped for text in texts if (stripped := text.strip())))
 
 
-def _lexbor_subtree_to_markdown(node: LexborNode) -> str:
+def _lexbor_subtree_to_markdown(node: LexborNode, depth: int = 0) -> str:
     """Render a DOM subtree to markdown, normalizing ``<table>`` nodes in-place.
 
     Walks children recursively whenever a ``<table>`` appears anywhere in the
@@ -1099,7 +1117,9 @@ def _lexbor_subtree_to_markdown(node: LexborNode) -> str:
     """
     tag = _tag_name(node)
     if tag == "table":
-        return normalized_table_to_markdown(normalize_html_table(node))
+        if depth >= _MAX_NESTED_TABLE_DEPTH:
+            return node.text(deep=True, strip=True).strip()
+        return normalized_table_to_markdown(normalize_html_table(node, depth))
 
     children = list(_direct_children(node))
     if not children:
@@ -1121,11 +1141,15 @@ def _lexbor_subtree_to_markdown(node: LexborNode) -> str:
     for child in children:
         child_tag = _tag_name(child)
         if child_tag == "table":
-            piece = normalized_table_to_markdown(normalize_html_table(child))
+            piece = (
+                child.text(deep=True, strip=True).strip()
+                if depth >= _MAX_NESTED_TABLE_DEPTH
+                else normalized_table_to_markdown(normalize_html_table(child, depth))
+            )
         elif child_tag is None:
             piece = child.text(deep=False, strip=False).strip()
         else:
-            piece = _lexbor_subtree_to_markdown(child)
+            piece = _lexbor_subtree_to_markdown(child, depth)
         if piece:
             parts.append(piece)
     return "\n\n".join(parts)

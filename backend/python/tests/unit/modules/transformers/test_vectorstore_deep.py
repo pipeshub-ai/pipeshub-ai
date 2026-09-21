@@ -1456,6 +1456,27 @@ class TestOrphanCleanup:
         release.assert_awaited_once()
 
 
+class TestTableDocumentBounds:
+    def test_oversized_table_row_is_split_to_the_token_ceiling(self):
+        """Table rows and summaries reach the embedder unbounded otherwise; an
+        over-long one is rejected only after the full retry budget."""
+        from app.modules.transformers.vectorstore import _bounded_documents, _embed_token_ceiling, _exceeds_token_ceiling
+
+        row = "Header: value, " * 200_000
+        docs = _bounded_documents(row, {"blockId": "b1"})
+
+        assert len(docs) > 1
+        ceiling = _embed_token_ceiling()
+        assert all(not _exceeds_token_ceiling(d.page_content, ceiling) for d in docs)
+        assert all(d.metadata["blockId"] == "b1" for d in docs)
+
+    def test_normal_row_stays_one_document(self):
+        from app.modules.transformers.vectorstore import _bounded_documents
+
+        docs = _bounded_documents("Name: Alice, Age: 30", {"blockId": "b1"})
+        assert [d.page_content for d in docs] == ["Name: Alice, Age: 30"]
+
+
 # ---------------------------------------------------------------------------
 # Record-deleted-mid-embedding guard
 # ---------------------------------------------------------------------------
@@ -1482,6 +1503,25 @@ class TestRecordDeletedMidEmbeddingGuard:
             virtual_record_id="vr-1",
         )
 
+        vs.vector_db_service.upsert_points.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deleted_record_is_detected_once_not_per_batch(self):
+        """A record deleted mid-indexing stops the remaining batches after the
+        first miss: one graph lookup and one warning, not one per batch."""
+        from langchain_core.documents import Document
+
+        vs = _make_vectorstore()
+        vs.embedding_provider = None  # local: batches run sequentially
+        vs.graph_provider.get_document = AsyncMock(return_value=None)
+        vs.logger = MagicMock()
+        docs = [Document(page_content="x" * 4000, metadata={}) for _ in range(40)]
+
+        await vs._process_document_chunks(docs, "rec-1", "test_collection")
+
+        assert vs.graph_provider.get_document.await_count == 1
+        warnings = [c for c in vs.logger.warning.call_args_list if "deleted mid-indexing" in str(c)]
+        assert len(warnings) == 1
         vs.vector_db_service.upsert_points.assert_not_awaited()
 
 

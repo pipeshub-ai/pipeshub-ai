@@ -2342,8 +2342,9 @@ class TestListKbRecordsExtended:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.list_kb_records = AsyncMock(side_effect=RuntimeError("db"))
         result = await service.list_kb_records("kb1", "user1", "org1")
-        assert "error" in result
-        assert result["pagination"]["totalCount"] == 0
+        # A DB failure must not look like an empty KB.
+        assert result["success"] is False and result["code"] == 500
+        assert "records" not in result
 
 
 class TestListKbRecords:

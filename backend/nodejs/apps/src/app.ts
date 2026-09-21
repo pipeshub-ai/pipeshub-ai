@@ -115,6 +115,10 @@ import {
 } from './libs/services/redis/connectionProviderFactory';
 
 const SERVER_KEEP_ALIVE_TIMEOUT_MS = 65_000;
+// Under the container stop grace period (Docker's default is 10s) so
+// in-flight requests finish before dependencies close, without the process
+// being SIGKILLed mid-drain.
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 8_000;
 
 const loggerConfig = {
   service: 'Application',
@@ -767,9 +771,37 @@ export class Application {
     }
   }
 
+  /**
+   * Stops accepting connections and resolves once in-flight requests have
+   * finished, force-closing whatever is still open after the drain timeout.
+   */
+  private async closeHttpServer(): Promise<void> {
+    if (!this.server.listening) return;
+    const closed = new Promise<void>((resolve) => this.server.close(() => resolve()));
+    this.server.closeIdleConnections();
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), SHUTDOWN_DRAIN_TIMEOUT_MS);
+    });
+    const outcome = await Promise.race([closed.then(() => 'drained' as const), timedOut]);
+    clearTimeout(timer);
+    if (outcome === 'timeout') {
+      this.logger.warn('Requests still open after the shutdown drain timeout; closing them', {
+        timeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS,
+      });
+      this.server.closeAllConnections();
+      await closed;
+    }
+  }
+
   async stop(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
+      // Stop accepting first, and only dispose Mongo/Redis/brokers once the
+      // requests already in flight have finished — otherwise they fail
+      // mid-request on closed clients. Socket.IO connections are closed by
+      // the gateway shutdowns below, so they don't hold the drain open.
+      const drained = this.closeHttpServer();
       try {
         const notificationConsumer =
           this.notificationContainer.get<NotificationConsumer>(
@@ -792,6 +824,7 @@ export class Application {
         this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
       }
+      await drained;
       // Stopped before the containers go, because it holds the message
       // producer one of them owns.
       // Awaited: a pass in flight is publishing through a producer the

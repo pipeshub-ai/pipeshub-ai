@@ -136,6 +136,9 @@ class PermissionContents(BaseModel):
 class RecordResponse(BaseModel):
     """Response model for record information"""
     id: str = Field(..., description="Record ID")
+    virtualRecordId: Optional[str] = Field(
+        None, description="Id vector search keys on (shared by deduplicated copies)"
+    )
     externalRecordId: str = Field(..., description="External record ID")
     externalRevisionId: Optional[str] = Field(None, description="External revision ID")
     recordName: str = Field(..., description="Record name")

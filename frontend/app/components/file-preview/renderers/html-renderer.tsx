@@ -1,13 +1,10 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
-import DOMPurify from 'dompurify';
-import { useThemeAppearance } from '@/app/components/theme-provider';
 import type { PreviewCitation } from '../types';
 import { useTextHighlighter } from '../use-text-highlighter';
-
-const HTML_CONTENT_CLASS = 'ph-html-rendered-content';
+import { sanitizeHtmlPreview } from './sanitize-html-preview';
 
 interface HtmlRendererProps {
   fileUrl: string;
@@ -17,18 +14,12 @@ interface HtmlRendererProps {
   onHighlightClick?: (citationId: string) => void;
 }
 
-export function HtmlRenderer({ fileUrl, fileName: _fileName, citations, activeCitationId, onHighlightClick }: HtmlRendererProps) {
-  const { appearance } = useThemeAppearance();
-  const isDark = appearance === 'dark';
-  const [sanitizedHtml, setSanitizedHtml] = useState<string>('');
+export function HtmlRenderer({ fileUrl, fileName, citations, activeCitationId, onHighlightClick }: HtmlRendererProps) {
+  const [srcDoc, setSrcDoc] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [contentReady, setContentReady] = useState(false);
-
-  /** Outer scrollable container ref */
-  const containerRef = useRef<HTMLDivElement>(null);
-  /** Inner content wrapper ref (the programmatically created div) */
-  const contentWrapperRef = useRef<HTMLDivElement | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const { applyHighlights, clearHighlights, scrollToHighlight } = useTextHighlighter({
     citations,
@@ -36,7 +27,6 @@ export function HtmlRenderer({ fileUrl, fileName: _fileName, citations, activeCi
     onHighlightClick,
   });
 
-  // ── Step 1: Fetch & sanitize ──────────────────────────────────────
   useEffect(() => {
     if (!fileUrl || fileUrl.trim() === '') {
       setError('File URL not available');
@@ -53,17 +43,8 @@ export function HtmlRenderer({ fileUrl, fileName: _fileName, citations, activeCi
         const response = await fetch(fileUrl);
         if (!response.ok) throw new Error('Failed to fetch file content');
         const rawHtml = await response.text();
-
         if (cancelled) return;
-
-        const clean = DOMPurify.sanitize(rawHtml, {
-          USE_PROFILES: { html: true },
-          ADD_ATTR: ['target', 'id', 'class', 'style', 'href', 'src', 'alt', 'title'],
-          ADD_TAGS: ['figure', 'figcaption'],
-          FORBID_TAGS: ['script', 'link', 'base'],
-          FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'autofocus'],
-        });
-        setSanitizedHtml(clean);
+        setSrcDoc(sanitizeHtmlPreview(rawHtml));
         setError(null);
       } catch (err) {
         if (!cancelled) {
@@ -79,55 +60,33 @@ export function HtmlRenderer({ fileUrl, fileName: _fileName, citations, activeCi
     return () => { cancelled = true; };
   }, [fileUrl]);
 
-  // ── Step 2: Mount sanitized HTML into the DOM ─────────────────────
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !sanitizedHtml || isLoading) return;
-
-    // Clear previous content
-    container.innerHTML = '';
-    contentWrapperRef.current = null;
-
-    const contentDiv = document.createElement('div');
-    contentDiv.className = HTML_CONTENT_CLASS;
-    contentDiv.innerHTML = sanitizedHtml;
-    container.appendChild(contentDiv);
-    contentWrapperRef.current = contentDiv;
+  const handleIframeLoad = useCallback(() => {
     setContentReady(true);
+  }, []);
 
-    return () => {
-      container.innerHTML = '';
-      contentWrapperRef.current = null;
-      setContentReady(false);
-    };
-  }, [sanitizedHtml, isLoading]);
-
-  // ── Step 3: Apply citation highlights once content is ready ───────
   useEffect(() => {
     if (!contentReady || !citations?.length) return;
-    const wrapper = contentWrapperRef.current;
-    if (!wrapper) return;
+    const root = iframeRef.current?.contentDocument?.body;
+    if (!root) return;
 
-    applyHighlights(wrapper);
+    applyHighlights(root);
     return () => { clearHighlights(); };
   }, [contentReady, citations, applyHighlights, clearHighlights]);
 
-  // ── Step 4: Scroll to active citation (retry pattern) ────────────
   useEffect(() => {
     if (!activeCitationId || !contentReady) return;
-    const wrapper = contentWrapperRef.current;
-    if (!wrapper) return;
+    const root = iframeRef.current?.contentDocument?.body;
+    if (!root) return;
 
-    // Re-apply to update active state
     if (citations?.length) {
-      applyHighlights(wrapper);
+      applyHighlights(root);
     }
 
     const attemptScroll = (attempts: number) => {
       if (attempts <= 0) return;
-      const el = wrapper.querySelector(`.highlight-${CSS.escape(activeCitationId)}`);
+      const el = root.querySelector(`.highlight-${CSS.escape(activeCitationId)}`);
       if (el) {
-        scrollToHighlight(activeCitationId, wrapper);
+        scrollToHighlight(activeCitationId, root);
       } else if (attempts > 1) {
         setTimeout(() => attemptScroll(attempts - 1), 100);
       }
@@ -135,97 +94,6 @@ export function HtmlRenderer({ fileUrl, fileName: _fileName, citations, activeCi
 
     attemptScroll(3);
   }, [activeCitationId, contentReady, scrollToHighlight, citations, applyHighlights]);
-
-  // ── Inject scoped styles for the content wrapper ──────────────────
-  useEffect(() => {
-    const styleId = 'ph-html-renderer-styles';
-    if (document.getElementById(styleId)) return;
-
-    const style = document.createElement('style');
-    style.id = styleId;
-    style.textContent = `
-      .${HTML_CONTENT_CLASS} {
-        font-family: 'Manrope', sans-serif;
-        line-height: 1.6;
-        max-width: 100%;
-        word-wrap: break-word;
-        color: var(--olive-12);
-      }
-      .${HTML_CONTENT_CLASS} img {
-        max-width: 100%;
-        height: auto;
-      }
-      .${HTML_CONTENT_CLASS} pre {
-        background-color: var(--olive-3);
-        padding: 1em;
-        border-radius: var(--radius-2);
-        overflow-x: auto;
-        font-family: monospace;
-      }
-      .${HTML_CONTENT_CLASS} code:not(pre > code) {
-        font-family: monospace;
-        background-color: var(--olive-3);
-        padding: 0.2em 0.4em;
-        border-radius: var(--radius-1);
-      }
-      .${HTML_CONTENT_CLASS} table {
-        border-collapse: collapse;
-        margin-bottom: 1em;
-        width: auto;
-      }
-      .${HTML_CONTENT_CLASS} td,
-      .${HTML_CONTENT_CLASS} th {
-        padding: 0.5em;
-        text-align: left;
-        border: 1px solid var(--olive-6);
-      }
-      .${HTML_CONTENT_CLASS} th {
-        background-color: var(--olive-3);
-        font-weight: 600;
-      }
-      .${HTML_CONTENT_CLASS} a {
-        color: var(--accent-9);
-        text-decoration: underline;
-      }
-      .${HTML_CONTENT_CLASS} blockquote {
-        border-left: 4px solid var(--olive-6);
-        padding-left: 1em;
-        margin-left: 0;
-        color: var(--olive-11);
-      }
-      .${HTML_CONTENT_CLASS} h1,
-      .${HTML_CONTENT_CLASS} h2,
-      .${HTML_CONTENT_CLASS} h3,
-      .${HTML_CONTENT_CLASS} h4,
-      .${HTML_CONTENT_CLASS} h5,
-      .${HTML_CONTENT_CLASS} h6 {
-        margin-top: 1.5em;
-        margin-bottom: 0.8em;
-      }
-      .${HTML_CONTENT_CLASS} p {
-        margin-bottom: 0.8em;
-      }
-      .${HTML_CONTENT_CLASS} ul,
-      .${HTML_CONTENT_CLASS} ol {
-        margin-left: 1.5em;
-        margin-bottom: 1em;
-      }
-      .${HTML_CONTENT_CLASS} li {
-        margin-bottom: 0.25em;
-      }
-      .${HTML_CONTENT_CLASS} hr {
-        border: none;
-        border-top: 1px solid var(--olive-6);
-        margin: 1.5em 0;
-      }
-    `;
-    document.head.appendChild(style);
-
-    return () => {
-      const existing = document.getElementById(styleId);
-      if (existing) existing.remove();
-    };
-  }, []);
 
   if (isLoading) {
     return (
@@ -257,20 +125,22 @@ export function HtmlRenderer({ fileUrl, fileName: _fileName, citations, activeCi
         border: '1px solid var(--olive-6)',
       }}
     >
-      <Box
-        ref={containerRef}
+      <iframe
+        ref={iframeRef}
         className="file-preview-scroll-area"
+        title={fileName || 'HTML preview'}
+        srcDoc={srcDoc}
+        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+        referrerPolicy="no-referrer"
+        onLoad={handleIframeLoad}
         style={{
           width: '100%',
           height: '100%',
-          overflow: 'auto',
-          minHeight: '100px',
-          padding: '1rem 1.5rem',
-          backgroundColor: isDark ? 'var(--slate-2)' : 'white',
-          color: isDark ? 'var(--slate-12)' : undefined,
+          border: 'none',
+          display: 'block',
+          backgroundColor: 'white',
         }}
       />
-      {/* Content is mounted programmatically into containerRef */}
     </Box>
   );
 }

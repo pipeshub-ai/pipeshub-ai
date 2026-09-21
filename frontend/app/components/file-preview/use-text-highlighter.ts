@@ -26,11 +26,18 @@ const CANDIDATE_SELECTOR = [
 
 const STYLE_ID = 'ph-highlight-styles';
 
-function ensureHighlightStyles(): void {
-  if (typeof document === 'undefined') return;
-  if (document.getElementById(STYLE_ID)) return;
+function documentOf(node: Node | null | undefined): Document | null {
+  if (!node) return typeof document === 'undefined' ? null : document;
+  return node.ownerDocument ?? (typeof document === 'undefined' ? null : document);
+}
 
-  const style = document.createElement('style');
+function ensureHighlightStyles(doc: Document | null): void {
+  if (!doc) return;
+  if (doc.getElementById(STYLE_ID)) return;
+  const head = doc.head ?? doc.getElementsByTagName('head')[0];
+  if (!head) return;
+
+  const style = doc.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
     .${HL_BASE} {
@@ -83,7 +90,7 @@ function ensureHighlightStyles(): void {
       }
     }
   `;
-  document.head.appendChild(style);
+  head.appendChild(style);
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -130,7 +137,10 @@ function collectTextNodes(
     ? `.${HL_BASE}.highlight-${CSS.escape(skipHighlightId)}`
     : null;
 
-  const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
+  const doc = documentOf(scope);
+  if (!doc) return { fullText: '', entries: [] };
+
+  const walker = doc.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = node.parentElement;
       if (!parent) return NodeFilter.FILTER_REJECT;
@@ -303,13 +313,16 @@ function highlightTextInScope(
     return highlightFuzzyFallback(scope, highlightId, fullClass, matchType, onClickHighlight);
   }
 
+  const doc = documentOf(scope);
+  if (!doc) return { success: false };
+
   try {
-    const range = document.createRange();
+    const range = doc.createRange();
     range.setStart(resolved.startNode, resolved.startOffset);
     range.setEnd(resolved.endNode, resolved.endOffset);
 
     if (resolved.startNode === resolved.endNode) {
-      const span = createHighlightSpan(fullClass, highlightId, onClickHighlight);
+      const span = createHighlightSpan(doc, fullClass, highlightId, onClickHighlight);
       range.surroundContents(span);
       return {
         success: true,
@@ -330,11 +343,11 @@ function highlightTextInScope(
       if (nodeStart >= nodeEnd) continue;
 
       try {
-        const nodeRange = document.createRange();
+        const nodeRange = doc.createRange();
         nodeRange.setStart(entry.node, nodeStart);
         nodeRange.setEnd(entry.node, nodeEnd);
 
-        const span = createHighlightSpan(fullClass, highlightId, onClickHighlight);
+        const span = createHighlightSpan(doc, fullClass, highlightId, onClickHighlight);
         nodeRange.surroundContents(span);
         wrappedSpans.push(span);
       } catch (segErr) {
@@ -359,11 +372,12 @@ function highlightTextInScope(
 }
 
 function createHighlightSpan(
+  doc: Document,
   className: string,
   highlightId: string,
   onClickHighlight?: (id: string) => void,
 ): HTMLSpanElement {
-  const span = document.createElement('span');
+  const span = doc.createElement('span');
   span.className = className;
   span.dataset.highlightId = highlightId;
   span.addEventListener('click', (e) => {
@@ -414,8 +428,11 @@ function highlightFuzzyFallback(
     return { success: false };
   }
 
+  const doc = documentOf(scope);
+  if (!doc) return { success: false };
+
   try {
-    const wrapper = createHighlightSpan(fullClass, highlightId, onClickHighlight);
+    const wrapper = createHighlightSpan(doc, fullClass, highlightId, onClickHighlight);
     while (scope.firstChild) wrapper.appendChild(scope.firstChild);
     scope.appendChild(wrapper);
     return {
@@ -466,7 +483,7 @@ export function useTextHighlighter({
       if (!root || !citations?.length || isHighlightingRef.current) return;
 
       isHighlightingRef.current = true;
-      ensureHighlightStyles();
+      ensureHighlightStyles(documentOf(root));
       clearHighlights();
 
       requestAnimationFrame(() => {

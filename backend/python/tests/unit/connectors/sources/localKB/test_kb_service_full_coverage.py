@@ -1572,8 +1572,7 @@ class TestListKbRecords:
     async def test_exception(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("err"))
         result = await service.list_kb_records("kb1", "user1", "org1")
-        assert result["records"] == []
-        assert "error" in result
+        assert result["success"] is False and result["code"] == 500
 
 
 class TestGetKbChildren:

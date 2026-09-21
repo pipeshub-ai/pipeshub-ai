@@ -2045,12 +2045,7 @@ class KnowledgeBaseService:
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to list KB records: {str(e)}")
-            return {
-                "records": [],
-                "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
-                "filters": {"applied": {}, "available": {}},
-                "error": action_failed("load these files"),
-            }
+            return {"success": False, "code": 500, "reason": action_failed("load these files")}
 
     async def get_kb_children(
         self,

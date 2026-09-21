@@ -400,6 +400,20 @@ def _chunk_oversized_text(
     return chunks or [text]
 
 
+def _bounded_documents(text: str, metadata: dict) -> List[Document]:
+    """Documents for one piece of table text, split to the model's token
+    ceiling. Table rows and summaries are otherwise unbounded: a pathological
+    block (deeply nested tables used to yield megabytes) is only rejected by
+    the embedding API after the full retry budget, stalling the record."""
+    ceiling = _embed_token_ceiling()
+    if not _exceeds_token_ceiling(text, ceiling):
+        return [Document(page_content=text, metadata=metadata)]
+    return [
+        Document(page_content=piece, metadata=metadata)
+        for piece in _split_to_token_ceiling(text, ceiling)
+    ]
+
+
 def _build_text_documents(
     text_blocks: List,
     virtual_record_id: str,
@@ -1386,21 +1400,17 @@ class VectorStore(Transformer):
 
     async def _embed_and_upsert_documents(
         self, documents: List[Document], record_id: str, collection_name: str
-    ) -> None:
+    ) -> bool:
         """Embed a batch of LangChain Documents and upsert to the vector DB.
 
-        Guard: aborts if the record was deleted mid-flight (race condition fix
-        restored from commit 839a29499).
+        Returns False, without embedding, if the record was deleted mid-flight
+        (race condition fix restored from commit 839a29499).
         """
-        # Record-existence guard before upsert
         record_doc = await self.graph_provider.get_document(
             record_id, CollectionNames.RECORDS.value
         )
         if record_doc is None:
-            self.logger.warning(
-                f"Record {record_id} not found before upsert — skipping batch"
-            )
-            return
+            return False
 
         texts = [doc.page_content for doc in documents]
 
@@ -1421,6 +1431,7 @@ class VectorStore(Transformer):
         await self.vector_db_service.upsert_points(
             collection_name=collection_name, points=points
         )
+        return True
 
     async def _process_document_chunks(
         self,
@@ -1438,17 +1449,30 @@ class VectorStore(Transformer):
             else (_DEFAULT_DOCUMENT_BATCH_SIZE, _DEFAULT_DOCUMENT_BATCH_CHARS)
         )
 
-        async def process_batch(batch_start: int, batch: List[Document]) -> int:
-            try:
-                await self._embed_and_upsert_documents(batch, record_id, collection_name)
-                return len(batch)
-            except Exception as e:
-                self.logger.warning(f"Batch at {batch_start} failed: {e}")
-                raise
-
         batches = _batch_documents_by_size(
             langchain_document_chunks, max_documents, max_chars
         )
+        # Set by the first batch that finds the record deleted, so the rest
+        # skip without another graph lookup (and without one warning each).
+        record_gone = asyncio.Event()
+
+        async def process_batch(batch_start: int, batch: List[Document]) -> int:
+            if record_gone.is_set():
+                return 0
+            try:
+                stored = await self._embed_and_upsert_documents(batch, record_id, collection_name)
+            except Exception as e:
+                self.logger.warning(f"Batch at {batch_start} failed: {e}")
+                raise
+            if stored is False:
+                if not record_gone.is_set():
+                    record_gone.set()
+                    self.logger.warning(
+                        f"Record {record_id} was deleted mid-indexing at batch "
+                        f"{batch_start}; skipping the rest of its {len(batches)} batches"
+                    )
+                return 0
+            return len(batch)
 
         if use_local_sequential:
             for idx, (start, batch) in enumerate(batches):
@@ -1845,37 +1869,33 @@ class VectorStore(Transformer):
                     if table_data:
                         table_summary = table_data.get("table_summary", "")
                         if table_summary:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=table_summary,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block.id,
-                                        "orgId": org_id,
-                                        "isBlock": False,
-                                        "isBlockGroup": True,
-                                        "blockType": BlockType.TABLE.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                table_summary,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block.id,
+                                    "orgId": org_id,
+                                    "isBlock": False,
+                                    "isBlockGroup": True,
+                                    "blockType": BlockType.TABLE.value,
+                                },
+                            ))
                 elif block_type == "table_row":
                     table_data = block.data
                     if table_data:
                         row_text = table_data.get("row_natural_language_text", "")
                         if row_text:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=row_text,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block.id,
-                                        "orgId": org_id,
-                                        "isBlock": True,
-                                        "isBlockGroup": False,
-                                        "blockType": BlockType.TABLE_ROW.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                row_text,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block.id,
+                                    "orgId": org_id,
+                                    "isBlock": True,
+                                    "isBlockGroup": False,
+                                    "blockType": BlockType.TABLE_ROW.value,
+                                },
+                            ))
 
             # Record summary (only on fresh full index, not reconciliation/partial update)
             if record is not None and not (is_reconciliation or block_ids_to_delete):
