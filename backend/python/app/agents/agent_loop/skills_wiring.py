@@ -24,7 +24,9 @@ Four call sites in `factory.py`, in this order:
 2. `build_skill_manager()` — right after `tool_registry` is built, before
    `plan_domain_agents()` runs (see below for why ordering matters).
 3. `register_skill_tools()` — same spot, so the 5 skill tools land in
-   `plan_domain_agents()`'s registered-tool snapshot. They claim no
+   `plan_domain_agents()`'s registered-tool snapshot. Only the `"skills"`
+   group (the four read-only tools) is pinned; `skill_manage` sits in its
+   own `"skill_authoring"` group and is fetched on demand. They claim no
    `app_name`/`tool_name` any `DomainAgentDefinition` claims (see
    `domain_agents.py`), so they always fall into the RESIDUAL grant and
    stay on the top-level agent under composition — no `domain_agents.py`
@@ -85,7 +87,16 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_SKILL_TOOL_NAMES = ("skills_list", "load_skill", "load_skill_resource", "skill_search", "skill_manage")
+_SKILL_READ_TOOL_NAMES = ("skills_list", "load_skill", "load_skill_resource", "skill_search")
+# Its own toolset, deliberately NOT in the essential/pinned set `factory.py`
+# builds: `skill_manage` is the write surface and its schema is the single
+# largest of the five (~670 of the ~1,210 tokens all five cost), yet a chat
+# or search request never authors a skill. Grouping it separately keeps it
+# behind `fetch_tools("skill_authoring")`/`search_tools`, so the turn-0
+# prompt carries only the four read-only tools. The `skill_writer`
+# sub-agent is unaffected — it resolves tools by registered NAME
+# (`runtime.tool_registry.names()`), not by toolset membership.
+_SKILL_WRITE_TOOL_NAMES = ("skill_manage",)
 
 # Granted to EVERY domain agent (see `domain_agents.py::register_domain_agents`'s
 # `shared_tool_names`), not just kept in the top level's residual grant —
@@ -97,7 +108,7 @@ _SKILL_TOOL_NAMES = ("skills_list", "load_skill", "load_skill_resource", "skill_
 # governance decision (`SkillManagerConfig.write_approval`), not something
 # every scoped sub-agent should be able to trigger just by writing PDF
 # code.
-DOMAIN_SHARED_SKILL_TOOL_NAMES = frozenset({"skills_list", "load_skill", "load_skill_resource", "skill_search"})
+DOMAIN_SHARED_SKILL_TOOL_NAMES = frozenset(_SKILL_READ_TOOL_NAMES)
 _SKILL_WRITER_MAX_TURNS = 8
 
 # Adapted from `roles/builtin/skill_writer.py::SKILL_WRITER_ROLE` — cannot
@@ -173,10 +184,11 @@ async def build_skill_manager(
 
 
 def register_skill_tools(tool_registry: "ToolRegistry", manager: SkillManager) -> None:
-    """Registers the 5 skill tools + a `"skills"` toolset group. Swallows
-    a name/path collision (should never happen — none of PipesHub's own
-    tools use these names) rather than failing request construction over
-    an optional feature."""
+    """Registers the 5 skill tools under two groups — `"skills"` (read-only,
+    pinned by `factory.py`) and `"skill_authoring"` (the `skill_manage` write
+    surface, fetched on demand). Swallows a name/path collision (should never
+    happen — none of PipesHub's own tools use these names) rather than failing
+    request construction over an optional feature."""
     try:
         tool_registry.register_tool(SkillsListTool(manager))
         tool_registry.register_tool(LoadSkillTool(manager))
@@ -187,7 +199,11 @@ def register_skill_tools(tool_registry: "ToolRegistry", manager: SkillManager) -
         logger.exception("skills_wiring: skill tool name/path collision — skills tools not registered")
         return
     tool_registry.register_toolset(
-        "skills", "Search, load, and manage the skill library.", list(_SKILL_TOOL_NAMES),
+        "skills", "Search and load skills from the skill library.", list(_SKILL_READ_TOOL_NAMES),
+    )
+    tool_registry.register_toolset(
+        "skill_authoring", "Create, edit, or delete a skill in the skill library.",
+        list(_SKILL_WRITE_TOOL_NAMES),
     )
 
 
