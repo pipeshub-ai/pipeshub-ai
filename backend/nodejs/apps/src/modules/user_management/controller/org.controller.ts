@@ -241,6 +241,49 @@ export class OrgController {
         ],
       });
 
+      const orgEventId = new mongoose.Types.ObjectId().toString();
+      const orgEvent: Event = {
+        eventType: EventType.OrgCreatedEvent,
+        timestamp: Date.now(),
+        payload: {
+          orgId: org._id,
+          accountType: org.accountType,
+          registeredName: org.registeredName,
+        } as OrgAddedEvent,
+      };
+
+      org.pendingEvents = [{
+        eventId: orgEventId,
+        eventType: orgEvent.eventType,
+        payload: orgEvent.payload,
+        timestamp: orgEvent.timestamp,
+        status: 'pending',
+        retries: 0
+      }];
+
+      const userEventId = new mongoose.Types.ObjectId().toString();
+      const userEvent: Event = {
+        eventType: EventType.NewUserEvent,
+        timestamp: Date.now(),
+        payload: {
+          orgId: adminUser.orgId.toString(),
+          userId: adminUser._id,
+          fullName: adminUser.fullName,
+          email: adminUser.email,
+          syncAction: 'none',
+        } as UserAddedEvent,
+      };
+
+      adminUser.pendingEvents = [{
+        eventId: userEventId,
+        eventType: userEvent.eventType,
+        payload: userEvent.payload,
+        timestamp: userEvent.timestamp,
+        status: 'pending',
+        retries: 0
+      }];
+
+
       const rsAvailable = this.config.rsAvailable === 'true';
       if (rsAvailable) {
         session = await mongoose.startSession();
@@ -291,32 +334,8 @@ export class OrgController {
         });
       }
 
-      await this.eventService.start();
-      let event: Event = {
-        eventType: EventType.OrgCreatedEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: org._id,
-          accountType: org.accountType,
-          registeredName: org.registeredName,
-        } as OrgAddedEvent,
-      };
-      await this.eventService.publishEvent(event);
-
-      event = {
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: adminUser.orgId.toString(),
-          userId: adminUser._id,
-          fullName: adminUser.fullName,
-          email: adminUser.email,
-          syncAction: 'none',
-        } as UserAddedEvent,
-      };
-      await this.eventService.publishEvent(event);
-
-      await this.eventService.stop();
+      await this.eventService.dispatchInline(Org, org._id.toString(), orgEventId, orgEvent);
+      await this.eventService.dispatchInline(Users, adminUser._id.toString(), userEventId, userEvent);
       res.status(200).json(org);
     } catch (error) {
       if (error instanceof BadRequestError || error instanceof NotFoundError) {

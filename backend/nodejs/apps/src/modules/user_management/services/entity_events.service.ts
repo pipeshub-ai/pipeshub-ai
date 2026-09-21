@@ -1,4 +1,5 @@
 import { injectable, inject } from 'inversify';
+import { Model } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.types';
 
@@ -120,6 +121,65 @@ export class EntitiesEventProducer {
       );
     } catch (error) {
       this.logger.error(`Failed to publish event: ${event.eventType}`, error);
+    }
+  }
+
+  async dispatchInline(
+    model: Model<any>,
+    documentId: string,
+    eventId: string,
+    event: Event,
+  ): Promise<void> {
+    const claimed = await model.findOneAndUpdate(
+      {
+        _id: documentId,
+        pendingEvents: { $elemMatch: { eventId, status: 'pending' } },
+      },
+      {
+        $set: {
+          'pendingEvents.$.status': 'processing',
+          'pendingEvents.$.claimedAt': new Date(),
+        },
+      },
+      { new: true },
+    );
+
+    if (!claimed) {
+      this.logger.debug(`Event ${eventId} not found or already claimed`);
+      return;
+    }
+
+    const message: StreamMessage<string> = {
+      key: event.eventType,
+      value: JSON.stringify(event),
+      headers: {
+        eventType: event.eventType,
+        timestamp: event.timestamp.toString(),
+      },
+    };
+
+    try {
+      if (!this.producer.isConnected()) {
+        await this.producer.connect();
+      }
+      await this.producer.publish(this.topic, message);
+      this.logger.info(
+        `Published event: ${event.eventType} to topic ${this.topic}`,
+      );
+
+      await model.updateOne(
+        { _id: documentId },
+        { $pull: { pendingEvents: { eventId } } },
+      );
+    } catch (error) {
+      this.logger.error(`Failed to publish event: ${event.eventType}`, error);
+      await model.updateOne(
+        { _id: documentId, 'pendingEvents.eventId': eventId },
+        {
+          $set: { 'pendingEvents.$.status': 'pending' },
+          $inc: { 'pendingEvents.$.retries': 1 },
+        },
+      );
     }
   }
 }

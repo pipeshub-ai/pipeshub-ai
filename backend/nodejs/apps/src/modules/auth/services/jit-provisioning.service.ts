@@ -8,7 +8,9 @@ import {
   EventType,
   UserAddedEvent,
   SyncAction,
+  Event,
 } from '../../user_management/services/entity_events.service';
+import mongoose from 'mongoose';
 import { deriveNameFromEmail } from '../../../utils/generic-functions';
 
 export interface JitUserDetails {
@@ -63,6 +65,28 @@ export class JitProvisioningService {
       isDeleted: false,
     });
 
+    const eventId = new mongoose.Types.ObjectId().toString();
+    const event: Event = {
+      eventType: EventType.NewUserEvent,
+      timestamp: Date.now(),
+      payload: {
+        orgId: orgId.toString(),
+        userId: newUser._id,
+        fullName: newUser.fullName,
+        email: newUser.email,
+        syncAction: SyncAction.Immediate,
+      } as UserAddedEvent,
+    };
+
+    newUser.pendingEvents = [{
+      eventId,
+      eventType: event.eventType,
+      payload: event.payload,
+      timestamp: event.timestamp,
+      status: 'pending',
+      retries: 0
+    }];
+
     await newUser.save();
 
     // Add to everyone group
@@ -71,28 +95,7 @@ export class JitProvisioningService {
       { $addToSet: { users: newUser._id } },
     );
 
-    // Publish user creation event
-    try {
-      await this.eventService.start();
-      await this.eventService.publishEvent({
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: orgId.toString(),
-          userId: newUser._id,
-          fullName: newUser.fullName,
-          email: newUser.email,
-          syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
-      });
-    } catch (eventError) {
-      this.logger.error('Failed to publish user creation event', {
-        error: eventError,
-        userId: newUser._id,
-      });
-    } finally {
-      await this.eventService.stop();
-    }
+    await this.eventService.dispatchInline(Users, newUser._id.toString(), eventId, event);
 
     this.logger.info(`User auto-provisioned successfully via ${provider}`, {
       userId: newUser._id,

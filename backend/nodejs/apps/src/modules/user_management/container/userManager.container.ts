@@ -7,6 +7,7 @@ import { ConfigurationManagerConfig } from '../../configuration_manager/config/c
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { UserGroupController } from '../controller/userGroups.controller';
 import { EntitiesEventProducer } from '../services/entity_events.service';
+import { EntitiesEventDispatcher } from '../services/entity_events.dispatcher';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -90,9 +91,24 @@ export class UserManagerContainer {
         messageProducer,
         container.get('Logger'),
       );
-      container
-        .bind<EntitiesEventProducer>('EntitiesEventProducer')
-        .toConstantValue(entityEventsService);
+      if (!container.isBound('EntitiesEventProducer')) {
+        container
+          .bind<EntitiesEventProducer>('EntitiesEventProducer')
+          .toConstantValue(entityEventsService);
+      }
+
+      const entityEventsDispatcher = new EntitiesEventDispatcher(
+        container.get('Logger'),
+        entityEventsService,
+      );
+      if (!container.isBound('EntitiesEventDispatcher')) {
+        container
+          .bind<EntitiesEventDispatcher>('EntitiesEventDispatcher')
+          .toConstantValue(entityEventsDispatcher);
+      }
+
+      // Start the dispatcher automatically
+      entityEventsDispatcher.start();
 
       const notificationProducer = new NotificationProducer(
         messageProducer,

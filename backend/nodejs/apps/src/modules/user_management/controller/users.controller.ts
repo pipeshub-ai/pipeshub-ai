@@ -596,7 +596,7 @@ export class UserController {
         { $addToSet: { users: newUser._id } }, // Add user to the group if not already present
       );
 
-      await this.eventService.start();
+      const eventId = new mongoose.Types.ObjectId().toString();
       const event: Event = {
         eventType: EventType.NewUserEvent,
         timestamp: Date.now(),
@@ -608,9 +608,20 @@ export class UserController {
           syncAction: SyncAction.Immediate,
         } as UserAddedEvent,
       };
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+
+      newUser.pendingEvents = [{
+        eventId,
+        eventType: event.eventType,
+        payload: event.payload,
+        timestamp: event.timestamp,
+        status: 'pending',
+        retries: 0
+      }];
+
       await newUser.save();
+      
+      await this.eventService.dispatchInline(Users, newUser._id.toString(), eventId, event);
+
       this.logger.debug('user created');
       res.status(201).json(newUser);
     } catch (error) {
@@ -640,6 +651,20 @@ export class UserController {
       role: 'member',
     });
 
+    const eventId = new mongoose.Types.ObjectId().toString();
+    const event: Event = {
+      eventType: EventType.NewUserEvent,
+      timestamp: Date.now(),
+      payload: {
+        orgId: orgId.toString(),
+        userId: newUser._id,
+        fullName: newUser.fullName,
+        email: newUser.email,
+        syncAction: SyncAction.Immediate,
+      } as UserAddedEvent,
+    };
+    newUser.pendingEvents.push({ eventId, status: 'pending', event });
+    
     await newUser.save();
 
     // Add to everyone group
@@ -650,25 +675,12 @@ export class UserController {
 
     // Publish user creation event
     try {
-      await this.eventService.start();
-      await this.eventService.publishEvent({
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: orgId.toString(),
-          userId: newUser._id,
-          fullName: newUser.fullName,
-          email: newUser.email,
-          syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
-      });
+      await this.eventService.dispatchInline(Users, newUser._id.toString(), eventId, event);
     } catch (eventError) {
       logger.error('Failed to publish user creation event', {
         error: eventError,
         userId: newUser._id,
       });
-    } finally {
-      await this.eventService.stop();
     }
 
     logger.info('User auto-provisioned successfully', {
@@ -711,6 +723,20 @@ export class UserController {
       role: 'member',
     });
 
+    const eventId = new mongoose.Types.ObjectId().toString();
+    const event: Event = {
+      eventType: EventType.NewUserEvent,
+      timestamp: Date.now(),
+      payload: {
+        orgId: orgId.toString(),
+        userId: newUser._id,
+        fullName: newUser.fullName,
+        email: newUser.email,
+        syncAction: SyncAction.Immediate,
+      } as UserAddedEvent,
+    };
+    newUser.pendingEvents.push({ eventId, status: 'pending', event });
+    
     await newUser.save();
 
     // Add to everyone group
@@ -721,25 +747,12 @@ export class UserController {
 
     // Publish user creation event
     try {
-      await this.eventService.start();
-      await this.eventService.publishEvent({
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: orgId.toString(),
-          userId: newUser._id,
-          fullName: newUser.fullName,
-          email: newUser.email,
-          syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
-      });
+      await this.eventService.dispatchInline(Users, newUser._id.toString(), eventId, event);
     } catch (eventError) {
       logger.error('Failed to publish user creation event', {
         error: eventError,
         userId: newUser._id,
       });
-    } finally {
-      await this.eventService.stop();
     }
 
     logger.info(`User auto-provisioned successfully via ${provider}`, {
@@ -1403,14 +1416,7 @@ export class UserController {
       user.hasLoggedIn = false;
       user.deletedBy = req.user.userId ?? req.user._id;
 
-      await UserCredentials.updateOne(
-        { userId },
-        { $unset: { hashedPassword: '' } },
-      );
-
-      await user.save();
-
-      await this.eventService.start();
+      const eventId = new mongoose.Types.ObjectId().toString();
       const event: Event = {
         eventType: EventType.DeleteUserEvent,
         timestamp: Date.now(),
@@ -1420,8 +1426,15 @@ export class UserController {
           email: user.email,
         } as UserDeletedEvent,
       };
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      user.pendingEvents.push({ eventId, status: 'pending', event });
+
+      await UserCredentials.updateOne(
+        { userId },
+        { $unset: { hashedPassword: '' } },
+      );
+
+      await user.save();
+      await this.eventService.dispatchInline(Users, user._id.toString(), eventId, event);
 
       res.json({ message: 'User deleted successfully' });
     } catch (error) {
@@ -2011,13 +2024,29 @@ export class UserController {
     let newUsers: User[] = [];
     if (emailsForNewAccounts.length > 0) {
       newUsers = await Users.create(
-        emailsForNewAccounts.map((email) => ({
-          email,
-          isDeleted: false,
-          hasLoggedIn: false,
-          orgId,
-          role: inviteRole,
-        })),
+        emailsForNewAccounts.map((email) => {
+          const _id = new mongoose.Types.ObjectId();
+          const eventId = new mongoose.Types.ObjectId().toString();
+          const event: Event = {
+            eventType: EventType.NewUserEvent,
+            timestamp: Date.now(),
+            payload: {
+              orgId: orgId.toString(),
+              userId: _id.toString(),
+              email,
+              syncAction: SyncAction.Immediate,
+            } as UserAddedEvent,
+          };
+          return {
+            _id,
+            email,
+            isDeleted: false,
+            hasLoggedIn: false,
+            orgId,
+            role: inviteRole,
+            pendingEvents: [{ eventId, status: 'pending', event }],
+          };
+        }),
       );
     }
 
@@ -2096,20 +2125,30 @@ export class UserController {
           { orgId, type: 'everyone' },
           { $addToSet: { users: userId } },
         );
-        const event: Event = {
-          eventType: EventType.NewUserEvent,
-          timestamp: Date.now(),
-          payload: {
-            orgId: orgId.toString(),
-            userId,
-            email,
-            syncAction: SyncAction.Immediate,
-          } as UserAddedEvent,
-        };
-        // A concurrent request may have disconnected the shared producer;
-        // start() is idempotent and reconnects so the event isn't dropped.
-        await this.eventService.start();
-        await this.eventService.publishEvent(event);
+        const newUserDoc = newUserByEmail.get(email);
+        if (newUserDoc && newUserDoc.pendingEvents && newUserDoc.pendingEvents.length > 0) {
+          const pendingEvent = newUserDoc.pendingEvents[0];
+          if (pendingEvent) {
+            await this.eventService.dispatchInline(Users, userId.toString(), pendingEvent.eventId, pendingEvent.event);
+          }
+        } else {
+          const eventId = new mongoose.Types.ObjectId().toString();
+          const event: Event = {
+            eventType: EventType.NewUserEvent,
+            timestamp: Date.now(),
+            payload: {
+              orgId: orgId.toString(),
+              userId,
+              email,
+              syncAction: SyncAction.Immediate,
+            } as UserAddedEvent,
+          };
+          await Users.updateOne(
+            { _id: userId },
+            { $push: { pendingEvents: { eventId, status: 'pending', event } } }
+          );
+          await this.eventService.dispatchInline(Users, userId.toString(), eventId, event);
+        }
       }
 
       const statusCode = await this.sendInviteMail(
@@ -2138,6 +2177,7 @@ export class UserController {
           'User ID missing while inviting restored user. Please ensure user restoration was successful.',
         );
       }
+      const eventId = new mongoose.Types.ObjectId().toString();
       const event: Event = {
         eventType: EventType.NewUserEvent,
         timestamp: Date.now(),
@@ -2148,8 +2188,11 @@ export class UserController {
           syncAction: SyncAction.Immediate,
         } as UserAddedEvent,
       };
-      await this.eventService.start();
-      await this.eventService.publishEvent(event);
+      await Users.updateOne(
+        { _id: userId },
+        { $push: { pendingEvents: { eventId, status: 'pending', event } } }
+      );
+      await this.eventService.dispatchInline(Users, userId.toString(), eventId, event);
 
       const statusCode = await this.sendInviteMail(
         email,

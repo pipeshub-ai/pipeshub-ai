@@ -154,6 +154,28 @@ export class ServiceAccountsService {
       isDisabled: false,
     });
 
+    const eventId = new mongoose.Types.ObjectId().toString();
+    const event: Event = {
+      eventType: EventType.NewUserEvent,
+      timestamp: Date.now(),
+      payload: {
+        orgId,
+        userId: idOf(serviceAccount),
+        fullName: serviceAccount.fullName,
+        email: serviceAccount.email,
+        syncAction: SyncAction.Immediate,
+      } as UserAddedEvent,
+    };
+
+    serviceAccount.pendingEvents = [{
+      eventId,
+      eventType: event.eventType,
+      payload: event.payload,
+      timestamp: event.timestamp,
+      status: 'pending',
+      retries: 0
+    }];
+
     // Saved before the event goes out: the consumer builds a permission-graph
     // node from it, and a node for a record that failed to save would be a
     // principal with access and no way to administer it.
@@ -176,18 +198,7 @@ export class ServiceAccountsService {
       { $addToSet: { users: serviceAccount._id } },
     );
 
-    const addedPayload: UserAddedEvent = {
-      orgId,
-      userId: idOf(serviceAccount),
-      fullName: serviceAccount.fullName,
-      email: serviceAccount.email,
-      syncAction: SyncAction.Immediate,
-    };
-    await this.publish({
-      eventType: EventType.NewUserEvent,
-      timestamp: Date.now(),
-      payload: addedPayload,
-    });
+    await this.eventService.dispatchInline(Users, idOf(serviceAccount), eventId, event);
 
     this.logger.info('Service account created', {
       orgId,
@@ -222,7 +233,19 @@ export class ServiceAccountsService {
     // would succeed, both would publish userAdded, and the later would
     // overwrite the earlier one's details. Making `isDeleted: true` part of
     // the query means the transition happens once: the first request restores
-    // the record, and the second matches nothing.
+    const eventId = new mongoose.Types.ObjectId().toString();
+    const event: Event = {
+      eventType: EventType.NewUserEvent,
+      timestamp: Date.now(),
+      payload: {
+        orgId,
+        userId: existing._id.toString(),
+        fullName: input.fullName.trim(),
+        email: existing.email,
+        syncAction: SyncAction.Immediate,
+      } as UserAddedEvent,
+    };
+
     const restored = await Users.findOneAndUpdate(
       // Narrowed the same way the check above is, so the update cannot land
       // on another tenant's row even if the record changed underneath us.
@@ -248,10 +271,19 @@ export class ServiceAccountsService {
           deletedBy: '',
           // One they did not. Setting a field to undefined is a no-op in
           // Mongoose, so writing `description: undefined` would quietly leave
-          // the deleted account's old text in place — which contradicts what
           // this method promises, that nothing of the old account survives
           // but its identity.
           ...(input.description === undefined ? { description: '' } : {}),
+        },
+        $push: {
+          pendingEvents: {
+            eventId,
+            eventType: event.eventType,
+            payload: event.payload,
+            timestamp: event.timestamp,
+            status: 'pending',
+            retries: 0
+          }
         },
       },
       { new: true },
@@ -268,18 +300,7 @@ export class ServiceAccountsService {
       { $addToSet: { users: restored._id } },
     );
 
-    const addedPayload: UserAddedEvent = {
-      orgId,
-      userId: idOf(restored),
-      fullName: restored.fullName,
-      email: restored.email,
-      syncAction: SyncAction.Immediate,
-    };
-    await this.publish({
-      eventType: EventType.NewUserEvent,
-      timestamp: Date.now(),
-      payload: addedPayload,
-    });
+    await this.eventService.dispatchInline(Users, idOf(restored), eventId, event);
 
     this.logger.info('Service account restored', {
       orgId,

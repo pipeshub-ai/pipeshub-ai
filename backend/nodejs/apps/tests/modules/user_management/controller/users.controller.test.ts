@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
+import { EntitiesEventProducer } from '../../../../src/modules/user_management/services/entity_events.service';
 import { UserController } from '../../../../src/modules/user_management/controller/users.controller';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
@@ -58,6 +59,8 @@ describe('UserController', () => {
   let mockAuthService: any;
   let mockLogger: any;
   let mockEventService: any;
+  let fakeKafkaProducer: any;
+  let realEventService: any;
   let mockNotificationProducer: any;
   let req: any;
   let res: any;
@@ -88,11 +91,21 @@ describe('UserController', () => {
       warn: sinon.stub(),
     };
 
+    fakeKafkaProducer = {
+      publish: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(true),
+      connect: sinon.stub().resolves(),
+    };
+    realEventService = new EntitiesEventProducer(
+      fakeKafkaProducer as any,
+      mockLogger,
+      { get: sinon.stub().returns('entity-events') } as any,
+    );
     mockEventService = {
       start: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
       publishEvent: sinon.stub().resolves(),
-      isConnected: sinon.stub().returns(false),
+      dispatchInline: (...args: any[]) => realEventService.dispatchInline.apply(realEventService, args),
     };
 
     mockNotificationProducer = {
@@ -142,6 +155,11 @@ describe('UserController', () => {
     if (!(ProjectService.removeUserFromAllProjects as any).restore) {
       sinon.stub(ProjectService, 'removeUserFromAllProjects').resolves();
     }
+  });
+
+  beforeEach(() => {
+    sinon.stub(Users, 'findOneAndUpdate').resolves(true as any);
+    sinon.stub(Users, 'updateOne').resolves({} as any);
   });
 
   afterEach(() => {
@@ -852,9 +870,7 @@ describe('UserController', () => {
         expect(next.calledOnce).to.be.true;
       } else {
         expect(res.status.calledWith(201)).to.be.true;
-        expect(mockEventService.start.calledOnce).to.be.true;
-        expect(mockEventService.publishEvent.calledOnce).to.be.true;
-        expect(mockEventService.stop.calledOnce).to.be.true;
+        expect(fakeKafkaProducer.publish.calledOnce).to.be.true;
       }
     });
   });
@@ -4698,11 +4714,12 @@ describe('UserController', () => {
   // Branch coverage: provisionSamlUser - event publish error
   // -----------------------------------------------------------------------
   describe('provisionSamlUser - event publish error', () => {
-    it('should continue when event publishing fails', async () => {
+    it('should catch event publish failure and revert status to pending', async () => {
       const mockNewUser = {
         _id: 'new-user-id',
         email: 'saml@test.com',
         fullName: 'SAML User',
+        pendingEvents: [],
         save: sinon.stub().resolves(),
         toObject: sinon.stub().returns({ _id: 'new-user-id' }),
       };
@@ -4710,20 +4727,23 @@ describe('UserController', () => {
       sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
       (mockNewUser as any).constructor = Users;
       sinon.stub(UserGroups, 'updateOne').resolves();
-      mockEventService.start.resolves();
-      mockEventService.publishEvent.rejects(new Error('Kafka down'));
-      mockEventService.stop.resolves();
+      fakeKafkaProducer.publish.rejects(new Error('Kafka down'));
 
-      // The method should not throw despite event publishing failure
-      const result = await controller.provisionSamlUser(
+      await controller.provisionSamlUser(
         'saml@test.com',
         { firstName: 'SAML' },
         '507f1f77bcf86cd799439012',
         mockLogger,
       );
 
-      expect(mockLogger.error.called).to.be.true;
-      expect(mockEventService.stop.called).to.be.true;
+      // Verify pendingEvents was populated before save
+      expect(mockNewUser.pendingEvents.length).to.equal(1);
+      
+      // Verify revert block was hit
+      expect((Users.updateOne as sinon.SinonStub).calledWithMatch(
+        sinon.match.any,
+        sinon.match({ $set: { 'pendingEvents.$.status': 'pending' }, $inc: { 'pendingEvents.$.retries': 1 } })
+      )).to.be.true;
     });
   });
 
@@ -4731,30 +4751,36 @@ describe('UserController', () => {
   // Branch coverage: provisionJitUser - event publish error
   // -----------------------------------------------------------------------
   describe('provisionJitUser - event publish error', () => {
-    it('should continue when event publishing fails', async () => {
-      sinon.stub(Users, 'findOne').resolves(null); // No deleted user
+    it('should catch event publish failure and revert status to pending', async () => {
+      sinon.stub(Users, 'findOne').resolves(null);
 
       const mockNewUser = {
         _id: 'new-user-id',
         email: 'jit@test.com',
         fullName: 'JIT User',
+        pendingEvents: [],
         save: sinon.stub().resolves(),
         toObject: sinon.stub().returns({ _id: 'new-user-id' }),
       };
       sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
       sinon.stub(UserGroups, 'updateOne').resolves();
-      mockEventService.publishEvent.rejects(new Error('Kafka down'));
+      fakeKafkaProducer.publish.rejects(new Error('Kafka down'));
 
-      const result = await controller.provisionJitUser(
+      await controller.provisionJitUser(
         'jit@test.com',
         { fullName: 'JIT User' },
-        '507f1f77bcf86cd799439012',
-        'google',
+        'org789',
         mockLogger,
       );
 
-      expect(mockLogger.error.called).to.be.true;
-      expect(mockEventService.stop.called).to.be.true;
+      // Verify pendingEvents was populated before save
+      expect(mockNewUser.pendingEvents.length).to.equal(1);
+      
+      // Verify revert block was hit
+      expect((Users.updateOne as sinon.SinonStub).calledWithMatch(
+        sinon.match.any,
+        sinon.match({ $set: { 'pendingEvents.$.status': 'pending' }, $inc: { 'pendingEvents.$.retries': 1 } })
+      )).to.be.true;
     });
   });
 
