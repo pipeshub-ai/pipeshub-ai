@@ -5053,37 +5053,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     INTO {collection}
                 RETURN 1
             """
-            try:
-                await self.http_client.execute_aql(
-                    query,
-                    bind_vars={"stub_id": stub_id, "keep_id": keep_id},
-                    txn_id=transaction,
-                )
-            except Exception as e:
-                self.logger.warning(
-                    "Skipping edge collection %s while merging user %s: %s",
-                    collection,
-                    stub_key,
-                    e,
-                )
+            await self.http_client.execute_aql(
+                query,
+                bind_vars={"stub_id": stub_id, "keep_id": keep_id},
+                txn_id=transaction,
+            )
             cleanup = f"""
             FOR e IN {collection}
                 FILTER e._from == @stub_id OR e._to == @stub_id
                 REMOVE e IN {collection}
             """
-            try:
-                await self.http_client.execute_aql(
-                    cleanup,
-                    bind_vars={"stub_id": stub_id},
-                    txn_id=transaction,
-                )
-            except Exception as e:
-                self.logger.warning(
-                    "Failed to drop stub edges in %s for %s: %s",
-                    collection,
-                    stub_key,
-                    e,
-                )
+            await self.http_client.execute_aql(
+                cleanup,
+                bind_vars={"stub_id": stub_id},
+                txn_id=transaction,
+            )
         await self.delete_nodes(
             [stub_key],
             CollectionNames.USERS.value,
