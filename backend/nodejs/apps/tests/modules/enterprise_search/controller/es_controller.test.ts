@@ -5,6 +5,8 @@ import mongoose from 'mongoose'
 import jwt from 'jsonwebtoken'
 import { EventEmitter } from 'events'
 import {
+  assignAgentCapabilitiesToPayload,
+  assignRetrievalContextToPayload,
   createConversation,
   getAllConversations,
   getConversationById,
@@ -13858,4 +13860,35 @@ describe('Enterprise Search Controller', () => {
     })
   })
 
+})
+
+describe('assignRetrievalContextToPayload', () => {
+  it('forwards the flag when true', () => {
+    const payload: Record<string, unknown> = {}
+    assignRetrievalContextToPayload(payload, { includeRetrievalContext: true })
+    expect(payload.includeRetrievalContext).to.equal(true)
+  })
+
+  it('omits the key entirely when absent or false', () => {
+    for (const body of [{}, { includeRetrievalContext: false }]) {
+      const payload: Record<string, unknown> = {}
+      assignRetrievalContextToPayload(payload, body)
+      expect(payload).to.not.have.property('includeRetrievalContext')
+    }
+  })
+
+  it('ignores non-boolean truthy values', () => {
+    const payload: Record<string, unknown> = {}
+    assignRetrievalContextToPayload(payload, { includeRetrievalContext: 'yes' })
+    expect(payload).to.not.have.property('includeRetrievalContext')
+  })
+
+  it('is independent of agentCapabilities forwarding', () => {
+    // Regression: this used to live inside assignAgentCapabilitiesToPayload,
+    // which streamChat only calls in agent mode — so `internal_search`, the
+    // mode the benchmark measures, silently never received the flag.
+    const payload: Record<string, unknown> = {}
+    assignAgentCapabilitiesToPayload(payload, { includeRetrievalContext: true })
+    expect(payload).to.not.have.property('includeRetrievalContext')
+  })
 })
