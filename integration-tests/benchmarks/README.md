@@ -37,6 +37,11 @@ export PIPESHUB_TEST_USER_EMAIL=... PIPESHUB_TEST_USER_PASSWORD=...
 export TEST_OPENAI_API_KEY=... TEST_ANTHROPIC_API_KEY=... TEST_GEMINI_API_KEY=...
 export PIPESHUB_BASE_URL=http://localhost:3000 PIPESHUB_CONNECTOR_URL=http://localhost:8088
 
+# The RAG baselines and the `prepare` vector check read Qdrant directly, and
+# the compose stack runs it with auth on. Same value as QDRANT_API_KEY in
+# deployment/docker-compose/.env — without it `prepare` dies on HTTP 401.
+export QDRANT_API_KEY=...
+
 python -m benchmarks.harness seed-models --config benchmarks/datasets/frames/configs/smoke.yaml
 python -m benchmarks.harness run --config benchmarks/datasets/frames/configs/smoke.yaml
 ```
