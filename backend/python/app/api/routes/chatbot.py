@@ -99,6 +99,10 @@ class ChatQuery(BaseModel):
     # labels are only valid for the request that minted them, so callers
     # that rely on record ids surviving across turns should leave this off.
     enableRecordIdShortening: bool = False
+    # Opt-in measurement surface for the benchmark harness: streams CUSTOM
+    # `retrieval_context` frames naming the records and blocks that reached
+    # the model, plus a `run_usage` frame. No effect on the answer.
+    includeRetrievalContext: bool = False
     # Stop Generation: client-generated UUID identifying this run, so a
     # later `POST /chat/cancel {runId}` can target it. Absent for callers
     # that predate this field or don't need cancellation (the agent loop
@@ -1337,6 +1341,7 @@ async def _generate_chat_stream_via_agent_loop(
         "projectInstructions": query_info.projectInstructions,
         "attachments": query_info.attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
+        "includeRetrievalContext": query_info.includeRetrievalContext,
         "runId": query_info.runId,
         "is_service_account": bool(user.get("isServiceAccount")),
     }

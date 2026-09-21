@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
+from app.agents.agent_loop.protocol.retrieval_context import RETRIEVAL_CONTEXT_EVENT_NAME
+from app.agents.agent_loop.protocol.run_usage import RUN_USAGE_EVENT_NAME
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
@@ -69,6 +71,11 @@ class ArtifactSSEPayload(BaseModel):
         return self.model_dump(exclude_none=True)
 
 
+def _wire(payload: Any) -> dict[str, Any]:
+    """Accepts the payload model or an already-serialised dict."""
+    return payload.to_wire_dict() if hasattr(payload, "to_wire_dict") else payload
+
+
 class ProtocolFormatter(ABC):
     @abstractmethod
     def answer_delta(
@@ -91,6 +98,19 @@ class ProtocolFormatter(ABC):
         self, context: "AgentContext", *, tool: str | None, toolset: str | None,
         reason: str | None, message: str | None,
     ) -> list[dict[str, Any]]: ...
+
+    @abstractmethod
+    def retrieval_context(
+        self, context: "AgentContext", *, payload: Any,
+    ) -> list[dict[str, Any]]:
+        """Which records and blocks reached the model. Opt-in; identifiers
+        only, never block text."""
+
+    @abstractmethod
+    def run_usage(
+        self, context: "AgentContext", *, payload: Any,
+    ) -> list[dict[str, Any]]:
+        """Token and loop-outcome totals for the whole run."""
 
     @abstractmethod
     def error(self, context: "AgentContext", *, message: str, code: str) -> list[dict[str, Any]]: ...
@@ -120,6 +140,12 @@ class LegacyFormatter(ProtocolFormatter):
             "event": "tool_unavailable",
             "data": {"tool": tool, "toolset": toolset, "reason": reason, "message": message},
         }]
+
+    def retrieval_context(self, context, *, payload):
+        return [{"event": RETRIEVAL_CONTEXT_EVENT_NAME, "data": _wire(payload)}]
+
+    def run_usage(self, context, *, payload):
+        return [{"event": RUN_USAGE_EVENT_NAME, "data": _wire(payload)}]
 
     def error(self, context, *, message, code):
         return [{"event": "error", "data": {"message": message, "type": code}}]
@@ -182,6 +208,18 @@ class AGUIFormatter(ProtocolFormatter):
             AGUIEventType.CUSTOM, name="tool_unavailable",
             value={"tool": tool, "toolset": toolset, "reason": reason, "message": message},
             runId=context.run_id,
+        )]
+
+    def retrieval_context(self, context, *, payload):
+        return [frame(
+            AGUIEventType.CUSTOM, name=RETRIEVAL_CONTEXT_EVENT_NAME,
+            value=_wire(payload), runId=context.run_id,
+        )]
+
+    def run_usage(self, context, *, payload):
+        return [frame(
+            AGUIEventType.CUSTOM, name=RUN_USAGE_EVENT_NAME,
+            value=_wire(payload), runId=context.run_id,
         )]
 
     def error(self, context, *, message, code):

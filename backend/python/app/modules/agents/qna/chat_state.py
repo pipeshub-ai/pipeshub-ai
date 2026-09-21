@@ -187,6 +187,9 @@ class ChatState(TypedDict):
     # TEMPORARY token-savings experiment — see `RecordIdShortener` in
     # `utils/chat_helpers.py`. Opt-in, disabled by default.
     enable_record_id_shortening: bool | None
+    # Opt-in measurement surface: when True the stream carries CUSTOM
+    # `retrieval_context` and `run_usage` frames. Never on by default.
+    include_retrieval_context: bool | None
     record_id_shortener: Any | None  # Lazily created by the first knowledge tool call, only when enabled above
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
     resolved_attachment_blocks: list | None  # Pre-resolved image_url blocks for multimodal LLM injection; populated on first LLM call
@@ -638,6 +641,10 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "enable_record_id_shortening": bool(
             chat_query.get("enable_record_id_shortening")
             or chat_query.get("enableRecordIdShortening")
+        ),
+        "include_retrieval_context": bool(
+            chat_query.get("include_retrieval_context")
+            or chat_query.get("includeRetrievalContext")
         ),
 
         # Attachments (uploaded images/PDFs from client)

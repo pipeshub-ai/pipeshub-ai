@@ -31,6 +31,7 @@ from app.agents.agent_loop.hooks.memory import (
     conversation_enrichment,
     seed_visible_tools_from_history,
 )
+from app.agents.agent_loop.hooks.retrieval_context import retrieval_context_emission
 from app.agents.agent_loop.hooks.result_accumulation import (
     result_accumulation,
     stash_tool_call_metadata,
@@ -54,6 +55,7 @@ __all__ = [
     "shape_image_injection",
     "shape_retrieved_image_injection",
     "result_accumulation",
+    "retrieval_context_emission",
     "retry_with_status",
     "stash_tool_call_metadata",
 ]

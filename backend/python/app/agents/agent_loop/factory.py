@@ -120,6 +120,7 @@ from app.agents.agent_loop.hooks import (
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
+    retrieval_context_emission,
     retry_with_status,
     seed_visible_tools_from_history,
     shape_image_injection,
@@ -975,7 +976,12 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_MODEL).use(shape_deterministic_compact())      # L6
 
         if transport_registry is not None:
-            summarizer = make_llm_summarizer(transport_registry, "langchain", model_name)
+            summarizer = make_llm_summarizer(
+                transport_registry, "langchain", model_name,
+                # Compaction calls the model outside the turn loop, so
+                # `Agent.usage` never sees them.
+                on_usage=context.auxiliary_usage.add,
+            )
             hooks.on(HookEvent.PRE_MODEL).use(shape_auto_compact(             # L7a
                 summarizer=summarizer,
                 trigger_ratio=_AUTO_COMPACT_TRIGGER_RATIO,
@@ -1005,6 +1011,11 @@ class PipesHubAgentFactory:
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
+        if context.include_retrieval_context:
+            # Opt-in: diffs the retrieval accumulators after every tool call
+            # and streams only what is new. Off by default, so a normal
+            # request pays nothing for it.
+            hooks.on(HookEvent.POST_TOOL_USE).use(retrieval_context_emission(context))
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 

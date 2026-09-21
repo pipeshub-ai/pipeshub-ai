@@ -60,6 +60,8 @@ from app.agents.chat_modes.policy import (
     ChatModePolicy,
     resolve_chat_mode_policy,
 )
+from app.agents.agent_loop.protocol.run_usage import emit_run_usage
+from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
 from app.agents.chat_modes.prefetch import prefetch_retrieval
 from app.config.constants.service import config_node_constants
 from app.modules.demo_data.chat import (
@@ -596,6 +598,12 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 ensure_fetch_full_record_available(
                     context, registry=_runtime.tool_registry,
                 )
+            # After the merge above, so the frame reports what actually
+            # reached the model. Emitted even when prefetch was skipped or
+            # found nothing, so a consumer can tell those apart.
+            await emit_prefetch_retrieval_context(
+                context, scheduled=prefetch_task is not None, result=prefetch_result,
+            )
             if resolved_attachments.context_text:
                 goal.constraints.append(resolved_attachments.context_text)
 
@@ -609,6 +617,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 async for event in agent.stream(goal):
                     await streamer.on_event(event)
                 result = agent.last_stream_result
+
+                await emit_run_usage(context, agent, result, model=model_name or None)
 
                 finalizer = AnswerFinalizer(context, collector)
                 await finalizer.run(

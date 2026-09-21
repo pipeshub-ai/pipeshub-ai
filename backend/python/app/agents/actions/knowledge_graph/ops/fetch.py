@@ -257,6 +257,18 @@ async def execute_fetch_record(
             if outcome.complete:
                 context.full_records_fetched.add(rid)
                 context.tool_state.setdefault("full_records_fetched", set()).add(rid)
+            if getattr(context, "include_retrieval_context", False):
+                # The record lands in `virtual_record_id_to_result` whole, but
+                # only the budgeted blocks reach the model; the ledger reports
+                # that difference, which nothing else records.
+                context.tool_state.setdefault("fetch_render_outcomes", {}).setdefault(
+                    str(rid), [],
+                ).append({
+                    "virtualRecordId": record.get("virtual_record_id"),
+                    "startBlock": start_block,
+                    "blocksRendered": outcome.blocks_rendered,
+                    "complete": outcome.complete,
+                })
 
         if collected_images and context.is_multimodal_llm:
             # Mirrors `retrieval.py`'s matching branch: multipart `data`
