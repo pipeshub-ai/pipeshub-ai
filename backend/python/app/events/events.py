@@ -55,6 +55,7 @@ from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.libreoffice_convert import convert_with_libreoffice
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import ENRICHMENT_FAILED
 
 
 def _get_pdf_ocr_detection_worker_count() -> int:
@@ -484,12 +485,13 @@ class EventProcessor:
                     "❌ Enrichment failed for record %s (document remains searchable): %s",
                     record_id,
                     enrich_exc,
+                    exc_info=True,
                 )
                 await self.update_record_fields(
                     record_doc,
                     {
                         "extractionStatus": ProgressStatus.FAILED.value,
-                        "reason": f"Enrichment failed: {enrich_exc}",
+                        "reason": ENRICHMENT_FAILED,
                     },
                 )
 

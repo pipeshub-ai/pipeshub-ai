@@ -3522,7 +3522,7 @@ class TestChatStream:
             body = await _drain(await chat_stream(request, "a1"))
 
         assert "RUN_ERROR" in body or "event: error" in body
-        assert "Failed to initialize LLM service" in body
+        assert "An admin can add one in Workspace" in body
 
 
 # ===========================================================================

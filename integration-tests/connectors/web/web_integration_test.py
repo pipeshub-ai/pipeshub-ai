@@ -16,6 +16,7 @@ Test cases:
   TC-STREAM-001 — A crawled page streams its stored content
   TC-UPDATE-001 — A page whose text changes is re-indexed in place
   TC-INCR-001   — A page linked after the first crawl is indexed on the next one
+  TC-PERM-001   — An ordinary member of the org finds a crawled page in search
 
 Not covered: a page that disappears from the site. The connector skips a 404
 and keeps the record it already has, so there is no behaviour to assert yet.
@@ -36,6 +37,12 @@ from connectors.web.conftest import (  # type: ignore[import-not-found]
     EXCLUDED_PAGES,
     EXPECTED_PAGES,
 )
+from helper.connector_visibility import (
+    found,
+    search_connector_as,
+    search_connector_as_admin,
+    wait_until_searchable,
+)
 from helper.graph_provider import GraphProviderProtocol
 from helper.graph_provider_utils import wait_for_sync_completion
 from helper.storage_incremental import (
@@ -43,6 +50,7 @@ from helper.storage_incremental import (
     sync_until_names_visible,
     wait_for_record_reindex,
 )
+from helper.second_user import SecondUser, describe_search
 from helper.web_fixtures import WebFixtures, html_page
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
@@ -181,3 +189,36 @@ class TestWebConnector:
         assert after_count == before_count + 1, (
             f"TC-INCR-001: expected one new record, count went {before_count} -> {after_count}"
         )
+
+
+@pytest.mark.integration
+@pytest.mark.web
+@pytest.mark.permissions
+@pytest.mark.asyncio(loop_scope="session")
+class TestWebConnectorVisibility:
+    """The crawl is a team connector: everyone in the org should find it."""
+
+    @pytest.mark.order(2)
+    async def test_tc_perm_001_a_member_finds_a_crawled_page(
+        self,
+        web_connector: dict[str, Any],
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+        second_user: SecondUser,
+    ) -> None:
+        """TC-PERM-001: A non-admin member searches the connector and gets the page.
+
+        Uses a page no other test changes, so its record is stable.
+        """
+        connector_id = web_connector["connector_id"]
+        record = await wait_until_searchable(graph_provider, connector_id, "Fixture API Reference")
+        query = "Marker api-reference: every endpoint accepts JSON and returns JSON"
+
+        member = search_connector_as(second_user, connector_id, query)
+        if not found(member, record["virtualRecordId"]):
+            admin = search_connector_as_admin(pipeshub_client, connector_id, query)
+            pytest.fail(
+                "TC-PERM-001: a member of the org did not find a page from a team "
+                f"connector. Member: {describe_search(member)}. "
+                f"Admin, same query: {describe_search(admin)}"
+            )

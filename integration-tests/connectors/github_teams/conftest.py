@@ -30,8 +30,11 @@ from typing import Any, AsyncGenerator
 import pytest
 import pytest_asyncio
 
+from helper.source_credentials import source_unavailable
+
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
+from helper.second_user import second_user  # type: ignore[import-not-found]  # noqa: F401 - fixture
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 from connectors.github_teams.constants import (  # type: ignore[import-not-found]
@@ -86,10 +89,10 @@ def _require_env() -> dict[str, str]:
     }
     missing = [k for k, v in values.items() if not v]
     if missing:
-        pytest.skip(
-            f"GitHub Teams credentials/config not set (missing: {', '.join(sorted(missing))}). "
-            f"Required: {ENV_TOKEN}, {ENV_ORG}, {ENV_PRIMARY_REPO}, {ENV_PUBLIC_REPO}, "
-            f"{ENV_MUTATION_REPO}."
+        source_unavailable(
+            "The GitHub organisation this suite syncs from is not configured "
+            f"(missing: {', '.join(sorted(missing))}).",
+            secrets=[ENV_TOKEN, ENV_ORG, ENV_PRIMARY_REPO, ENV_PUBLIC_REPO, ENV_MUTATION_REPO],
         )
     return values
 

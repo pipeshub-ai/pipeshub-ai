@@ -261,10 +261,10 @@ describe('SkillsApi', () => {
       });
     });
 
-    it('finalizeImport posts content/resources/category/subcategory', async () => {
-      mockedPost.mockResolvedValueOnce({ data: { name: 'pdf-extractor' } });
+    it('finalizeImport posts content/resources/category/subcategory/name', async () => {
+      mockedPost.mockResolvedValueOnce({ data: { name: 'pdf-anthropic' } });
       const preview = {
-        name: 'pdf-extractor',
+        name: 'pdf-anthropic',
         description: 'd',
         version: '1.0.0',
         content: '---\nname: pdf-extractor\n---\nbody',
@@ -279,6 +279,7 @@ describe('SkillsApi', () => {
         resources: preview.resources,
         category: 'documents',
         subcategory: 'pdf',
+        name: 'pdf-anthropic',
       });
     });
   });

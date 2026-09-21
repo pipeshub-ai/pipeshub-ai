@@ -15,14 +15,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.services.vector_db.collection_manifest import CollectionManifestStore
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.models import CollectionConfig, HybridSearchRequest
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import RecordContext
 from tests.integration.vector_db.conftest import make_collection
-from tests.integration.vector_db.helpers import DIM, make_dense, sample_points
+from tests.integration.vector_db.helpers import DIM, make_dense, sample_points, wait_for
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 
 def _make_config_service():
@@ -49,7 +50,7 @@ def _make_registry(vector_db_service) -> CollectionRegistry:
         collection_config_factory=lambda size, sparse_idf=False: CollectionConfig(
             embedding_size=size
         ),
-        config_service=_make_config_service(),
+        manifest_store=CollectionManifestStore(_make_config_service(), MagicMock()),
         logger=MagicMock(),
     )
 
@@ -80,11 +81,16 @@ class _CollectionRegistryContractTests:
         try:
             await vector_service.upsert_points(name, sample_points("org-registry-search"))
             flt = await vector_service.filter_collection(must={"orgId": "org-registry-search"})
-            results = await vector_service.query_nearest_points(
-                name,
-                [HybridSearchRequest(dense_query=make_dense([1.0]), filter=flt, limit=3)],
-            )
-            assert len(results[0]) >= 1
+
+            async def query() -> list:
+                return (await vector_service.query_nearest_points(
+                    name,
+                    [HybridSearchRequest(dense_query=make_dense([1.0]), filter=flt, limit=3)],
+                ))[0]
+
+            # OpenSearch indexes refresh every 30s, so a write is not
+            # searchable at once there.
+            assert len(await wait_for(query, timeout=45.0)) >= 1
         finally:
             await registry.delete_collection(name)
 

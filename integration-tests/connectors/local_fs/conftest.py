@@ -55,6 +55,10 @@ async def local_fs_connector(
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
 ) -> AsyncGenerator[dict[str, Any], None]:
+    pytest.skip(
+        "Local FS now pulls events from the desktop; creating this connector "
+        "would wait forever for a folder-walk sync."
+    )
     folder = new_run_folder()
     for rel_path, text in SEED_FILES.items():
         local_fs_folder.write(folder, rel_path, text)
@@ -99,6 +103,10 @@ async def local_fs_desktop_connector(
     graph_provider: GraphProviderProtocol,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """A connector whose folder exists only on the user's machine, not the backend's."""
+    pytest.skip(
+        "Local FS now pulls events from the desktop; this fixture still points "
+        "at a folder the backend cannot see and expects upload ingest."
+    )
     instance = pipeshub_client.create_connector(
         connector_type=CONNECTOR_TYPE,
         instance_name=f"local-fs-desktop-test-{uuid.uuid4().hex[:8]}",

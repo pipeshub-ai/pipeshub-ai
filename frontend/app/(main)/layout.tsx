@@ -21,6 +21,7 @@ import i18n from '@/lib/i18n/config'
 import { useLanguageStore } from '@/lib/store/language-store'
 import { UserProfileInitializer } from './components/user-profile-initializer'
 import { OrgProfileInitializer } from './components/org-profile-initializer'
+import { ElectronLocalSyncBootstrap } from './components/electron-local-sync-bootstrap'
 import { UserBackgroundSurvey } from "./components/surveys/user-background"
 import { OnboardingTour } from "./components/tours/onboarding"
 import { useOnboardingStore } from "./onboarding/store"
@@ -193,6 +194,10 @@ function AppLayout({
       {/* Hydrates user profile (name, email, isAdmin, avatar) once auth is ready */}
       <UserProfileInitializer />
       <OrgProfileInitializer />
+      {/* Desktop-only: brings up Local FS watchers already known to the
+          Electron journal as soon as auth is ready, without requiring the
+          user to open the connectors page first. */}
+      <ElectronLocalSyncBootstrap />
       <Flex
         style={{
           height: '100vh',
@@ -216,13 +221,12 @@ function AppLayout({
             maxWidth: (!isMobile && isNavCollapsed)
               ? 0
               : `${sidebarWidth + SIDEBAR_SECONDARY_PANEL_EXTRA_PX}px`,
-            // SidebarBase keeps its fixed width inside the animating slot; without
-            // clipping it paints over pages with a transparent background (e.g.
-            // /projects). The expanded max-width already covers the "More Chats"
-            // cluster, so nothing legitimate is clipped.
             overflow: 'hidden',
+            visibility: (!isMobile && isNavCollapsed) ? 'hidden' : 'visible',
             flexShrink: 0,
-            transition: 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
+            transition: (!isMobile && isNavCollapsed)
+              ? 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0.28s'
+              : 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
             position: 'relative',
             // Must be an explicit height so the SidebarBase's height:'100%'
             // chain resolves correctly (this Box is a flex child of the outer

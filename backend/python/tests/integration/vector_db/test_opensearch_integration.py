@@ -20,11 +20,12 @@ from tests.integration.vector_db.helpers import (
     make_collection_config,
     make_dense,
     org_filter,
+    point_id,
     sample_points,
 )
 from tests.integration.vector_db.conftest import make_collection
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 
 async def _refresh(svc, col: str) -> None:
@@ -106,7 +107,7 @@ class TestOpenSearchUpsertQuery:
             )
             results = (await opensearch_service.query_nearest_points(col, [req]))[0]
             assert len(results) > 0
-            assert results[0].id == "doc-python"
+            assert results[0].id == point_id("doc-python")
         finally:
             await opensearch_service.delete_collection(col)
 
@@ -127,7 +128,7 @@ class TestOpenSearchUpsertQuery:
             results = (await opensearch_service.query_nearest_points(col, [req]))[0]
             ids = [r.id for r in results]
             # doc-python matches both dense and text, should be first
-            assert ids[0] == "doc-python"
+            assert ids[0] == point_id("doc-python")
         finally:
             await opensearch_service.delete_collection(col)
 
@@ -140,7 +141,7 @@ class TestOpenSearchUpsertQuery:
             points_a = sample_points("org-a")
             points_b = [
                 VectorPoint(
-                    id="doc-b1",
+                    id=point_id("doc-b1"),
                     dense_vector=make_dense([0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                     payload={
                         "page_content": "Ruby on Rails",
@@ -158,7 +159,7 @@ class TestOpenSearchUpsertQuery:
             )
             results = (await opensearch_service.query_nearest_points(col, [req]))[0]
             ids = {r.id for r in results}
-            assert "doc-b1" not in ids
+            assert point_id("doc-b1") not in ids
         finally:
             await opensearch_service.delete_collection(col)
 
@@ -186,7 +187,7 @@ class TestOpenSearchUpsertQuery:
             )
             results = (await opensearch_service.query_nearest_points(col, [req]))[0]
             ids = {r.id for r in results}
-            assert "doc-cooking" not in ids
+            assert point_id("doc-cooking") not in ids
         finally:
             await opensearch_service.delete_collection(col)
 
@@ -215,7 +216,7 @@ class TestOpenSearchMutations:
                 limit=5,
             )
             results = (await opensearch_service.query_nearest_points(col, [req]))[0]
-            assert not any(r.id == "doc-python" for r in results)
+            assert not any(r.id == point_id("doc-python") for r in results)
         finally:
             await opensearch_service.delete_collection(col)
 
@@ -328,7 +329,7 @@ class TestOpenSearchForceMergeAndWarmup:
             )
             results = (await opensearch_service.query_nearest_points(col, [req]))[0]
             assert len(results) > 0
-            assert results[0].id == "doc-python"
+            assert results[0].id == point_id("doc-python")
         finally:
             await opensearch_service.delete_collection(col)
 
@@ -369,7 +370,7 @@ class TestOpenSearchQuantizedCollection:
                 limit=3,
             )
             results = (await opensearch_service.query_nearest_points(col, [req]))[0]
-            assert results[0].id == "doc-python", (
+            assert results[0].id == point_id("doc-python"), (
                 "Quantization must not change the top-1 result for a clearly dominant vector"
             )
         finally:

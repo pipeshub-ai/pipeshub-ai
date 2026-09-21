@@ -398,7 +398,8 @@ class TestCreateTeam:
         with pytest.raises(HTTPException) as exc:
             await create_team(req)
         assert exc.value.status_code == 400
-        assert "Users not found in graph" in exc.value.detail
+        # people are told who to remove, never the raw ids
+        assert exc.value.detail == "Some people you picked are no longer in this workspace. Remove them and try sharing again."
 
     @pytest.mark.asyncio
     async def test_unknown_user_id_raises_400(self):
@@ -416,7 +417,8 @@ class TestCreateTeam:
         with pytest.raises(HTTPException) as exc:
             await create_team(req)
         assert exc.value.status_code == 400
-        assert "Users not found in graph" in exc.value.detail
+        # people are told who to remove, never the raw ids
+        assert exc.value.detail == "Some people you picked are no longer in this workspace. Remove them and try sharing again."
 
     @pytest.mark.asyncio
     async def test_empty_user_id_in_roles_skipped(self):
@@ -669,7 +671,8 @@ class TestUpdateTeam:
         with pytest.raises(HTTPException) as exc:
             await update_team(req, "team-1")
         assert exc.value.status_code == 400
-        assert "Users not found in graph" in exc.value.detail
+        # people are told who to remove, never the raw ids
+        assert exc.value.detail == "Some people you picked are no longer in this workspace. Remove them and try sharing again."
 
     @pytest.mark.asyncio
     async def test_update_user_roles(self):
@@ -1040,7 +1043,12 @@ class TestGetUserTeams:
                 created_by=MEMBER_MONGO_ID_2,
             )
         assert exc.value.status_code == 400
-        assert "Users not found in graph" in exc.value.detail
+        # a filter naming someone who isn't here is a lookup miss, not a picked person
+        assert exc.value.detail == (
+            "This person was removed, or you no longer have access. "
+            "Refresh the page and try again."
+        )
+        assert MEMBER_MONGO_ID_2 not in exc.value.detail
         gp.get_user_teams.assert_not_called()
 
     @pytest.mark.asyncio

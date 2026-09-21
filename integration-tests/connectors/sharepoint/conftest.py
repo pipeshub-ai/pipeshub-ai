@@ -22,6 +22,7 @@ import pytest
 import pytest_asyncio
 from connector_lifecycle import destructor
 from helper.graph_provider import GraphProviderProtocol
+from helper.source_credentials import source_unavailable
 from helper.graph_provider_utils import wait_until_graph_condition
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
@@ -46,7 +47,10 @@ def expected_site_names() -> list[str]:
 def sharepoint_credentials() -> dict[str, str]:
     missing = [name for name in REQUIRED_ENV if not os.getenv(name)]
     if missing:
-        pytest.skip(f"SharePoint credentials not set: {', '.join(missing)}")
+        source_unavailable(
+            "The SharePoint tenant this suite syncs from is not configured.",
+            secrets=missing,
+        )
     return {name: os.environ[name] for name in REQUIRED_ENV}
 
 

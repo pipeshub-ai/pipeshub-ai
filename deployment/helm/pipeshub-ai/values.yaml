@@ -310,49 +310,6 @@ config:
   # reach a daemon you run yourself, e.g. "tcp://docker-daemon.svc:2375".
   dockerHost: ""
 
-# --- Coding sandbox execution ------------------------------------------------
-sandbox:
-  # Docker-in-Docker sidecar, so SANDBOX_MODE=docker has a daemon to talk to.
-  #
-  # Off by default, and that is deliberate. DinD needs a PRIVILEGED container,
-  # which is the one exception to this chart's otherwise uniform posture
-  # (runAsNonRoot, drop ALL capabilities, no privilege escalation). A
-  # privileged container can escape to the node, so enabling this trades a
-  # node-level risk for the isolation that keeps model-generated code off the
-  # application pod. Make that trade knowingly:
-  #
-  #   - Pod Security Admission `restricted` and OpenShift's default SCC will
-  #     REJECT this pod. You need a `privileged`/`baseline` namespace label or
-  #     a matching SCC.
-  #   - Every container in this pod can reach the daemon on localhost:2375 and
-  #     therefore has root on the node. Do not co-locate untrusted sidecars.
-  #
-  # Alternatives that avoid a privileged container entirely:
-  #   - SANDBOX_MODE=e2b with E2B_API_KEY (execution moves off-cluster)
-  #   - config.dockerHost pointing at a daemon you run and secure yourself
-  #   - a rootless image (docker:<ver>-dind-rootless) via `image` below, which
-  #     needs its own cgroup/seccomp accommodations — verify on your cluster
-  dind:
-    enabled: false
-    image: "docker:27-dind"
-    pullPolicy: "IfNotPresent"
-    # The daemon listens on plain TCP bound to the pod's localhost. TLS is
-    # off because the socket never leaves the pod's network namespace;
-    # exposing this port beyond the pod would be handing out node root.
-    port: 2375
-    resources:
-      requests:
-        cpu: "250m"
-        memory: "512Mi"
-      limits:
-        cpu: "2"
-        memory: "4Gi"
-    # /var/lib/docker. emptyDir means the sandbox image is re-pulled after
-    # every pod restart; size this for that image plus the layers a run
-    # creates. Set `existingClaim` to keep the cache across restarts.
-    storage:
-      sizeLimit: "20Gi"
-      existingClaim: ""
   # Light records take their own cluster-wide indexing lease pool. Leave false
   # for one release: a previous-build replica admits every record into the
   # shared "indexing" pool at the full budget, so during a rolling upgrade a
@@ -399,6 +356,50 @@ sandbox:
   # Enter this value in your IdP (e.g. Okta → "Audience URI (SP Entity ID)").
   # Override with --set config.samlSpEntityId="https://app.example.com"
   samlSpEntityId: "pipeshub"
+
+# --- Coding sandbox execution ------------------------------------------------
+sandbox:
+  # Docker-in-Docker sidecar, so SANDBOX_MODE=docker has a daemon to talk to.
+  #
+  # Off by default, and that is deliberate. DinD needs a PRIVILEGED container,
+  # which is the one exception to this chart's otherwise uniform posture
+  # (runAsNonRoot, drop ALL capabilities, no privilege escalation). A
+  # privileged container can escape to the node, so enabling this trades a
+  # node-level risk for the isolation that keeps model-generated code off the
+  # application pod. Make that trade knowingly:
+  #
+  #   - Pod Security Admission `restricted` and OpenShift's default SCC will
+  #     REJECT this pod. You need a `privileged`/`baseline` namespace label or
+  #     a matching SCC.
+  #   - Every container in this pod can reach the daemon on localhost:2375 and
+  #     therefore has root on the node. Do not co-locate untrusted sidecars.
+  #
+  # Alternatives that avoid a privileged container entirely:
+  #   - SANDBOX_MODE=e2b with E2B_API_KEY (execution moves off-cluster)
+  #   - config.dockerHost pointing at a daemon you run and secure yourself
+  #   - a rootless image (docker:<ver>-dind-rootless) via `image` below, which
+  #     needs its own cgroup/seccomp accommodations — verify on your cluster
+  dind:
+    enabled: false
+    image: "docker:27-dind"
+    pullPolicy: "IfNotPresent"
+    # The daemon listens on plain TCP bound to the pod's localhost. TLS is
+    # off because the socket never leaves the pod's network namespace;
+    # exposing this port beyond the pod would be handing out node root.
+    port: 2375
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+    # /var/lib/docker. emptyDir means the sandbox image is re-pulled after
+    # every pod restart; size this for that image plus the layers a run
+    # creates. Set `existingClaim` to keep the cache across restarts.
+    storage:
+      sizeLimit: "20Gi"
+      existingClaim: ""
 
 # IMPORTANT: Set a stable secret key for production deployments!
 # If not set, a random key is generated on each install. This causes issues

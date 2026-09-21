@@ -130,7 +130,7 @@ export function ChatInputWrapper() {
         signal,
       });
       const ref = refs[0];
-      if (!ref) throw new Error('Upload returned no attachment ref');
+      if (!ref) throw new Error("The upload didn't finish. Please attach the file again.");
       return ref;
     },
     [effectiveAgentId],

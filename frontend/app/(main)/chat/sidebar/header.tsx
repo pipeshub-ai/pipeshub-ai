@@ -4,12 +4,37 @@ import { Flex, IconButton, Tooltip } from '@radix-ui/themes';
 import { Link } from '@/lib/navigation';
 import { HEADER_ELEMENT_SIZE } from '@/app/components/sidebar';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { toast } from '@/lib/store/toast-store';
 import { PipesHubIcon } from '@/app/components/ui';
+
+function SidebarPanelIcon({ size = 18, color = 'currentColor' }: { size?: number; color?: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      style={{ display: 'block', flexShrink: 0, color }}
+      aria-hidden
+    >
+      <rect
+        x="3"
+        y="3"
+        width="20"
+        height="20"
+        rx="2.5"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinejoin="round"
+      />
+      <path d="M9 3v18" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 /**
  * Sidebar header — logo, user avatar, and a desktop collapse button.
@@ -66,7 +91,7 @@ export function ChatSidebarHeader() {
               onClick={() => setNavCollapsed(true)}
               style={{ margin: 0, cursor: 'pointer' }}
             >
-              <MaterialIcon name="keyboard_tab" size={18} color="var(--gray-10)" style={{ transform: 'scaleX(-1)' }} />
+              <SidebarPanelIcon size={18} color="var(--gray-10)" />
             </IconButton>
           </Tooltip>
         )}

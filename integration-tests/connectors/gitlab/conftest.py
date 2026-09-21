@@ -28,6 +28,8 @@ from typing import Any, AsyncGenerator
 import pytest
 import pytest_asyncio
 
+from helper.source_credentials import source_unavailable
+
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
@@ -88,10 +90,10 @@ def _require_env() -> dict[str, str]:
     }
     missing = [key for key, value in values.items() if not value]
     if missing:
-        pytest.skip(
-            f"GitLab credentials/config not set (missing: {', '.join(sorted(missing))}). "
-            f"Required: {ENV_TOKEN}, {ENV_GROUP}, {ENV_PRIMARY_PROJECT}, "
-            f"{ENV_MUTATION_PROJECT}."
+        source_unavailable(
+            "The GitLab group this suite syncs from is not configured "
+            f"(missing: {', '.join(sorted(missing))}).",
+            secrets=[ENV_TOKEN, ENV_GROUP, ENV_PRIMARY_PROJECT, ENV_MUTATION_PROJECT],
         )
     values["subgroup"] = os.getenv(ENV_SUBGROUP, "")
     values["instance_url"] = os.getenv(ENV_INSTANCE_URL) or DEFAULT_INSTANCE_URL

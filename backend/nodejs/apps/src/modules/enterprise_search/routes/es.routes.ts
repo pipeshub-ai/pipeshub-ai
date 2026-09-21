@@ -1,6 +1,7 @@
 import { NextFunction, Router, Response } from 'express';
 import { Container } from 'inversify';
 import multer from 'multer';
+import { createMulter } from '../../../libs/utils/multer.utils';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
   addMessage,
@@ -127,12 +128,12 @@ export function createConversationalRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
-  const chatPdfUpload = multer({
+  const chatPdfUpload = createMulter({
     storage: multer.memoryStorage(),
     limits: { fileSize: CHAT_ATTACHMENT_UPLOAD_MAX_BYTES, files: 10 },
   });
 
-  const internalAttachmentUpload = multer({
+  const internalAttachmentUpload = createMulter({
     storage: multer.memoryStorage(),
     limits: { fileSize: CHAT_ATTACHMENT_UPLOAD_MAX_BYTES, files: 10 },
   });
@@ -613,7 +614,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     ? container.get<KeyValueStoreService>('KeyValueStoreService')
     : undefined;
 
-  const agentAttachmentUpload = multer({
+  const agentAttachmentUpload = createMulter({
     storage: multer.memoryStorage(),
     limits: { fileSize: CHAT_ATTACHMENT_UPLOAD_MAX_BYTES, files: 10 },
   });
@@ -917,7 +918,7 @@ export function createChatSpeechRouter(container: Container): Router {
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const appConfig = container.get<AppConfig>('AppConfig');
 
-  const audioUpload = multer({
+  const audioUpload = createMulter({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_STT_AUDIO_BYTES, files: 1 },
   });

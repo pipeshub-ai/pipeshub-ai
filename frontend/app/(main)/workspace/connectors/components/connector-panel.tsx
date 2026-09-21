@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Tabs, Box, Button, Text } from '@radix-ui/themes';
 import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
   WorkspaceRightPanel,
@@ -42,6 +43,7 @@ import {
 } from '../utils/sync-filter-save-guards';
 import type { PanelTab } from '../types';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
+import { isLocalFsConfigReadOnly } from '../utils/local-fs-helpers';
 
 /** Non-admin OAuth instances must pick an OAuth app before save. */
 function oauthAppSelectionError(
@@ -175,6 +177,7 @@ export function ConnectorPanel() {
     (isNoneAuthType(authTypeForConfigureGate) ||
       !isOAuthType(authTypeForConfigureGate) ||
       instanceAuthenticated);
+  const configReadOnly = isLocalFsConfigReadOnly(connectorType);
   // Use registry connector's display name so the panel always shows the type name
   // (e.g. "Pipeshub docs") rather than an instance name when creating a new connector.
   const connectorTypeName = registryConnectors.find((c) => c.type === connectorType)?.name ?? connectorName;
@@ -229,7 +232,7 @@ export function ConnectorPanel() {
         if (s.panelConnector?.type !== connectorType || (s.panelConnectorId ?? '') !== instanceKey) {
           return;
         }
-        const message = err instanceof Error ? err.message : 'Failed to load connector configuration';
+        const message = getUserFacingErrorMessage(err, 'We couldn\'t load this connector\'s settings. Please try again in a moment.');
         setSchemaError(message);
       } finally {
         if (gen === panelOpenFetchGen.current) {
@@ -568,7 +571,7 @@ export function ConnectorPanel() {
           setPanelActiveTab('configure');
         }
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.createError');
+        const message = getUserFacingErrorMessage(err, t('workspace.connectors.toasts.createError'));
         setSaveError(message);
       } finally {
         setIsSavingAuth(false);
@@ -623,7 +626,7 @@ export function ConnectorPanel() {
           setPanelActiveTab('configure');
         }
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.authSaveError');
+        const message = getUserFacingErrorMessage(err, t('workspace.connectors.toasts.authSaveError'));
         setSaveError(message);
       } finally {
         setIsSavingAuth(false);
@@ -651,6 +654,9 @@ export function ConnectorPanel() {
   ]);
 
   const performSaveConfig = useCallback(async () => {
+    // Backstop for the confirm dialogs, which can reach here without the footer button.
+    if (configReadOnly) return;
+
     const currentConnectorId =
       panelConnectorId || useConnectorsStore.getState().panelConnectorId;
 
@@ -746,6 +752,7 @@ export function ConnectorPanel() {
     panelConnectorId,
     formData,
     connectorSchema,
+    configReadOnly,
     mergeFormErrors,
     closePanel,
     connectorType,
@@ -759,6 +766,8 @@ export function ConnectorPanel() {
   ]);
 
   const handleSaveConfig = useCallback(() => {
+    if (configReadOnly) return;
+
     const currentConnectorId =
       panelConnectorId || useConnectorsStore.getState().panelConnectorId;
 
@@ -818,6 +827,7 @@ export function ConnectorPanel() {
     panelConnectorId,
     panelConnector,
     connectorSchema,
+    configReadOnly,
     formData.sync.customValues,
     formData.filters.sync,
     formData.filters.indexing,
@@ -878,6 +888,7 @@ export function ConnectorPanel() {
     isSavingConfig,
     isLoadingSchema,
     isLoadingConfig,
+    configReadOnly,
     onNext: handleSaveAuth,
     onSave: handleSaveConfig,
     labels: {
@@ -892,6 +903,7 @@ export function ConnectorPanel() {
       authBeforeConfigure: t('workspace.connectors.authRequiredBeforeConfig'),
       backToAuth: t('workspace.connectors.backToCredentials'),
       backFromConfigure: t('workspace.connectors.backFromConfigure'),
+      configReadOnly: t('workspace.connectors.configTab.localFsDesktopOnlySaveTooltip'),
     },
     onContinueFromAuthorize: async () => {
       await refreshPanelFromServer();
@@ -1006,7 +1018,7 @@ export function ConnectorPanel() {
                 </Tabs.Content>
               ) : null}
               <Tabs.Content value="configure">
-                <ConfigureTab />
+                <ConfigureTab readOnly={configReadOnly} />
               </Tabs.Content>
             </Box>
           </Tabs.Root>
@@ -1073,6 +1085,7 @@ function getFooterConfig({
   isSavingConfig,
   isLoadingSchema,
   isLoadingConfig,
+  configReadOnly,
   onNext,
   onSave,
   labels,
@@ -1091,6 +1104,7 @@ function getFooterConfig({
   isSavingConfig: boolean;
   isLoadingSchema: boolean;
   isLoadingConfig: boolean;
+  configReadOnly: boolean;
   onNext: () => void;
   onSave: () => void;
   labels: {
@@ -1105,6 +1119,7 @@ function getFooterConfig({
     authBeforeConfigure: string;
     backToAuth: string;
     backFromConfigure: string;
+    configReadOnly: string;
   };
   onContinueFromAuthorize: () => void | Promise<void>;
   onBackFromConfigure: () => void | Promise<void>;
@@ -1158,7 +1173,9 @@ function getFooterConfig({
       isNoneAuthType(authTypeForConfigureGate) ||
       !isOAuthType(authTypeForConfigureGate));
 
-  const configTooltip = !hasConnectorId
+  const configTooltip = configReadOnly
+    ? labels.configReadOnly
+    : !hasConnectorId
     ? labels.completeAuthForSave
     : !configureSaveAllowed
     ? labels.authBeforeConfigure
@@ -1168,7 +1185,8 @@ function getFooterConfig({
 
   return {
     primaryLabel: labels.saveConfig,
-    primaryDisabled: !configureSaveAllowed || isSavingConfig || isLoadingSchema || isLoadingConfig,
+    primaryDisabled:
+      configReadOnly || !configureSaveAllowed || isSavingConfig || isLoadingSchema || isLoadingConfig,
     primaryLoading: isSavingConfig,
     primaryTooltip: configTooltip,
     onPrimary: onSave,

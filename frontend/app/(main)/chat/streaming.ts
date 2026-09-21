@@ -21,7 +21,7 @@ import { buildChatArtifact } from './utils/build-chat-artifact';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages, getThreadMessagePlainText } from './runtime';
 import { i18n } from '@/lib/i18n';
-import { toast } from '@/lib/store/toast-store';
+import { showNoModelToast } from './utils/no-model-toast';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import {
   buildAssistantApiFilters,
@@ -911,11 +911,7 @@ export async function streamRegenerateForSlot(
     }
   }
   if (!resolvedModel) {
-    toast.warning('No AI model configured', {
-      description: 'This workspace has no AI model set up. Configure one in Settings.',
-      action: { label: 'AI Models Settings', href: '/workspace/ai-models' },
-      duration: null,
-    });
+    showNoModelToast();
     resolvedModel = { modelKey: '', modelName: '', modelFriendlyName: '' };
   }
 

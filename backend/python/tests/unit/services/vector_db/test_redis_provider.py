@@ -1076,12 +1076,19 @@ class TestRedisFailuresAreLoud:
             await service.get_collection_info("records")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "Unknown index name",
+            "records_idx: no such index",
+            # Redis 8.8+: without this, creating any new collection raised.
+            "SEARCH_INDEX_NOT_FOUND Index not found: records_idx",
+        ],
+    )
     async def test_collection_info_returns_missing_for_unknown_index(
-        self, service, mock_redis_client
+        self, service, mock_redis_client, reply
     ):
-        mock_redis_client.execute_command = AsyncMock(
-            side_effect=Exception("Unknown index name")
-        )
+        mock_redis_client.execute_command = AsyncMock(side_effect=Exception(reply))
         info = await service.get_collection_info("records")
         assert info.exists is False
 

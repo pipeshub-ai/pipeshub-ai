@@ -9,6 +9,7 @@ from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
 
@@ -201,7 +202,9 @@ async def create_team(request: Request) -> JSONResponse:
                 chunk_size=MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # the provider names the missing ids; people only need to know who to remove
+            logger.error("Team member lookup failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=400, detail=PEOPLE_GONE) from exc
 
     for user_role in user_roles:
         mongo_id = user_role.get("userId")
@@ -247,7 +250,7 @@ async def create_team(request: Request) -> JSONResponse:
         logger.error(f"Error in create_team: {str(e)}", exc_info=True)
         if transaction_id:
             await graph_provider.rollback_transaction(transaction_id)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=action_failed("create this team"))
 
     return JSONResponse(
         status_code=200,
@@ -372,7 +375,8 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                     chunk_size=MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE,
                 )
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                logger.error("Team member lookup failed: %s", exc, exc_info=True)
+                raise HTTPException(status_code=400, detail=PEOPLE_GONE) from exc
 
         # Remove users if specified
         if remove_user_mongo_ids:
@@ -413,7 +417,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                         logger.info(f"Updated {len(updated_permissions)} user roles in batch")
                     except Exception as e:
                         logger.error(f"Error updating user roles in batch: {str(e)}")
-                        raise HTTPException(status_code=500, detail=f"Failed to update user roles: {str(e)}")
+                        raise HTTPException(status_code=500, detail=action_failed("update these people's roles"))
 
         # Add users if specified (excluding creator to preserve OWNER role)
         if add_user_roles:
@@ -550,7 +554,7 @@ async def get_user_teams(
             ):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Users not found in graph: [{created_by}]",
+                    detail=not_found("This person"),
                 )
             graph_created_by = creator_user["_key"]
 

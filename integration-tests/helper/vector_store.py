@@ -126,9 +126,12 @@ class VectorStoreProbe:
         return self._client
 
     async def close(self) -> None:
-        if self._client is not None:
-            await self._client.close()
-            self._client = None
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                await client.close()
+            except Exception as exc:  # noqa: BLE001 - a dead connection still needs dropping
+                logger.debug("Closing the vector database client failed: %s", exc)
 
     # ------------------------------------------------------------------ #
     # Reads
@@ -140,7 +143,20 @@ class VectorStoreProbe:
         return sorted(c.name for c in result.collections)
 
     async def _count_matching(self, condition: qmodels.FieldCondition) -> int:
-        """Total points matching a condition across every collection."""
+        """Total points matching a condition across every collection.
+
+        Retried once on a fresh client: the probe is shared by a whole session,
+        and its pooled connection does not survive the vector database
+        restarting under it. A second failure is a real one.
+        """
+        try:
+            return await self._count_matching_once(condition)
+        except Exception as exc:  # noqa: BLE001 - re-raised below if a new client fails too
+            logger.info("Reconnecting to the vector database after: %s", exc)
+            await self.close()
+            return await self._count_matching_once(condition)
+
+    async def _count_matching_once(self, condition: qmodels.FieldCondition) -> int:
         client = await self._conn()
         total = 0
         for name in await self.collections():

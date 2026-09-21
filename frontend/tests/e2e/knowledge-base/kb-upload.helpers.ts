@@ -1,8 +1,9 @@
-import type { APIRequestContext, Locator, Page } from '@playwright/test';
+import { request, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { postWithRetry } from '../helpers/api-retry.helper';
+import { apiBaseURL, getAccessToken } from '../fixtures/api-context.fixture';
 
 /** Stable reason codes emitted by the backend in `file:failed` SSE events. */
 export const REJECTION = {
@@ -33,9 +34,15 @@ export async function createTestKb(
     throw new Error(`createTestKb failed [${response.status()}]: ${body}`);
   }
   const data = await response.json();
-  const id: string | undefined =
-    data.id ?? data._key ?? data.kb?.id ?? data.kb?._key;
-  if (!id) throw new Error(`createTestKb: no id in response: ${JSON.stringify(data)}`);
+  // The API answers with `id` (CreateKnowledgeBaseResponse, where it is
+  // required). Reading anything else would quietly accept a changed shape.
+  const id: unknown = data?.id;
+  if (typeof id !== 'string' || id.length === 0) {
+    throw new Error(
+      `createTestKb: POST /api/v1/knowledgeBase answered without a string "id". ` +
+        `Fields present: ${Object.keys(data ?? {}).join(', ') || '(none)'}`,
+    );
+  }
   return { id, name };
 }
 
@@ -51,6 +58,55 @@ export async function deleteTestKb(
   if (!response.ok() && response.status() !== 404) {
     throw new Error(`deleteTestKb ${kbId} failed [${response.status()}]: ${await response.text()}`);
   }
+}
+
+/**
+ * Upload one file through the real upload API and return its record id.
+ * The endpoint answers with a server-sent event stream, one event per file.
+ */
+export async function uploadFileByApi(
+  kbId: string,
+  file: { name: string; mimeType: string; buffer: Buffer },
+): Promise<string> {
+  // Not the shared apiContext: its default JSON Content-Type overrides the multipart one.
+  const uploader = await request.newContext({
+    baseURL: apiBaseURL(),
+    extraHTTPHeaders: { Authorization: `Bearer ${getAccessToken()}` },
+  });
+  let body: string;
+  try {
+    const response = await uploader.post(`/api/v1/knowledgeBase/${kbId}/upload`, { multipart: { files: file } });
+    body = await response.text();
+    if (!response.ok()) throw new Error(`uploading ${file.name} failed [${response.status()}]: ${body}`);
+  } finally {
+    await uploader.dispose();
+  }
+  const succeeded = body.match(/event: file:succeeded\ndata: (.*)\n/);
+  if (!succeeded) throw new Error(`uploading ${file.name} did not succeed: ${body.slice(0, 500)}`);
+  return (JSON.parse(succeeded[1]) as { recordId: string }).recordId;
+}
+
+/** Wait until a record finishes indexing; fail with the reason if it fails. */
+export async function waitForIndexed(
+  apiContext: APIRequestContext,
+  recordId: string,
+  timeoutMs = 300_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let status = 'unknown';
+  while (Date.now() < deadline) {
+    // Upload reports success only once the record exists, so any error here is real.
+    const response = await apiContext.get(`/api/v1/knowledgeBase/record/${recordId}`);
+    if (!response.ok()) {
+      throw new Error(`reading record ${recordId} failed [${response.status()}]: ${await response.text()}`);
+    }
+    const record = ((await response.json()) as { record?: { indexingStatus?: string; reason?: string } }).record;
+    status = record?.indexingStatus ?? 'unknown';
+    if (status === 'COMPLETED') return;
+    if (status === 'FAILED') throw new Error(`record ${recordId} failed to index: ${record?.reason ?? 'no reason given'}`);
+    await new Promise((r) => setTimeout(r, 3_000));
+  }
+  throw new Error(`record ${recordId} was still ${status} after ${timeoutMs / 1000}s`);
 }
 
 /**

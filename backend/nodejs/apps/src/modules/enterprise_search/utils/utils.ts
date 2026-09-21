@@ -40,6 +40,7 @@ import {
   SSEProtocol,
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
+import { CHAT_ERROR_MESSAGES, userFacingChatError } from './chat-error-messages';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -2039,13 +2040,10 @@ export const sendSSEErrorEvent = async (
     return;
   }
 
+  // `details` only picks the error code; its raw text never reaches the client.
   const errorData: any = {
     error: errorMessage,
   };
-
-  if (details) {
-    errorData.details = details;
-  }
 
   if (conversation) {
     errorData.conversation = conversation;
@@ -2150,7 +2148,7 @@ export const handleRegenerationStreamData = (
         try {
           const errorData = JSON.parse(dataLine);
           if (existingConversation && messageId) {
-            const errorMessage = errorData.message || 'Unknown error occurred';
+            const errorMessage = errorData.message || CHAT_ERROR_MESSAGES.failed;
             replaceMessageWithError(
               existingConversation,
               messageId,
@@ -2248,7 +2246,7 @@ export const handleRegenerationStreamData = (
           const errorData = JSON.parse(dataLine);
           if (existingConversation && messageId) {
             const errorMessage =
-              errorData.error || errorData.message || 'Unknown error occurred';
+              errorData.error || errorData.message || CHAT_ERROR_MESSAGES.failed;
             replaceMessageWithError(
               existingConversation,
               messageId,
@@ -2274,7 +2272,7 @@ export const handleRegenerationStreamData = (
             dataLine,
           });
           if (existingConversation && messageId) {
-            const errorMessage = `Failed to parse error event: ${parseError.message}`;
+            const errorMessage = CHAT_ERROR_MESSAGES.failed;
             replaceMessageWithError(
               existingConversation,
               messageId,
@@ -2466,7 +2464,7 @@ export const handleRegenerationError = async (
   errorType: string = 'regeneration_error',
   protocol?: SSEProtocol,
 ): Promise<void> => {
-  const errorMessage = error.message || 'Unknown error occurred';
+  const errorMessage = userFacingChatError(error);
 
   if (existingConversation && messageId) {
     try {

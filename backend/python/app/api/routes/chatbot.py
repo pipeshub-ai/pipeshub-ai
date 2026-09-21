@@ -21,6 +21,7 @@ from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_as_pil_from_
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry, RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
@@ -48,6 +49,7 @@ from app.utils.attachment_mime_types import (
     SUPPORTED_ATTACHMENT_MIME_TYPES,
     TEXT_ATTACHMENT_MIME_TYPES,
 )
+from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -303,8 +305,8 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
     # Get initial config
     ai_models = await config_service.get_config(
         config_node_constants.AI_MODELS.value, use_cache=True,
-    )
-    llm_configs = ai_models["llm"]
+    ) or {}
+    llm_configs = ai_models.get("llm") or []
 
     # Search based on provided parameters
     if model_key is None and model_name is None:
@@ -325,13 +327,13 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
         new_ai_models = await config_service.get_config(
             config_node_constants.AI_MODELS.value,
             use_cache=False
-        )
-        llm_configs = new_ai_models["llm"]
+        ) or {}
+        llm_configs = new_ai_models.get("llm") or []
         if key_config := _find_config_by_key(llm_configs, model_key):
             return key_config, new_ai_models
 
     if not llm_configs:
-        raise ValueError("No LLM configurations found")
+        raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
 
     return llm_configs, ai_models
 
@@ -353,7 +355,7 @@ async def get_llm_for_chat(
     try:
         llm_config, ai_models_config = await get_model_config(config_service, model_key, model_name)
         if not llm_config:
-            raise ValueError("No LLM configurations found")
+            raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
 
         # Handle list of configs - extract first one if we got a list
         if isinstance(llm_config, list):
@@ -390,8 +392,34 @@ async def get_llm_for_chat(
             model_provider, llm_config, default_model_name, reasoning_effort
         )
         return llm, llm_config, ai_models_config
+    except LLMNotConfiguredError:
+        # Already says what to do; the "Failed to initialize" prefix would only bury it.
+        raise
     except Exception as e:
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
+
+
+# Shown when the chat model fails to start for a reason the classifier doesn't recognise.
+CHAT_MODEL_START_FAILED = (
+    "The selected AI model couldn't be started. Try another model, or ask a "
+    "workspace admin to check it in Workspace → AI Models."
+)
+
+
+_ATTACHMENT_UNREADABLE_HINTS = {
+    "image": "The image may be damaged or in a format we can't open. Save it as PNG or JPEG and attach it again.",
+    "text": "Make sure it's a plain-text file, then attach it again.",
+    "docx": "It may be damaged or password-protected. Save it again, or attach it as a PDF.",
+    "spreadsheet": "It may be damaged or password-protected. Save it again, or attach it as a CSV.",
+    "csv": "Check that it's a valid CSV or TSV file, then attach it again.",
+    "pdf": "It may be damaged or password-protected. Save it again, or attach a different copy.",
+    "upload": "Please attach it again.",
+}
+
+
+def _attachment_unreadable(file_name: str, kind: str) -> str:
+    """The message a user sees when a chat attachment can't be read; the cause goes to the log."""
+    return f"Couldn't read {file_name}. {_ATTACHMENT_UNREADABLE_HINTS[kind]}"
 
 
 # Cap tabular chat-attachment context so large CSV/XLSX files don't blow the LLM window.
@@ -567,12 +595,13 @@ async def upload_chat_attachments(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Unsupported attachment type '{item.mimeType}': {item.fileName}. "
-                    "Supported: PDF, JPEG, PNG, TXT, MD, MDX, DOCX, XLSX, CSV, TSV."
+                    f"{item.fileName} can't be attached because that file type isn't supported. "
+                    "You can attach PDF, Word (DOCX), Excel (XLSX), CSV, TSV, text, Markdown, "
+                    "JPEG and PNG files."
                 ),
             )
         if item.size <= 0:
-            raise HTTPException(status_code=400, detail=f"Attachment size must be positive: {item.fileName}")
+            raise HTTPException(status_code=400, detail=f"{item.fileName} is empty. Attach a file that has content.")
 
         record_id = str(uuid4())
         virtual_record_id = str(uuid4())
@@ -586,7 +615,7 @@ async def upload_chat_attachments(
         try:
             file_binary = base64.b64decode(item.contentBase64, validate=True)
         except Exception:
-            raise HTTPException(status_code=400, detail=f"Invalid base64 content for attachment: {item.fileName}")
+            raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "upload"))
 
         storage_doc_id, _ = await blob_storage.save_binary_to_storage(
             org_id=org_id,
@@ -630,28 +659,32 @@ async def upload_chat_attachments(
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "image_direct"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to process image attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "image"))
         elif is_text:
             try:
                 block_containers = await _build_text_blocks(file_binary)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "text"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse text attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "text"))
         elif is_docx:
             try:
                 block_containers = await _build_docx_blocks(file_binary, item.fileName, config_service)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "docling"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse DOCX attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "docx"))
         elif is_spreadsheet:
             try:
                 block_containers = await _build_excel_blocks(file_binary, item.fileName, config_service)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "excel_lightweight"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse Excel attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet"))
         elif is_delimited:
             try:
                 block_containers = await _build_csv_blocks(
@@ -660,7 +693,8 @@ async def upload_chat_attachments(
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "csv_lightweight"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse CSV attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "csv"))
         else:
             try:
                 needs_ocr = await asyncio.to_thread(_pdf_has_any_ocr_page, file_binary)
@@ -670,8 +704,9 @@ async def upload_chat_attachments(
                         raise HTTPException(
                             status_code=400,
                             detail=(
-                                f"Scanned attachment page cap exceeded. "
-                                f"Maximum allowed combined scanned pages is {OCR_IMAGE_PAGE_CAP}."
+                                f"{item.fileName} has too many scanned pages to attach: the limit is "
+                                f"{OCR_IMAGE_PAGE_CAP} scanned pages per message. Attach fewer pages "
+                                "or split the document."
                             ),
                         )
                     block_containers = await asyncio.to_thread(
@@ -687,7 +722,8 @@ async def upload_chat_attachments(
             except HTTPException:
                 raise
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "pdf"))
         record_doc["isVLMOcrProcessed"] = needs_ocr
         file_doc = {
             "_key": record_id,
@@ -1044,18 +1080,21 @@ async def _generate_chat_stream_via_agent_loop(
     try:
         llm_bundle = await llm_task
         if not llm_bundle or llm_bundle[0] is None:
-            raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
+            raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
         llm, model_config, ai_models_config = llm_bundle
     except Exception as exc:
         for pending in (prompts_task, user_doc_task, org_doc_task):
             pending.cancel()
         await asyncio.gather(prompts_task, user_doc_task, org_doc_task, return_exceptions=True)
         logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
+        error_code, user_message = classify_exception(exc)
+        if error_code == "unknown":
+            user_message = CHAT_MODEL_START_FAILED
         if protocol == "agui":
-            evt = frame(AGUIEventType.RUN_ERROR, message=str(exc), code="llm_initialization_failed")
+            evt = frame(AGUIEventType.RUN_ERROR, message=user_message, code="llm_initialization_failed")
             yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
         else:
-            yield create_sse_event("error", {"error": str(exc)})
+            yield create_sse_event("error", {"error": user_message})
         return
 
     system_prompts_config: dict[str, Any] = await prompts_task

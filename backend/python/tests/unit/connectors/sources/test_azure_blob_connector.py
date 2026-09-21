@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from fastapi import HTTPException
@@ -1526,6 +1527,38 @@ class TestEntitiesProcessor:
         assert result.weburl is not None
         assert result.is_internal is True
         assert result.hide_weburl is True
+
+    def test_forwards_record_group_kwargs_to_base(self, mock_logger_fullcov, mock_provider, mock_config):
+        proc = AzureBlobDataSourceEntitiesProcessor(
+            logger=mock_logger_fullcov,
+            data_store_provider=mock_provider,
+            config_service=mock_config,
+            account_name="myaccount",
+        )
+        proc.org_id = "org-1"
+        child = MagicMock()
+        child.connector_name = Connectors.AZURE_BLOB
+        child.connector_id = "c1"
+        child.org_id = "org-1"
+
+        result = proc._create_placeholder_parent_record(
+            "c/folder",
+            RecordType.FILE,
+            child,
+            record_name="folder",
+            record_group_type=RecordGroupType.BUCKET.value,
+            external_record_group_id="c",
+        )
+        assert isinstance(result, FileRecord)
+        assert result.record_name == "folder"
+        assert result.record_group_type == RecordGroupType.BUCKET.value
+        assert result.external_record_group_id == "c"
+        assert result.is_internal is True
+        assert result.hide_weburl is True
+        parsed = urlparse(result.weburl)
+        assert parsed.scheme == "https"
+        assert parsed.hostname == "myaccount.blob.core.windows.net"
+        assert result.path == "folder/"
 
 
 class TestGetAppUsers:

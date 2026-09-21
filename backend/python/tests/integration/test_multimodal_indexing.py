@@ -31,7 +31,7 @@ from tests.integration.vector_db.conftest import (  # noqa: F401  (fixtures)
 )
 from tests.integration.vector_db.helpers import DIM
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 from app.models.blocks import BlockType  # noqa: E402
 from app.services.embeddings.multimodal.interface import (  # noqa: E402
@@ -77,18 +77,32 @@ class FakeMultimodalProvider(IMultimodalEmbeddingProvider):
 
 def _make_vector_store(vector_db_service):
     from app.modules.transformers.vectorstore import VectorStore
-    from app.services.vector_db.models import VectorDBCapabilities
+    from app.services.vector_db.collection_manifest import CollectionManifestStore
+    from app.services.vector_db.collection_registry import CollectionRegistry
+    from app.services.vector_db.models import CollectionConfig, VectorDBCapabilities
+    from app.services.vector_db.strategies.single import SingleCollectionStrategy
 
     vector_db_service.get_capabilities = MagicMock(return_value=VectorDBCapabilities())
 
     graph_provider = AsyncMock()
     graph_provider.get_document = AsyncMock(return_value={"_key": "rec-1"})
 
+    # The image path under test never resolves a collection (each test upserts
+    # into its own), but VectorStore reads the strategy off a registry.
+    registry = CollectionRegistry(
+        vector_db_service=vector_db_service,
+        strategy=SingleCollectionStrategy(),
+        collection_config_factory=lambda size, sparse_idf=False: CollectionConfig(
+            embedding_size=size
+        ),
+        manifest_store=CollectionManifestStore(AsyncMock(), MagicMock()),
+        logger=MagicMock(),
+    )
     vs = VectorStore(
         logger=MagicMock(),
         config_service=AsyncMock(),
         graph_provider=graph_provider,
-        collection_name="",  # set per-test via vs.collection_name
+        collection_registry=registry,
         vector_db_service=vector_db_service,
     )
     vs.embedding_provider = "cohere"
@@ -129,7 +143,6 @@ class TestQdrantMultimodalIndexing:
 
         col = make_collection("e2e_mm_qdrant")
         vs = _make_vector_store(qdrant_service)
-        vs.collection_name = col
         cfg = CollectionConfig(embedding_size=DIM, distance_metric=DistanceMetric.COSINE)
 
         chunks = [
@@ -170,7 +183,6 @@ class TestQdrantMultimodalIndexing:
 
         col = make_collection("e2e_mm_qdrant_baddim")
         vs = _make_vector_store(qdrant_service)
-        vs.collection_name = col
         cfg = CollectionConfig(embedding_size=DIM, distance_metric=DistanceMetric.COSINE)
 
         chunks = [
@@ -204,7 +216,6 @@ class TestRedisMultimodalIndexing:
 
         col = make_collection("e2e_mm_redis")
         vs = _make_vector_store(redis_service)
-        vs.collection_name = col
         cfg = CollectionConfig(embedding_size=DIM, distance_metric=DistanceMetric.COSINE)
 
         chunks = [

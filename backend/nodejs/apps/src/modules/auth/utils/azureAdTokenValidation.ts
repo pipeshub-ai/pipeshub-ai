@@ -3,6 +3,7 @@ import axios from 'axios';
 import jwkToPem from 'jwk-to-pem';
 import {
   BadRequestError,
+  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
@@ -10,132 +11,159 @@ const logger = Logger.getInstance({
   service: 'Azure Ad Token Validation',
 });
 
+// Microsoft signs ID tokens for every tenant and app with the same keys, so a
+// valid signature alone says nothing about who the token was issued for.
+const MULTI_TENANT_AUTHORITIES = new Set([
+  'common',
+  'organizations',
+  'consumers',
+]);
+// Personal Microsoft accounts (outlook.com, live.com, ...) all share this tenant.
+export const MICROSOFT_CONSUMER_TENANT_ID =
+  '9188040d-6c67-4c5b-b112-36a304b66dad';
+
+// Sign-in waits on these two calls, so they get a short bound rather than the
+// 10s used for background telemetry calls.
+const MICROSOFT_METADATA_TIMEOUT_MS = 5000;
+
+export const MICROSOFT_SIGN_IN_FAILED =
+  "Sign-in with Microsoft didn't complete. Try again; if it keeps happening, ask your admin to check the Microsoft sign-in settings.";
+const WRONG_ACCOUNT =
+  "This Microsoft account can't be used to sign in here. Sign in with your organization's Microsoft account, or ask your admin which account to use.";
+
+interface OpenIdConfiguration {
+  issuer?: string;
+  jwks_uri?: string;
+}
+
+interface JsonWebKeySet {
+  keys?: (jwkToPem.JWK & { kid?: string })[];
+}
+
+export interface MicrosoftSignInConfig {
+  clientId?: string;
+  tenantId?: string;
+}
+
+export const isSingleTenantConfig = (tenantId?: string): boolean =>
+  !MULTI_TENANT_AUTHORITIES.has((tenantId || 'common').trim().toLowerCase());
+
 export const validateAzureAdUser = async (
-  credentials: Record<string, any>,
-  tenantId: string,
-): Promise<any | null> => {
+  credentials: { idToken?: unknown },
+  config: MicrosoftSignInConfig,
+): Promise<JwtPayload> => {
+  const idToken = credentials.idToken;
+  if (typeof idToken !== 'string' || idToken === '') {
+    throw new BadRequestError(MICROSOFT_SIGN_IN_FAILED);
+  }
+  const clientId = config.clientId?.trim();
+  if (!clientId) {
+    throw new BadRequestError(
+      "Microsoft sign-in isn't fully set up. Ask your admin to add the application (client) ID in the Microsoft sign-in settings.",
+    );
+  }
+  const tenant = (config.tenantId || 'common').trim();
+
+  const decoded = jwt.decode(idToken, { complete: true });
+  if (decoded === null) throw new UnauthorizedError(MICROSOFT_SIGN_IN_FAILED);
+
+  let openIdConfig: { data: OpenIdConfiguration };
+  let jwks: { data: JsonWebKeySet };
   try {
-    const idToken = credentials?.idToken;
-    if (!idToken) {
-      throw new BadRequestError('Id token is required');
-    }
-
-    // Decode token without verification
-    const decoded = jwt.decode(idToken, { complete: true });
-    if (!decoded || !decoded.header)
-      throw new UnauthorizedError('Invalid token structure');
-
-    // if (handleAzureAuthCallback(credentials, email, decoded) == null) {
-    //   return { statusCode: 400 };
-    if (handleAzureAuthCallback(credentials, decoded) == null) {
-      throw new BadRequestError('Error in Azure Auth CallBack');
-    }
-
-    // Fetch OpenID Configuration & JWKS
-    const openIdConfig = await axios.get(
-      `https://login.microsoftonline.com/${tenantId}/v2.0/.well-known/openid-configuration`,
+    openIdConfig = await axios.get<OpenIdConfiguration>(
+      `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/v2.0/.well-known/openid-configuration`,
+      { timeout: MICROSOFT_METADATA_TIMEOUT_MS },
     );
-
-    const jwks = await axios.get(openIdConfig.data.jwks_uri);
-
-    // Find the matching signing key
-    const signingKey = jwks.data.keys.find(
-      (key: any) => key.kid === decoded.header.kid,
-    );
-    if (!signingKey) throw new BadRequestError('Signing key not found');
-    // Convert JWK to PEM & verify token
-    const publicKey = jwkToPem(signingKey);
-    const verifiedToken = jwt.verify(idToken, publicKey, {
-      algorithms: ['RS256'],
+    jwks = await axios.get<JsonWebKeySet>(openIdConfig.data.jwks_uri ?? '', {
+      timeout: MICROSOFT_METADATA_TIMEOUT_MS,
     });
-
-    return verifiedToken;
   } catch (error) {
-    throw error;
+    logger.warn('Could not reach Microsoft to check the sign-in', {
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    throw new ServiceUnavailableError(
+      "We couldn't reach Microsoft to check your sign-in. Please try again in a moment.",
+    );
   }
-};
 
-export const handleAzureAuthCallback = async (
-  credentials: Record<string, any>,
-  decoded: Record<string, any>,
-) => {
+  const signingKey = jwks.data.keys?.find(
+    (key) => key.kid === decoded.header.kid,
+  );
+  if (!signingKey) throw new UnauthorizedError(MICROSOFT_SIGN_IN_FAILED);
+
+  let verified: JwtPayload;
   try {
-    const accessToken = credentials?.accessToken;
-    if (!accessToken) {
-      return null;
-    }
-    const isJwtToken = (token: string) => token?.split('.')?.length === 3;
-    let decodedToken;
-
-    if (isJwtToken(accessToken)) {
-      try {
-        decodedToken = jwt.decode(accessToken) as JwtPayload;
-      } catch (error) {
-        if (error instanceof Error) {
-          logger.error('Error decoding access token:', error.message);
-        }
-        return null;
-      }
-    } else {
-      logger.warn('Personal account detected.');
-      return accessToken;
-    }
-
-    const userPrincipalName = (
-      decodedToken?.upn ||
-      decoded?.payload?.email ||
-      credentials.account?.username ||
-      ''
-    ).toLowerCase();
-    if (!userPrincipalName) {
-      // return res.status(400).json({ error: "User principal name (UPN) is missing." });
-      logger.error('User principal name (UPN) is missing.');
-      return null;
-    }
-
-    logger.info('UPN:', userPrincipalName);
-    return accessToken;
-    // const user = await User.findOne({
-    //   upn: userPrincipalName,
-    //   isDeleted: false,
-    //   isAccountNotVerified: { $in: [false, undefined] },
-    // }).lean();
-
-    // if (!user) {
-    //   return res.status(404).json({ error: "User not found." });
-    // }
-
-
-    // if (validateAzureUser(response, decodedToken, user.email, user.upn, res)) {
-    //   return;
-    // }
+    const result = jwt.verify(idToken, jwkToPem(signingKey), {
+      algorithms: ['RS256'],
+      audience: clientId,
+    });
+    if (typeof result === 'string') throw new UnauthorizedError(WRONG_ACCOUNT);
+    verified = result;
   } catch (error) {
-    throw error;
+    if (error instanceof jwt.TokenExpiredError) {
+      throw new UnauthorizedError(
+        'Your Microsoft sign-in expired. Please sign in again.',
+      );
+    }
+    logger.warn('Rejected a Microsoft ID token', {
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    throw new UnauthorizedError(WRONG_ACCOUNT);
   }
+
+  // A tenant-specific configuration publishes its own issuer; the multi-tenant
+  // ones publish a {tenantid} template that must match the token's own tid.
+  const tid = typeof verified.tid === 'string' ? verified.tid : '';
+  const expectedIssuer = (openIdConfig.data.issuer ?? '').replace(
+    '{tenantid}',
+    tid,
+  );
+  const allowedForAuthority =
+    tenant.toLowerCase() !== 'organizations' ||
+    tid !== MICROSOFT_CONSUMER_TENANT_ID;
+  if (
+    !tid ||
+    !expectedIssuer ||
+    verified.iss !== expectedIssuer ||
+    !allowedForAuthority
+  ) {
+    logger.warn('Rejected a Microsoft ID token from an unexpected tenant', {
+      tokenTenant: tid,
+      configuredTenant: tenant,
+    });
+    throw new UnauthorizedError(WRONG_ACCOUNT);
+  }
+
+  return verified;
 };
 
-// const validateAzureAdUserEmail = (username:string, decodedToken:JwtPayload, userEmail:string) => {
-//   const azureEmail = username;
-//   const azureUPN = decodedToken?.upn;
-
-//   if (!azureEmail) {
-//      res.status(400).json({ error: "Azure email is missing." });
-//   }
-
-//   if (!azureUPN) {
-//     if (azureEmail !== userEmail) {
-//       return res.status(400).json({ error: "Email mismatch between Azure and system." });
-//     }
-//     if (userUPN && userEmail !== userUPN) {
-//       return res.status(400).json({ error: "UPN mapping mismatch." });
-//     }
-//   } else {
-//     if (userUPN && azureUPN !== userUPN) {
-//       return res.status(400).json({ error: "UPN mismatch between Azure and system." });
-//     }
-//     if (azureEmail !== userEmail) {
-//       return res.status(400).json({ error: "Email mismatch between Azure and system." });
-//     }
-//   }
-//   return false;
-// };
+/**
+ * The email that identifies the PipesHub account for a verified token, and
+ * whether the token's `email` claim can be trusted to change stored data.
+ *
+ * `email` is set by tenant admins and never verified by Microsoft, so with a
+ * multi-tenant configuration anyone's tenant could claim any address. It is
+ * trusted only when the tenant is pinned, for personal accounts (Microsoft
+ * owns those addresses), or when Microsoft vouches for the domain (xms_edov).
+ * Otherwise the sign-in name is used: for work accounts it is the UPN, whose
+ * domain must be verified by the tenant that issued it.
+ */
+export const microsoftAccountIdentity = (
+  claims: JwtPayload,
+  tenantId?: string,
+): { email?: string; emailClaimTrusted: boolean } => {
+  const emailClaimTrusted =
+    isSingleTenantConfig(tenantId) ||
+    claims.tid === MICROSOFT_CONSUMER_TENANT_ID ||
+    claims.xms_edov === true ||
+    claims.xms_edov === 'true' ||
+    claims.xms_edov === '1';
+  const signInName = [claims.preferred_username, claims.upn].find(
+    (value): value is string =>
+      typeof value === 'string' && value.includes('@'),
+  );
+  const email =
+    (emailClaimTrusted && typeof claims.email === 'string' && claims.email) ||
+    signInName;
+  return { email: email ? email.toLowerCase() : undefined, emailClaimTrusted };
+};

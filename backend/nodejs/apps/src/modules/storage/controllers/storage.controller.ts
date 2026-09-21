@@ -7,7 +7,11 @@ import {
 } from '../../../libs/middlewares/types';
 import { Response, NextFunction } from 'express';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import { endpoint, storageEtcdPaths } from '../constants/constants';
+import {
+  endpoint,
+  storageEtcdPaths,
+  STORAGE_WRITE_FAILED_MESSAGE,
+} from '../constants/constants';
 import {
   AzureBlobStorageConfig,
   LocalStorageConfig,
@@ -19,8 +23,10 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
 import {
   BadRequestError,
+  ConflictError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import {
   Document,
@@ -50,6 +56,7 @@ import {
   isValidStorageVendor,
   normalizeExtension,
   serveFileFromLocalStorage,
+  writeToStorage,
 } from '../utils/utils';
 import { UploadDocumentService } from './storage.upload.service';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
@@ -110,22 +117,21 @@ export class StorageController {
     document: mongoose.Document<unknown, {}, DocumentModel> & DocumentModel,
     buffer: Buffer,
     newDocumentFilePath: string,
-    next: NextFunction,
+    _next: NextFunction,
     adapter: StorageServiceAdapter,
   ): Promise<StorageServiceResponse<string> | undefined> {
-    try {
-      const mimetype = getMimeType(document.extension);
-      const cloneFilePayload: FilePayload = {
-        buffer: buffer,
-        mimeType: mimetype,
-        documentPath: newDocumentFilePath,
-        isVersioned: document.isVersionedFile,
-      };
-      return await adapter.uploadDocumentToStorageService(cloneFilePayload);
-    } catch (error) {
-      next(error);
-      return undefined;
-    }
+    const mimetype = getMimeType(document.extension);
+    const cloneFilePayload: FilePayload = {
+      buffer: buffer,
+      mimeType: mimetype,
+      documentPath: newDocumentFilePath,
+      isVersioned: document.isVersionedFile,
+    };
+    // Throws rather than calling next: every caller is inside its own try, and
+    // answering here as well would send a second response.
+    return writeToStorage(adapter, cloneFilePayload, {
+      documentId: String(document._id),
+    });
   }
 
   async compareDocuments(
@@ -350,6 +356,87 @@ export class StorageController {
       next(error);
     }
   }
+  /**
+   * Removes a new document whose direct upload never arrived. Refused unless a
+   * signed URL was issued for it and storage confirms its file is absent, so a
+   * stored file never loses its document.
+   *
+   * The caller aborts only after its upload has failed, so the file it was
+   * sending is no longer on its way. Even so, the delete is guarded on the
+   * document still being an unfinished direct upload, and anything that did
+   * land at the document's path is removed afterwards, so the end state is
+   * never a stored file that nothing describes.
+   */
+  async abortDirectUpload(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
+      const { documentId } = req.params;
+      const document = await DocumentModel.findOne({ _id: documentId, orgId });
+      if (!document) {
+        throw new NotFoundError('Document does not exist');
+      }
+      if (document.awaitingDirectUpload !== true) {
+        throw new ConflictError(
+          'This document is not an unfinished direct upload',
+        );
+      }
+
+      const adapter = await this.initializeStorageAdapter(req);
+      let exists: boolean;
+      try {
+        exists = await adapter.objectExists(document);
+      } catch (error) {
+        this.logger.error('Could not check whether a direct upload arrived', {
+          documentId: String(document._id),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw new ServiceUnavailableError(
+          'Could not confirm the file is absent from storage; the document was kept',
+        );
+      }
+      if (exists) {
+        await DocumentModel.updateOne(
+          { _id: document._id, orgId },
+          { $unset: { awaitingDirectUpload: '' } },
+        );
+        throw new ConflictError(
+          'The file arrived in storage; the document was kept',
+        );
+      }
+
+      // Only a document still waiting for its direct upload may go: anything
+      // that finished it in the meantime keeps its document.
+      const removed = await DocumentModel.findOneAndDelete({
+        _id: document._id,
+        orgId,
+        awaitingDirectUpload: true,
+      });
+      if (!removed) {
+        throw new ConflictError(
+          'The document changed while it was being aborted; it was kept',
+        );
+      }
+
+      // The signed link stays valid until it expires, so a file could still
+      // arrive at this path. Nothing describes it now, so remove it.
+      try {
+        await adapter.deleteObject(document);
+      } catch (error) {
+        this.logger.warn('Could not clear the path of an aborted upload', {
+          documentId: String(document._id),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      res.status(HTTP_STATUS.OK).json({ deleted: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async downloadDocument(
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -475,7 +562,16 @@ export class StorageController {
       const document = docResult.document;
 
       const adapter = await this.initializeStorageAdapter(req);
-      const uploadResult = await adapter.updateBuffer(buffer, document);
+      let uploadResult: StorageServiceResponse<string>;
+      try {
+        uploadResult = await adapter.updateBuffer(buffer, document);
+      } catch (error) {
+        this.logger.error('Failed to upload buffer', {
+          documentId: String(document._id),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+      }
 
       if (uploadResult.statusCode === 200) {
         document.mutationCount = (document.mutationCount ?? 0) + 1;
@@ -483,10 +579,12 @@ export class StorageController {
         await document.save();
         res.status(200).json(uploadResult.data);
       } else {
-        this.logger.error(`Failed to upload buffer: ${uploadResult.msg}`);
-        throw new InternalServerError(
-          `Failed to upload buffer: ${uploadResult.msg}`,
-        );
+        this.logger.error('Failed to upload buffer', {
+          documentId: String(document._id),
+          statusCode: uploadResult.statusCode,
+          error: uploadResult.msg,
+        });
+        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
       }
     } catch (error) {
       next(error);
@@ -550,9 +648,18 @@ export class StorageController {
         );
 
         if (bufferResponse.statusCode !== 200) {
-          throw new InternalServerError(
-            `Some error occurred while uploading next version: ${bufferResponse.msg}`,
+          // `msg` is the storage service's own status text: it says what broke,
+          // so it belongs in the log. `data` is the file itself and never goes
+          // here. The person gets the sentence a failed first upload shows.
+          this.logger.error(
+            'Failed to read the current file before versioning',
+            {
+              documentId: String(document._id),
+              statusCode: bufferResponse.statusCode,
+              error: bufferResponse.msg,
+            },
           );
+          throw new InternalServerError(STORAGE_WRITE_FAILED_MESSAGE);
         }
 
         const response = await this.cloneDocument(
@@ -564,9 +671,14 @@ export class StorageController {
         );
 
         if (!response || response.statusCode !== 200) {
-          throw new InternalServerError(
-            response?.data ?? 'Failed to save current as v0 before update',
-          );
+          // `data` is the storage service's response body, which can carry the
+          // file or customer content, so only its status and message are kept.
+          this.logger.error('Failed to save the previous version', {
+            documentId: String(document._id),
+            statusCode: response?.statusCode,
+            error: response?.msg,
+          });
+          throw new InternalServerError(STORAGE_WRITE_FAILED_MESSAGE);
         }
 
         const storageConfig =
@@ -602,53 +714,67 @@ export class StorageController {
 
         // If current document was modified since last version, save it as a new version first
         if (isDocumentChanged === true) {
-        const versionToSave = document.versionHistory?.length ?? 0;
-        const versionFilePath = getVersionFilePath(
-          basePath,
-          versionToSave,
-          ext,
-        );
-        const bufferResponse = await adapter.getBufferFromStorageService(
-          document,
-          undefined,
-        );
-
-        if (bufferResponse.statusCode !== 200) {
-          throw new InternalServerError(
-            `Some error occurred while uploading next version: ${bufferResponse.msg}`,
+          const versionToSave = document.versionHistory?.length ?? 0;
+          const versionFilePath = getVersionFilePath(
+            basePath,
+            versionToSave,
+            ext,
           );
-        }
-
-        const response = await this.cloneDocument(
-          document,
-          bufferResponse.data as Buffer,
-          versionFilePath,
-          next,
-          adapter,
-        );
-
-        if (!response || response.statusCode !== 200) {
-          throw new InternalServerError(
-            response?.data ?? 'Failed to save current version before update',
+          const bufferResponse = await adapter.getBufferFromStorageService(
+            document,
+            undefined,
           );
-        }
 
-        document.versionHistory?.push({
-          version: versionToSave,
-          [document.storageVendor]: {
-            url: response?.data,
-          },
-          mutationCount: document.mutationCount,
-          size: document.sizeInBytes,
-          extension: document.extension,
-          note: currentVersionNote,
-          initiatedByUserId: userId
-            ? (new mongoose.Types.ObjectId(
-                userId,
-              ) as unknown as mongoose.Schema.Types.ObjectId)
-            : undefined,
-          createdAt: Date.now(),
-        });
+          if (bufferResponse.statusCode !== 200) {
+            // `msg` is the storage service's own status text: it says what broke,
+            // so it belongs in the log. `data` is the file itself and never goes
+            // here. The person gets the sentence a failed first upload shows.
+            this.logger.error(
+              'Failed to read the current file before versioning',
+              {
+                documentId: String(document._id),
+                statusCode: bufferResponse.statusCode,
+                error: bufferResponse.msg,
+              },
+            );
+            throw new InternalServerError(STORAGE_WRITE_FAILED_MESSAGE);
+          }
+
+          const response = await this.cloneDocument(
+            document,
+            bufferResponse.data as Buffer,
+            versionFilePath,
+            next,
+            adapter,
+          );
+
+          if (!response || response.statusCode !== 200) {
+            // `data` is the storage service's response body, which can carry the
+            // file or customer content, so only its status and message are kept.
+            this.logger.error('Failed to save the previous version', {
+              documentId: String(document._id),
+              statusCode: response?.statusCode,
+              error: response?.msg,
+            });
+            throw new InternalServerError(STORAGE_WRITE_FAILED_MESSAGE);
+          }
+
+          document.versionHistory?.push({
+            version: versionToSave,
+            [document.storageVendor]: {
+              url: response?.data,
+            },
+            mutationCount: document.mutationCount,
+            size: document.sizeInBytes,
+            extension: document.extension,
+            note: currentVersionNote,
+            initiatedByUserId: userId
+              ? (new mongoose.Types.ObjectId(
+                  userId,
+                ) as unknown as mongoose.Schema.Types.ObjectId)
+              : undefined,
+            createdAt: Date.now(),
+          });
         }
       }
 
@@ -676,23 +802,20 @@ export class StorageController {
         isVersioned: document.isVersionedFile,
       };
 
-      // OPTIMIZATION: Upload to both locations in parallel
-      const [versionResponse, currentResponse] = await Promise.all([
-        adapter.uploadDocumentToStorageService(nextVersionPayload),
-        adapter.uploadDocumentToStorageService(currentPayload),
-      ]);
-
-      if (versionResponse.statusCode !== 200) {
-        throw new InternalServerError(
-          `Failed to upload version file: ${versionResponse.msg}`,
-        );
-      }
-
-      if (currentResponse.statusCode !== 200) {
-        throw new InternalServerError(
-          `Failed to upload current file: ${currentResponse.msg}`,
-        );
-      }
+      // The version file first, then the current file. Written together, a
+      // failed version write could still replace the current file while the
+      // document keeps describing the previous one.
+      const logContext = { documentId: String(document._id) };
+      const versionResponse = await writeToStorage(
+        adapter,
+        nextVersionPayload,
+        logContext,
+      );
+      const currentResponse = await writeToStorage(
+        adapter,
+        currentPayload,
+        logContext,
+      );
 
       const fileExtension = path.extname(originalname);
 
@@ -789,9 +912,13 @@ export class StorageController {
       );
 
       if (bufferResult.statusCode !== HTTP_STATUS.OK) {
-        throw new InternalServerError(
-          `Some error occurred while rollback: ${bufferResult.msg}`,
-        );
+        this.logger.error('Failed to read the version being rolled back to', {
+          documentId: String(document._id),
+          version: versionNum,
+          statusCode: bufferResult.statusCode,
+          error: bufferResult.msg,
+        });
+        throw new InternalServerError(STORAGE_WRITE_FAILED_MESSAGE);
       }
 
       const currentFileResponse = await this.cloneDocument(
@@ -981,13 +1108,13 @@ export class StorageController {
       ));
 
       if (isDocumentChanged === true) {
-        res.status(HTTP_STATUS.OK).json(true);
-      } else if (isDocumentChanged === false) {
-        res.status(HTTP_STATUS.OK).json(false);
-      } else {
-        throw new InternalServerError(
-          'Some error occurred while comparing documents',
-        );
+          res.status(HTTP_STATUS.OK).json(true);
+        } else if (isDocumentChanged === false) {
+          res.status(HTTP_STATUS.OK).json(false);
+        } else {
+          throw new InternalServerError(
+            'Some error occurred while comparing documents',
+          );
       }
     } catch (error) {
       next(error);

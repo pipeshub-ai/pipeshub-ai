@@ -18,6 +18,10 @@ import {
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { inject, injectable } from 'inversify';
 import { MailService } from '../services/mail.service';
 import {
@@ -32,6 +36,7 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { UserGroups } from '../schema/userGroup.schema';
+import { isServiceAccountEmail } from '../constants/service-account.constants';
 import type {
   GraphUserListResponse,
   UserGroupSummary,
@@ -136,6 +141,13 @@ export class UserController {
     const filter: Record<string, any> = {
       orgId: orgIdObj,
       isDeleted: { $ne: true },
+      // This is the list of people. Service accounts are users in every way
+      // the permission graph cares about, but they are managed in their own
+      // admin screen, and listing them here has consequences beyond the
+      // cosmetic: they can never log in, so they would sit in the
+      // pending-invite set forever and be swept into bulk invite actions
+      // aimed at colleagues who have not signed in yet.
+      kind: { $ne: 'service' },
     };
 
     if (search) {
@@ -1592,7 +1604,13 @@ export class UserController {
           },
         });
         if (result.statusCode !== 200) {
-          throw new InternalServerError(result.data || 'Error sending invite');
+          this.logger.error('Sending the invitation failed', {
+            statusCode: result.statusCode,
+            reason: result.data,
+          });
+          throw markClientSafe(
+            new InternalServerError(serverFailureMessage('send the invitation')),
+          );
         }
       } else {
         result = await this.mailService.sendMail({
@@ -1610,7 +1628,13 @@ export class UserController {
           },
         });
         if (result.statusCode !== 200) {
-          throw new InternalServerError(result.data || 'Error sending invite');
+          this.logger.error('Sending the invitation failed', {
+            statusCode: result.statusCode,
+            reason: result.data,
+          });
+          throw markClientSafe(
+            new InternalServerError(serverFailureMessage('send the invitation')),
+          );
         }
       }
 
@@ -1897,7 +1921,18 @@ export class UserController {
     org: { registeredName?: string; shortName?: string } | null,
     inviteRole: 'admin' | 'member' = 'member',
   ): Promise<InviteResult> {
-    const existingUsers = await Users.find({ email: { $in: emails }, orgId });
+    // Service-account addresses are not invitable, and are dropped before
+    // anything is derived from the list. They belong to machine identities
+    // managed on their own screen: inviting one would try to send mail to a
+    // domain that does not resolve, and a deleted one would be restored as a
+    // person — which would also let an invite occupy a name the service
+    // account screen then could not use. They must not count toward the
+    // administrator limit either.
+    emails = emails.filter((email) => !isServiceAccountEmail(email));
+
+    const existingUsers = (
+      await Users.find({ email: { $in: emails }, orgId })
+    ).filter((user) => user.kind !== 'service');
     const activeUsers = existingUsers.filter((user) => !user.isDeleted);
     const deletedUsers = existingUsers.filter((user) => user.isDeleted);
 
@@ -1993,8 +2028,11 @@ export class UserController {
         ...pendingUsersToReinvite.map((u) => u._id),
       ].filter(Boolean);
       if (promoteIds.length > 0) {
+        // Narrowed to people. The schema refuses to promote a service
+        // account, so without this a batch that happened to include one
+        // would fail as a whole and take the genuine invites with it.
         await Users.updateMany(
-          { _id: { $in: promoteIds }, orgId },
+          { _id: { $in: promoteIds }, orgId, kind: { $ne: 'service' } },
           { $set: { role: 'admin' } },
         );
       }

@@ -349,7 +349,9 @@ class TestUpdateConfigOAuthWithConfigId:
         with pytest.raises(HTTPException) as exc:
             await update_connector_instance_config("conn1", request)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "Failed to fetch OAuth configuration" in exc.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc.value.detail == "We couldn't save this connector's settings. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to fetch OAuth configuration" not in exc.value.detail
 
     @pytest.mark.asyncio
     @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
@@ -930,7 +932,9 @@ class TestUpdateConfigGeneralException:
         with pytest.raises(HTTPException) as exc:
             await update_connector_instance_config("conn1", request)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "Failed to update connector configuration" in exc.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc.value.detail == "We couldn't save this connector's settings. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to update connector configuration" not in exc.value.detail
 
 
 # ============================================================================
@@ -1225,7 +1229,9 @@ class TestStreamRecordInternalGoogleDrivePaths:
         with pytest.raises(HTTPException) as exc:
             await stream_record_internal(req, "rec-1", gp, cs, claims=claims)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "Error streaming record" in exc.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc.value.detail == "We couldn't open this file. Please try again; if it keeps failing, contact your admin."
+        assert "Error streaming record" not in exc.value.detail
 
 
 # ============================================================================

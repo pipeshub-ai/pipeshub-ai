@@ -1,0 +1,123 @@
+name: Answer Quality Evals
+
+# Runs the golden agent cases against a real model: the small set every night,
+# the full set weekly. Never on pull requests — it holds a provider key and
+# spends money on every run.
+#
+# Unlike the performance benchmarks this needs no stack: the cases ask which
+# tool the agent reaches for and whether it acts without being asked, so the
+# tools are stubs and the only thing that has to be real is the model. That
+# keeps a nightly run to a few model calls instead of a full environment.
+on:
+  # 02:00 UTC nightly (07:30 IST) — after the integration run at 18:30 UTC has
+  # long finished, so the two never queue behind each other.
+  schedule:
+    - cron: '0 2 * * *'
+    # Sunday 03:00 UTC: the full set, an hour after that night's small one.
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      case_set:
+        description: 'Which cases to run'
+        required: true
+        default: 'nightly'
+        type: choice
+        options:
+          - nightly
+          - full
+      model:
+        description: 'Model to evaluate (blank uses the configured default)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: answer-quality-evals
+  cancel-in-progress: false
+
+jobs:
+  evals:
+    name: Answer quality (${{ github.event.schedule == '0 3 * * 0' && 'full' || github.event.inputs.case_set || 'nightly' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Same environments, and so the same approval gate and secrets, as the
+    # integration and performance workflows.
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+
+    env:
+      # Routed through env rather than interpolated into the shell, so a
+      # dispatch input cannot inject; validated below before use.
+      CASE_SET_INPUT: ${{ github.event.schedule == '0 3 * * 0' && 'full' || github.event.inputs.case_set || 'nightly' }}
+      MODEL_INPUT: ${{ github.event.inputs.model || '' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        run: |
+          case "$CASE_SET_INPUT" in
+            nightly|full) ;;
+            *) echo "case_set must be 'nightly' or 'full', got '$CASE_SET_INPUT'"; exit 1 ;;
+          esac
+          if [ -n "$MODEL_INPUT" ] && ! printf '%s' "$MODEL_INPUT" | grep -Eq '^[A-Za-z0-9._:-]+$'; then
+            echo "model may only contain letters, numbers, dot, underscore, colon and hyphen"
+            exit 1
+          fi
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install backend dependencies
+        working-directory: backend/python
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+
+      # --fail-on-regression has no effect while the committed baselines are
+      # placeholders: the CLI skips the comparison and says so. It starts
+      # guarding the moment a real run is adopted as a baseline, which is a
+      # deliberate manual step (see tests/evals/README.md).
+      - name: Run the golden cases
+        working-directory: backend/python
+        env:
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+          EVAL_MODEL: ${{ github.event.inputs.model || '' }}
+        run: |
+          source .venv/bin/activate
+          python -m tests.evals.run_scheduled_evals \
+            --set "$CASE_SET_INPUT" \
+            --output "reports/evals/$CASE_SET_INPUT.json" \
+            --summary reports/evals/summary.md \
+            --baseline "tests/evals/baselines/$CASE_SET_INPUT.json" \
+            --fail-on-regression
+
+      - name: Write job summary
+        if: ${{ !cancelled() }}
+        run: |
+          if [ ! -s backend/python/reports/evals/summary.md ]; then
+            echo "The eval run wrote no summary." >> "$GITHUB_STEP_SUMMARY"
+            echo "Check the 'Run the golden cases' step above: a run that measured nothing exits non-zero." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          cat backend/python/reports/evals/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload eval result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: answer-quality-${{ github.run_id }}
+          path: backend/python/reports/evals/
+          if-no-files-found: ignore

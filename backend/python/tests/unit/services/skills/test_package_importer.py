@@ -154,6 +154,9 @@ class TestPreviewUpload:
             "assets/a.bin": chunk,
             "assets/b.bin": chunk,
             "assets/c.bin": chunk,
+            "assets/d.bin": chunk,
+            "assets/e.bin": chunk,
+            "assets/f.bin": chunk,
         })
         importer = SkillPackageImporter()
         with pytest.raises(PackageImportError, match="per-skill limit"):
@@ -403,15 +406,15 @@ class TestPreviewUrl:
 class TestNormalizeGitHubUrl:
     def test_github_repo_url_becomes_api_tarball(self) -> None:
         result = SkillPackageImporter._normalize_url("https://github.com/netresearch/jira-skill")
-        assert result == "https://api.github.com/repos/netresearch/jira-skill/tarball"
+        assert result == "https://codeload.github.com/netresearch/jira-skill/tar.gz/HEAD"
 
     def test_github_repo_url_with_trailing_slash(self) -> None:
         result = SkillPackageImporter._normalize_url("https://github.com/acme/my-skill/")
-        assert result == "https://api.github.com/repos/acme/my-skill/tarball"
+        assert result == "https://codeload.github.com/acme/my-skill/tar.gz/HEAD"
 
     def test_github_repo_url_with_dot_git(self) -> None:
         result = SkillPackageImporter._normalize_url("https://github.com/acme/my-skill.git")
-        assert result == "https://api.github.com/repos/acme/my-skill/tarball"
+        assert result == "https://codeload.github.com/acme/my-skill/tar.gz/HEAD"
 
     def test_non_github_url_unchanged(self) -> None:
         url = "https://example.com/my-skill.tar.gz"
@@ -422,7 +425,7 @@ class TestNormalizeGitHubUrl:
         assert SkillPackageImporter._normalize_url(url) == url
 
     async def test_github_url_downloads_from_api(self) -> None:
-        api_url = "https://api.github.com/repos/acme/my-skill/tarball"
+        api_url = "https://codeload.github.com/acme/my-skill/tar.gz/HEAD"
         data = _make_tar({"SKILL.md": _VALID_SKILL_MD.encode()})
         fetcher = _FakeFetcher({api_url: _response(data)})
         preview = await SkillPackageImporter(fetcher).preview_url("https://github.com/acme/my-skill")
@@ -458,3 +461,127 @@ class TestArchiveFormatComesFromTheBytes:
     def test_neither_zip_nor_tar(self) -> None:
         with pytest.raises(PackageImportError, match="Not a valid zip or tar/tgz archive"):
             SkillPackageImporter().preview_upload("skill.tar.gz", b"\x1f\x8bnot really gzip")
+
+
+def _skill_md(name: str) -> bytes:
+    return (
+        f"---\nname: {name}\ndescription: Extracts tables from PDF files\n---\n\n"
+        f"# {name}\n\nUse this skill when the user asks.\n"
+    ).encode()
+
+
+class TestSkillFilter:
+    def test_multiple_skills_require_a_filter(self) -> None:
+        files = {
+            "skills/pptx/SKILL.md": _skill_md("pptx"),
+            "skills/xlsx/SKILL.md": _skill_md("xlsx"),
+        }
+        with pytest.raises(PackageImportError, match="multiple skills"):
+            package_importer._files_to_preview(files, source_label="t")
+
+    def test_filter_selects_one_skill_and_its_resources(self) -> None:
+        files = {
+            "skills/pptx/SKILL.md": _skill_md("pptx"),
+            "skills/xlsx/SKILL.md": _skill_md("xlsx"),
+            "skills/pptx/scripts/x.py": b"print(1)",
+            "skills/xlsx/scripts/y.py": b"print(2)",
+        }
+        preview = package_importer._files_to_preview(
+            files, source_label="t", skill_filter="pptx",
+        )
+        assert preview.name == "pptx"
+        assert preview.resources == {"scripts/x.py": "print(1)"}
+
+    def test_unknown_filter_lists_available_skills(self) -> None:
+        files = {"skills/pptx/SKILL.md": _skill_md("pptx")}
+        with pytest.raises(PackageImportError, match="Available skills"):
+            package_importer._files_to_preview(files, source_label="t", skill_filter="docx")
+
+    def test_root_skill_md_wins_over_nested_plugin_copy(self) -> None:
+        files = {
+            "SKILL.md": _skill_md("frontend-slides"),
+            "plugins/frontend-slides/SKILL.md": _skill_md("frontend-slides"),
+            "STYLE_PRESETS.md": b"# presets",
+        }
+        preview = package_importer._files_to_preview(files, source_label="t")
+        assert preview.name == "frontend-slides"
+        assert preview.resources["STYLE_PRESETS.md"] == "# presets"
+
+
+class TestGitHubSubdirectoryAndCatalog:
+    async def test_github_tree_url_fetches_subdirectory(self) -> None:
+        listing = json.dumps([
+            {
+                "type": "file",
+                "path": "skills/pptx/SKILL.md",
+                "download_url": "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md",
+            },
+            {
+                "type": "file",
+                "path": "skills/pptx/scripts/x.py",
+                "download_url": "https://raw.githubusercontent.com/a/s/main/skills/pptx/scripts/x.py",
+            },
+        ]).encode()
+        fetcher = _FakeFetcher({
+            "https://api.github.com/repos/anthropics/skills/contents/skills/pptx?ref=main": _response(listing),
+            "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md": _response(_skill_md("pptx")),
+            "https://raw.githubusercontent.com/a/s/main/skills/pptx/scripts/x.py": _response(b"print(1)"),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_url(
+            "https://github.com/anthropics/skills/tree/main/skills/pptx"
+        )
+        assert preview.name == "pptx"
+        assert preview.resources["scripts/x.py"] == "print(1)"
+
+    async def test_skill_filter_fetches_skills_subdir(self) -> None:
+        listing = json.dumps([
+            {
+                "type": "file",
+                "path": "skills/pptx/SKILL.md",
+                "download_url": "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md",
+            },
+        ]).encode()
+        fetcher = _FakeFetcher({
+            "https://api.github.com/repos/anthropics/skills/contents/skills/pptx": _response(listing),
+            "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md": _response(_skill_md("pptx")),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_url(
+            "https://github.com/anthropics/skills", skill_filter="pptx",
+        )
+        assert preview.name == "pptx"
+
+    async def test_github_contents_403_falls_back_to_filtered_tarball(self) -> None:
+        tarball = _make_tar({
+            "repo/skills/pptx/SKILL.md": _skill_md("pptx"),
+            "repo/skills/xlsx/SKILL.md": _skill_md("xlsx"),
+        })
+        fetcher = _FakeFetcher({
+            "https://api.github.com/repos/anthropics/skills/contents/skills/pptx": _response(status=403),
+            "https://api.github.com/repos/anthropics/skills/contents/pptx": _response(status=403),
+            "https://codeload.github.com/anthropics/skills/tar.gz/HEAD": _response(tarball),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_url(
+            "https://github.com/anthropics/skills", skill_filter="pptx",
+        )
+        assert preview.name == "pptx"
+
+    async def test_catalog_slug_follows_github_source(self) -> None:
+        catalog = json.dumps({
+            "urls": {
+                "repository": "https://github.com/zarazhangrui/frontend-slides/blob/main/SKILL.md",
+            },
+            "recommended_command": "npx skills add zarazhangrui/frontend-slides",
+        }).encode()
+        tarball = _make_tar({"SKILL.md": _skill_md("frontend-slides")})
+        fetcher = _FakeFetcher({
+            "https://www.openagentskill.com/api/skills/zarazhangrui-frontend-slides/install": _response(catalog),
+            "https://codeload.github.com/zarazhangrui/frontend-slides/tar.gz/HEAD": _response(tarball),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_catalog_slug(
+            "zarazhangrui-frontend-slides"
+        )
+        assert preview.name == "frontend-slides"
+
+    def test_github_tarball_url_includes_ref(self) -> None:
+        result = SkillPackageImporter._normalize_url("https://github.com/acme/my-skill#v1.2.3")
+        assert result == "https://codeload.github.com/acme/my-skill/tar.gz/v1.2.3"

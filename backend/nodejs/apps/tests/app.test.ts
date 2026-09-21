@@ -59,6 +59,7 @@ import * as oidcRoutes from '../src/modules/oauth_provider/routes/oid.provider.r
 import * as apiDocsRoutes from '../src/modules/api-docs/docs.routes';
 import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes';
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
+import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -176,6 +177,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);
   sandbox.stub(toolsetsRoutes, 'createToolsetsRouter').returns(dummyRouter);
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
+  sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
 }
 
 /**

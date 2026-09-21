@@ -31,6 +31,7 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 13 TC-GH-CODE-TS-001      — code/folder source timestamps (polled)
   order 14 TC-GH-PERM-001         — private repo ACL, role mapping, 2-hop inheritance
   order 15 TC-GH-PERM-002         — public repo ORG grant placement (its own connector)
+  order 15 TC-GH-PERM-003         — a colleague with no GitHub account: private refused, public opens
   order 16 TC-GH-IDX-001          — indexing reaches COMPLETED / AUTO_INDEX_OFF
   order 17 TC-GH-CKPT-001         — issue / PR / code checkpoints at their exact values
   order 18 TC-INCR-ISSUE-001      — new issues (one pre-closed → DONE), then edit + not_planned close
@@ -69,6 +70,8 @@ from helper.graph_provider_utils import (  # noqa: E402
     wait_for_sync_completion,
     wait_until_graph_condition,
 )
+from helper.record_access import wait_for_record_access  # noqa: E402
+from helper.second_user import SecondUser  # noqa: E402
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from validation.graph_entity_validator import (  # noqa: E402
     assert_graph_entity_matches,
@@ -107,6 +110,7 @@ from connectors.github_teams.github_test_utils import (  # noqa: E402
     FileChange,
     add_comment,
     add_sub_issue,
+    blob_paths,
     blob_sha_for_path,
     delete_issue,
     commit_changes,
@@ -117,6 +121,7 @@ from connectors.github_teams.github_test_utils import (  # noqa: E402
     get_branch_head,
     get_issue,
     get_pull,
+    get_tree,
     list_filter,
     list_pulls,
     sync_filters,
@@ -1334,6 +1339,57 @@ class TestGitHubTeamsPermissions:
             "TC-GH-PERM-002 passed: %d grant(s) on the public repo group",
             repo_group_perms,
         )
+
+    @pytest.mark.order(15)
+    async def test_tc_gh_perm_003_colleague_without_github_account(
+        self,
+        github_connector: dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+        pipeshub_client: PipeshubClient,
+        second_user: SecondUser,
+        github_rest: Any,
+    ) -> None:
+        """TC-GH-PERM-003: what a colleague with no GitHub account can open.
+
+        PERM-001 and PERM-002 check the edges; this asks the product, as a fresh org
+        member who is no collaborator on either repo. The private repo's issue must be
+        refused and the public repo's content must open. Each half keeps the other
+        honest: a user who is refused everything, or allowed everything, fails one.
+        """
+        primary = github_connector["primary_repo"]
+        issue = github_connector["reference_issue"]
+        private_record = await graph_provider.get_record_by_external_id(
+            github_connector["connector_id"], f"{primary['id']}/issues/{issue['number']}",
+        )
+        assert private_record is not None, f"private issue #{issue['number']} missing"
+        wait_for_record_access(
+            second_user, private_record.id, expect_access=False,
+            description=f"issue #{issue['number']} in private repo {primary['full_name']}",
+        )
+
+        public = github_connector["public_repo"]
+        # A named file rather than whatever the graph returns first, so a failure says
+        # which record and does not depend on query order.
+        public_paths = sorted(blob_paths(await get_tree(
+            github_rest, github_connector["org"], public["name"], public["default_branch"],
+        )))
+        assert public_paths, f"public repo {public['full_name']} has no files to open"
+        public_path = public_paths[0]
+        async with dedicated_connector(
+            pipeshub_client, graph_provider,
+            token=github_connector["token"], name=_connector_name("perm-colleague"),
+            filters=sync_filters(repo_ids=list_filter("in", [public["full_name"]])),
+            min_records=1,
+        ) as connector_id:
+            public_record = await wait_for_record_by_external_id(
+                graph_provider, connector_id, f"/{public['id']}/blob/{public_path}",
+                description=f"{public_path} from public repo {public['full_name']}",
+            )
+            wait_for_record_access(
+                second_user, public_record.id, expect_access=True,
+                description=f"{public_path} in public repo {public['full_name']}",
+            )
+        logger.info("TC-GH-PERM-003 passed: private refused, public opened")
 
 
 # =============================================================================

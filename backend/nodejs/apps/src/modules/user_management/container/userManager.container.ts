@@ -16,6 +16,8 @@ import { TeamsController } from '../controller/teams.controller';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import * as messageBrokerFactory from '../../../libs/services/message-broker.factory';
 import { NotificationProducer } from '../../notification/service/notification.producer';
+import { ServiceAccountsService } from '../services/service-accounts.service';
+import { ServiceAccountsController } from '../controller/service-accounts.controller';
 
 const loggerConfig = {
   service: 'User Manager Container',
@@ -124,6 +126,18 @@ export class UserManagerContainer {
           container.get<NotificationProducer>('NotificationProducer'),
         );
       });
+
+      const serviceAccountsService = new ServiceAccountsService(
+        container.get('Logger'),
+        container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+      );
+      container
+        .bind<ServiceAccountsService>('ServiceAccountsService')
+        .toConstantValue(serviceAccountsService);
+
+      container
+        .bind<ServiceAccountsController>('ServiceAccountsController')
+        .toConstantValue(new ServiceAccountsController(serviceAccountsService));
 
       const userGroupController = new UserGroupController();
       container

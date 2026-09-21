@@ -70,6 +70,8 @@ import {
 import { NotificationService } from './modules/notification/service/notification.service';
 import { DesktopProxySocketGateway } from './modules/desktop_proxy/socket/desktop-proxy.gateway';
 import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop-proxy.container';
+import { createDesktopProxyRouter } from './modules/desktop_proxy/routes/desktop-proxy.routes';
+import { registerDesktopPresence } from './libs/services/desktop-presence.provider';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
@@ -82,6 +84,7 @@ import { createTeamsRouter } from './modules/user_management/routes/teams.routes
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
+import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
 import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import {
@@ -232,7 +235,7 @@ export class Application {
           appConfig,
         );
       this.desktopProxyContainer =
-        await DesktopProxyContainer.initialize(appConfig, () => this.port);
+        await DesktopProxyContainer.initialize(appConfig);
 
       this.oauthProviderContainer = await OAuthProviderContainer.initialize(
         configurationManagerConfig,
@@ -289,6 +292,7 @@ export class Application {
         .initialize(this.server);
       this.desktopProxySocketGateway =
         this.desktopProxyContainer.get(DesktopProxySocketGateway);
+      registerDesktopPresence(this.desktopProxySocketGateway);
       this.desktopProxySocketGateway.initialize(this.server);
 
       this.bootstrapNotificationBrokerConsumer();
@@ -540,6 +544,12 @@ export class Application {
       createStorageRouter(this.storageServiceContainer),
     );
 
+    // desktop relay routes (connector service -> user's desktop app)
+    this.app.use(
+      '/api/v1/desktop',
+      createDesktopProxyRouter(this.desktopProxyContainer),
+    );
+
     // enterprise search conversational routes
     this.app.use(
       '/api/v1/conversations',
@@ -651,6 +661,12 @@ export class Application {
       createOAuthClientsRouter(this.oauthProviderContainer),
     );
 
+    // Service accounts (machine identities, admin-managed)
+    this.app.use(
+      '/api/v1/service-accounts',
+      createServiceAccountsRouter(this.entityManagerContainer),
+    );
+
     this.app.use(
       '/api/v1/personal-access-tokens',
       createPatRouter(this.oauthProviderContainer),
@@ -734,6 +750,7 @@ export class Application {
       try {
         this.desktopProxySocketGateway?.shutdown();
         this.desktopProxySocketGateway = null;
+        registerDesktopPresence(null);
         this.notificationContainer
           .get<NotificationService>(NotificationService)
           .shutdown();

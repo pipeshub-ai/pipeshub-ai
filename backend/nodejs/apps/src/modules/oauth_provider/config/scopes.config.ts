@@ -343,8 +343,11 @@ export const DefaultMcpScopes = [
  * Scopes the CLI/agent preset mints. The first-party device app
  * (`pipeshub-agent`) and Dynamic Client Registration default to this set
  * (intersected with instance MCP_SCOPES). Never grant
- * `client_credentials` through DCR or the first-party device app — that
- * grant has no user identity.
+ * `client_credentials` to the first-party device app: the grant carries no
+ * identity of its own, so AuthMiddleware resolves its tokens to the app's
+ * `createdBy` and they run as that person. DCR needs no such care — it
+ * refuses the grant outright, in OAuthDcrService and again in
+ * `createDynamicClient`.
  */
 export const AgentMcpScopes = [
   'conversation:chat',

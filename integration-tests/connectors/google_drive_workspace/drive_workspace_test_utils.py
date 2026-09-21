@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from google.oauth2 import service_account  # type: ignore[import-not-found]
 from googleapiclient.discovery import build  # type: ignore[import-not-found]
+from googleapiclient.errors import HttpError  # type: ignore[import-not-found]
 from pymongo import MongoClient  # type: ignore[import-not-found]
 
 from app.config.constants.arangodb import MimeTypes  # type: ignore[import-not-found]
@@ -30,6 +31,8 @@ FULL_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 ENV_SA_JSON = "GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON"
 ENV_ADMIN_EMAIL = "GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL"
 ENV_TEST_USER = "GOOGLE_DRIVE_WORKSPACE_TEST_USER_EMAIL"
+# A second Workspace member in the same domain, to share files with.
+ENV_SECOND_USER = "GOOGLE_DRIVE_WORKSPACE_SECOND_USER_EMAIL"
 
 # A freshly created Shared Drive lags its create call twice over: in the member
 # drives.list the connector discovers drives through, and in the drive-wide
@@ -558,6 +561,130 @@ async def create_shared_drive_folder_filter_fixtures(
         "root_file_name": "root-child.txt",
     }
     logger.info("Created Shared Drive folder-filter fixtures: %s", fixtures)
+    return fixtures
+
+
+def _create_permission(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    body: dict[str, Any],
+    **params: Any,
+) -> str:
+    """permissions.create with a body (the typed wrapper takes none); return its id."""
+    created = drive.client.permissions().create(  # type: ignore[attr-defined]
+        fileId=file_id,
+        body=body,
+        supportsAllDrives=True,
+        fields="id",
+        **params,
+    ).execute()
+    permission_id = created.get("id")
+    if not permission_id:
+        raise RuntimeError(f"permissions.create returned no id for {file_id}: {created}")
+    return str(permission_id)
+
+
+def share_drive_item_with_user(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    email: str,
+    role: str = "reader",
+) -> str:
+    """Share with one person, without the notification email; return the permission id."""
+    permission_id = _create_permission(
+        drive,
+        file_id,
+        {"type": "user", "role": role, "emailAddress": email},
+        sendNotificationEmail=False,
+    )
+    logger.info("Shared Drive item %s with %s as %s", file_id, email, role)
+    return permission_id
+
+
+def share_drive_item_with_domain(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    domain: str,
+    role: str = "reader",
+) -> str:
+    """Share with everyone in ``domain``; return the permission id."""
+    permission_id = _create_permission(
+        drive,
+        file_id,
+        {"type": "domain", "role": role, "domain": domain},
+    )
+    logger.info("Shared Drive item %s with domain %s as %s", file_id, domain, role)
+    return permission_id
+
+
+async def unshare_drive_item(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    permission_id: str,
+) -> None:
+    await drive.permissions_delete(
+        fileId=file_id, permissionId=permission_id, supportsAllDrives=True
+    )
+    logger.info("Removed permission %s from Drive item %s", permission_id, file_id)
+
+
+async def create_permission_fixtures(
+    drive: GoogleDriveDataSource,
+    second_user_email: str,
+    domain: str,
+) -> dict[str, str]:
+    """One file per way of sharing, all owned by the impersonated user.
+
+    Layout::
+
+        {root}/
+          private.txt          owner only
+          shared-reader.txt    + second user as reader
+          revoke.txt           + second user as reader (a test takes it away)
+          domain.txt           + everyone in the domain as reader
+
+    ``domain_share_error`` is set instead of ``domain_permission_id`` when the
+    Workspace sharing policy refuses domain-wide shares, so only that case skips.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    root_name = f"pipeshub-it-drive-perm-{suffix}"
+    root_id = await create_drive_folder(drive, root_name)
+
+    # The caller only learns root_id from the return value, so a failure part-way
+    # through must clean up here or the tree is left in Drive.
+    try:
+        fixtures: dict[str, str] = {"root_folder_id": root_id, "root_folder_name": root_name}
+        for key, name in (
+            ("private", "private.txt"),
+            ("shared", "shared-reader.txt"),
+            ("revoke", "revoke.txt"),
+            ("domain", "domain.txt"),
+        ):
+            fixtures[f"{key}_file_id"] = await create_drive_text_file(
+                drive, name, parent_id=root_id, content=f"pipeshub drive permission it: {name}\n"
+            )
+            fixtures[f"{key}_file_name"] = name
+
+        fixtures["shared_permission_id"] = share_drive_item_with_user(
+            drive, fixtures["shared_file_id"], second_user_email
+        )
+        fixtures["revoke_permission_id"] = share_drive_item_with_user(
+            drive, fixtures["revoke_file_id"], second_user_email
+        )
+        try:
+            fixtures["domain_permission_id"] = share_drive_item_with_domain(
+                drive, fixtures["domain_file_id"], domain
+            )
+        except HttpError as e:
+            if e.resp.status != 403:
+                raise
+            fixtures["domain_share_error"] = f"HTTP {e.resp.status}: {e}"
+            logger.warning("Domain-wide share refused for %s: %s", domain, e)
+    except BaseException:
+        await delete_drive_folder(drive, root_id)
+        raise
+
+    logger.info("Created Drive permission fixtures: %s", fixtures)
     return fixtures
 
 

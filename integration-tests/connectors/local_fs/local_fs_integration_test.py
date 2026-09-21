@@ -15,6 +15,7 @@ folder, so these tests change files on disk and sync again.
   TC-LFS-INCR-001   — A new file in a new folder appears, under that folder
   TC-LFS-DEL-001    — A deleted file's record is removed
   TC-LFS-FILTER-001 — Excluding .txt drops .txt files and keeps the rest
+  TC-LFS-PERM-001   — Another member of the org cannot find the files
 
 The desktop app (``local_fs_desktop_connector``): the folder is on the user's
 machine, so the app uploads each change with its content.
@@ -47,6 +48,12 @@ from connectors.local_fs.local_fs_source_helper import (  # type: ignore[import-
     external_record_id,
     upload_file_events,
 )
+from helper.connector_visibility import (
+    found,
+    search_connector_as,
+    search_connector_as_admin,
+    wait_until_searchable,
+)
 from helper.graph_provider import GraphProviderProtocol
 from helper.graph_provider_utils import (
     wait_for_sync_completion,
@@ -59,6 +66,7 @@ from helper.storage_incremental import (
     sync_until_names_absent,
     sync_until_names_visible,
 )
+from helper.second_user import SecondUser, describe_search, has_no_access
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 logger = logging.getLogger("local-fs-lifecycle-test")
@@ -78,6 +86,12 @@ def _streamed(pipeshub_client: PipeshubClient, record_id: str) -> str:
     return response.content.decode()
 
 
+@pytest.mark.skip(
+    reason=(
+        "Local FS now pulls events from the desktop; this suite still assumes "
+        "the connector walks a compose-mounted folder"
+    )
+)
 @pytest.mark.integration
 @pytest.mark.local_fs
 @pytest.mark.asyncio(loop_scope="session")
@@ -244,6 +258,48 @@ class TestLocalFsFolderSync:
             connector_id, ["guide.md", "benefits.md", "runbook.md"]
         )
         await graph_provider.assert_record_not_exists(connector_id, "leave-policy.txt")
+
+
+@pytest.mark.skip(
+    reason=(
+        "Local FS now pulls events from the desktop; this suite still POSTs "
+        "the removed /file-events/upload route"
+    )
+)
+@pytest.mark.integration
+@pytest.mark.local_fs
+@pytest.mark.permissions
+@pytest.mark.asyncio(loop_scope="session")
+class TestLocalFsVisibility:
+    """Local FS is a personal connector: its files are its owner's alone."""
+
+    @pytest.mark.order(2)
+    async def test_tc_lfs_perm_001_another_member_cannot_find_the_files(
+        self,
+        local_fs_connector: dict[str, Any],
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+        second_user: SecondUser,
+    ) -> None:
+        """TC-LFS-PERM-001: The owner finds a file; another member of the org does not.
+
+        Runs before any test re-syncs, since every sync recreates the records.
+        """
+        connector_id = local_fs_connector["connector_id"]
+        record = await wait_until_searchable(graph_provider, connector_id, "notes.txt")
+        query = SEED_FILES["notes.txt"]
+
+        owner = search_connector_as_admin(pipeshub_client, connector_id, query)
+        assert found(owner, record["virtualRecordId"]), (
+            "TC-LFS-PERM-001 precondition: the owner could not find their own file, "
+            f"so the other member finding nothing proves nothing. {describe_search(owner)}"
+        )
+
+        other = search_connector_as(second_user, connector_id, query)
+        assert has_no_access(other), (
+            "TC-LFS-PERM-001: another member of the org found files from someone "
+            f"else's personal connector. {describe_search(other)}"
+        )
 
 
 @pytest.mark.integration

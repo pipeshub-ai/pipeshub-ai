@@ -15,12 +15,15 @@
 #
 #   PIPESHUB_DEPLOY_TYPE=slim bash deployment/docker-compose/tests/published_hub_smoke.sh
 #   PIPESHUB_DEPLOY_TYPE=full bash deployment/docker-compose/tests/published_hub_smoke.sh
+#   PIPESHUB_DEPLOY_TYPE=eval bash deployment/docker-compose/tests/published_hub_smoke.sh
+#   PIPESHUB_GRAPH_DB=arango  bash deployment/docker-compose/tests/published_hub_smoke.sh
 #
 # Optional env:
-#   PIPESHUB_DEPLOY_TYPE   slim (default) | full
-#   PIPESHUB_VERSION       Hub tag (default: slim for slim, latest for full)
-#   PIPESHUB_SMOKE_PORT    requested host port (default: 3997 slim, 3998 full)
-#   HEALTH_WAIT_SECS       installer health deadline (default: 600 slim, 720 full)
+#   PIPESHUB_DEPLOY_TYPE   slim (default) | full | eval
+#   PIPESHUB_GRAPH_DB      neo4j | arango (default: the installer's choice for the deploy type)
+#   PIPESHUB_VERSION       Hub tag (default: slim for slim and eval, latest for full)
+#   PIPESHUB_SMOKE_PORT    requested host port (default: 3997 slim, 3998 full, 3995 eval)
+#   HEALTH_WAIT_SECS       installer health deadline (default: 600 slim/eval, 720 full)
 #   PIPESHUB_SMOKE_KEEP=1  leave the stack running (skip uninstall)
 #   PUBLISHED_HUB_SMOKE_DIAG  directory to copy logs/health.json on failure
 # ==============================================================================
@@ -73,14 +76,32 @@ case "$DEPLOY_TYPE" in
     DEFAULT_PORT="3997"
     DEFAULT_WAIT="600"
     ;;
+  eval)
+    DEFAULT_TAG="slim"
+    DEFAULT_PORT="3995"
+    DEFAULT_WAIT="600"
+    ;;
   *)
-    die "PIPESHUB_DEPLOY_TYPE must be slim or full (got ${DEPLOY_TYPE})"
+    die "PIPESHUB_DEPLOY_TYPE must be slim, full or eval (got ${DEPLOY_TYPE})"
     ;;
 esac
 
+GRAPH_DB="${PIPESHUB_GRAPH_DB:-}"
+case "$GRAPH_DB" in
+  "") EXPECTED_DATA_STORE="" ;;
+  neo4j) EXPECTED_DATA_STORE="neo4j" ;;
+  arango) EXPECTED_DATA_STORE="arangodb" ;;
+  *) die "PIPESHUB_GRAPH_DB must be neo4j or arango (got ${GRAPH_DB})" ;;
+esac
+# Eval always runs Neo4j (the installer overrides any other choice), so a
+# request for ArangoDB there would test nothing.
+if [[ "$DEPLOY_TYPE" == "eval" && "$EXPECTED_DATA_STORE" == "arangodb" ]]; then
+  die "eval installs always use Neo4j; do not combine it with PIPESHUB_GRAPH_DB=arango"
+fi
+
 IMAGE_TAG="${PIPESHUB_VERSION:-$DEFAULT_TAG}"
 PORT="${PIPESHUB_SMOKE_PORT:-$DEFAULT_PORT}"
-PROJECT="${PIPESHUB_PROJECT:-pipeshub-ci-${DEPLOY_TYPE}-${GITHUB_RUN_ID:-$$}}"
+PROJECT="${PIPESHUB_PROJECT:-pipeshub-ci-${DEPLOY_TYPE}${PIPESHUB_GRAPH_DB:+-${PIPESHUB_GRAPH_DB}}-${GITHUB_RUN_ID:-$$}}"
 export HEALTH_WAIT_SECS="${HEALTH_WAIT_SECS:-$DEFAULT_WAIT}"
 DIAG_DIR="${PUBLISHED_HUB_SMOKE_DIAG:-}"
 
@@ -130,7 +151,7 @@ cp "$COMPOSE_FILE_SRC" "$WORK/docker-compose.yml"
 cp "$INNER_INSTALLER" "$WORK/install.sh"
 chmod +x "$WORK/install.sh"
 
-echo "${LOG_PREFIX}: deploy=${DEPLOY_TYPE} project=${PROJECT} port=${PORT} image=${EXPECTED_IMAGE_PREFIX}:${IMAGE_TAG}"
+echo "${LOG_PREFIX}: deploy=${DEPLOY_TYPE} graph=${GRAPH_DB:-default} project=${PROJECT} port=${PORT} image=${EXPECTED_IMAGE_PREFIX}:${IMAGE_TAG}"
 echo "${LOG_PREFIX}: workdir=${WORK}"
 
 set +e
@@ -182,6 +203,34 @@ if [[ "$_got_image" != "${EXPECTED_IMAGE_PREFIX}:${IMAGE_TAG}" ]]; then
   die "expected image ${EXPECTED_IMAGE_PREFIX}:${IMAGE_TAG}, container is running ${GOT_IMAGE:-unknown}"
 fi
 
+# The stack must run the graph database it was installed with, and only that one.
+DATA_STORE="$(env_file_val DATA_STORE || true)"
+case "$DATA_STORE" in
+  arangodb) GRAPH_SERVICE="arango"; OTHER_GRAPH_SERVICE="neo4j" ;;
+  neo4j)    GRAPH_SERVICE="neo4j";  OTHER_GRAPH_SERVICE="arango" ;;
+  *) die "installer wrote DATA_STORE=${DATA_STORE:-unset} (expected neo4j or arangodb)" ;;
+esac
+if [[ -n "$EXPECTED_DATA_STORE" && "$DATA_STORE" != "$EXPECTED_DATA_STORE" ]]; then
+  die "asked for PIPESHUB_GRAPH_DB=${GRAPH_DB}, installer wrote DATA_STORE=${DATA_STORE}"
+fi
+if [[ "$DEPLOY_TYPE" == "eval" && "$DATA_STORE" != "neo4j" ]]; then
+  die "eval must run Neo4j, installer wrote DATA_STORE=${DATA_STORE}"
+fi
+service_running() {
+  [[ -n "$(docker ps -q --filter "label=com.docker.compose.project=${PROJECT}" \
+    --filter "label=com.docker.compose.service=$1" --filter status=running)" ]]
+}
+service_running "$GRAPH_SERVICE" || die "graph database container '${GRAPH_SERVICE}' is not running"
+if service_running "$OTHER_GRAPH_SERVICE"; then
+  die "both graph databases are running; expected only '${GRAPH_SERVICE}'"
+fi
+
+# Eval is the 8 GB laptop install: it leaves out the coding sandbox.
+PROFILES="$(env_file_val COMPOSE_PROFILES || true)"
+if [[ "$DEPLOY_TYPE" == "eval" && ",${PROFILES}," == *",sandbox,"* ]]; then
+  die "eval install enabled the sandbox profile (COMPOSE_PROFILES=${PROFILES})"
+fi
+
 RESTARTS="$(docker inspect "$APP_ID" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
 if [[ "${RESTARTS:-0}" -ge 2 ]]; then
   die "app container restarted ${RESTARTS} times (crash loop)"
@@ -218,4 +267,4 @@ if [[ "$UI_CODE" != "200" ]]; then
   die "UI returned HTTP ${UI_CODE} (expected 200)"
 fi
 
-echo "${LOG_PREFIX}: ok (deploy=${DEPLOY_TYPE} image=${GOT_IMAGE} UI 200, core services healthy)"
+echo "${LOG_PREFIX}: ok (deploy=${DEPLOY_TYPE} graph=${DATA_STORE} image=${GOT_IMAGE} UI 200, core services healthy)"

@@ -50,7 +50,11 @@ for _p in (_ROOT, _RV_HELPER, _AUTH_UTILS):
         sys.path.insert(0, s)
 
 from helper.clients.ai_models_client import AIModelsClient  # noqa: E402
-from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from helper.second_user import SecondUser  # noqa: E402
+from helper.source_credentials import (  # noqa: E402
+    secrets_required,
+    source_unavailable,
+)
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
     assert_response_matches_openapi_ref,
@@ -215,12 +219,22 @@ def _resolve_live_spec(spec: LiveProviderSpec) -> Optional[tuple[str, str, Dict[
     return api_key, model, configuration
 
 
+# Only OpenAI's key reaches the integration workflow today, so only OpenAI is a
+# run the nightly can be held to. The other three have never run in CI: their
+# keys are not passed to the job at all, so they skip everywhere and a red
+# nightly would say nothing about them. Add a provider here once its key is in
+# the repository's integration-test environment.
+_PROVIDERS_CI_MUST_COVER = frozenset({_PROVIDER_OPENAI})
+
+
 def _skip_if_no_live_credentials(spec: LiveProviderSpec) -> tuple[str, str, Dict[str, Any]]:
     resolved = _resolve_live_spec(spec)
     if resolved is None:
         missing = [spec.api_key_env, *spec.required_env]
-        pytest.skip(
-            f"{spec.provider_id}: set {', '.join(missing)}{spec.skip_reason_extra}"
+        source_unavailable(
+            f"{spec.provider_id}: no live credentials{spec.skip_reason_extra}",
+            secrets=missing,
+            required=secrets_required() and spec.provider_id in _PROVIDERS_CI_MUST_COVER,
         )
     _, model, configuration = resolved
     return spec.provider_id, model, configuration
@@ -592,21 +606,7 @@ class TestAddAIModelProviderAzureFields(AIModelsTestBase):
 class TestAddAIModelProviderNonAdmin(AIModelsTestBase):
     """Admin gate via userAdminCheck — skipped when no non-admin fixture exists."""
 
-    def test_non_admin_rejected(self, pipeshub_client: PipeshubClient) -> None:
-        if not os.getenv("PIPESHUB_TEST_NON_ADMIN_EMAIL") or not os.getenv(
-            "PIPESHUB_TEST_NON_ADMIN_PASSWORD"
-        ):
-            pytest.skip(
-                "No non-admin fixture: set PIPESHUB_TEST_NON_ADMIN_EMAIL and "
-                "PIPESHUB_TEST_NON_ADMIN_PASSWORD to enable this test"
-            )
-        from auth_helpers import login_with_user, session_headers  # noqa: E402
-
-        token, _ = login_with_user(
-            pipeshub_client,
-            os.environ["PIPESHUB_TEST_NON_ADMIN_EMAIL"].strip(),
-            os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
-        )
+    def test_non_admin_rejected(self, second_user: SecondUser) -> None:
         payload = _minimal_llm_payload(
             _PROVIDER_OPENAI,
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
@@ -614,7 +614,7 @@ class TestAddAIModelProviderNonAdmin(AIModelsTestBase):
         resp = self.ai.post(
             "/providers",
             json=payload,
-            headers=session_headers(token),
+            headers=second_user.headers,
             auth=False,
         )
         assert resp.status_code == 400, (
@@ -798,21 +798,7 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
 class TestUpdateAIModelProviderNonAdmin(AIModelsTestBase):
     """PUT rejected for non-admin session JWT."""
 
-    def test_non_admin_put_rejected(self, pipeshub_client: PipeshubClient) -> None:
-        if not os.getenv("PIPESHUB_TEST_NON_ADMIN_EMAIL") or not os.getenv(
-            "PIPESHUB_TEST_NON_ADMIN_PASSWORD"
-        ):
-            pytest.skip(
-                "Set PIPESHUB_TEST_NON_ADMIN_EMAIL and "
-                "PIPESHUB_TEST_NON_ADMIN_PASSWORD to enable this test"
-            )
-        from auth_helpers import login_with_user, session_headers  # noqa: E402
-
-        token, _ = login_with_user(
-            pipeshub_client,
-            os.environ["PIPESHUB_TEST_NON_ADMIN_EMAIL"].strip(),
-            os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
-        )
+    def test_non_admin_put_rejected(self, second_user: SecondUser) -> None:
         payload = _minimal_update_body(
             _PROVIDER_OPENAI,
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
@@ -820,7 +806,7 @@ class TestUpdateAIModelProviderNonAdmin(AIModelsTestBase):
         resp = self.ai.put(
             f"/providers/{_MODEL_TYPE_LLM}/{uuid.uuid4()}",
             json=payload,
-            headers=session_headers(token),
+            headers=second_user.headers,
             auth=False,
         )
         assert resp.status_code == 400, (
@@ -1009,24 +995,10 @@ class TestDeleteAIModelProviderValidation(AIModelsTestBase):
 class TestDeleteAIModelProviderNonAdmin(AIModelsTestBase):
     """DELETE rejected for non-admin session JWT."""
 
-    def test_non_admin_delete_rejected(self, pipeshub_client: PipeshubClient) -> None:
-        if not os.getenv("PIPESHUB_TEST_NON_ADMIN_EMAIL") or not os.getenv(
-            "PIPESHUB_TEST_NON_ADMIN_PASSWORD"
-        ):
-            pytest.skip(
-                "Set PIPESHUB_TEST_NON_ADMIN_EMAIL and "
-                "PIPESHUB_TEST_NON_ADMIN_PASSWORD to enable this test"
-            )
-        from auth_helpers import login_with_user, session_headers  # noqa: E402
-
-        token, _ = login_with_user(
-            pipeshub_client,
-            os.environ["PIPESHUB_TEST_NON_ADMIN_EMAIL"].strip(),
-            os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
-        )
+    def test_non_admin_delete_rejected(self, second_user: SecondUser) -> None:
         resp = self.ai.delete(
             f"/providers/{_MODEL_TYPE_LLM}/{uuid.uuid4()}",
-            headers=session_headers(token),
+            headers=second_user.headers,
             auth=False,
         )
         assert resp.status_code == 400, (
@@ -1162,22 +1134,8 @@ class TestGetAIModelsProviders(AIModelsTestBase):
 class TestGetAIModelsProvidersNonAdmin(AIModelsTestBase):
     """GET /ai-models rejected for non-admin session JWT."""
 
-    def test_non_admin_list_rejected(self, pipeshub_client: PipeshubClient) -> None:
-        if not os.getenv("PIPESHUB_TEST_NON_ADMIN_EMAIL") or not os.getenv(
-            "PIPESHUB_TEST_NON_ADMIN_PASSWORD"
-        ):
-            pytest.skip(
-                "Set PIPESHUB_TEST_NON_ADMIN_EMAIL and "
-                "PIPESHUB_TEST_NON_ADMIN_PASSWORD to enable this test"
-            )
-        from auth_helpers import login_with_user, session_headers  # noqa: E402
-
-        token, _ = login_with_user(
-            pipeshub_client,
-            os.environ["PIPESHUB_TEST_NON_ADMIN_EMAIL"].strip(),
-            os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
-        )
-        resp = self.ai.get("/", headers=session_headers(token), auth=False)
+    def test_non_admin_list_rejected(self, second_user: SecondUser) -> None:
+        resp = self.ai.get("/", headers=second_user.headers, auth=False)
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
         )
@@ -1276,25 +1234,9 @@ class TestGetModelsByType(AIModelsTestBase):
 class TestGetModelsByTypeNonAdmin(AIModelsTestBase):
     """GET /ai-models/{modelType} rejected for non-admin session JWT."""
 
-    def test_non_admin_get_by_type_rejected(
-        self, pipeshub_client: PipeshubClient
-    ) -> None:
-        if not os.getenv("PIPESHUB_TEST_NON_ADMIN_EMAIL") or not os.getenv(
-            "PIPESHUB_TEST_NON_ADMIN_PASSWORD"
-        ):
-            pytest.skip(
-                "Set PIPESHUB_TEST_NON_ADMIN_EMAIL and "
-                "PIPESHUB_TEST_NON_ADMIN_PASSWORD to enable this test"
-            )
-        from auth_helpers import login_with_user, session_headers  # noqa: E402
-
-        token, _ = login_with_user(
-            pipeshub_client,
-            os.environ["PIPESHUB_TEST_NON_ADMIN_EMAIL"].strip(),
-            os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
-        )
+    def test_non_admin_get_by_type_rejected(self, second_user: SecondUser) -> None:
         resp = self.ai.get(
-            f"/{_MODEL_TYPE_LLM}", headers=session_headers(token), auth=False
+            f"/{_MODEL_TYPE_LLM}", headers=second_user.headers, auth=False
         )
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"

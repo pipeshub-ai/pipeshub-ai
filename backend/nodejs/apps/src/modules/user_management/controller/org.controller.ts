@@ -22,6 +22,10 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { Logger } from '../../../libs/services/logger.service';
 import { ContainerRequest } from '../../auth/middlewares/types';
 import {
@@ -318,8 +322,9 @@ export class OrgController {
       if (error instanceof BadRequestError || error instanceof NotFoundError) {
         throw error;
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Error retrieving users',
+      this.logger.error('Creating the organisation failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('create the organisation')),
       );
     } finally {
       if (session) {

@@ -1755,10 +1755,16 @@ class TestDisplayPicture(UsersTestBase):
         assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
             f"[wrong MIME] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
         )
+        # The message reaches the person unwrapped: no "File upload failed:" in
+        # front of text that already says what went wrong and which types work.
         assert body["error"]["message"] == (
-            "File upload failed: Invalid file type. Allowed types: image/png, image/jpeg, image/jpg, image/webp, image/gif"
+            "Invalid file type. Allowed types: image/png, image/jpeg, image/jpg, image/webp, image/gif"
         ), (
             f"[wrong MIME] Unexpected message: {body['error']['message']!r}"
+        )
+        assert "File upload failed" not in body["error"]["message"], (
+            "[wrong MIME] The plain message is wrapped in technical text again: "
+            f"{body['error']['message']!r}"
         )
 
         # -- GET: missing auth ----------------------------------------------------

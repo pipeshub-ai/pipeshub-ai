@@ -52,6 +52,17 @@ from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import (
+    CONNECTOR_OFF,
+    FOLDER_NOTHING_TO_INDEX,
+    RETRIES_EXHAUSTED,
+    RETRY_SCHEDULED,
+    STORED_CONTENT_DAMAGED,
+    STORED_CONTENT_MISSING,
+    duplicate_failed,
+    to_user_reason,
+    unsupported_file_type,
+)
 
 
 class RecordEventHandler(BaseEventService):
@@ -180,7 +191,7 @@ class RecordEventHandler(BaseEventService):
                 record_id=record_id,
                 indexing_status=ProgressStatus.FAILED.value,
                 extraction_status=ProgressStatus.FAILED.value,
-                reason=f"Message discarded after {attempts} attempt(s): {reason}",
+                reason=RETRIES_EXHAUSTED,
             )
             if updated is None:
                 # The status write is the only trace this record will ever get,
@@ -223,11 +234,7 @@ class RecordEventHandler(BaseEventService):
         would usually repeat the same failure (e.g. rate limits) and waste resources.
         """
         try:
-            propagated_reason = (
-                f"Primary duplicate indexing failed: {reason}"
-                if reason
-                else "Primary duplicate indexing failed"
-            )
+            propagated_reason = duplicate_failed(reason)
             updated = await self.event_processor.graph_provider.update_queued_duplicates_status(
                 record_id,
                 ProgressStatus.FAILED.value,
@@ -439,12 +446,12 @@ class RecordEventHandler(BaseEventService):
                 == MessageErrorType.TRANSIENT
             ):
                 raise
-            async for event in _fail("Failed to retrieve record from blob storage"):
+            async for event in _fail(STORED_CONTENT_MISSING):
                 yield event
             return
 
         if not blob or not self._blob_has_blocks(blob):
-            async for event in _fail("Blob has no parsed blocks"):
+            async for event in _fail(STORED_CONTENT_DAMAGED):
                 yield event
             return
 
@@ -475,7 +482,7 @@ class RecordEventHandler(BaseEventService):
             self.logger.exception(
                 "Vector-only reindex could not build blocks for record %s", record_id
             )
-            async for event in _fail("Blob blocks are malformed"):
+            async for event in _fail(STORED_CONTENT_DAMAGED):
                 yield event
             return
 
@@ -741,7 +748,7 @@ class RecordEventHandler(BaseEventService):
                             record_id=record_id,
                             indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                             extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
-                            reason="Connector is inactive"
+                            reason=CONNECTOR_OFF,
                         )
                         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -800,7 +807,7 @@ class RecordEventHandler(BaseEventService):
                     record_id=record_id,
                     indexing_status=ProgressStatus.COMPLETED.value,
                     extraction_status=ProgressStatus.COMPLETED.value,
-                    reason="Folder record — no content to index",
+                    reason=FOLDER_NOTHING_TO_INDEX,
                 )
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
@@ -962,7 +969,7 @@ class RecordEventHandler(BaseEventService):
                     record_id=record_id,
                     indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
                     extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    reason=f"Unsupported file type: {mime_type} ({judged_extension})",
+                    reason=unsupported_file_type(judged_extension),
                 )
 
                 # Yield both events for unsupported file types
@@ -1141,6 +1148,7 @@ class RecordEventHandler(BaseEventService):
                 elif is_final:
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
+                    user_reason = to_user_reason(last_exception)
                     self.logger.error(
                         f"Final failure for record {record_id}: {error_msg}",
                         exc_info=last_exception,
@@ -1150,7 +1158,7 @@ class RecordEventHandler(BaseEventService):
                             record_id=record_id,
                             indexing_status=ProgressStatus.FAILED.value,
                             extraction_status=ProgressStatus.FAILED.value,
-                            reason=error_msg,
+                            reason=user_reason,
                         )
                     except Exception as status_exc:
                         # A status-write failure here must not replace the
@@ -1177,7 +1185,7 @@ class RecordEventHandler(BaseEventService):
                                 f"propagating failure to all queued duplicates"
                             )
                             await self._propagate_primary_failure_to_queued_duplicates(
-                                record_id, virtual_record_id, error_msg
+                                record_id, virtual_record_id, user_reason
                             )
                         else:
                             # Transient error exhausted retries → try next duplicate
@@ -1210,7 +1218,7 @@ class RecordEventHandler(BaseEventService):
                                 if current.get("extractionStatus") != ProgressStatus.COMPLETED.value:
                                     updates["extractionStatus"] = ProgressStatus.NOT_STARTED.value
                         if updates:
-                            updates["reason"] = f"Transient failure, retry scheduled: {error_msg}"
+                            updates["reason"] = RETRY_SCHEDULED
                             updates["processingStartedAt"] = None
                             updated = await self.event_processor.graph_provider.update_node(
                                 record_id, CollectionNames.RECORDS.value, updates

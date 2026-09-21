@@ -210,6 +210,36 @@ describe('projects/validators/project.validators', () => {
       expect(result.success).to.equal(false)
     })
 
+    it('coerces numeric query strings, accepting the limit boundary of 100', () => {
+      const result = listProjectsQuerySchema.safeParse({ query: { page: '3', limit: '100' } })
+      expect(result.success).to.equal(true)
+      if (result.success) {
+        expect(result.data.query.page).to.equal(3)
+        expect(result.data.query.limit).to.equal(100)
+      }
+    })
+
+    it('treats an empty page or limit (`?page=&limit=`) as omitted rather than as 0', () => {
+      const result = listProjectsQuerySchema.safeParse({ query: { page: '', limit: '' } })
+      expect(result.success).to.equal(true)
+      if (result.success) {
+        expect(result.data.query.page).to.equal(1)
+        expect(result.data.query.limit).to.equal(20)
+      }
+    })
+
+    for (const [label, query] of [
+      ['page 0', { page: '0' }],
+      ['a negative page', { page: '-1' }],
+      ['a non-numeric page', { page: 'abc' }],
+      ['limit 0', { limit: '0' }],
+      ['a non-numeric limit', { limit: 'ten' }],
+    ] as const) {
+      it(`rejects ${label}`, () => {
+        expect(listProjectsQuerySchema.safeParse({ query }).success).to.equal(false)
+      })
+    }
+
     it('transforms includeArchived "true"/"false" strings to booleans', () => {
       const trueResult = listProjectsQuerySchema.safeParse({
         query: { includeArchived: 'true' },
@@ -223,6 +253,27 @@ describe('projects/validators/project.validators', () => {
 
     it('rejects a non-boolean-string includeArchived', () => {
       const result = listProjectsQuerySchema.safeParse({ query: { includeArchived: 'yes' } })
+      expect(result.success).to.equal(false)
+    })
+
+    it('transforms isArchived "true"/"false" strings while preserving an omitted value', () => {
+      const trueResult = listProjectsQuerySchema.safeParse({
+        query: { isArchived: 'true' },
+      })
+      const falseResult = listProjectsQuerySchema.safeParse({
+        query: { isArchived: 'false' },
+      })
+      const omittedResult = listProjectsQuerySchema.safeParse({ query: {} })
+
+      expect(trueResult.success && trueResult.data.query.isArchived).to.equal(true)
+      expect(falseResult.success && falseResult.data.query.isArchived).to.equal(false)
+      expect(
+        omittedResult.success && omittedResult.data.query.isArchived,
+      ).to.equal(undefined)
+    })
+
+    it('rejects a non-boolean-string isArchived', () => {
+      const result = listProjectsQuerySchema.safeParse({ query: { isArchived: 'yes' } })
       expect(result.success).to.equal(false)
     })
   })

@@ -260,7 +260,7 @@ describe('mail/controller/mail.controller', () => {
   })
 
   describe('sendMail - error when emailSender returns status false with no data', () => {
-    it('should use fallback error message', async () => {
+    it('answers with a written message either way', async () => {
       sinon.stub(controller, 'emailSender').resolves({ status: false, data: undefined })
       const req: any = { body: {} }
       const res: any = { status: sinon.stub().returnsThis(), json: sinon.stub() }
@@ -270,7 +270,7 @@ describe('mail/controller/mail.controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.message).to.equal('Error sending mail')
+      expect(err.message).to.contain('PipesHub tried to send that email')
     })
   })
 })

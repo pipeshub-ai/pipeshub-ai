@@ -41,7 +41,11 @@
     "pinnedSection": "已置顶",
     "allSection": "所有项目",
     "backToAllProjects": "所有项目",
-    "loadMore": "加载更多"
+    "loadMore": "加载更多",
+    "tabYourProjects": "您的项目",
+    "tabArchived": "已归档",
+    "archivedEmptyState": "暂无归档项目",
+    "archivedEmptyStateHint": "您归档的项目会显示在这里。"
   },
   "timeGroup": {
     "today": "今天",
@@ -393,6 +397,7 @@
       "subtitleExisting": "确认或更新您的 PipesHub 服务器 URL。",
       "label": "服务器 URL",
       "submit": "连接",
+      "changeServer": "更改服务器",
       "errors": {
         "empty": "请输入服务器 URL。",
         "invalid": "请输入有效的 URL（例如 http://localhost:3000）。",
@@ -831,6 +836,7 @@
       "unpinProject": "取消置顶",
       "archiveProject": "归档项目",
       "unarchiveProject": "取消归档",
+      "restoreSuccess": "项目已恢复",
       "deleteProject": "删除项目",
       "shareProject": "分享项目",
       "backToProjects": "所有项目",
@@ -880,15 +886,49 @@
         "memberCount_one": "{{count}} 位成员",
         "memberCount_other": "{{count}} 位成员",
         "share": "分享",
-        "recentChatsTitle": "最近对话",
-        "seeAllChats": "查看所有对话",
         "saveInstructionsFailed": "保存说明失败",
         "updateToolsFailed": "更新工具失败",
         "updatePinFailed": "更新置顶状态失败",
         "updateArchiveFailed": "更新归档状态失败",
         "shareRefreshFailed": "刷新共享详情失败",
         "removeFileConfirmTitle": "Remove file",
-        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone.",
+        "heroTitle": "我们要处理什么？",
+        "heroSubtitle": "您在这里发起的每个聊天都会沿用此项目的指令、文件和工具。",
+        "addDescription": "添加描述",
+        "descriptionPlaceholder": "这个项目是关于什么的？",
+        "descriptionSaveFailed": "保存描述失败",
+        "visibilityBadgePrivate": "私有",
+        "visibilityBadgeOrg": "组织",
+        "visibilityLabel": "可见性",
+        "visibilityPrivate": "仅您自己可见",
+        "visibilityOrg": "对您的组织可见",
+        "ownerLabel": "拥有者",
+        "youLabel": "您",
+        "aboutTitle": "关于",
+        "chatDefaultsTitle": "聊天默认设置",
+        "modelLabel": "模型",
+        "projectSetupTitle": "项目设置",
+        "projectSetupProgress": "{{done}} / {{total}}",
+        "statusSet": "已设置",
+        "statusNotSet": "未设置",
+        "filesStatusNone": "无文件",
+        "filesStatusCount_one": "{{count}} 个文件",
+        "filesStatusCount_other": "{{count}} 个文件",
+        "filesStatusCountWithSize_one": "{{count}} 个文件 · {{size}}",
+        "filesStatusCountWithSize_other": "{{count}} 个文件 · {{size}}",
+        "connectorsStatusNone": "无",
+        "connectorsStatusCount_one": "已连接 {{count}} 个",
+        "connectorsStatusCount_other": "已连接 {{count}} 个",
+        "toolsStatusDefault": "默认",
+        "toolsStatusCount_one": "已启用 {{count}} 个",
+        "toolsStatusCount_other": "已启用 {{count}} 个",
+        "membersStatusOnlyYou": "仅您自己",
+        "suggestSummariseDocument": "总结文档",
+        "suggestPlanWork": "规划一项工作",
+        "suggestWriteInstructions": "编写项目指令",
+        "suggestSummariseDocumentPrompt": "请总结此项目文件中最重要的文档。",
+        "suggestPlanWorkPrompt": "请帮我为此项目规划一项工作，并将其拆分为具体的后续步骤。"
       },
       "moveDialog": {
         "title": "移至项目",
@@ -1336,7 +1376,7 @@
         "errorOptionalUrlInvalid": "可选 URL 如已填写，必须是有效的 http(s) 地址。",
         "grantRequiredTitle": "需要授权类型",
         "grantRequiredDescription": "必须至少保留一种已选择的授权类型。",
-        "clientCredentialsWarning": "客户端凭据令牌始终以创建此应用的用户身份访问 Pipeshub，而不是以调用令牌端点的任何人的身份。用户仍可通过授权码流程为自己授权此应用。"
+        "clientCredentialsWarning": "客户端凭据令牌始终以创建此应用的用户身份访问 Pipeshub，而不是以调用令牌端点的任何人的身份。在您授予的权限范围（scope）内，令牌可以访问该用户能访问的一切，并继承其角色，因此由管理员创建的应用将拥有管理员权限。如果该账户被删除，令牌也会失效。如果此应用同时支持授权码流程，用户仍可通过该方式为自己授权。"
       }
     },
     "personalAccessTokens": {
@@ -2028,6 +2068,8 @@
         "additionalSettingsDescription": "配置连接器专属的同步选项",
         "nonEditableUrlFieldTooltip": "网站 URL 设置后无法更改。",
         "nonEditableLockedFieldTooltip": "此值设置后无法更改。",
+        "localFsDesktopOnlyBanner": "本地文件系统设置只能在 PipesHub 桌面应用中更改。此视图为只读。",
+        "localFsDesktopOnlySaveTooltip": "请打开 PipesHub 桌面应用以更改这些设置。",
         "importDate": "导入起始日期",
         "importDateDescription": "选择从哪个日期开始导入消息",
         "importAllTime": "导入全部历史数据",
@@ -2109,7 +2151,9 @@
           "needsAuth": "需要认证",
           "needsAuthTooltip": "配置已保存，但此实例仍需要认证。",
           "ready": "已完成",
-          "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。"
+          "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。",
+          "desktopOffline": "桌面端离线",
+          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。"
         },
         "sync": {
           "kind": "同步",
@@ -2120,6 +2164,14 @@
           "removing": "正在移除",
           "removingTooltip": "此实例正在被删除。"
         }
+      },
+      "localFsDesktop": {
+        "offlineToast": "请在拥有此文件夹的电脑上打开 PipesHub 桌面应用以进行同步。",
+        "offlineNamedToast": "拥有此文件夹的设备 {{deviceName}} 未连接。请在该设备上打开 PipesHub 桌面应用以进行同步。",
+        "unclaimedToast": "此连接器尚未在桌面端设置。请在拥有此文件夹的电脑上打开 PipesHub 桌面应用，并在其中启用一次同步。",
+        "ownedByOtherDeviceToast": "此连接器属于 {{deviceName}}。请在该设备上的 PipesHub 桌面应用中启用同步。",
+        "ownedByOtherDeviceUnknownToast": "此连接器属于另一台设备。请在该设备上的 PipesHub 桌面应用中启用同步。",
+        "deviceIdentityError": "无法识别此设备：{{error}}"
       },
       "schemaForm": {
         "tagsPlaceholder": "输入内容并按 Enter 添加标签",
@@ -2487,7 +2539,10 @@
         "confirmImport": "导入技能",
         "source": "来源：{{source}}",
         "resourceCount": "{{count}} 个资源",
-        "skippedBinary": "已跳过 {{count}} 个二进制文件（暂不支持）"
+        "skippedBinary": "已跳过 {{count}} 个二进制文件（暂不支持）",
+        "nameHint": "使用小写加连字符。如果原始名称已是内置技能（例如 pptx），请改用其他名称。",
+        "nameInvalid": "名称只能包含小写字母、数字和单个连字符。",
+        "originalName": "原始名称：{{name}}"
       },
       "candidates": {
         "title": "待审核的候选技能",

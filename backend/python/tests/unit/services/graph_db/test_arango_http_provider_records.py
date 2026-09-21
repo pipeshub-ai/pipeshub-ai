@@ -2802,6 +2802,83 @@ class TestDeleteOutlookRecord:
 # ===================================================================
 
 class TestDeleteLocalFsRecord:
+    async def test_a_full_sync_reset_deletes_without_a_per_record_edge(self, connected_provider):
+        """The connector's own sync resets records it holds no permission edge for.
+
+        Requiring the edge aborted the whole sync on ArangoDB while Neo4j, which
+        applies no such gate to connector records, completed it.
+        """
+        connected_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        connected_provider.http_client.get_document = AsyncMock(
+            side_effect=[
+                {"_key": "ukey", "userId": "mongo-user-1"},
+                {"_key": "conn1", "createdBy": "mongo-user-1"},
+            ]
+        )
+        connected_provider._check_record_permission = AsyncMock(return_value=None)
+        connected_provider._execute_local_fs_record_deletion = AsyncMock(
+            return_value={"success": True}
+        )
+
+        result = await connected_provider.delete_local_fs_record(
+            record_id="r1", user_id="ukey",
+            record=_arango_record(connector_id="conn1"), transaction=None,
+        )
+
+        assert result["success"] is True
+        connected_provider._execute_local_fs_record_deletion.assert_awaited_once()
+
+    async def test_a_permission_edge_still_grants_the_delete(self, connected_provider):
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "ukey", "userId": "mongo-user-1"}
+        )
+        connected_provider._check_record_permission = AsyncMock(return_value="OWNER")
+        connected_provider._is_connector_creator = AsyncMock(return_value=False)
+        connected_provider._execute_local_fs_record_deletion = AsyncMock(
+            return_value={"success": True}
+        )
+
+        result = await connected_provider.delete_local_fs_record(
+            record_id="r1", user_id="mongo-user-1",
+            record=_arango_record(connector_id="conn1"), transaction=None,
+        )
+
+        assert result["success"] is True
+
+    async def test_someone_elses_connector_is_still_refused(self, connected_provider):
+        """The cross-tenant guard survives: another tenant's creator is not ours."""
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "ukey", "userId": "mongo-user-1"}
+        )
+        connected_provider.http_client.get_document = AsyncMock(
+            return_value={"_key": "conn1", "createdBy": "someone-else"}
+        )
+        connected_provider._check_record_permission = AsyncMock(return_value=None)
+        connected_provider._execute_local_fs_record_deletion = AsyncMock()
+
+        result = await connected_provider.delete_local_fs_record(
+            record_id="r1", user_id="mongo-user-1",
+            record=_arango_record(connector_id="conn1"), transaction=None,
+        )
+
+        assert result["success"] is False
+        assert result["code"] == 403
+        connected_provider._execute_local_fs_record_deletion.assert_not_awaited()
+
+    async def test_a_record_without_a_connector_is_refused(self, connected_provider):
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "ukey", "userId": "mongo-user-1"}
+        )
+        connected_provider._check_record_permission = AsyncMock(return_value=None)
+        record = _arango_record(connector_id="conn1")
+        record.pop("connectorId")
+
+        result = await connected_provider.delete_local_fs_record(
+            record_id="r1", user_id="mongo-user-1", record=record, transaction=None,
+        )
+
+        assert result["code"] == 403
+
     async def test_user_not_found(self, connected_provider):
         connected_provider.get_user_by_user_id = AsyncMock(return_value=None)
         connected_provider.http_client.get_document = AsyncMock(return_value=None)

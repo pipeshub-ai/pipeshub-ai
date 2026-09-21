@@ -1,6 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore, logoutAndRedirect } from '@/config';
-import { extractApiErrorMessage, processError } from './api-error';
+import { extractApiErrorMessage, processError, ProcessedError } from './api-error';
 import { showErrorToast } from './error-toast';
 import {
   refreshAccessToken,
@@ -14,7 +14,12 @@ import { generateRequestId } from '@/lib/utils/request-id';
 
 declare module 'axios' {
   export interface AxiosRequestConfig {
-    suppressErrorToast?: boolean;
+    /**
+     * Skip the global error toast. Pass a predicate to suppress only the
+     * failures the caller renders itself, so every other error still gets
+     * the backend's message through the generic toast.
+     */
+    suppressErrorToast?: boolean | ((error: ProcessedError) => boolean);
   }
 }
 
@@ -149,7 +154,10 @@ apiClient.interceptors.response.use(
 
     const processedError = processError(error);
 
-    if (!originalRequest.suppressErrorToast) {
+    const suppress = originalRequest.suppressErrorToast;
+    const suppressed =
+      typeof suppress === 'function' ? suppress(processedError) : suppress;
+    if (!suppressed) {
       showErrorToast(processedError);
     }
 

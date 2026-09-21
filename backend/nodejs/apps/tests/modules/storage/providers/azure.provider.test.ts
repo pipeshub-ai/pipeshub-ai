@@ -202,6 +202,35 @@ describe('AzureBlobStorageAdapter', () => {
       const path = proto.getBlobPath('https://account.blob.core.windows.net/mycontainer/a/b/c/file.pdf')
       expect(path).to.equal('a/b/c/file.pdf')
     })
+
+    it('should decode names so they match the blob that was uploaded', () => {
+      const proto = require(
+        '../../../../src/modules/storage/providers/azure.provider',
+      ).default.prototype
+      proto.containerName = 'mycontainer'
+      const path = proto.getBlobPath(
+        'https://account.blob.core.windows.net/mycontainer/org/Quarterly%20report%20%C3%A9t%C3%A9%20%2350%25.pdf',
+      )
+      expect(path).to.equal('org/Quarterly report été #50%.pdf')
+    })
+
+    it('should handle path-style URLs that carry the account name', () => {
+      const proto = require(
+        '../../../../src/modules/storage/providers/azure.provider',
+      ).default.prototype
+      proto.containerName = 'mycontainer'
+      const path = proto.getBlobPath('http://127.0.0.1:10000/devstoreaccount1/mycontainer/a/file.pdf')
+      expect(path).to.equal('a/file.pdf')
+    })
+
+    it('should reject a URL from another container', () => {
+      const proto = require(
+        '../../../../src/modules/storage/providers/azure.provider',
+      ).default.prototype
+      proto.containerName = 'mycontainer'
+      expect(() => proto.getBlobPath('https://account.blob.core.windows.net/other/file.pdf'))
+        .to.throw(StorageValidationError)
+    })
   })
 
   // -------------------------------------------------------------------------
@@ -625,6 +654,29 @@ describe('AzureBlobStorageAdapter', () => {
       expect(sasOpts.contentDisposition).to.include('myfile.pdf')
     })
 
+    it('should ask for read-only permissions in a form the SDK accepts', async () => {
+      const proto = require(
+        '../../../../src/modules/storage/providers/azure.provider',
+      ).default.prototype
+
+      proto.containerName = 'testcontainer'
+      const mockBlobClient = {
+        generateSasUrl: sinon.stub().resolves('https://signed.url'),
+      }
+      proto.containerClient = {
+        getBlockBlobClient: sinon.stub().returns(mockBlobClient),
+      }
+
+      await proto.getSignedUrl({
+        azureBlob: { url: 'https://account.blob.core.windows.net/testcontainer/file.pdf' },
+        extension: '.pdf',
+      })
+
+      // The SDK re-parses permissions from toString(); a plain object gives "[object Object]".
+      const sasOpts = mockBlobClient.generateSasUrl.firstCall.args[0]
+      expect(sasOpts.permissions.toString()).to.equal('r')
+    })
+
     it('should throw PresignedUrlError on unknown error', async () => {
       const proto = require(
         '../../../../src/modules/storage/providers/azure.provider',
@@ -670,6 +722,7 @@ describe('AzureBlobStorageAdapter', () => {
 
       expect(result.statusCode).to.equal(200)
       expect(result.data.url).to.include('direct-upload')
+      expect(mockBlobClient.generateSasUrl.firstCall.args[0].permissions.toString()).to.equal('w')
     })
 
     it('should throw PresignedUrlError on failure', async () => {
@@ -1275,6 +1328,89 @@ describe('AzureBlobStorageAdapter - additional coverage', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(StorageDownloadError)
       }
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // container creation at start-up
+  // -------------------------------------------------------------------------
+  describe('container creation at start-up', () => {
+    const CONNECTION_STRING =
+      'DefaultEndpointsProtocol=https;AccountName=test;AccountKey=a2V5;EndpointSuffix=core.windows.net'
+
+    function newAdapter() {
+      const AzureBlobStorageAdapter = require(
+        '../../../../src/modules/storage/providers/azure.provider',
+      ).default
+      return new AzureBlobStorageAdapter({
+        azureBlobConnectionString: CONNECTION_STRING,
+        containerName: 'new-container',
+      })
+    }
+
+    it('makes the first upload wait until the container exists', async () => {
+      const { ContainerClient, BlockBlobClient } = require('@azure/storage-blob')
+      let finishCreate: (value: { succeeded: boolean }) => void = () => undefined
+      sinon.stub(ContainerClient.prototype, 'createIfNotExists').returns(
+        new Promise((resolve) => { finishCreate = resolve }),
+      )
+      const uploadData = sinon.stub(BlockBlobClient.prototype, 'uploadData').resolves({})
+
+      const adapter = newAdapter()
+      const upload = adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from('x'), documentPath: 'a/b.txt', mimeType: 'text/plain', isVersioned: false,
+      })
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(uploadData.called).to.equal(false)
+
+      finishCreate({ succeeded: true })
+      const result = await upload
+      expect(result.statusCode).to.equal(200)
+      expect(uploadData.calledOnce).to.equal(true)
+    })
+
+    it('reports a failed container check from the operation, not as an unhandled rejection', async () => {
+      const { ContainerClient, BlockBlobClient } = require('@azure/storage-blob')
+      const create = sinon.stub(ContainerClient.prototype, 'createIfNotExists')
+        .rejects(new Error('access denied'))
+      const uploadData = sinon.stub(BlockBlobClient.prototype, 'uploadData').resolves({})
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        const adapter = newAdapter()
+        await new Promise((resolve) => setImmediate(resolve))
+
+        try {
+          await adapter.uploadDocumentToStorageService({
+            buffer: Buffer.from('x'), documentPath: 'a/b.txt', mimeType: 'text/plain', isVersioned: false,
+          })
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(StorageConfigurationError)
+        }
+        await new Promise((resolve) => setImmediate(resolve))
+        expect(unhandled).to.deep.equal([])
+        expect(uploadData.called).to.equal(false)
+        // The operation retried the check once before giving up.
+        expect(create.callCount).to.equal(2)
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
+    })
+
+    it('recovers when the container check fails at start-up and succeeds on retry', async () => {
+      const { ContainerClient, BlockBlobClient } = require('@azure/storage-blob')
+      sinon.stub(ContainerClient.prototype, 'createIfNotExists')
+        .onFirstCall().rejects(new Error('temporarily unavailable'))
+        .onSecondCall().resolves({ succeeded: true })
+      sinon.stub(BlockBlobClient.prototype, 'uploadData').resolves({})
+
+      const adapter = newAdapter()
+      const result = await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from('x'), documentPath: 'a/b.txt', mimeType: 'text/plain', isVersioned: false,
+      })
+      expect(result.statusCode).to.equal(200)
     })
   })
 })

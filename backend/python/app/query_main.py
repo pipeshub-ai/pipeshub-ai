@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -38,6 +39,7 @@ from app.services.messaging.utils import MessagingUtils
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
 
 container = QueryAppContainer.init("query_service")
@@ -472,24 +474,13 @@ async def health_check() -> JSONResponse:
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """
-    Custom handler to log Pydantic validation errors.
-    This will log the detailed error and the body of the failed request.
-    """
-    # Log the full error details from the exception
-
-    try:
-        # Try to log the request body
-        await request.json()
-    except Exception:
-        print("Could not parse request body as JSON.")
-
-    # You can customize the response, but for now, we'll just re-raise
-    # or return the default FastAPI response structure.
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors()},
+    """Answer a malformed request in plain words, keeping FastAPI's ``detail`` list shape."""
+    errors = jsonable_encoder(exc.errors())
+    logging.getLogger(__name__).warning(
+        "Request validation failed for %s %s: %s", request.method, request.url, errors
     )
+    message, detail = friendly_validation_errors(errors)
+    return JSONResponse(status_code=422, content={"message": message, "detail": detail})
 
 
 # Include routes from routes.py

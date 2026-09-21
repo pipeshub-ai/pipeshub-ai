@@ -220,7 +220,7 @@ test.describe('Knowledge Base Upload', () => {
 
       const row = failedRows(page).first();
       await expect(row).toBeVisible({ timeout: 15_000 });
-      await expect(row).toContainText(/exceed|size|limit/i, { timeout: 30_000 });
+      await expect(row).toContainText(/larger than the \d+ MB limit/i, { timeout: 30_000 });
     } finally {
       cleanup();
     }
@@ -343,7 +343,7 @@ test.describe('Knowledge Base Upload', () => {
       ).toHaveCount(0, { timeout: 90_000 });
 
       // Size-limit rejections emit a specific phrase; it must not appear here.
-      await expect(tracker).not.toContainText(/exceed|size limit/i);
+      await expect(tracker).not.toContainText(/larger than the \d+ MB limit/i);
     } finally {
       cleanup();
     }
@@ -660,7 +660,7 @@ test.describe('Knowledge Base Upload — Client-Side Size Validation', () => {
       // a few seconds, not the 30-60s a backend round-trip would take.
       await expect(failedRows(page)).toHaveCount(1, { timeout: 10_000 });
       await expect(completedRows(page)).toHaveCount(0);
-      await expect(failedRows(page).first()).toContainText(/exceed|size.*limit/i);
+      await expect(failedRows(page).first()).toContainText(/larger than the \d+ MB limit/i);
 
       // The gate must prevent any upload request from reaching the server.
       expect(uploadCalls).toBe(0);
@@ -721,7 +721,7 @@ test.describe('Knowledge Base Upload — Client-Side Size Validation', () => {
       // The 2 valid files proceed to the backend and complete normally.
       await expect(completedRows(page)).toHaveCount(2, { timeout: 60_000 });
       await expect(failedRows(page)).toHaveCount(1, { timeout: 10_000 });
-      await expect(failedRows(page).first()).toContainText(/exceed|size.*limit/i);
+      await expect(failedRows(page).first()).toContainText(/larger than the \d+ MB limit/i);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -741,9 +741,9 @@ test.describe('Knowledge Base Upload — Client-Side Size Validation', () => {
       const row = failedRows(page).first();
       await expect(row).toBeVisible({ timeout: 10_000 });
 
-      // Must contain the exact phrasing: "File exceeds the XX MB size limit"
+      // Must match the backend's phrasing: "This file is larger than the XX MB limit"
       const limitMB = Math.round(realMaxBytes / (1024 * 1024));
-      await expect(row).toContainText(`exceeds the ${limitMB} MB size limit`);
+      await expect(row).toContainText(`larger than the ${limitMB} MB limit`);
     } finally {
       cleanup();
     }

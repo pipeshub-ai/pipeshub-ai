@@ -2401,7 +2401,9 @@ class TestParseRequestJsonDeep:
         from app.api.routes.toolsets import _parse_request_json
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(MagicMock(), b'{"key": ')
-        assert "Invalid JSON" in exc.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc.value.detail == "We couldn't read that request. Refresh the page and try again."
+        assert "Invalid JSON" not in exc.value.detail
 
 
 # ---------------------------------------------------------------------------

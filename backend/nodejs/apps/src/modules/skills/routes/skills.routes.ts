@@ -13,6 +13,7 @@
 import { Router } from 'express';
 import { Container } from 'inversify';
 import multer from 'multer';
+import { createMulter } from '../../../libs/utils/multer.utils';
 
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
@@ -62,7 +63,7 @@ export function createSkillsRouter(container: Container): Router {
     ?? Logger.getInstance({ service: 'SkillsRoutes' });
   const importLimiter = createSkillsImportRateLimiter(logger);
 
-  const skillUpload = multer({
+  const skillUpload = createMulter({
     storage: multer.memoryStorage(),
     limits: { fileSize: SKILL_UPLOAD_MAX_BYTES, files: 1 },
   });

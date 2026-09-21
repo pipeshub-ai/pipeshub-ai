@@ -156,6 +156,20 @@ tags:
   # User Management
   - name: Users
     description: User management operations
+  - name: Service Accounts
+    description: |
+      Machine identities that automation authenticates as, so a script reads with
+      its own permissions rather than borrowing a person's.
+
+      A service account is an ordinary user record with `kind: "service"`. It
+      appears in the permission graph the same way people do, so "what can this
+      account see" is answered by the same code that answers it for a colleague.
+      It can never sign in, and it is always a member, never an administrator.
+
+      Every route is admin-only, and for OAuth tokens and personal access tokens
+      the scopes below are enforced as well — creating a service account grants
+      access to the organisation's documents, so a narrowly scoped credential
+      cannot do it merely because its owner is an admin.
   - name: Teams
     description: Team management operations
   - name: Organizations
@@ -168,6 +182,13 @@ tags:
   # Storage
   - name: Document Management
     description: Document CRUD and retrieval operations
+  - name: Internal Storage
+    description: |
+      Service-to-service storage endpoints. Each mirrors a public `/document`
+      route but is authenticated with the storage scoped token rather than a
+      signed-in user's session, so these are **not** callable by API clients or
+      the browser. They are listed here so the surface is discoverable and the
+      pairing with the public routes is visible.
   - name: Knowledge Base
     description: Knowledge base management operations
   - name: Knowledge Hub
@@ -328,6 +349,14 @@ tags:
       - `custom`: Use cron expression for complex schedules
       - `once`: Run once at a specific future time
 components:
+  parameters:
+    InternalDocumentId:
+      name: documentId
+      in: path
+      required: true
+      description: The document's id.
+      schema:
+        type: string
   securitySchemes:
     bearerAuth:
       type: http
@@ -2856,6 +2885,100 @@ components:
           example: "Team fetched successfully"
         team:
           $ref: '#/components/schemas/TeamDetail'
+
+    ServiceAccount:
+      type: object
+      additionalProperties: false
+      description: A machine identity in this organisation.
+      required:
+        - id
+        - slug
+        - fullName
+        - email
+        - isDisabled
+      properties:
+        id:
+          type: string
+          description: Mongo id of the underlying user record
+          example: "507f1f77bcf86cd799439012"
+        slug:
+          type: string
+          description: Short name, unique within the organisation
+          example: "nightly-sync"
+        fullName:
+          type: string
+          description: Display name, shown wherever a user is shown
+          example: "Nightly sync"
+        email:
+          type: string
+          description: |
+            Reserved address under `service.pipeshub.internal`, derived from the
+            slug. Not a mailbox: the domain is reserved by RFC 8375 and never
+            resolves. It exists because the user record requires an address and
+            the permission-graph sync looks users up by it.
+          example: "svc-nightly-sync-507f1f77bcf86cd799439011@service.pipeshub.internal"
+        description:
+          type: string
+          description: What this account is for
+        isDisabled:
+          type: boolean
+          description: |
+            When true, tokens already issued stop working as well as new
+            sign-ins being refused. The record, its group memberships and its
+            permission-graph node all survive, so it can be switched back on.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ServiceAccountCreateRequest:
+      type: object
+      additionalProperties: false
+      description: Request body for `POST /service-accounts`. Validated by `createServiceAccountSchema` (Zod).
+      required:
+        - slug
+        - fullName
+      properties:
+        slug:
+          type: string
+          minLength: 3
+          maxLength: 48
+          pattern: '^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$'
+          description: |
+            Letters, digits and single hyphens, not starting or ending with
+            one. Becomes the local part of the account's address, which is
+            lowercase — mixed case is accepted here and lowercased rather than
+            refused, which is why the pattern allows it.
+          example: "nightly-sync"
+        fullName:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: "Nightly sync"
+        description:
+          type: string
+          maxLength: 500
+          example: "Reads the handbook for the release digest"
+
+    ServiceAccountUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Request body for `PATCH /service-accounts/{id}`. At least one field is
+        required; an empty body is refused rather than silently doing nothing.
+      minProperties: 1
+      properties:
+        fullName:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        isDisabled:
+          type: boolean
 
     TeamCreateRequest:
       type: object
@@ -12007,6 +12130,22 @@ components:
         isActive:
           type: boolean
           description: Whether connector is enabled for syncing/agent
+        desktopOnline:
+          type: boolean
+          description: |
+            Whether the owner device (`ownerDeviceId`) is currently connected.
+            Local FS only; omitted otherwise, and while the connector has no owner.
+        ownerDeviceId:
+          type: string
+          description: |
+            Local FS only. The desktop device that owns this connector, set when
+            sync is first enabled from the desktop app.
+        ownerDeviceName:
+          type: string
+          description: |
+            Local FS only. Display name of the desktop device that owns this
+            connector, set when sync is first enabled from the desktop app.
+          example: "WIN-LAPTOP"
         isConfigured:
           type: boolean
           description: Whether all required configuration is complete
@@ -12317,82 +12456,54 @@ components:
           type: string
           enum: [sync, agent]
           description: "Toggle type: 'sync' for data synchronization, 'agent' for AI agent integration"
+        deviceId:
+          type: string
+          description: |
+            Sent by the desktop app. Required when enabling sync on a Local FS
+            connector with no owner yet; must match `ownerDeviceId` afterwards.
+        deviceName:
+          type: string
+          description: |
+            Sent by the desktop app with `deviceId`. Stored as `ownerDeviceName`
+            when the device claims the connector.
 
-    LocalFsFileEvent:
+    LocalFsDesktopRefusal:
       type: object
-      description: Single filesystem change event for Local FS replay
+      description: |
+        409 body returned when a Local FS connector cannot sync because of its
+        owner device.
       required:
-        - type
-        - path
-        - timestamp
-        - isDirectory
+        - success
+        - code
+        - message
+        - details
       properties:
-        type:
-          type: string
-          description: Event type (e.g. CREATED, MODIFIED, DELETED, RENAMED, MOVED)
-        path:
-          type: string
-          description: Path relative to the configured sync root
-        oldPath:
-          type: string
-          nullable: true
-          description: Previous path for rename or move events
-        timestamp:
-          type: integer
-          format: int64
-          description: Event time in epoch milliseconds
-        size:
-          type: integer
-          format: int64
-          nullable: true
-        contentField:
-          type: string
-          nullable: true
-          description: Multipart form field name containing file bytes for uploaded desktop sync events
-        sha256:
-          type: string
-          nullable: true
-          description: SHA-256 digest of the uploaded file bytes
-        mimeType:
-          type: string
-          nullable: true
-          description: MIME type of the uploaded file bytes
-        isDirectory:
+        success:
           type: boolean
-          description: Must be false when sent from the CLI (directories are expanded client-side)
-
-    LocalFsFileEventBatchRequest:
-      type: object
-      description: Batch of Local FS file events (also accepts a bare JSON array of events, which the server wraps)
-      required:
-        - batchId
-        - events
-        - timestamp
-      properties:
-        batchId:
+          example: false
+        code:
           type: string
-        events:
-          type: array
-          items:
-            $ref: '#/components/schemas/LocalFsFileEvent'
-        timestamp:
-          type: integer
-          format: int64
-          description: Batch timestamp in epoch milliseconds
-        resetBeforeApply:
-          type: boolean
-          description: When true, clear existing Local FS records before applying this batch
-
-    LocalFsFileEventStats:
-      type: object
-      description: Counts returned after applying a Local FS file event batch
-      properties:
-        processed:
-          type: integer
-          description: Files upserted or updated from the batch
-        deleted:
-          type: integer
-          description: Deletions or path removals applied
+          enum: [DESKTOP_OFFLINE, DESKTOP_UNCLAIMED, DESKTOP_OWNED_BY_OTHER_DEVICE]
+        message:
+          type: string
+          example: "No desktop is connected for connector conn_abc123. Open the Pipeshub desktop app on the machine that owns this folder."
+        details:
+          type: object
+          required:
+            - code
+            - connectorId
+            - retryable
+          properties:
+            code:
+              type: string
+              enum: [DESKTOP_OFFLINE, DESKTOP_UNCLAIMED, DESKTOP_OWNED_BY_OTHER_DEVICE]
+            connectorId:
+              type: string
+            retryable:
+              type: boolean
+            ownerDeviceName:
+              type: string
+              description: Name of the owner device, when the connector has one.
 
     FilterOptions:
       type: object
@@ -13547,6 +13658,10 @@ components:
         subcategory:
           type: string
           nullable: true
+        name:
+          type: string
+          nullable: true
+          description: Optional kebab-case name to persist as. Rewrites SKILL.md frontmatter `name` so an import can avoid a reserved builtin.
 
     SkillImportPreview:
       type: object
@@ -19872,6 +19987,172 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== TEAMS ENDPOINTS ====================
+  /service-accounts:
+    get:
+      tags:
+        - Service Accounts
+      summary: List service accounts
+      description: |
+        Every service account in the caller's organisation, newest first.
+
+        The organisation comes from the caller's own token, never from the
+        request, so an administrator of one organisation cannot reach another's.
+      operationId: listServiceAccounts
+      security:
+        - bearerAuth: []
+        - oauth2: [user:read]
+      responses:
+        '200':
+          description: Service accounts in this organisation
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceAccount'
+        '400':
+          description: Admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+    post:
+      tags:
+        - Service Accounts
+      summary: Create a service account
+      description: |
+        Creates a machine identity and publishes the same `userAdded` event
+        that creating a person publishes, so the permission graph builds its
+        node, its edge to the organisation, its knowledge base and its
+        membership of the organisation's "All" team.
+
+        The account is always a member and never an administrator, whoever
+        creates it. It cannot sign in.
+
+        Reusing the name of a previously deleted service account restores that
+        record rather than failing: the address is uniquely indexed and the
+        graph node is keyed by it, so a second record would leave the name
+        permanently unusable. Every field is reset from this request, and the
+        account comes back enabled.
+      operationId: createServiceAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [user:invite]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountCreateRequest'
+      responses:
+        '201':
+          description: Service account created, or a deleted one of the same name restored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccount'
+        '400':
+          description: Invalid name, or admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '409':
+          description: A service account of that name already exists
+
+  /service-accounts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F]{24}$'
+        description: Mongo id of the service account
+    get:
+      tags:
+        - Service Accounts
+      summary: Get a service account
+      description: |
+        `kind` is part of the lookup rather than checked afterwards, so a
+        colleague's user id passed here returns 404 rather than their record.
+      operationId: getServiceAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [user:read]
+      responses:
+        '200':
+          description: The service account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccount'
+        '400':
+          description: Admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '404':
+          description: No such service account in this organisation
+    patch:
+      tags:
+        - Service Accounts
+      summary: Rename, describe, disable or re-enable a service account
+      description: |
+        Disabling stops tokens that have already been issued, not only the next
+        sign-in. Renaming is passed on to the permission graph, which keeps its
+        own copy of the display name; disabling is not, because the graph does
+        not need it.
+      operationId: updateServiceAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [user:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountUpdateRequest'
+      responses:
+        '200':
+          description: The updated service account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccount'
+        '400':
+          description: Empty body, invalid field, or admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '404':
+          description: No such service account in this organisation
+    delete:
+      tags:
+        - Service Accounts
+      summary: Delete a service account
+      description: |
+        Marks the record deleted, removes it from every group and tells the
+        permission graph, which marks its node inactive. The name can be used
+        again, which restores this record rather than creating a second one.
+      operationId: deleteServiceAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [user:delete]
+      responses:
+        '204':
+          description: Deleted
+        '400':
+          description: Admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '404':
+          description: No such service account in this organisation
+
   /teams:
     post:
       tags:
@@ -22451,6 +22732,341 @@ paths:
   #       '404':
   #         description: Document not found
   #
+  # --- Internal storage routes -------------------------------------------
+  # Service-to-service only: each mirrors a public /document route but is
+  # authenticated with the storage scoped token instead of a user's session.
+  /document/internal/upload:
+    post:
+      tags:
+        - Internal Storage
+      summary: Upload a file (service-to-service)
+      description: |
+        Store one file and create its document record. Mirrors `POST /document/upload`,
+        but authenticated with the storage scoped token rather than a signed-in user.
+      operationId: internalUploadDocument
+      security:
+        - scopedToken: []
+      requestBody:
+        description: The file to store.
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The file to store. One file per request.
+      responses:
+        '200':
+          description: The file was stored and its document record created.
+        '400':
+          description: The request was missing the file, or the file was rejected.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: The file could not be saved. Safe to retry.
+  /document/internal/placeholder:
+    post:
+      tags:
+        - Internal Storage
+      summary: Create a document record with no file yet (service-to-service)
+      description: |
+        Create the document record that a direct upload will later fill.
+        Mirrors `POST /document/placeholder`.
+      operationId: internalCreatePlaceholderDocument
+      security:
+        - scopedToken: []
+      requestBody:
+        description: Where the file will live and what to call it.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - documentName
+                - documentPath
+                - extension
+              properties:
+                documentName:
+                  type: string
+                alternateDocumentName:
+                  type: string
+                documentPath:
+                  type: string
+                extension:
+                  type: string
+                permissions:
+                  type: string
+                metaData: {}
+                isVersionedFile:
+                  type: boolean
+                customMetadata:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - key
+                      - value
+                    properties:
+                      key:
+                        type: string
+                      value: {}
+      responses:
+        '200':
+          description: The document record was created.
+        '400':
+          description: The request body was incomplete.
+        '401':
+          description: The storage scoped token was missing or invalid.
+  /document/internal/{documentId}:
+    get:
+      tags:
+        - Internal Storage
+      summary: Read a document record (service-to-service)
+      description: Mirrors `GET /document/{documentId}`.
+      operationId: internalGetDocumentById
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      responses:
+        '200':
+          description: The document record.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
+  /document/internal/{documentId}/:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Delete a document record (service-to-service)
+      description: |
+        Mark the document deleted. Mirrors `DELETE /document/{documentId}/`.
+        The stored file itself is handled by the caller.
+      operationId: internalDeleteDocumentById
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      responses:
+        '200':
+          description: The document was marked deleted.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
+  /document/internal/{documentId}/download:
+    get:
+      tags:
+        - Internal Storage
+      summary: Download a document (service-to-service)
+      description: |
+        Returns a time-limited link for S3 or Azure, or the file itself for local
+        storage. Mirrors `GET /document/{documentId}/download`.
+      operationId: internalDownloadDocument
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+        - name: version
+          in: query
+          required: false
+          description: A past version to download. Defaults to the current one.
+          schema:
+            type: integer
+            minimum: 0
+        - name: expirationTimeInSeconds
+          in: query
+          required: false
+          description: How long the download link stays valid.
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: A download link, or the file itself for local storage.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document, or no such version.
+  /document/internal/{documentId}/buffer:
+    get:
+      tags:
+        - Internal Storage
+      summary: Read a document's bytes (service-to-service)
+      description: Mirrors `GET /document/{documentId}/buffer`.
+      operationId: internalGetDocumentBuffer
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+        - name: version
+          in: query
+          required: false
+          description: A past version to read. Defaults to the current one.
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        '200':
+          description: The document's bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document, or no such version.
+    put:
+      tags:
+        - Internal Storage
+      summary: Replace a document's bytes (service-to-service)
+      description: Mirrors `PUT /document/{documentId}/buffer`.
+      operationId: internalUpdateDocumentBuffer
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      requestBody:
+        description: The bytes that replace the document's current contents.
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: The document's bytes were replaced.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
+        '503':
+          description: The file could not be saved. Safe to retry.
+  /document/internal/{documentId}/uploadNextVersion:
+    post:
+      tags:
+        - Internal Storage
+      summary: Add a new version of a document (service-to-service)
+      description: Mirrors `POST /document/{documentId}/uploadNextVersion`.
+      operationId: internalUploadNextVersion
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      requestBody:
+        description: The new version's bytes, and optional notes for this and the previous version.
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                currentVersionNote:
+                  type: string
+                nextVersionNote:
+                  type: string
+      responses:
+        '200':
+          description: The new version was stored.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
+        '503':
+          description: The file could not be saved. Safe to retry.
+  /document/internal/{documentId}/rollBack:
+    post:
+      tags:
+        - Internal Storage
+      summary: Roll a document back to an earlier version (service-to-service)
+      description: Mirrors `POST /document/{documentId}/rollBack`.
+      operationId: internalRollBackToPreviousVersion
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      requestBody:
+        description: The version to return to, and why.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - note
+              properties:
+                note:
+                  type: string
+                  description: Why the document was rolled back.
+                version:
+                  type: integer
+                  minimum: 0
+                  description: The version to return to.
+      responses:
+        '200':
+          description: The document was rolled back.
+        '400':
+          description: The note was missing, or the version was not a whole number.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document, or no such version.
+  /document/internal/{documentId}/directUpload:
+    post:
+      tags:
+        - Internal Storage
+      summary: Get a link to upload straight to storage (service-to-service)
+      description: |
+        Returns a time-limited link the caller uses to send the file directly to
+        S3 or Azure. Mirrors `POST /document/{documentId}/directUpload`.
+      operationId: internalDirectUpload
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      responses:
+        '200':
+          description: A time-limited upload link.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
+        '503':
+          description: The upload link could not be issued. Safe to retry.
+  /document/internal/{documentId}/isModified:
+    get:
+      tags:
+        - Internal Storage
+      summary: Has this document changed? (service-to-service)
+      description: Mirrors `GET /document/{documentId}/isModified`.
+      operationId: internalIsDocumentModified
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      responses:
+        '200':
+          description: Whether the document has changed since it was stored.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
   /knowledgeBase:
     post:
       tags:
@@ -28587,10 +29203,19 @@ paths:
             default: mine
         - name: includeArchived
           in: query
+          description: Include archived projects alongside active projects.
           schema:
             type: string
             enum: ['true', 'false']
             default: 'false'
+        - name: isArchived
+          in: query
+          description: |
+            Filter by exact archive status. When provided, this takes
+            precedence over `includeArchived`.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Paginated project list
@@ -32074,6 +32699,8 @@ paths:
         <li><b>isConfigured:</b> All required settings are complete</li>
         <li><b>isAuthenticated:</b> OAuth flow complete or credentials valid</li>
         <li><b>isActive:</b> Connector is enabled for sync/agent</li>
+        <li><b>desktopOnline:</b> Owner device's desktop app connected (Local FS only)</li>
+        <li><b>ownerDeviceId / ownerDeviceName:</b> Desktop device that owns the connector, set on first enable (Local FS only)</li>
         </ul>
       operationId: listConnectorInstances
       security:
@@ -33050,7 +33677,18 @@ paths:
         '401':
           description: Unauthorized
         '409':
-          description: Conflict — the connector instance is disabled or locked.
+          description: |
+            Conflict. Possible reasons:<br>
+            <ul>
+            <li>The connector instance is disabled or locked</li>
+            <li><code>DESKTOP_OFFLINE</code> - Local FS: the owner device's desktop app is not connected</li>
+            <li><code>DESKTOP_UNCLAIMED</code> - Local FS: no device owns the connector yet</li>
+            </ul>
+            Local FS refusals carry <code>details.code</code> and use the body below.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalFsDesktopRefusal'
 
   /connectors/{connectorId}/name:
     put:
@@ -33304,6 +33942,7 @@ paths:
         <li>Connector must be configured (<code>isConfigured: true</code>)</li>
         <li>For OAuth connectors: Must be authenticated (<code>isAuthenticated: true</code>)</li>
         <li>For agent: Connector must support agent (<code>supportsAgent: true</code>)</li>
+        <li>Local FS: must be enabled from the owner device via the desktop app, which sends <code>deviceId</code> and <code>deviceName</code>. The first enable claims that device as owner.</li>
         </ul>
         <b>Permissions:</b><br>
         <ul>
@@ -33356,139 +33995,18 @@ paths:
           description: Permission denied
         '404':
           description: Connector not found
-
-  /connectors/{connectorId}/file-events:
-    post:
-      tags:
-        - Connector Control
-      summary: Submit Local FS file events
-      description: |
-        Replays a batch of filesystem change events for a **Local FS** connector instance.
-        Used by the local CLI to apply incremental changes without a full directory rescan.
-        Only Local FS connector instances accept this endpoint; other connector types receive 400.
-      operationId: submitConnectorFileEvents
-      security:
-        - bearerAuth: []
-        - oauth2: [connector:sync]
-      parameters:
-        - name: connectorId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: |
-          JSON body: either a `LocalFsFileEventBatchRequest` object, or a bare JSON array of
-          `LocalFsFileEvent` objects (the server wraps arrays with a generated batch id).
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LocalFsFileEventBatchRequest'
-      responses:
-        '200':
-          description: File event batch applied
+        '409':
+          description: |
+            Local FS sync cannot be enabled. <code>details.code</code> is one of:<br>
+            <ul>
+            <li><code>DESKTOP_OFFLINE</code> - the owner device's desktop app is not connected</li>
+            <li><code>DESKTOP_UNCLAIMED</code> - the connector has no owner yet and no <code>deviceId</code> was sent</li>
+            <li><code>DESKTOP_OWNED_BY_OTHER_DEVICE</code> - <code>deviceId</code> differs from <code>ownerDeviceId</code>; <code>details.ownerDeviceName</code> names the owner</li>
+            </ul>
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - success
-                  - connectorId
-                  - batchId
-                  - stats
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  connectorId:
-                    type: string
-                  batchId:
-                    type: string
-                  stats:
-                    $ref: '#/components/schemas/LocalFsFileEventStats'
-        '400':
-          description: Not a Local FS connector, or invalid path or event payload
-        '401':
-          description: Unauthorized
-        '403':
-          description: Permission denied
-        '404':
-          description: Connector not found
-        '422':
-          description: Invalid or missing request body
-
-  /connectors/{connectorId}/file-events/upload:
-    post:
-      tags:
-        - Connector Control
-      summary: Submit Local FS file events with file bytes
-      description: |
-        Replays a batch of Local FS desktop sync events and uploads file bytes for created,
-        modified, renamed, or moved files. This supports deployed connector backends that
-        cannot read the desktop filesystem path directly.
-      operationId: submitConnectorFileEventUploads
-      security:
-        - bearerAuth: []
-        - oauth2: [connector:sync]
-      parameters:
-        - name: connectorId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required:
-                - manifest
-              properties:
-                manifest:
-                  type: string
-                  description: |
-                    JSON `LocalFsFileEventBatchRequest`. Upsert events include `contentField`,
-                    `sha256`, `mimeType`, `size`, and timestamps. Delete events do not need files.
-                file_0:
-                  type: string
-                  format: binary
-                  description: File bytes referenced by an event `contentField`; additional file_N fields are allowed.
-      responses:
-        '200':
-          description: Uploaded file event batch applied
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                  - success
-                  - connectorId
-                  - batchId
-                  - stats
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  connectorId:
-                    type: string
-                  batchId:
-                    type: string
-                  stats:
-                    $ref: '#/components/schemas/LocalFsFileEventStats'
-        '400':
-          description: Not a Local FS connector, invalid path, or digest mismatch
-        '401':
-          description: Unauthorized
-        '403':
-          description: Permission denied
-        '404':
-          description: Connector not found
-        '413':
-          description: Batch or file upload too large
-        '422':
-          description: Invalid manifest or missing file part
+                $ref: '#/components/schemas/LocalFsDesktopRefusal'
 
   # -------------------- Connector OAuth --------------------
   /connectors/{connectorId}/oauth/authorize:

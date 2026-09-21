@@ -106,14 +106,23 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 value_str = json.dumps(value, default=str)
             logger.debug("📋 Serialized value: %s", value_str)
 
+            if not overwrite:
+                # One transaction, not get-then-put: with a separate read, every
+                # process that starts at once sees the key absent and each is
+                # told it owns the value it then overwrites.
+                lease = await asyncio.to_thread(client.lease, ttl) if ttl else None
+                created = await asyncio.to_thread(
+                    client.put_if_not_exists, key, value_str.encode(), lease
+                )
+                if not created and lease is not None:
+                    await asyncio.to_thread(lease.revoke)
+                return bool(created)
+
             # Check if key exists
             logger.debug("🔍 Checking if key exists")
             existing_value = await asyncio.to_thread(client.get, key)
 
-            if existing_value[0] is not None and not overwrite:
-                logger.debug("📋 Key exists, skipping creation")
-                return False  # Key was not created (already exists)
-            elif existing_value[0] is not None:
+            if existing_value[0] is not None:
                 logger.debug("📋 Key exists, updating value")
                 success = await asyncio.to_thread(
                     client.put, key, value_str.encode()

@@ -488,7 +488,120 @@ services:
       retries: 5
       start_period: 30s
 
+
+  # Zammad is a connector *source*, like bookstack-source, behind its own
+  # profile because it is the heaviest of them: the workflow sets
+  # COMPOSE_PROFILES=zammad-source only for the shard that runs its tests.
+  #
+  # Elasticsearch is not optional here. The connector lists tickets through
+  # Zammad's search API with queries like `group_id:3 AND updated_at:[... TO *]`.
+  # Zammad serves those with Elasticsearch; without it, it falls back to a SQL
+  # LIKE over the ticket title and article body, which treats that query as a
+  # literal string and matches nothing. The connector would sync no tickets,
+  # and a test written against that would pass while proving nothing.
+  zammad-db:
+    image: postgres:16-alpine
+    profiles: ["zammad-source"]
+    restart: always
+    environment:
+      POSTGRES_USER: zammad
+      POSTGRES_PASSWORD: ${ZAMMAD_DB_PASSWORD:-zammad123}
+      POSTGRES_DB: zammad
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zammad"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  zammad-redis:
+    image: redis:7-alpine
+    profiles: ["zammad-source"]
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  zammad-elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.3
+    profiles: ["zammad-source"]
+    restart: always
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+
+  zammad-init:
+    image: zammad/zammad-docker-compose:6.4.1-63
+    profiles: ["zammad-source"]
+    depends_on:
+      zammad-db:
+        condition: service_healthy
+      zammad-elasticsearch:
+        condition: service_healthy
+    environment: &zammad-env
+      POSTGRESQL_HOST: zammad-db
+      POSTGRESQL_USER: zammad
+      POSTGRESQL_PASS: ${ZAMMAD_DB_PASSWORD:-zammad123}
+      POSTGRESQL_DB: zammad
+      REDIS_URL: redis://zammad-redis:6379
+      ELASTICSEARCH_ENABLED: "true"
+      ELASTICSEARCH_HOST: zammad-elasticsearch
+      ELASTICSEARCH_PORT: "9200"
+    command: ["zammad-init"]
+    volumes:
+      - zammad-storage:/opt/zammad/storage
+
+  zammad-railsserver:
+    image: zammad/zammad-docker-compose:6.4.1-63
+    profiles: ["zammad-source"]
+    restart: always
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+      zammad-redis:
+        condition: service_healthy
+    environment: *zammad-env
+    # The image's entrypoint binds puma to IPv6 only, so it will not start on a
+    # host without IPv6. Bind IPv4 instead, then start as usual. Serving the API
+    # straight from puma also keeps the nginx and websocket containers out of
+    # the stack; the connector only calls the REST API.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - sed 's#tcp://\[::\]#tcp://0.0.0.0#' /docker-entrypoint.sh > /tmp/zammad-entrypoint.sh && chmod +x /tmp/zammad-entrypoint.sh && exec /tmp/zammad-entrypoint.sh zammad-railsserver
+    ports:
+      - "127.0.0.1:8096:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -o /dev/null http://localhost:3000/api/v1/getting_started"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+    volumes:
+      - zammad-storage:/opt/zammad/storage
+
+  zammad-scheduler:
+    image: zammad/zammad-docker-compose:6.4.1-63
+    profiles: ["zammad-source"]
+    restart: always
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+      zammad-redis:
+        condition: service_healthy
+    environment: *zammad-env
+    command: ["zammad-scheduler"]
+    volumes:
+      - zammad-storage:/opt/zammad/storage
+
 volumes:
+  zammad-storage:
   mongodb_data:
     driver: local
   redis_data:

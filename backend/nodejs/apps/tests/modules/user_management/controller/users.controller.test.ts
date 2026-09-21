@@ -2484,7 +2484,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
 
     it('should throw InternalServerError when mail sending fails (password disabled)', async () => {
@@ -2507,7 +2507,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
   });
 
@@ -4306,7 +4306,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
 
     it('should throw when password mail sending fails', async () => {
@@ -4333,7 +4333,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
   });
 

@@ -1,25 +1,6 @@
 import { test, expect } from '../fixtures/api-context.fixture';
 import { ensureSmtpConfigured } from '../helpers/smtp.helper';
-import type { APIRequestContext } from '@playwright/test';
-
-/** Soft-delete the user with this email, if one exists (the invite may have failed). */
-async function deleteUserByEmail(apiContext: APIRequestContext, email: string): Promise<void> {
-  const list = await apiContext.get('/api/v1/users', { params: { search: email, page: 1, limit: 10 } });
-  if (!list.ok()) {
-    throw new Error(`listing users to clean up ${email} failed [${list.status()}]: ${await list.text()}`);
-  }
-  const body = await list.json();
-  const users: Array<{ _id?: string; userId?: string; email?: string }> = body.users ?? [];
-  const user = users.find((u) => u.email === email);
-  if (!user) return;
-  const id = user._id ?? user.userId;
-  // Without an id the DELETE would hit /undefined, get a 404, and pass as "already gone".
-  if (!id) throw new Error(`user ${email} has no id in the list response: ${JSON.stringify(user)}`);
-  const response = await apiContext.delete(`/api/v1/users/${id}`);
-  if (!response.ok() && response.status() !== 404) {
-    throw new Error(`deleting invited user ${email} failed [${response.status()}]: ${await response.text()}`);
-  }
-}
+import { deleteUserByEmail } from '../helpers/members.helper';
 
 test.describe('Users Invite', () => {
   test.beforeEach(async ({ page, apiContext }) => {

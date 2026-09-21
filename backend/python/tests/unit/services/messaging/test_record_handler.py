@@ -24,6 +24,7 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.error_classifier import MessageErrorType
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
+from app.utils import user_errors
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1781,7 +1782,8 @@ class TestProcessEventErrors:
         gp.update_node.assert_awaited()
         updates = gp.update_node.call_args.args[2]
         assert updates["indexingStatus"] == ProgressStatus.FAILED.value
-        assert "cairosvg" in updates["reason"]
+        # The dependency detail stays in the logs; the person sees what to do.
+        assert updates["reason"] == user_errors.UNREADABLE_FILE
 
     @pytest.mark.asyncio
     async def test_terminal_error_record_not_found_skips_trigger_duplicate(self):
@@ -2379,14 +2381,14 @@ class TestPropagatePrimaryFailureToQueuedDuplicates:
         gp.update_queued_duplicates_status = AsyncMock(return_value=2)
 
         await handler._propagate_primary_failure_to_queued_duplicates(
-            "r1", "vr1", "Rate limit exceeded"
+            "r1", "vr1", user_errors.FILE_TOO_LARGE
         )
 
         gp.update_queued_duplicates_status.assert_awaited_once_with(
             "r1",
             ProgressStatus.FAILED.value,
             "vr1",
-            reason="Primary duplicate indexing failed: Rate limit exceeded",
+            reason=user_errors.duplicate_failed(user_errors.FILE_TOO_LARGE),
         )
 
     @pytest.mark.asyncio
@@ -2401,7 +2403,7 @@ class TestPropagatePrimaryFailureToQueuedDuplicates:
             "r1",
             ProgressStatus.FAILED.value,
             "vr1",
-            reason="Primary duplicate indexing failed",
+            reason=user_errors.duplicate_failed(None),
         )
 
     @pytest.mark.asyncio
@@ -2451,7 +2453,7 @@ class TestPropagatePrimaryFailureToQueuedDuplicates:
                     await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         handler._propagate_primary_failure_to_queued_duplicates.assert_awaited_once_with(
-            "r1", "vr1", "download failed"
+            "r1", "vr1", user_errors.UNREADABLE_FILE
         )
         handler._trigger_next_queued_duplicate.assert_not_awaited()
 
@@ -2951,7 +2953,7 @@ class TestFolderRecordSkip:
         gp.update_node.assert_awaited()
         updates = gp.update_node.call_args.args[2]
         assert updates["indexingStatus"] == ProgressStatus.COMPLETED.value
-        assert updates["reason"] == "Folder record — no content to index"
+        assert updates["reason"] == user_errors.FOLDER_NOTHING_TO_INDEX
 
     @pytest.mark.asyncio
     async def test_google_drive_folder_mime_skips_indexing(self):
@@ -3771,8 +3773,8 @@ class TestOnMessageAbandoned:
         assert updates["indexingStatus"] == ProgressStatus.FAILED.value
         assert updates["extractionStatus"] == ProgressStatus.FAILED.value
         assert updates["processingStartedAt"] is None
-        assert "4 transient failures" in updates["reason"]
-        assert "4 attempt" in updates["reason"]
+        # The broker's own account ("4 transient failures") is logged, not shown.
+        assert updates["reason"] == user_errors.RETRIES_EXHAUSTED
 
     @pytest.mark.parametrize(
         "settled_status",

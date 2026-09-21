@@ -28,6 +28,23 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
 )
 from app.models.entities import RecordType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.user_messages import action_failed, not_found
+
+
+class BrowseRequestError(Exception):
+    """A browse request this service can explain to the person who made it.
+
+    Only messages written here for a reader travel in one of these. Everything
+    else that goes wrong — including a ``ValueError`` the graph client raises for
+    its own reasons, such as a transaction it can no longer find — is internal,
+    and the caller answers it with a generic message instead.
+    """
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
 
 FOLDER_MIME_TYPES = [
     'application/vnd.folder',
@@ -129,6 +146,7 @@ class KnowledgeHubService:
                 return KnowledgeHubNodesResponse(
                     success=False,
                     error="User not found",
+                    errorCode=404,
                     id=parent_id,
                     items=[],
                     pagination=PaginationInfo(
@@ -325,12 +343,12 @@ class KnowledgeHubService:
 
             return response
 
-        except ValueError as ve:
-            # Validation errors (404 - not found, 400 - type mismatch)
-            self.logger.warning(f"⚠️ Validation error: {str(ve)}")
+        except BrowseRequestError as request_error:
+            self.logger.warning("⚠️ Browse request refused: %s", request_error.message)
             return KnowledgeHubNodesResponse(
                 success=False,
-                error=str(ve),
+                error=request_error.message,  # user-written message
+                errorCode=request_error.status_code,
                 id=parent_id,
                 items=[],
                 pagination=PaginationInfo(
@@ -340,11 +358,11 @@ class KnowledgeHubService:
                 filters=FiltersInfo(applied=AppliedFilters()),
             )
         except Exception as e:
-            self.logger.error(f"❌ Failed to get nodes: {str(e)}")
-            self.logger.error(traceback.format_exc())
+            self.logger.error("❌ Failed to get nodes: %s", e, exc_info=True)
             return KnowledgeHubNodesResponse(
                 success=False,
-                error=f"Failed to retrieve nodes: {str(e)}",
+                error=action_failed("open this collection"),
+                errorCode=500,
                 id=parent_id,
                 items=[],
                 pagination=PaginationInfo(
@@ -676,7 +694,8 @@ class KnowledgeHubService:
         Validate that a node exists and matches the expected type.
 
         Raises:
-            KnowledgeHubNodesResponse with error if validation fails
+            BrowseRequestError: the node is gone, or the link asks for it as the
+                wrong kind of thing.
         """
         # Get node info
         node_info = await self.graph_provider.get_knowledge_hub_node_info(
@@ -685,14 +704,20 @@ class KnowledgeHubService:
         )
 
         if not node_info:
-            raise ValueError(f"Node with ID '{node_id}' not found")
+            raise BrowseRequestError(not_found("This item"), 404)
 
         actual_type = node_info.get('nodeType')
 
         # Validate type matches
         if actual_type != expected_type:
-            raise ValueError(
-                f"Node type mismatch: node '{node_id}' is not '{expected_type}', it is '{actual_type}'. Use /nodes/{actual_type}/{node_id} instead."
+            self.logger.warning(
+                "⚠️ Node %s is a %s, not the %s the request asked for",
+                node_id, actual_type, expected_type,
+            )
+            raise BrowseRequestError(
+                "This link points to something else now. "
+                "Go back to the collection and open the item from there.",
+                400,
             )
 
         # Validate user has access (check permissions)

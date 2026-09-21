@@ -5,6 +5,7 @@ Handles agent instances, templates, chat, and permissions using graph-based arch
 
 import asyncio
 import json
+import logging
 import os
 import uuid
 from collections.abc import AsyncGenerator
@@ -17,6 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
@@ -56,8 +58,14 @@ from app.telemetry.identity import domain_from_email
 from app.utils.attachment_utils import (
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
+from app.utils.llm import LLM_MISSING_FOR_CHAT
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import action_failed
+
+# ``services['logger']`` is bound inside each request, so a handler that failed
+# before that needs a module logger with a name it cannot shadow.
+_log = logging.getLogger(__name__)
 
 # `RouteDecision`/`_build_agent_capability_context`/`_build_prior_routing_messages`/
 # `BlobStorage`/`resolve_attachments` moved to `app.modules.agents.qna.router`
@@ -219,7 +227,7 @@ class LLMInitializationError(AgentError):
     """LLM initialization failed"""
     def __init__(self) -> None:
         super().__init__(
-            detail="Failed to initialize LLM service. LLM configuration is missing.",
+            detail=LLM_MISSING_FOR_CHAT,
             status_code=500
         )
 
@@ -883,7 +891,7 @@ async def _create_toolset_edges(
             return created_toolsets, [{"name": "all", "error": "Failed to create toolset nodes"}]
     except Exception as e:
         logger.error(f"Failed to batch create toolset nodes: {e}")
-        return created_toolsets, [{"name": "all", "error": str(e)}]
+        return created_toolsets, [{"name": "all", "error": action_failed("add these tools to the agent")}]
 
     # Prepare agent -> toolset edges
     agent_toolset_edges = [
@@ -1113,7 +1121,7 @@ async def _create_mcp_server_edges(
             return created_mcp_servers, [{"name": "all", "error": "Failed to create MCP server nodes"}]
     except Exception as e:
         logger.error(f"Failed to batch create MCP server nodes: {e}")
-        return created_mcp_servers, [{"name": "all", "error": str(e)}]
+        return created_mcp_servers, [{"name": "all", "error": action_failed("add these MCP servers to the agent")}]
 
     # Prepare agent -> mcpServer edges
     agent_mcp_server_edges = [
@@ -1582,7 +1590,7 @@ async def get_agent_templates(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error getting templates: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("load agent templates")) from e
 
 
 @router.get("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -1610,7 +1618,7 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
         raise
     except Exception as e:
         services["logger"].error(f"Error getting template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("load this template")) from e
 
 
 @router.post("/template/{template_id}/clone", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1635,7 +1643,7 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
         raise
     except Exception as e:
         services["logger"].error(f"Error cloning template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("copy this template")) from e
 
 
 @router.delete("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1659,7 +1667,7 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
         raise
     except Exception as e:
         services["logger"].error(f"Error deleting template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("delete this template")) from e
 
 
 @router.put("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1684,7 +1692,7 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
         raise
     except Exception as e:
         services["logger"].error(f"Error updating template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("save this template")) from e
 
 
 # ============================================================================
@@ -2036,7 +2044,7 @@ async def create_agent(request: Request) -> JSONResponse:
             logger.error(f"Failed to create agent {agent_key}: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to create agent: {str(e)}"
+                detail=action_failed("create this agent")
             ) from e
 
         # Build response
@@ -2070,7 +2078,7 @@ async def create_agent(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         logger.error(f"Error creating agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("create this agent")) from e
 
 @router.get(
     "/{agent_id}/internal/service-account",
@@ -2128,7 +2136,8 @@ async def get_agent_internal(request: Request, agent_id: str) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _log.error("get_agent_internal failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=400, detail=action_failed("load this agent")) from e
 
 
 @router.get("/web-search-usage/{provider}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -2157,7 +2166,8 @@ async def get_web_search_provider_usage(request: Request, provider: str) -> JSON
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _log.error("get_web_search_provider_usage failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=400, detail=action_failed("check where this web search provider is used")) from e
 
 
 @router.get("/model-usage/{model_key}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -2186,11 +2196,12 @@ async def get_model_usage(request: Request, model_key: str) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
+        _log.error("get_model_usage failed: %s", e, exc_info=True)
         # Server-side failure (graph DB outage, etc.) — return 500 so callers
         # treat this as a transient backend error and fail-closed on deletion.
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Internal server error while checking model usage: {str(e)}",
+            detail=action_failed("check where this model is used"),
         ) from e
 
 
@@ -2241,7 +2252,7 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error getting agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("load this agent")) from e
 
 
 @router.get("/", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -2343,7 +2354,7 @@ async def get_agents(
         raise
     except Exception as e:
         services["logger"].error(f"Error getting agents: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("load your agents")) from e
 
 
 @router.put("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -2591,7 +2602,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.error(f"Failed to delete toolset nodes and edges for agent {agent_id}: {e}", exc_info=True)
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Failed to delete toolset nodes and edges: {str(e)}"
+                    detail=action_failed("save this agent")
                 ) from e
 
             # Create new toolset nodes, tool nodes, and edges only if there are toolsets to create
@@ -2613,7 +2624,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     )
                     raise HTTPException(
                         status_code=500,
-                        detail=f"Failed to create toolset edges: {str(e)}"
+                        detail=action_failed("save this agent")
                     ) from e
             else:
                 logger.info(f"All toolsets removed for agent {agent_id}")
@@ -2747,7 +2758,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.error(f"Failed to delete MCP server nodes and edges for agent {agent_id}: {e}", exc_info=True)
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Failed to delete MCP server nodes and edges: {str(e)}"
+                    detail=action_failed("save this agent")
                 ) from e
 
             # Create new MCP server nodes, tool nodes, and edges only if there are servers to attach.
@@ -2790,7 +2801,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     )
                     raise HTTPException(
                         status_code=500,
-                        detail=f"Failed to create MCP server edges: {str(e)}"
+                        detail=action_failed("save this agent")
                     ) from e
             else:
                 logger.info(f"All MCP servers detached for agent {agent_id}")
@@ -2883,7 +2894,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.error(f"Failed to delete knowledge nodes and edges for agent {agent_id}: {e}", exc_info=True)
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Failed to delete knowledge nodes and edges: {str(e)}"
+                    detail=action_failed("save this agent")
                 ) from e
 
             # Create new knowledge nodes and edges only if there are knowledge sources to create
@@ -2900,7 +2911,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     )
                     raise HTTPException(
                         status_code=500,
-                        detail=f"Failed to create knowledge edges: {str(e)}"
+                        detail=action_failed("save this agent")
                     ) from e
             else:
                 logger.info(f"All knowledge sources removed for agent {agent_id}")
@@ -2942,7 +2953,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                         logger.error(f"Failed to abort transaction: {abort_error}")
                 logger.error(f"Failed to update skill assignments for agent {agent_id}: {e}", exc_info=True)
                 raise HTTPException(
-                    status_code=500, detail=f"Failed to update skill assignments: {str(e)}",
+                    status_code=500, detail=action_failed("save this agent"),
                 ) from e
 
         return JSONResponse(
@@ -2953,7 +2964,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         logger.error(f"Error updating agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("save this agent")) from e
 
 @router.delete("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -3074,7 +3085,7 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
                 services["logger"].warning(f"⚠️ Failed to rollback transaction {txn_id}: {rb_err}")
         if services is not None:
             services["logger"].error(f"Error deleting agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("delete this agent")) from e
 
 
 # ============================================================================
@@ -3846,7 +3857,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     yield _evt
             except Exception as exc:
                 logger.error(f"Error in chat_stream body: {exc}", exc_info=True)
-                yield _stream_error_frame(protocol, str(exc))
+                error_code, user_message = classify_exception(exc)
+                yield _stream_error_frame(protocol, user_message, error_code)
 
         return StreamingResponse(
             _run(),
@@ -3861,7 +3873,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         raise
     except Exception as e:
         logger.error(f"Error in chat_stream: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _, user_message = classify_exception(e)
+        raise HTTPException(status_code=400, detail=user_message) from e
 
 def _stream_error_frame(protocol: str, message: str, code: str = "stream_error") -> str:
     """Terminal SSE error frame, in whichever protocol the client asked for.

@@ -211,7 +211,7 @@ async def assert_no_indexing_in_flight(
         raise VectorStoreRebuildConflictError(
             "Connector sync is running "
             f"({', '.join(sorted(running_syncs)[:5])}). "
-            "Wait for it to finish before rebuilding the vector store."
+            "Wait for it to finish, then rebuild the search index again."
         )
 
     busy = await find_busy_connectors(graph_provider, apps)
@@ -219,7 +219,7 @@ async def assert_no_indexing_in_flight(
         raise VectorStoreRebuildConflictError(
             "Records are still queued or being indexed for "
             f"{len(busy)} connector(s) ({', '.join(busy[:5])}). "
-            "Wait for indexing to drain before rebuilding the vector store."
+            "Wait for indexing to finish, then rebuild the search index again."
         )
 
 
@@ -251,7 +251,7 @@ async def acquire_rebuild_lock(config_service: Any) -> tuple[RebuildJobLock, Red
     if not await lock.try_acquire():
         await redis.aclose()
         raise VectorStoreRebuildBusyError(
-            "A vector-store cleanup or reindex job is already running"
+            "A search index cleanup or reindex is already running. Wait for it to finish, then try again."
         )
     return lock, redis
 
