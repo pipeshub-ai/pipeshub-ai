@@ -1,0 +1,38 @@
+# Milestone / publication run: all 824 questions (held-out included), the
+# ~100k-article distractor tier. Needs a persistent benchmark instance: the
+# ingest alone exceeds a CI runner's time budget.
+run_name: full
+dataset:
+  split: all
+corpus:
+  tier: GD
+  scope: all
+  distractor_count: 100000
+pipeshub:
+  index_timeout_s: 86400
+answerer:
+  model: gpt-5.6-luna
+  provider: openAI
+  is_reasoning: true
+systems:
+  - kind: pipeshub
+    repeats: 3
+    concurrency: 4
+  - kind: closed_book
+    repeats: 3
+    concurrency: 8
+  - kind: bm25
+    repeats: 3
+    concurrency: 8
+    options:
+      n_docs: 4
+  - kind: oracle
+    repeats: 3
+    concurrency: 8
+grading:
+  primary:
+    model: claude-sonnet-5
+    provider: anthropic
+  secondary:
+    model: gemini-3.8-flash
+    provider: gemini

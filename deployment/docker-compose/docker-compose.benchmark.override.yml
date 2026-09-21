@@ -1,0 +1,18 @@
+# Benchmark overrides, layered on docker-compose.integration.{neo4j,arango}.yml:
+#
+#   docker compose -f docker-compose.integration.neo4j.yml \
+#                  -f docker-compose.benchmark.override.yml up -d
+#
+# FRAMES answers must come from retrieval over the benchmark corpus only, so
+# code execution (run_code / the coding sandbox) is switched off. Web search is
+# excluded separately: the harness only ever uses the `internal_search` chat
+# mode, and `guard.py` fails the run if a disallowed tool is called anyway.
+# See integration-tests/benchmarks/frames/README.md.
+#
+# The RAG baselines read PipesHub's Qdrant directly; with the default
+# docker-compose.yml (which doesn't publish it) also layer
+# docker-compose.benchmark.ports.yml.
+services:
+  pipeshub-ai:
+    environment:
+      - PIPESHUB_ENABLE_CODE_EXECUTION=false

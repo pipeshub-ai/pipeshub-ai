@@ -1,0 +1,16 @@
+You are checking whether cited evidence supports a statement from an answer.
+
+Evidence:
+{evidence}
+
+Statement: {statement}
+
+Judge only against the evidence above, not your own knowledge. A statement that
+follows from facts stated in the evidence through simple arithmetic or date
+calculation counts as supported. Use PARTIAL when the evidence supports some but
+not all of the statement.
+
+End your reply with exactly one line, one of:
+Support: FULL
+Support: PARTIAL
+Support: NONE

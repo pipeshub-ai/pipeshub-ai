@@ -660,3 +660,46 @@ def teardown_test_embedding_model(
 ) -> None:
     """DELETE a previously seeded embedding model."""
     teardown_test_llm_model(client, seeded)
+
+
+def seed_explicit_llm(
+    client: PipeshubClient,
+    *,
+    provider: str,
+    model_name: str,
+    api_key: Optional[str],
+    is_reasoning: bool = False,
+    is_default: bool = False,
+    extra_configuration: Optional[Dict[str, Any]] = None,
+) -> SeededAIModel:
+    """Register one NAMED model, with no provider fallback.
+
+    `setup_test_llm_model` picks whichever provider has credentials, which is
+    right for a test that just needs *a* model. A benchmark needs *this* model
+    on *this* provider — silently falling back would change what the run
+    measured — so an unusable provider raises instead.
+    """
+    if not api_key:
+        raise RuntimeError(
+            f"no API key for provider {provider!r}; set the matching TEST_*_API_KEY "
+            f"to register {model_name!r}",
+        )
+    if provider == _PROVIDER_AZURE_OPENAI:
+        deployment = _env("TEST_AZURE_OPENAI_DEPLOYMENT_NAME") or model_name
+        if not _env("TEST_AZURE_OPENAI_ENDPOINT"):
+            raise RuntimeError("TEST_AZURE_OPENAI_ENDPOINT is required for azureOpenAI")
+        configuration = _build_azure_configuration(api_key, model_name, deployment_name=deployment)
+    else:
+        configuration = _build_openai_configuration(api_key, model_name)
+    if extra_configuration:
+        configuration = {**configuration, **extra_configuration}
+    return _post_provider_model(
+        client,
+        candidate=_ProviderCandidate(
+            provider=provider, model_name=model_name, configuration=configuration,
+        ),
+        model_type=_DEFAULT_LLM_MODEL_TYPE,
+        is_reasoning=is_reasoning,
+        is_multimodal=False,
+        is_default=is_default,
+    )

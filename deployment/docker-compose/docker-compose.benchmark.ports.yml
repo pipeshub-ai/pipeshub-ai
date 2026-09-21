@@ -1,0 +1,11 @@
+# Publishes, on localhost only, what the FRAMES harness calls besides the Node
+# API when running on docker-compose.yml (the integration compose files already
+# publish both): the connector service (KB record listing) and Qdrant (read by
+# the RAG baselines).
+services:
+  pipeshub-ai:
+    ports:
+      - "127.0.0.1:8088:8088"
+  qdrant:
+    ports:
+      - "127.0.0.1:6333:6333"

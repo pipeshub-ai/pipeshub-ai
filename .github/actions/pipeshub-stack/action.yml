@@ -1,0 +1,88 @@
+name: PipesHub stack
+description: >-
+  Build and start the PipesHub docker-compose stack, wait until every service
+  is healthy, create the organisation and mark onboarding complete.
+  Composite actions cannot read secrets; pass credentials as inputs.
+
+inputs:
+  compose-files:
+    description: Space-separated compose files under deployment/docker-compose, applied in order.
+    required: true
+  base-url:
+    description: Node gateway URL.
+    required: false
+    default: http://localhost:3000
+  admin-email:
+    description: Admin account email for the new organisation.
+    required: true
+  admin-password:
+    description: Admin account password for the new organisation.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The app Dockerfile uses these as FROM stages; pulling first warms the cache.
+    - name: Pull pre-built base images
+      shell: bash
+      run: |
+        docker pull pipeshubai/pipeshub-ai-base:python-deps || true
+        docker pull pipeshubai/pipeshub-ai-base:runtime || true
+
+    - name: Build and start services
+      shell: bash
+      working-directory: deployment/docker-compose
+      env:
+        COMPOSE_FILES: ${{ inputs.compose-files }}
+      run: |
+        args=()
+        for file in $COMPOSE_FILES; do args+=(-f "$file"); done
+        docker compose "${args[@]}" build
+        docker compose "${args[@]}" up -d
+
+    - name: Wait for services
+      shell: bash
+      env:
+        BASE_URL: ${{ inputs.base-url }}
+      run: |
+        wait_healthy() {
+          local url="$1" delay=1 deadline=$((SECONDS + 300))
+          until curl -sf "$url" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "Timed out waiting for $url"; return 1; fi
+            echo "Not ready ($url), retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2 > 64 ? 64 : delay * 2))
+          done
+        }
+        wait_healthy "${BASE_URL}/api/v1/health"
+        wait_healthy "${BASE_URL}/api/v1/health/services"
+        echo "All services are healthy"
+
+    - name: Create organisation and skip onboarding
+      shell: bash
+      env:
+        BASE_URL: ${{ inputs.base-url }}
+        ADMIN_EMAIL: ${{ inputs.admin-email }}
+        ADMIN_PASSWORD: ${{ inputs.admin-password }}
+      run: |
+        org=$(jq -n --arg email "$ADMIN_EMAIL" --arg pw "$ADMIN_PASSWORD" '{
+          accountType: "business", adminFullName: "Benchmark Admin", contactEmail: $email,
+          password: $pw, confirmPassword: $pw, registeredName: "Benchmark Org", shortName: "BENCH"
+        }')
+        curl -sf "${BASE_URL}/api/v1/org" -H "Content-Type: application/json" -d "$org" -o /dev/null
+
+        headers=$(mktemp)
+        curl -sf "${BASE_URL}/api/v1/userAccount/initAuth" -H "Content-Type: application/json" \
+          -d "$(jq -n --arg email "$ADMIN_EMAIL" '{email: $email}')" -D "$headers" -o /dev/null
+        session=$(grep -i "x-session-token:" "$headers" | tr -d '\r' | awk '{print $2}')
+        rm -f "$headers"
+
+        login=$(jq -n --arg email "$ADMIN_EMAIL" --arg pw "$ADMIN_PASSWORD" \
+          '{method: "password", credentials: {password: $pw}, email: $email}')
+        token=$(curl -sf "${BASE_URL}/api/v1/userAccount/authenticate" -H "Content-Type: application/json" \
+          -H "x-session-token: ${session}" -d "$login" | jq -r '.accessToken')
+        echo "::add-mask::${token}"
+
+        curl -sf -X PUT "${BASE_URL}/api/v1/org/onboarding-status" -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${token}" -d '{"status": "configured"}' -o /dev/null
+        echo "Organisation ready"

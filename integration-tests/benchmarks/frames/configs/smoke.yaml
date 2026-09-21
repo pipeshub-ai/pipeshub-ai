@@ -1,0 +1,34 @@
+# 25 stratified dev questions against a gold-only corpus built just for them.
+# Checks the pipeline end to end; its ±~20-point margin says nothing about quality.
+run_name: smoke
+dataset:
+  split: dev
+  limit: 25
+corpus:
+  tier: G
+  scope: selected_questions
+answerer:
+  model: gpt-5.6-luna
+  provider: openAI
+  is_reasoning: true
+systems:
+  - kind: pipeshub
+    concurrency: 2
+  - kind: closed_book
+    concurrency: 4
+  - kind: bm25
+    concurrency: 4
+    options:
+      n_docs: 4
+  - kind: oracle
+    concurrency: 4
+grading:
+  primary:
+    model: claude-sonnet-5
+    provider: anthropic
+  secondary:
+    model: gemini-3.8-flash
+    provider: gemini
+limits:
+  max_error_rate: 0.3
+  min_items_for_breaker: 10

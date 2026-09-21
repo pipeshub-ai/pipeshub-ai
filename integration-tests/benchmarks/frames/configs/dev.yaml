@@ -1,0 +1,36 @@
+# The iteration loop: all 200 dev questions, gold articles plus seeded
+# hard-negative distractors (articles the gold pages link to). The answering
+# model is a reasoning model (temperature fixed at 1), so every system repeats 3x.
+run_name: dev
+dataset:
+  split: dev
+corpus:
+  tier: GD
+  scope: all
+  distractor_count: 10000
+answerer:
+  model: gpt-5.6-luna
+  provider: openAI
+  is_reasoning: true
+systems:
+  - kind: pipeshub
+    repeats: 3
+    concurrency: 3
+  - kind: closed_book
+    repeats: 3
+    concurrency: 6
+  - kind: bm25
+    repeats: 3
+    concurrency: 6
+    options:
+      n_docs: 4
+  - kind: oracle
+    repeats: 3
+    concurrency: 6
+grading:
+  primary:
+    model: claude-sonnet-5
+    provider: anthropic
+  secondary:
+    model: gemini-3.8-flash
+    provider: gemini

@@ -1,0 +1,144 @@
+name: FRAMES Benchmark
+
+# Runs the FRAMES harness (integration-tests/benchmarks/frames) against a fresh
+# stack with code execution disabled. The `full` config (100k-article corpus)
+# is meant for a persistent benchmark instance, not this runner.
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: Harness config (benchmarks/frames/configs/<name>.yaml)
+        type: choice
+        options:
+          - smoke
+          - dev
+        default: smoke
+      commit_hash:
+        description: Commit to benchmark (defaults to the dispatched ref)
+        type: string
+        required: false
+  schedule:
+    - cron: "0 3 * * 0" # weekly dev-slice run, Sundays 03:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frames-benchmark
+  cancel-in-progress: false
+
+env:
+  PIPESHUB_BASE_URL: http://localhost:3000
+  PIPESHUB_CONNECTOR_URL: http://localhost:8088
+  MESSAGE_BROKER: redis
+  FRAMES_CONFIG: ${{ github.event.inputs.config || 'dev' }}
+  COMPOSE_FILES: docker-compose.integration.neo4j.yml docker-compose.benchmark.override.yml
+
+jobs:
+  frames:
+    name: FRAMES (${{ github.event.inputs.config || 'dev' }})
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    timeout-minutes: 350
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+
+    env:
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      DOCKER_BUILDKIT: "1"
+      PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+      PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+      TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+      TEST_GEMINI_API_KEY: ${{ secrets.TEST_GEMINI_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.commit_hash || github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install harness
+        working-directory: integration-tests
+        run: |
+          uv venv
+          uv pip install -e .
+
+      # Offline tests (fakes only): fail before paying for a stack or any API call.
+      - name: Harness unit tests
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          pytest unit/frames -q
+
+      # Pinned corpus articles and cached judge verdicts survive between runs.
+      - name: Restore corpus and judge cache
+        uses: actions/cache@v4
+        with:
+          path: integration-tests/.cache/frames
+          key: frames-cache-${{ env.FRAMES_CONFIG }}-${{ hashFiles('integration-tests/benchmarks/frames/corpus/**', 'integration-tests/benchmarks/frames/dataset/**', 'integration-tests/benchmarks/frames/configs/**') }}
+          restore-keys: |
+            frames-cache-${{ env.FRAMES_CONFIG }}-
+
+      - name: Start PipesHub (code execution disabled)
+        uses: ./.github/actions/pipeshub-stack
+        with:
+          compose-files: ${{ env.COMPOSE_FILES }}
+          base-url: ${{ env.PIPESHUB_BASE_URL }}
+          admin-email: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          admin-password: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+
+      - name: Register models
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          python -m benchmarks.frames seed-models --config "benchmarks/frames/configs/${FRAMES_CONFIG}.yaml"
+
+      # Exit 2 means the run finished but a disallowed tool was called (INVALID).
+      - name: Run FRAMES
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          set +e
+          python -m benchmarks.frames run --config "benchmarks/frames/configs/${FRAMES_CONFIG}.yaml"
+          status=$?
+          set -e
+          latest=$(ls -td reports/frames-benchmark/*/ 2>/dev/null | head -1)
+          if [ -n "$latest" ] && [ -f "${latest}report.md" ]; then
+            cat "${latest}report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      - name: Dump docker logs
+        if: failure()
+        working-directory: deployment/docker-compose
+        run: |
+          args=(); for file in $COMPOSE_FILES; do args+=(-f "$file"); done
+          mkdir -p ../../integration-tests/reports/docker-logs
+          for svc in $(docker compose "${args[@]}" config --services); do
+            docker compose "${args[@]}" logs --no-color --timestamps "$svc" \
+              > "../../integration-tests/reports/docker-logs/${svc}.log" 2>&1 || true
+          done
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ env.FRAMES_CONFIG }}-${{ github.run_id }}
+          path: integration-tests/reports/
+          if-no-files-found: ignore
+
+      - name: Tear down
+        if: always()
+        working-directory: deployment/docker-compose
+        run: |
+          args=(); for file in $COMPOSE_FILES; do args+=(-f "$file"); done
+          docker compose "${args[@]}" down -v
