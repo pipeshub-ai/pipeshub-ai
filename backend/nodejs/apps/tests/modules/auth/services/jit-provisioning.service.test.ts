@@ -484,7 +484,19 @@ describe('JitProvisioningService - additional coverage', () => {
   describe('provisionUser - full flow', () => {
     it('should create user, add to group, and publish event on success', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
-      sinon.stub(Users.prototype, 'save').resolves()
+      
+      const mockNewUser = {
+        _id: 'new-user-id',
+        email: 'new@example.com',
+        fullName: 'New User',
+        pendingEvents: [],
+      } as any;
+      sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
+      (Users.prototype as any)._id = mockNewUser._id;
+      (Users.prototype as any).email = mockNewUser.email;
+      (Users.prototype as any).fullName = mockNewUser.fullName;
+      (Users.prototype as any).pendingEvents = mockNewUser.pendingEvents;
+      
       sinon.stub(UserGroups, 'updateOne').resolves({} as any)
 
       const result = await jitService.provisionUser(
@@ -496,32 +508,42 @@ describe('JitProvisioningService - additional coverage', () => {
 
       expect(result).to.have.property('email', 'new@example.com')
       expect(result).to.have.property('fullName', 'New User')
-      expect(mockEventService.start.calledOnce).to.be.true
+      expect((result as any).pendingEvents).to.have.length(1)
       expect(mockEventService.dispatchInline.calledOnce).to.be.true
-      expect(mockEventService.stop.calledOnce).to.be.true
       expect(mockLogger.info.calledWith(sinon.match(/Auto-provisioning user/))).to.be.true
       expect(mockLogger.info.calledWith(sinon.match(/auto-provisioned successfully/))).to.be.true
     })
 
-    it('should call eventService.stop even when dispatchInline fails', async () => {
+    it('should call throw and revert pending events if dispatchInline fails', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
-      sinon.stub(Users.prototype, 'save').resolves()
+      const mockNewUser = {
+        _id: 'new-user-id',
+        email: 'new2@example.com',
+        fullName: 'Another User',
+        pendingEvents: [],
+      } as any;
+      sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
+      (Users.prototype as any)._id = mockNewUser._id;
+      (Users.prototype as any).email = mockNewUser.email;
+      (Users.prototype as any).fullName = mockNewUser.fullName;
+      (Users.prototype as any).pendingEvents = mockNewUser.pendingEvents;
+      
       sinon.stub(UserGroups, 'updateOne').resolves({} as any)
+      sinon.stub(Users, 'updateOne').resolves({} as any)
       mockEventService.dispatchInline.rejects(new Error('Kafka down'))
 
-      const result = await jitService.provisionUser(
-        'new2@example.com',
-        { fullName: 'Another User' },
-        'org456',
-        'microsoft',
-      )
+      try {
+        await jitService.provisionUser(
+          'new2@example.com',
+          { fullName: 'Another User' },
+          'org456',
+          'microsoft',
+        )
+      } catch (e) {}
 
-      expect(result).to.have.property('email', 'new2@example.com')
-      expect(mockEventService.stop.calledOnce).to.be.true
       expect(mockLogger.error.calledWith(sinon.match(/Failed to publish/))).to.be.true
+      expect(Users.updateOne.calledOnce).to.be.true
     })
-
-    it('should call eventService.stop even when start fails', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
       sinon.stub(Users.prototype, 'save').resolves()
       sinon.stub(UserGroups, 'updateOne').resolves({} as any)

@@ -97,7 +97,7 @@ describe('RecordRelationService', () => {
 
       await service.publishRecordEvents(records, fileRecords, mockKeyValueStore)
 
-      expect(mockEventProducer.dispatchInline.calledOnce).to.be.true
+      expect(mockEventProducer.publishEvent.calledOnce).to.be.true
     })
 
     it('should handle empty records array gracefully', async () => {
@@ -115,7 +115,7 @@ describe('RecordRelationService', () => {
       await service.publishRecordEvents([], [], mockKeyValueStore)
 
       // Should complete without error
-      expect(mockEventProducer.dispatchInline.called).to.be.false
+      expect(mockEventProducer.publishEvent.called).to.be.false
     })
   })
 
@@ -395,7 +395,7 @@ describe('RecordRelationService', () => {
       })
 
       expect(result.success).to.be.true
-      expect(mockSyncEventProducer.dispatchInline.calledOnce).to.be.true
+      expect(mockSyncEventProducer.publishEvent.calledOnce).to.be.true
     })
 
     it('should return failure when publishEvent throws', async () => {

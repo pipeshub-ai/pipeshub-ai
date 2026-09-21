@@ -22689,7 +22689,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         stale_cutoff = current_time - stale_threshold_ms
 
         query = f"""
-        UPSERT {{ "_key": event_id }}
+        UPSERT {{ "_key": @event_id }}
         INSERT {{
             "_key": @event_id,
             "status": "processing",
@@ -22714,7 +22714,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         }
         
         try:
-            result = await self.client.execute_query(query, bind_vars, transaction)
+            result = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
             if not result:
                 return "error"
             
@@ -22753,7 +22753,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         }
         
         try:
-            result = await self.client.execute_query(query, bind_vars, transaction)
+            result = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
             return len(result) > 0
         except Exception as e:
             self.logger.error(f"Error finalizing entity event {event_id}: {e}")

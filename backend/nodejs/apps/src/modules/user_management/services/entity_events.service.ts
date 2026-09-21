@@ -1,6 +1,5 @@
-import { PendingEvent } from '../schema/pendingEvent.schema';
-import { Document, Model, Types } from 'mongoose';
-import { injectable, inject } from 'inversify';
+import { Model, Types } from 'mongoose';
+import { inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.types';
 
@@ -80,8 +79,8 @@ export interface UserUpdatedEvent {
   email: string;
 }
 
-@injectable()
-export type ModelWithPendingEvents = Model<Document & { pendingEvents?: PendingEvent[] }>;
+
+export type ModelWithPendingEvents = Model<any>;
 
 export class EntitiesEventProducer {
   private readonly topic = 'entity-events';

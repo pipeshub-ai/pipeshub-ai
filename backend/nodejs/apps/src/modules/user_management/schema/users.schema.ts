@@ -8,7 +8,7 @@ import {
   assertServiceAccountRole,
   SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE,
 } from '../constants/service-account.constants';
-import { PendingEvent, pendingEventSchema } from './pendingEvent.schema';
+import { IPendingEvent, pendingEventSchema } from './pendingEvent.schema';
 
 export const userRoles = ['admin', 'member'] as const;
 export type UserRole = (typeof userRoles)[number];
@@ -47,7 +47,7 @@ export interface User extends Document, Address {
   address?: Address;
   isDeleted?: boolean;
   deletedBy?: string;
-  pendingEvents?: PendingEvent[];
+  pendingEvents?: IPendingEvent[];
 }
 
 const userSchema = new Schema<User>(

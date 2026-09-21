@@ -225,12 +225,15 @@ class KafkaUtils:
                 success = await entity_event_service.process_event(event_type, payload)
                 
                 final_status = "completed" if success else "failed"
-                await graph_provider.finalize_entity_event(
+                finalized = await graph_provider.finalize_entity_event(
                     collection=collection_name,
                     event_id=event_id,
                     claim_token=claim_token,
                     status=final_status
                 )
+                if not finalized:
+                    logger.warning(f"Finalization for event {event_id} failed: another worker holds the claim")
+                    return False
                 return success
 
             except Exception as e:

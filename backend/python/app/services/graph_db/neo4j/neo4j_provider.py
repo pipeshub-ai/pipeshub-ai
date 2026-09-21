@@ -376,7 +376,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         # dict.fromkeys preserves order while de-duplicating the two sources.
         collections = dict.fromkeys(
-            [*NODE_SCHEMA_REGISTRY, *RECORD_TYPE_COLLECTION_MAPPING.values()]
+            [*NODE_SCHEMA_REGISTRY, *RECORD_TYPE_COLLECTION_MAPPING.values(), "processedEvents"]
         )
 
         for collection in collections:

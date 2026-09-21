@@ -239,7 +239,7 @@ export class ServiceAccountsService {
       timestamp: Date.now(),
       payload: {
         orgId,
-        userId: existing._id.toString(),
+        userId: String(existing._id),
         fullName: input.fullName.trim(),
         email: existing.email,
         syncAction: SyncAction.Immediate,

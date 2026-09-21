@@ -97,7 +97,12 @@ export class JitProvisioningService {
       { $addToSet: { users: newUser._id } },
     );
 
-    await this.eventService.dispatchInline(Users, newUser._id.toString(), eventId, event);
+    await this.eventService.dispatchInline(
+      Users,
+      String(newUser._id),
+      eventId,
+      event,
+    );
 
     this.logger.info(`User auto-provisioned successfully via ${provider}`, {
       userId: newUser._id,

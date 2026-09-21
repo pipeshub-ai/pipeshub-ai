@@ -5593,7 +5593,7 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(eventService.start.calledOnce).to.be.true
-      expect(eventService.dispatchInline.calledOnce).to.be.true
+      expect(eventService.publishEvent.calledOnce).to.be.true
       orgStub.restore()
     })
   })
@@ -5954,7 +5954,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(eventService.dispatchInline.calledOnce).to.be.true
+      expect(eventService.publishEvent.calledOnce).to.be.true
     })
 
     it('should save config without real-time updates', async () => {
@@ -5974,7 +5974,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(eventService.dispatchInline.called).to.be.false
+      expect(eventService.publishEvent.called).to.be.false
     })
 
     it('should publish disable event when toggling from enabled to disabled', async () => {
@@ -6002,7 +6002,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(eventService.dispatchInline.calledOnce).to.be.true
+      expect(eventService.publishEvent.calledOnce).to.be.true
     })
 
     it('should throw when topic name missing but real-time updates enabled', async () => {
@@ -6108,7 +6108,7 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(eventService.start.calledOnce).to.be.true
-      expect(eventService.dispatchInline.calledOnce).to.be.true
+      expect(eventService.publishEvent.calledOnce).to.be.true
     })
 
     it('should call next when user is missing', async () => {

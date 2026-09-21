@@ -102,7 +102,7 @@ describe('ServiceAccountsService', () => {
       // The graph keys its node by the address, so it has to be told the
       // account is back.
       expect(events.dispatchInline.calledOnce).to.equal(true);
-      expect(events.dispatchInline.firstCall.args[0].eventType).to.equal(
+      expect(events.dispatchInline.firstCall.args[3].eventType).to.equal(
         'userAdded',
       );
     });
@@ -319,12 +319,12 @@ describe('ServiceAccountsService', () => {
 
       const disabling = makeService();
       await disabling.service.update(orgId, id, { isDisabled: true });
-      expect(disabling.events.dispatchInline.called).to.equal(false);
+      expect(disabling.events.publishEvent.called).to.equal(false);
 
       const renaming = makeService();
       await renaming.service.update(orgId, id, { fullName: 'New name' });
-      expect(renaming.events.dispatchInline.calledOnce).to.equal(true);
-      expect(renaming.events.dispatchInline.firstCall.args[0].eventType).to.equal(
+      expect(renaming.events.publishEvent.calledOnce).to.equal(true);
+      expect(renaming.events.publishEvent.firstCall.args[0].eventType).to.equal(
         'userUpdated',
       );
     });

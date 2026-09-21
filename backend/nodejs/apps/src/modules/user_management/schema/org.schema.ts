@@ -1,7 +1,7 @@
 import { Address } from '../../../libs/utils/address.utils';
 import { generateUniqueSlug } from '../../../libs/utils/counter';
 import mongoose, { Document, Schema, Model } from 'mongoose';
-import { PendingEvent, pendingEventSchema } from './pendingEvent.schema';
+import { IPendingEvent, pendingEventSchema } from './pendingEvent.schema';
 
 // Define the interface for Org Document
 
@@ -20,7 +20,7 @@ export interface IOrg extends Document {
   onBoardingStatus : string;
   /** Written during admin demotion txns to serialize last-admin checks. */
   adminRoleGuardAt?: Date;
-  pendingEvents?: PendingEvent[];
+  pendingEvents?: IPendingEvent[];
 }
 
 const orgSchema = new Schema<IOrg>(

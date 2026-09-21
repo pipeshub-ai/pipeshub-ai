@@ -620,11 +620,12 @@ export class UserController {
 
       await newUser.save();
       
-      await this.eventService.dispatchInline(Users, newUser._id.toString(), eventId, event);
+      await this.eventService.dispatchInline(Users, String(newUser._id), eventId, event);
 
       this.logger.debug('user created');
       res.status(201).json(newUser);
     } catch (error) {
+      console.error('DEBUG createUser ERROR:', error);
       next(error);
     }
   }
@@ -663,7 +664,7 @@ export class UserController {
         syncAction: SyncAction.Immediate,
       } as UserAddedEvent,
     };
-    newUser.pendingEvents.push({
+    (newUser.pendingEvents = newUser.pendingEvents ?? []).push({
       eventId,
       eventType: event.eventType,
       payload: event.payload,
@@ -682,7 +683,7 @@ export class UserController {
 
     // Publish user creation event
     try {
-      await this.eventService.dispatchInline(Users, newUser._id.toString(), eventId, event);
+      await this.eventService.dispatchInline(Users, String(newUser._id), eventId, event);
     } catch (eventError) {
       logger.error('Failed to publish user creation event', {
         error: eventError,
@@ -742,7 +743,7 @@ export class UserController {
         syncAction: SyncAction.Immediate,
       } as UserAddedEvent,
     };
-    newUser.pendingEvents.push({
+    (newUser.pendingEvents = newUser.pendingEvents ?? []).push({
       eventId,
       eventType: event.eventType,
       payload: event.payload,
@@ -761,7 +762,7 @@ export class UserController {
 
     // Publish user creation event
     try {
-      await this.eventService.dispatchInline(Users, newUser._id.toString(), eventId, event);
+      await this.eventService.dispatchInline(Users, String(newUser._id), eventId, event);
     } catch (eventError) {
       logger.error('Failed to publish user creation event', {
         error: eventError,
@@ -1440,7 +1441,7 @@ export class UserController {
           email: user.email,
         } as UserDeletedEvent,
       };
-      user.pendingEvents.push({
+      (user.pendingEvents = user.pendingEvents ?? []).push({
       eventId,
       eventType: event.eventType,
       payload: event.payload,
@@ -1455,7 +1456,7 @@ export class UserController {
       );
 
       await user.save();
-      await this.eventService.dispatchInline(Users, user._id.toString(), eventId, event);
+      await this.eventService.dispatchInline(Users, String(user._id), eventId, event);
 
       res.json({ message: 'User deleted successfully' });
     } catch (error) {
@@ -2191,7 +2192,7 @@ export class UserController {
         if (newUserDoc && newUserDoc.pendingEvents && newUserDoc.pendingEvents.length > 0) {
           const pendingEvent = newUserDoc.pendingEvents[0];
           if (pendingEvent) {
-            await this.eventService.dispatchInline(Users, userId.toString(), pendingEvent.eventId, pendingEvent);
+            await this.eventService.dispatchInline(Users, userId.toString(), pendingEvent.eventId, pendingEvent as unknown as Event);
           }
         } else {
           const eventId = new mongoose.Types.ObjectId().toString();
