@@ -216,6 +216,16 @@ def _normalize_list_param(value: str | list[str] | None) -> list[str] | None:
     return None
 
 
+# Shared by the Pydantic input schema and the `@tool` parameter list below so the
+# two can't drift. Hybrid search matches this string against document text, so
+# meta-phrasing ("find", "use the tool to") dilutes it rather than steering it.
+_QUERY_PARAM_DESCRIPTION = (
+    "Keyword-dense search text: the entities, terms, and dates you are looking for, "
+    "as they would appear in a document (e.g. 'Pedro Pablo Ramirez resignation 1944'). "
+    "No instructions or meta-phrases such as 'find', 'search for', or 'use the tool'."
+)
+
+
 class RetrievalToolOutput(BaseModel):
     """Structured output from the retrieval tool."""
     status: str = Field(default="success", description="Status: 'success' or 'error'")
@@ -227,7 +237,7 @@ class RetrievalToolOutput(BaseModel):
 
 class SearchInternalKnowledgeInput(BaseModel):
     """Input schema for the search_internal_knowledge tool"""
-    query: str = Field(description="The search query to find relevant information")
+    query: str = Field(description=_QUERY_PARAM_DESCRIPTION)
     connector_ids: list[str] | None = Field(
         default=None,
         description=(
@@ -286,7 +296,7 @@ class Retrieval:
             "system prompt. Omit `connector_ids` to search all accessible sources."
         ),
         parameters=[
-            ToolParameter(name="query", type=ParameterType.STRING, description="The search query to find relevant information", required=True),
+            ToolParameter(name="query", type=ParameterType.STRING, description=_QUERY_PARAM_DESCRIPTION, required=True),
             ToolParameter(name="connector_ids", type=ParameterType.ARRAY, description="Filter to a specific source by its ID. Pass a single ID per call — use one call per source and run them in parallel. Pass a KB collection's id or an app connector's id — both use this same parameter. Omit to search all accessible sources.", required=False, items={"type": "string"}),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],

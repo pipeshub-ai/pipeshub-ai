@@ -238,11 +238,16 @@ class SearchToolsTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Search across every registered tool (regardless of toolset) by "
-            "describing what you need, e.g. 'edit a file' or 'search the web'. "
-            "Results are ranked by relevance and, by default, made callable "
-            "immediately — no separate fetch_tools call needed. Use this when "
-            "you don't know which toolset (see list_toolsets) has what you need."
+            "Find which tool provides a capability, across every registered tool "
+            "(regardless of toolset). Matching is keyword-based against tool names "
+            "and descriptions, so pass 2-6 words naming the ACTION and the "
+            "SYSTEM/RESOURCE — e.g. 'search internal knowledge', 'create jira issue', "
+            "'send slack message', 'search the web'. Do NOT include the user's "
+            "question, entity names, or dates, and do not prefix it with phrases like "
+            "'use the ... tool to find'; every extra word lowers relevance. Results "
+            "are ranked by relevance and, by default, made callable immediately — no "
+            "separate fetch_tools call needed. Use this when you don't know which "
+            "toolset (see list_toolsets) has what you need."
         )
 
     @property
@@ -255,7 +260,10 @@ class SearchToolsTool(Tool):
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
-                description="Natural-language description of the capability you need",
+                description=(
+                    "Capability keywords only (action + system/resource), e.g. 'search "
+                    "internal knowledge'. Not your task or the user's question."
+                ),
                 required=True,
             ),
             ToolParameter(
