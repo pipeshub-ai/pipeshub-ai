@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from app.api.middlewares.auth import require_scopes, require_service_token
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes, TokenScopes
+from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
@@ -772,30 +773,22 @@ async def update_user_email(
         raise HTTPException(status_code=400, detail="Invalid email")
 
     try:
-        existing_user = await graph_provider.get_user_by_user_id(user_id)
-        if not existing_user:
+        result = await graph_provider.apply_verified_user_email(user_id, org_id, email)
+        if not result:
             raise HTTPException(status_code=404, detail="User not found")
-
-        graph_key = existing_user.get("id") or existing_user.get("_key")
-        await graph_provider.batch_upsert_nodes(
-            [
-                {
-                    "id": graph_key,
-                    "userId": user_id,
-                    "orgId": org_id,
-                    "email": email,
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
-            ],
-            CollectionNames.USERS.value,
-        )
         logger.info("Updated graph email for userId %s", user_id)
         return JSONResponse(
             status_code=200,
-            content={"status": "success", "email": email},
+            content={
+                "status": "success",
+                "email": result.get("email", email),
+                "mergedStubKeys": result.get("mergedStubKeys", []),
+            },
         )
     except HTTPException:
         raise
+    except GraphUserEmailConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error updating graph user email: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update user email")

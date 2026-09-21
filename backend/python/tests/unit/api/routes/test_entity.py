@@ -1236,18 +1236,21 @@ class TestUpdateUserEmail:
         async def _run() -> None:
             req = _make_request()
             gp = _graph_provider(req)
-            gp.get_user_by_user_id.return_value = {"id": "graph-key"}
+            gp.apply_verified_user_email.return_value = {
+                "email": "new@example.com",
+                "mergedStubKeys": [],
+            }
             body = UserEmailUpdateRequest(email="New@Example.com")
 
             resp = await update_user_email(req, body)
 
             assert resp.status_code == 200
-            gp.batch_upsert_nodes.assert_awaited_once()
-            payload = gp.batch_upsert_nodes.await_args.args[0][0]
+            gp.apply_verified_user_email.assert_awaited_once_with(
+                "user-1", "org-1", "new@example.com"
+            )
+            payload = json.loads(resp.body.decode())
             assert payload["email"] == "new@example.com"
-            assert payload["userId"] == "user-1"
-            assert payload["orgId"] == "org-1"
-            assert payload["id"] == "graph-key"
+            assert payload["mergedStubKeys"] == []
 
         asyncio.run(_run())
 
@@ -1255,11 +1258,28 @@ class TestUpdateUserEmail:
         async def _run() -> None:
             req = _make_request()
             gp = _graph_provider(req)
-            gp.get_user_by_user_id.return_value = None
+            gp.apply_verified_user_email.return_value = None
 
             with pytest.raises(HTTPException) as exc:
                 await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
             assert exc.value.status_code == 404
+
+        asyncio.run(_run())
+
+    def test_409_when_email_belongs_to_another_login(self):
+        async def _run() -> None:
+            from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.side_effect = GraphUserEmailConflictError(
+                "Email already belongs to another login user in the graph",
+                conflicting_user_id="other",
+            )
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+            assert exc.value.status_code == 409
 
         asyncio.run(_run())
 

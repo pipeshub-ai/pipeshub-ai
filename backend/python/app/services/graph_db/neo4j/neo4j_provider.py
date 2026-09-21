@@ -111,6 +111,13 @@ from app.services.graph_db.vector_membership_queries import (
 )
 from app.utils.env_config import env_int
 from app.utils.env_utils import env_bool
+from app.services.graph_db.user_email_identity import (
+    GraphUserEmailConflictError,
+    STUB_EDGE_COLLECTIONS,
+    VERIFIED_EMAIL_WRITE_COLLECTIONS,
+    classify_email_peer,
+    graph_user_key,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants
@@ -3371,6 +3378,165 @@ class Neo4jProvider(IGraphDBProvider):
             if raise_on_error:
                 raise
             return None
+
+    async def apply_verified_user_email(
+        self,
+        user_id: str,
+        org_id: str,
+        email: str,
+    ) -> dict | None:
+        keep = await self.get_user_by_user_id(user_id)
+        if not keep:
+            return None
+        keep_key = graph_user_key(keep)
+        if not keep_key:
+            return None
+
+        peers = await self._list_graph_users_by_email(email, org_id)
+        stub_keys: list[str] = []
+        for peer in peers:
+            kind = classify_email_peer(user_id, keep_key, peer)
+            if kind == "self":
+                continue
+            if kind == "login":
+                raise GraphUserEmailConflictError(
+                    "Email already belongs to another login user in the graph",
+                    conflicting_user_id=str(peer.get("userId") or ""),
+                )
+            peer_key = graph_user_key(peer)
+            if peer_key:
+                stub_keys.append(peer_key)
+
+        txn = await self.begin_transaction(
+            list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
+            list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
+        )
+        try:
+            for stub_key in stub_keys:
+                await self._absorb_graph_user_stub(keep_key, stub_key, txn)
+            await self.batch_upsert_nodes(
+                [
+                    {
+                        "id": keep_key,
+                        "userId": user_id,
+                        "orgId": org_id,
+                        "email": email,
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                ],
+                CollectionNames.USERS.value,
+                transaction=txn,
+            )
+            await self.commit_transaction(txn)
+        except Exception:
+            await self.rollback_transaction(txn)
+            raise
+        return {"email": email, "mergedStubKeys": stub_keys}
+
+    async def _list_graph_users_by_email(self, email: str, org_id: str) -> list[dict]:
+        query = """
+        MATCH (u:User)
+        WHERE toLower(u.email) = toLower($email)
+          AND u.orgId = $org_id
+        RETURN u
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"email": email, "org_id": org_id},
+        )
+        users: list[dict] = []
+        for record in results or []:
+            node = record.get("u")
+            if node is not None:
+                users.append(
+                    self._neo4j_to_arango_node(dict(node), CollectionNames.USERS.value)
+                )
+        return users
+
+    async def _absorb_graph_user_stub(
+        self,
+        keep_key: str,
+        stub_key: str,
+        transaction: str | None,
+    ) -> None:
+        allowed_rels = {
+            EDGE_COLLECTION_TO_RELATIONSHIP[collection]
+            for collection in STUB_EDGE_COLLECTIONS
+            if collection in EDGE_COLLECTION_TO_RELATIONSHIP
+        }
+        label_to_collection = {label: coll for coll, label in COLLECTION_TO_LABEL.items()}
+        query = """
+        MATCH (old:User {id: $stub_key})-[r]-(n)
+        WHERE n.id <> $keep_key
+        RETURN type(r) AS rel_type,
+               startNode(r).id AS from_id,
+               endNode(r).id AS to_id,
+               labels(startNode(r)) AS from_labels,
+               labels(endNode(r)) AS to_labels,
+               properties(r) AS props
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"stub_key": stub_key, "keep_key": keep_key},
+            txn_id=transaction,
+        )
+        seen: set[tuple[str, str, str]] = set()
+        for record in results or []:
+            rel_type = record.get("rel_type")
+            if rel_type not in allowed_rels or not re.fullmatch(r"[A-Z][A-Z0-9_]*", rel_type or ""):
+                self.logger.warning(
+                    "Skipping stub relationship type %s while merging user %s",
+                    rel_type,
+                    stub_key,
+                )
+                continue
+            from_id = record.get("from_id")
+            to_id = record.get("to_id")
+            if from_id == stub_key:
+                from_id = keep_key
+            if to_id == stub_key:
+                to_id = keep_key
+            if from_id == to_id:
+                continue
+            dedupe_key = (rel_type, from_id, to_id)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            from_labels = record.get("from_labels") or []
+            to_labels = record.get("to_labels") or []
+            from_collection = next(
+                (label_to_collection[label] for label in from_labels if label in label_to_collection),
+                CollectionNames.USERS.value if from_id == keep_key else None,
+            )
+            to_collection = next(
+                (label_to_collection[label] for label in to_labels if label in label_to_collection),
+                CollectionNames.USERS.value if to_id == keep_key else None,
+            )
+            if not from_collection or not to_collection:
+                continue
+            from_label = collection_to_label(from_collection)
+            to_label = collection_to_label(to_collection)
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", from_label):
+                continue
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", to_label):
+                continue
+            props = dict(record.get("props") or {})
+            merge_query = f"""
+            MATCH (from:{from_label} {{id: $from_id}})
+            MATCH (to:{to_label} {{id: $to_id}})
+            MERGE (from)-[r:{rel_type}]->(to)
+            ON CREATE SET r = $props
+            """
+            await self.client.execute_query(
+                merge_query,
+                parameters={"from_id": from_id, "to_id": to_id, "props": props},
+                txn_id=transaction,
+            )
+        await self.delete_nodes(
+            [stub_key],
+            CollectionNames.USERS.value,
+            transaction=transaction,
+        )
 
     async def get_graph_user_keys_by_mongo_user_ids(
         self,
