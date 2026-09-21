@@ -50,7 +50,7 @@ describe('ConnectorsCrawlingService', () => {
       );
 
       expect(result).to.deep.equal({ success: true });
-      expect(dispatchInline.calledOnce).to.be.true;
+      expect(publishEvent.calledOnce).to.be.true;
       const event = publishEvent.firstCall.args[0];
       expect(event.eventType).to.equal('slack.resync');
       expect(event.payload.orgId).to.equal(orgId);
@@ -75,7 +75,7 @@ describe('ConnectorsCrawlingService', () => {
         );
 
         expect(result).to.deep.equal({ success: true });
-        expect(dispatchInline.calledOnce).to.be.true;
+        expect(publishEvent.calledOnce).to.be.true;
       });
     });
 
@@ -91,7 +91,7 @@ describe('ConnectorsCrawlingService', () => {
         expect(e).to.be.instanceOf(Error);
         expect((e as Error).message).to.equal('kafka down');
       }
-      expect(dispatchInline.calledOnce).to.be.true;
+      expect(publishEvent.calledOnce).to.be.true;
     });
   });
 });
@@ -122,7 +122,7 @@ describe('ConnectorsCrawlingService (Local FS desktop presence)', () => {
     const result = await makeService(publishEvent).crawl(orgId, userId, scheduleConfig, 'Local FS', connectorId);
 
     expect(result).to.deep.equal({ success: true });
-    expect(dispatchInline.called).to.be.false;
+    expect(publishEvent.called).to.be.false;
   });
 
   // The owner device is not resolved here: the relay routes the pull to it
@@ -134,7 +134,7 @@ describe('ConnectorsCrawlingService (Local FS desktop presence)', () => {
 
     await makeService(publishEvent).crawl(orgId, userId, scheduleConfig, 'localfs', connectorId);
 
-    expect(dispatchInline.calledOnce).to.be.true;
+    expect(publishEvent.calledOnce).to.be.true;
     expect(presence.isLocalFsDeviceOnline.called).to.be.false;
   });
 
@@ -144,7 +144,7 @@ describe('ConnectorsCrawlingService (Local FS desktop presence)', () => {
 
     await makeService(publishEvent).crawl(orgId, userId, scheduleConfig, 'Local FS', connectorId);
 
-    expect(dispatchInline.calledOnce).to.be.true;
+    expect(publishEvent.calledOnce).to.be.true;
   });
 
   it('never consults presence for other connectors', async () => {
@@ -154,7 +154,7 @@ describe('ConnectorsCrawlingService (Local FS desktop presence)', () => {
 
     await makeService(publishEvent).crawl(orgId, userId, scheduleConfig, 'slack', connectorId);
 
-    expect(dispatchInline.calledOnce).to.be.true;
+    expect(publishEvent.calledOnce).to.be.true;
     expect(presence.isDesktopConnected.called).to.be.false;
     expect(presence.isLocalFsDeviceOnline.called).to.be.false;
   });

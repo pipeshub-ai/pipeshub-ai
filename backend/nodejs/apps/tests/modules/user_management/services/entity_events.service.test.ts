@@ -151,6 +151,12 @@ describe('EntitiesEventProducer', () => {
     });
 
     it('should allow constructing a full Event object', () => {
+      
+      const mockModel = {
+        findOneAndUpdate: sinon.stub().resolves(true),
+        updateOne: sinon.stub().resolves()
+      } as any;
+
       const event: Event = {
         eventType: EventType.NewUserEvent,
         timestamp: Date.now(),
@@ -193,6 +199,12 @@ describe('EntitiesEventProducer - additional coverage', () => {
 
   describe('Event construction patterns', () => {
     it('should construct OrgCreatedEvent', () => {
+      
+      const mockModel = {
+        findOneAndUpdate: sinon.stub().resolves(true),
+        updateOne: sinon.stub().resolves()
+      } as any;
+
       const event: Event = {
         eventType: EventType.OrgCreatedEvent,
         timestamp: Date.now(),
@@ -206,6 +218,12 @@ describe('EntitiesEventProducer - additional coverage', () => {
     })
 
     it('should construct OrgUpdatedEvent', () => {
+      
+      const mockModel = {
+        findOneAndUpdate: sinon.stub().resolves(true),
+        updateOne: sinon.stub().resolves()
+      } as any;
+
       const event: Event = {
         eventType: EventType.OrgUpdatedEvent,
         timestamp: Date.now(),
@@ -218,6 +236,12 @@ describe('EntitiesEventProducer - additional coverage', () => {
     })
 
     it('should construct OrgDeletedEvent', () => {
+      
+      const mockModel = {
+        findOneAndUpdate: sinon.stub().resolves(true),
+        updateOne: sinon.stub().resolves()
+      } as any;
+
       const event: Event = {
         eventType: EventType.OrgDeletedEvent,
         timestamp: Date.now(),
@@ -229,6 +253,12 @@ describe('EntitiesEventProducer - additional coverage', () => {
     })
 
     it('should construct UpdateUserEvent', () => {
+      
+      const mockModel = {
+        findOneAndUpdate: sinon.stub().resolves(true),
+        updateOne: sinon.stub().resolves()
+      } as any;
+
       const event: Event = {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
@@ -248,6 +278,12 @@ describe('EntitiesEventProducer - additional coverage', () => {
     })
 
     it('should construct DeleteUserEvent', () => {
+      
+      const mockModel = {
+        findOneAndUpdate: sinon.stub().resolves(true),
+        updateOne: sinon.stub().resolves()
+      } as any;
+
       const event: Event = {
         eventType: EventType.DeleteUserEvent,
         timestamp: Date.now(),
@@ -261,6 +297,12 @@ describe('EntitiesEventProducer - additional coverage', () => {
     })
 
     it('should construct NewUserEvent with Scheduled sync action', () => {
+      
+      const mockModel = {
+        findOneAndUpdate: sinon.stub().resolves(true),
+        updateOne: sinon.stub().resolves()
+      } as any;
+
       const event: Event = {
         eventType: EventType.NewUserEvent,
         timestamp: Date.now(),
@@ -290,6 +332,12 @@ describe('EntitiesEventProducer - additional coverage', () => {
       ;(instance as any).producer = mockProducer
       instance.logger = { info: sinon.stub(), error: sinon.stub() }
 
+      
+      const mockModel = {
+        findOneAndUpdate: sinon.stub().resolves(true),
+        updateOne: sinon.stub().resolves()
+      } as any;
+
       const event: Event = {
         eventType: EventType.OrgCreatedEvent,
         timestamp: Date.now(),
@@ -300,7 +348,7 @@ describe('EntitiesEventProducer - additional coverage', () => {
         } as OrgAddedEvent,
       }
 
-      await instance.dispatchInline(event)
+      await instance.dispatchInline(mockModel, 'doc-1', 'event-1', event)
 
       expect(mockProducer.publish.calledOnce).to.be.true
       const [topic, message] = mockProducer.publish.firstCall.args
@@ -325,6 +373,12 @@ describe('EntitiesEventProducer - additional coverage', () => {
       ;(instance as any).producer = mockProducer
       instance.logger = { info: sinon.stub(), error: sinon.stub() }
 
+      
+      const mockModel = {
+        findOneAndUpdate: sinon.stub().resolves(true),
+        updateOne: sinon.stub().resolves()
+      } as any;
+
       const event: Event = {
         eventType: EventType.NewUserEvent,
         timestamp: Date.now(),
@@ -336,7 +390,7 @@ describe('EntitiesEventProducer - additional coverage', () => {
         } as UserAddedEvent,
       }
 
-      await instance.dispatchInline(event)
+      await instance.dispatchInline(mockModel, 'doc-1', 'event-1', event)
       expect(instance.logger.error.calledOnce).to.be.true
     })
 
@@ -355,6 +409,12 @@ describe('EntitiesEventProducer - additional coverage', () => {
       instance.logger = { info: sinon.stub(), error: sinon.stub() }
 
       const timestamp = 1234567890
+      
+      const mockModel = {
+        findOneAndUpdate: sinon.stub().resolves(true),
+        updateOne: sinon.stub().resolves()
+      } as any;
+
       const event: Event = {
         eventType: EventType.DeleteUserEvent,
         timestamp,
@@ -365,7 +425,7 @@ describe('EntitiesEventProducer - additional coverage', () => {
         } as UserDeletedEvent,
       }
 
-      await instance.dispatchInline(event)
+      await instance.dispatchInline(mockModel, 'doc-1', 'event-1', event)
 
       const message = mockProducer.publish.firstCall.args[1]
       expect(message.headers.timestamp).to.equal('1234567890')

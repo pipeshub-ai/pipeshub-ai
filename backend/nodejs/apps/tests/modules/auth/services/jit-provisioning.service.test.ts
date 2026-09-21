@@ -20,7 +20,7 @@ describe('JitProvisioningService', () => {
   } as any;
   const mockEventService = {
     start: sinon.stub().resolves(),
-    dispatchInline: sinon.stub().resolves(), dispatchInline: sinon.stub().resolves(),
+    dispatchInline: sinon.stub().resolves(),
     stop: sinon.stub().resolves(),
   } as any;
 
@@ -395,7 +395,7 @@ describe('JitProvisioningService - additional coverage', () => {
   } as any
   const mockEventService = {
     start: sinon.stub().resolves(),
-    dispatchInline: sinon.stub().resolves(), dispatchInline: sinon.stub().resolves(),
+    dispatchInline: sinon.stub().resolves(),
     stop: sinon.stub().resolves(),
   } as any
 
