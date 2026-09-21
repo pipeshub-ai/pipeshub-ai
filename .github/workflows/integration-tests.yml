@@ -143,6 +143,18 @@ jobs:
       AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
       TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
       TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+      # _LLM_PROVIDER_ORDER tries Azure before OpenAI, but _azure_credentials_complete
+      # needs key, endpoint and deployment together — miss one and Azure is dropped
+      # from the candidates silently, leaving OpenAI as the only provider tried.
+      # secrets || vars so the non-secret names work from either store.
+      TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+      TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+      TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+      # Optional. Unset falls back to the LLM deployment above, which is what a
+      # local .env run does today.
+      TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
       CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
       CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
       CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
