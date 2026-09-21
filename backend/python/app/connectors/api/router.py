@@ -119,7 +119,7 @@ from app.connectors.services.vector_store_rebuild import (
 )
 from app.edition_containers import ConnectorAppContainer
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
-from app.models.entities import Record, RecordType
+from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
@@ -1453,6 +1453,13 @@ async def stream_record(
                 detail="You do not have permission to access this record"
             )
         await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
+        if isinstance(record, ArtifactRecord):
+            from app.services.artifact_registry.gallery import ArtifactDisplayPolicy
+            if not ArtifactDisplayPolicy.is_user_visible_record(record):
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value,
+                    detail="Record not found",
+                )
         is_admin = is_request_admin(request)
         return await _resolve_record_content_response(
             record=record,

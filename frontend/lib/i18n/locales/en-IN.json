@@ -221,6 +221,7 @@
   "nav": {
     "collections": "Collections",
     "allRecords": "All Records",
+    "allArtifacts": "All Artifacts",
     "workspace": "Workspace",
     "shared": "Shared with me",
     "private": "My collections",
