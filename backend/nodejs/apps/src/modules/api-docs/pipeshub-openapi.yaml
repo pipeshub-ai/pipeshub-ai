@@ -189,6 +189,8 @@ tags:
       signed-in user's session, so these are **not** callable by API clients or
       the browser. They are listed here so the surface is discoverable and the
       pairing with the public routes is visible.
+  - name: Artifacts
+    description: User-facing gallery of generated artifacts (preview, download, versions)
   - name: Knowledge Base
     description: Knowledge base management operations
   - name: Knowledge Hub
@@ -477,6 +479,133 @@ components:
   schemas:
     # ==================== COMMON SCHEMAS ====================
 
+    ArtifactGalleryItem:
+      type: object
+      additionalProperties: false
+      properties:
+        artifactId:
+          type: string
+        name:
+          type: string
+        logicalName:
+          type: string
+          nullable: true
+        artifactType:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          nullable: true
+        version:
+          type: integer
+        contentHash:
+          type: string
+          nullable: true
+        conversationId:
+          type: string
+          nullable: true
+        conversationTitle:
+          type: string
+          description: Display-only chat title when the caller can see that conversation
+        createdAt:
+          type: integer
+          nullable: true
+        updatedAt:
+          type: integer
+          nullable: true
+      required:
+        - artifactId
+        - name
+        - artifactType
+        - version
+
+    ArtifactGalleryVersion:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+        sizeBytes:
+          type: integer
+        contentHash:
+          type: string
+        createdAt:
+          type: integer
+      required:
+        - version
+
+    ArtifactGalleryDetail:
+      type: object
+      additionalProperties: false
+      properties:
+        artifactId:
+          type: string
+        name:
+          type: string
+        logicalName:
+          type: string
+          nullable: true
+        artifactType:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          nullable: true
+        version:
+          type: integer
+        contentHash:
+          type: string
+          nullable: true
+        conversationId:
+          type: string
+          nullable: true
+        conversationTitle:
+          type: string
+          description: Display-only chat title when the caller can see that conversation
+        createdAt:
+          type: integer
+          nullable: true
+        updatedAt:
+          type: integer
+          nullable: true
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactGalleryVersion'
+        description:
+          type: string
+        sourceTool:
+          type: string
+          nullable: true
+      required:
+        - artifactId
+        - name
+        - artifactType
+        - version
+
+    ArtifactGalleryListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactGalleryItem'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
 
     # ==================== AUTH SCHEMAS ====================
     AuthMethod:
@@ -23100,6 +23229,172 @@ paths:
           description: The storage scoped token was missing or invalid.
         '404':
           description: No such document.
+  /artifacts:
+    get:
+      tags:
+        - Artifacts
+      summary: List accessible artifacts
+      description: |
+        Paginated gallery of VISIBLE, non-temporary artifacts the caller can
+        access via record ACL. TOOL_RESULT artifacts are never returned.
+        Conversation titles are a display join and are omitted when the chat
+        is gone or the caller cannot see it.
+      operationId: listArtifacts
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: search
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+        - name: artifactTypes
+          in: query
+          description: Comma-separated gallery artifact types (not TOOL_RESULT)
+          schema:
+            type: string
+        - name: conversationId
+          in: query
+          schema:
+            type: string
+        - name: dateFrom
+          in: query
+          schema:
+            type: integer
+        - name: dateTo
+          in: query
+          schema:
+            type: integer
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [name, createdAtTimestamp, updatedAtTimestamp, artifactType]
+            default: createdAtTimestamp
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Paginated artifact gallery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactGalleryListResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Insufficient OAuth scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /artifacts/{artifactId}:
+    get:
+      tags:
+        - Artifacts
+      summary: Get artifact metadata
+      description: Metadata and versions for one artifact. Returns 404 if the artifact is missing, inaccessible, or not user-visible.
+      operationId: getArtifact
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+      responses:
+        '200':
+          description: Artifact detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactGalleryDetail'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /artifacts/{artifactId}/versions:
+    get:
+      tags:
+        - Artifacts
+      summary: List artifact versions
+      description: Immutable registry versions for one artifact.
+      operationId: listArtifactVersions
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+      responses:
+        '200':
+          description: Version list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArtifactGalleryVersion'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /knowledgeBase:
     post:
       tags:
@@ -23911,6 +24206,14 @@ paths:
           description: Target format for conversion
           schema:
             type: string
+        - name: version
+          in: query
+          description: |
+            Registry version to pin ARTIFACT record content to. Omit to stream
+            the latest version. Ignored for non-artifact records.
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: File content stream

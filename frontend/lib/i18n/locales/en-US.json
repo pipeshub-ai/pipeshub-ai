@@ -222,6 +222,7 @@
   "nav": {
     "collections": "Collections",
     "allRecords": "All Records",
+    "allArtifacts": "All Artifacts",
     "workspace": "Workspace",
     "shared": "Shared with me",
     "private": "My collections",
@@ -235,6 +236,31 @@
     "searchChats": "Search Chats",
     "inbox": "Inbox",
     "notifications": "Notifications"
+  },
+  "artifacts": {
+    "title": "All Artifacts",
+    "empty": "No artifacts yet",
+    "emptyHint": "Files your agents create in chat will show up here.",
+    "loadFailed": "Couldn't load artifacts",
+    "previewFailed": "Couldn't preview this file",
+    "downloadFailed": "Couldn't download this file",
+    "openInChat": "Open in chat",
+    "searchPlaceholder": "Search artifacts",
+    "conversation": "Conversation",
+    "untitledChat": "—",
+    "name": "Name",
+    "size": "Size",
+    "showing": "Showing {{start}}-{{end}} of {{total}}",
+    "types": {
+      "IMAGE": "Image",
+      "CHART": "Chart",
+      "DOCUMENT": "Document",
+      "SPREADSHEET": "Spreadsheet",
+      "PRESENTATION": "Presentation",
+      "DATA_FILE": "Data file",
+      "CODE": "Code",
+      "CODE_OUTPUT": "Code output"
+    }
   },
   "notifications": {
     "title": "Notifications",

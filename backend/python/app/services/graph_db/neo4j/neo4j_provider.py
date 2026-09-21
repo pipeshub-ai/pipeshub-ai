@@ -482,6 +482,21 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.md5Checksum)"
         )
 
+        indexes.append(
+            "CREATE INDEX record_org_record_type IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.recordType)"
+        )
+
+        indexes.append(
+            "CREATE INDEX artifact_org_visibility IF NOT EXISTS "
+            "FOR (n:Artifact) ON (n.orgId, n.visibility)"
+        )
+
+        indexes.append(
+            "CREATE INDEX artifact_org_conversation IF NOT EXISTS "
+            "FOR (n:Artifact) ON (n.orgId, n.conversationId)"
+        )
+
         # ==================== USER INDEXES (High Priority) ====================
 
         # SINGLE: email (authentication, lookups)
@@ -11877,6 +11892,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE kbRecord.orgId = $org_id
                     AND kbRecord.isDeleted <> true
                     AND kbRecord.origin = "UPLOAD"
+                    AND kbRecord.recordType <> "ARTIFACT"
                     AND NOT kbRecord.mimeType = "application/vnd.folder"
                     {kb_record_filter}
 
@@ -11989,6 +12005,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE kbRecord.orgId = $org_id
                     AND kbRecord.isDeleted <> true
                     AND kbRecord.origin = "UPLOAD"
+                    AND kbRecord.recordType <> "ARTIFACT"
                     AND NOT kbRecord.mimeType = "application/vnd.folder"
                     {kb_record_filter}
 
@@ -12049,6 +12066,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE kbRecord.orgId = $org_id
                     AND kbRecord.isDeleted <> true
                     AND kbRecord.origin = "UPLOAD"
+                    AND kbRecord.recordType <> "ARTIFACT"
                     AND NOT kbRecord.mimeType = "application/vnd.folder"
 
                 WITH u, COLLECT({record: kbRecord, role: kb_role}) AS kbRecords
@@ -12168,6 +12186,171 @@ class Neo4jProvider(IGraphDBProvider):
                 "indexingStatus": [],
                 "permissions": []
             }
+
+    def _artifact_gallery_sort_expr(self, sort_by: str) -> str:
+        return {
+            "name": "art.name",
+            "createdAtTimestamp": "rec.createdAtTimestamp",
+            "updatedAtTimestamp": "rec.updatedAtTimestamp",
+            "artifactType": "art.artifactType",
+        }.get(sort_by, "rec.createdAtTimestamp")
+
+    def _artifact_gallery_where(
+        self,
+        search: str | None,
+        artifact_types: list[str] | None,
+        conversation_id: str | None,
+        date_from: int | None,
+        date_to: int | None,
+    ) -> tuple[str, dict]:
+        conditions: list[str] = []
+        params: dict = {}
+        if search:
+            conditions.append(
+                "(toLower(coalesce(art.name, '')) CONTAINS toLower($search) "
+                "OR toLower(coalesce(art.logicalName, '')) CONTAINS toLower($search))"
+            )
+            params["search"] = search
+        if artifact_types is not None:
+            conditions.append("art.artifactType IN $artifact_types")
+            params["artifact_types"] = artifact_types
+        if conversation_id:
+            conditions.append("art.conversationId = $conversation_id")
+            params["conversation_id"] = conversation_id
+        if date_from:
+            conditions.append("rec.createdAtTimestamp >= $date_from")
+            params["date_from"] = date_from
+        if date_to:
+            conditions.append("rec.createdAtTimestamp <= $date_to")
+            params["date_to"] = date_to
+        extra = (" AND " + " AND ".join(conditions)) if conditions else ""
+        return extra, params
+
+    @staticmethod
+    def _artifact_gallery_match() -> str:
+        return """
+            MATCH (u:User {id: $user_id})-[perm:PERMISSION {type: "USER"}]->(rec:Record)
+            WHERE rec.orgId = $org_id
+              AND rec.recordType = "ARTIFACT"
+              AND coalesce(rec.isDeleted, false) = false
+            MATCH (rec)-[:IS_OF_TYPE]->(art:Artifact)
+            WHERE art.artifactType <> "TOOL_RESULT"
+              AND coalesce(art.isTemporary, false) = false
+              AND coalesce(art.visibility, "VISIBLE") = "VISIBLE"
+        """
+
+    @staticmethod
+    def _artifact_gallery_return() -> str:
+        return """
+            RETURN {
+                id: rec.id,
+                recordName: rec.recordName,
+                recordType: rec.recordType,
+                mimeType: rec.mimeType,
+                sizeInBytes: rec.sizeInBytes,
+                version: rec.version,
+                createdAtTimestamp: rec.createdAtTimestamp,
+                updatedAtTimestamp: rec.updatedAtTimestamp,
+                artifactDoc: {
+                    name: art.name,
+                    artifactType: art.artifactType,
+                    conversationId: art.conversationId,
+                    visibility: art.visibility,
+                    mimeType: art.mimeType,
+                    sizeInBytes: art.sizeInBytes,
+                    logicalName: art.logicalName,
+                    contentHash: art.contentHash,
+                    versions: art.versions,
+                    description: art.description,
+                    sourceTool: art.sourceTool,
+                    isTemporary: art.isTemporary
+                },
+                permission: {role: perm.role, type: perm.type}
+            } AS result
+        """
+
+    async def list_accessible_artifacts(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: str | None,
+        artifact_types: list[str] | None,
+        conversation_id: str | None,
+        date_from: int | None,
+        date_to: int | None,
+        sort_by: str,
+        sort_order: str,
+    ) -> tuple[list[dict], int]:
+        """Permission-first gallery listing. ``user_id`` is the graph user key."""
+        try:
+            extra, extra_params = self._artifact_gallery_where(
+                search, artifact_types, conversation_id, date_from, date_to,
+            )
+            sort_expr = self._artifact_gallery_sort_expr(sort_by)
+            sort_dir = "ASC" if (sort_order or "").lower() == "asc" else "DESC"
+            params = {
+                "user_id": user_id,
+                "org_id": org_id,
+                "skip": skip,
+                "limit": limit,
+                **extra_params,
+            }
+            match = self._artifact_gallery_match()
+            query = (
+                match
+                + extra
+                + f"""
+            WITH rec, art, perm
+            ORDER BY {sort_expr} {sort_dir}, rec.id
+            SKIP $skip
+            LIMIT $limit
+            """
+                + self._artifact_gallery_return()
+            )
+            count_query = match + extra + "\n            RETURN count(rec) AS total\n            "
+            results = await self.client.execute_query(query, parameters=params)
+            count_results = await self.client.execute_query(count_query, parameters=params)
+            records = [row.get("result", row) for row in (results or [])]
+            total = 0
+            if count_results:
+                total = count_results[0].get("total", 0) if isinstance(count_results[0], dict) else count_results[0]
+            return records, int(total or 0)
+        except Exception as e:
+            self.logger.error("❌ Failed to list accessible artifacts: %s", str(e))
+            return [], 0
+
+    async def get_artifact_detail(
+        self,
+        user_id: str,
+        org_id: str,
+        artifact_id: str,
+    ) -> dict | None:
+        """Permission-first single-artifact fetch. ``user_id`` is the graph user key."""
+        try:
+            query = (
+                self._artifact_gallery_match()
+                + """
+              AND rec.id = $artifact_id
+            """
+                + self._artifact_gallery_return()
+            )
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "user_id": user_id,
+                    "org_id": org_id,
+                    "artifact_id": artifact_id,
+                },
+            )
+            if not results:
+                return None
+            row = results[0]
+            return row.get("result", row)
+        except Exception as e:
+            self.logger.error("❌ Failed to get artifact detail: %s", str(e))
+            return None
 
     async def list_kb_records(
         self,

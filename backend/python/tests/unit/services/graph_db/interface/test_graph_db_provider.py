@@ -280,6 +280,8 @@ class TestAbstractMethodInventory:
         "list_kb_permissions",
         "list_all_records",
         "list_kb_records",
+        "list_accessible_artifacts",
+        "get_artifact_detail",
         # KB migration and legacy operations
         "find_file_by_name_in_parent",
         "get_legacy_kb_record_groups",
