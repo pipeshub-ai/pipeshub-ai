@@ -135,3 +135,51 @@ class TestRunIsSelfSufficient:
         from benchmarks.harness.corpus.manifest import load_run_manifest
 
         assert load_run_manifest(tmp_path) is None
+
+
+class TestMissingIngestManifestIsLoud:
+    """`ingest_<system>.json` maps a record id back to an article. Scoring
+    without it silently produces a retrieval-failure-shaped result instead of
+    saying the file is gone."""
+
+    def _ctx(self, tmp_path, kind: str):
+        from benchmarks.harness.config import RunConfig, SystemConfig
+        from benchmarks.harness.corpus.view import CorpusView
+        from benchmarks.harness.models import CorpusManifest
+        from benchmarks.harness.services import RunContext
+        from benchmarks.harness.store import RunStore
+        from datetime import UTC, datetime
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        config = RunConfig.model_construct(
+            systems=(SystemConfig(kind=kind),),
+            run_name="t",
+        )
+        store = RunStore(tmp_path / "run")
+        manifest = CorpusManifest(
+            snapshot=datetime(2024, 10, 15, tzinfo=UTC), tier="G", harness_version="t", documents=[],
+        )
+        ctx = RunContext(
+            config=config, store=store,
+            services=SimpleNamespace(adapter_registry=None),
+            dataset=MagicMock(),
+        )
+        ctx.corpus = CorpusView(tmp_path, manifest)
+        return ctx
+
+    def test_raises_for_a_system_that_ingests(self, tmp_path) -> None:
+        from benchmarks.harness.errors import IngestError
+        from benchmarks.harness.stages import LoadPreparedStage
+
+        ctx = self._ctx(tmp_path, "pipeshub")
+        with pytest.raises(IngestError, match="ingest_pipeshub.json"):
+            LoadPreparedStage().run(ctx)
+
+    def test_silent_for_a_system_that_never_ingests(self, tmp_path) -> None:
+        """Closed book and the oracle have no manifest by design."""
+        from benchmarks.harness.stages import LoadPreparedStage
+
+        ctx = self._ctx(tmp_path, "closed_book")
+        LoadPreparedStage().run(ctx)
+        assert ctx.prepared["closed_book"].ingest is None

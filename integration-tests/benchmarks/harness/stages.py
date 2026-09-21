@@ -26,7 +26,12 @@ from benchmarks.harness.corpus.manifest import (
 from benchmarks.harness.corpus.view import CorpusView
 from benchmarks.harness.dataset.split import apply_split, load_split, select_questions, split_sha256
 from benchmarks.harness.config import SystemConfig
-from benchmarks.harness.errors import BackendContractError, CorpusError, IndexTimeoutError
+from benchmarks.harness.errors import (
+    BackendContractError,
+    CorpusError,
+    IndexTimeoutError,
+    IngestError,
+)
 from benchmarks.harness.grading.claims import ClaimSupportJudge
 from benchmarks.harness.grading.judges import AnswerJudge, GradingSubject
 from benchmarks.harness.grading.prompts import answer_prompt_texts, verify_prompt_pins
@@ -172,6 +177,20 @@ class LoadPreparedStage:
         version = ctx.require_corpus().manifest.corpus_version
         for system in ctx.config.systems:
             ingest = ctx.store.read_model(ingest_file(system.id), IngestManifest)
+            # Without the manifest an `ArticleResolver` cannot map a record id
+            # back to an article, so every retrieval and citation metric
+            # degrades to a name-only lookup and scores near zero — numbers
+            # that look like a retrieval failure rather than a missing file.
+            # A system that never ingests (closed book, oracle) has none by
+            # design; one that does must not be scored without it.
+            if ingest is None and adapter_spec(
+                system.kind, ctx.services.adapter_registry,
+            ).capabilities.ingests_corpus:
+                raise IngestError(
+                    f"{system.id}: {ingest_file(system.id)} is missing from this run, so its "
+                    "retrieval and citation metrics cannot be computed; re-run `prepare` "
+                    "or drop the system from the config",
+                )
             ctx.prepared[system.id] = PreparedCorpus(system=system.id, corpus_version=version, ingest=ingest)
         return StageReport(self.name, processed=len(ctx.prepared))
 
