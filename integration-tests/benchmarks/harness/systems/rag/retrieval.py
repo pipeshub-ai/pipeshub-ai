@@ -60,6 +60,39 @@ class QueryEncoder:
         return embedding.indices.tolist(), embedding.values.tolist()
 
 
+def hybrid_points(
+    client: Any,  # noqa: ANN401
+    collection: str,
+    encoder: QueryEncoder,
+    query: str,
+    mode: RetrievalMode,
+    limit: int,
+    query_filter: Any = None,  # noqa: ANN401
+) -> list[Any]:
+    """One dense/sparse prefetch + RRF fusion, shared by both collections.
+
+    The two indexes must issue the *identical* query or the comparison between
+    them stops being about the chunks and starts being about the query; they
+    differ only in whether the search is scoped to a record set.
+    """
+    from qdrant_client import models
+
+    prefetch = []
+    if mode in ("dense", "hybrid"):
+        prefetch.append(models.Prefetch(query=encoder.dense(query), using="dense", limit=limit * 2))
+    if mode in ("sparse", "hybrid"):
+        indices, values = encoder.sparse(query)
+        prefetch.append(models.Prefetch(
+            query=models.SparseVector(indices=indices, values=values), using="sparse", limit=limit * 2,
+        ))
+    response = client.query_points(
+        collection_name=collection, prefetch=prefetch,
+        query=models.FusionQuery(fusion=models.Fusion.RRF),
+        query_filter=query_filter, limit=limit, with_payload=True,
+    )
+    return list(response.points)
+
+
 class ChunkIndex:
     def __init__(self, client: Any, collection: str, encoder: QueryEncoder, virtual_record_ids: Sequence[str]) -> None:  # noqa: ANN401
         from qdrant_client import models
@@ -72,21 +105,10 @@ class ChunkIndex:
         ])
 
     def search(self, query: str, mode: RetrievalMode, limit: int) -> list[Chunk]:
-        from qdrant_client import models
-
-        prefetch = []
-        if mode in ("dense", "hybrid"):
-            prefetch.append(models.Prefetch(query=self._encoder.dense(query), using="dense", limit=limit * 2))
-        if mode in ("sparse", "hybrid"):
-            indices, values = self._encoder.sparse(query)
-            prefetch.append(models.Prefetch(
-                query=models.SparseVector(indices=indices, values=values), using="sparse", limit=limit * 2,
-            ))
-        response = self._client.query_points(
-            collection_name=self._collection, prefetch=prefetch, query=models.FusionQuery(fusion=models.Fusion.RRF),
-            query_filter=self._scope, limit=limit, with_payload=True,
+        points = hybrid_points(
+            self._client, self._collection, self._encoder, query, mode, limit, self._scope,
         )
-        return self._fold_sentences(response.points)
+        return self._fold_sentences(points)
 
     def _fold_sentences(self, points: Sequence[Any]) -> list[Chunk]:  # noqa: ANN401
         ordered: list[tuple[tuple[str, int | None], float, str | None]] = []

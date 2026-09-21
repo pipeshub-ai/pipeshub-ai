@@ -392,13 +392,6 @@ def _git_sha() -> str | None:
     return result.stdout.strip() or None
 
 
-def _index_of(system: SystemConfig) -> str:
-    """Which index a system reads, for the diagnostics' same-index controls."""
-    if system.kind in ("naive_rag", "advanced_rag"):
-        return str(system.options.get("index", "pipeshub"))
-    return {"pipeshub": "pipeshub", "oracle": "oracle"}.get(system.kind, "none")
-
-
 class ReportStage:
     name = "report"
 
@@ -424,7 +417,10 @@ class ReportStage:
 
     @staticmethod
     def _diagnostics(ctx: RunContext, scores: list[QuestionScore], gold_for: Callable[[int], list[str]]) -> None:
-        index_of = {s.id: _index_of(s) for s in ctx.config.systems}
+        index_of = {
+            s.id: adapter_spec(s.kind, ctx.services.adapter_registry).reads_index(s)
+            for s in ctx.config.systems
+        }
         predictions = _latest_predictions(ctx)
         for system in ctx.config.systems:
             if not adapter_spec(system.kind, ctx.services.adapter_registry).capabilities.retrieval_trace:

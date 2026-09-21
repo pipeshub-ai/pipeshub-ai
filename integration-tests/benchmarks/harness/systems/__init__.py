@@ -46,6 +46,14 @@ AdapterFactory = Callable[[SystemConfig, AdapterDeps], SystemAdapter]
 class AdapterSpec:
     factory: AdapterFactory
     capabilities: AdapterCapabilities
+    # Which corpus index this system reads, for the diagnostics'
+    # same-index controls. A callable because a RAG system's index is a
+    # config option, not a property of the adapter kind. Declared here so
+    # adding a system never means editing the reporting stage.
+    index_of: Callable[[SystemConfig], str] | None = None
+
+    def reads_index(self, system: SystemConfig) -> str:
+        return self.index_of(system) if self.index_of else self.capabilities.reads_index
 
 
 def _answerer_kwargs(deps: AdapterDeps) -> dict[str, Any]:
@@ -172,13 +180,17 @@ def _advanced_rag(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
     return _rag(options, system, deps)
 
 
+def _rag_index(system: SystemConfig) -> str:
+    return str(system.options.get("index", "pipeshub"))
+
+
 ADAPTER_REGISTRY: dict[str, AdapterSpec] = {
     "closed_book": AdapterSpec(_closed_book, ClosedBookAnswerer.capabilities),
-    "oracle": AdapterSpec(_oracle, OracleAnswerer.capabilities),
+    "oracle": AdapterSpec(_oracle, OracleAnswerer.capabilities, lambda _s: "oracle"),
     "bm25": AdapterSpec(_bm25, Bm25Answerer.capabilities),
-    "pipeshub": AdapterSpec(_pipeshub, PipesHubAdapter.capabilities),
-    "naive_rag": AdapterSpec(_naive_rag, RagAnswerer.capabilities),
-    "advanced_rag": AdapterSpec(_advanced_rag, RagAnswerer.capabilities),
+    "pipeshub": AdapterSpec(_pipeshub, PipesHubAdapter.capabilities, lambda _s: "pipeshub"),
+    "naive_rag": AdapterSpec(_naive_rag, RagAnswerer.capabilities, _rag_index),
+    "advanced_rag": AdapterSpec(_advanced_rag, RagAnswerer.capabilities, _rag_index),
 }
 
 

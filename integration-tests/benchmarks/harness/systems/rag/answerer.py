@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from benchmarks.harness.config import FRAMES_SNAPSHOT, ModelPrice
 from benchmarks.harness.corpus.view import CorpusView
 from benchmarks.harness.llm.client import ChatMessage, LLMClient, LLMRequest, ResolvedModel
+from benchmarks.harness.citation_markers import cited_indices
 from benchmarks.harness.models import AskItem, CallUsage, Citation, IngestManifest, Prediction, RankedList, RetrievedChunk, SystemFailure
 from benchmarks.harness.systems.base import AdapterCapabilities, CorpusIngestor, PreparedCorpus, RankedRetriever
 from benchmarks.harness.systems.baselines.answering import (
@@ -43,7 +44,6 @@ RAG_ANSWER_PROMPT_VERSION = "rag-answer-v1"
 _CHARS_PER_TOKEN = 4
 _DEFAULT_CONTEXT_TOKENS = 128_000
 _RESERVED_TOKENS = 8_000
-_MARKER = re.compile(r"\[(\d+)\]")
 _SYSTEM_PROMPT = (
     "You answer factual questions using the numbered sources provided, which are passages from "
     "Wikipedia articles. Base your answer on the sources and cite every source you rely on with "
@@ -117,7 +117,7 @@ def render_sources(sources: Sequence[Source]) -> str:
 
 
 def cited_sources(answer: str, sources: Sequence[Source]) -> list[Citation]:
-    cited = sorted({int(n) for n in _MARKER.findall(answer or "")})
+    cited = sorted(set(cited_indices(answer)))
     return [
         Citation(
             display_index=n, record_id=sources[n - 1].record_id, virtual_record_id=sources[n - 1].virtual_record_id,

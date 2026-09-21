@@ -13,6 +13,8 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from benchmarks.harness import HARNESS_VERSION
+
 from benchmarks.harness.llm.client import EmbeddingResponse, LLMClient, LLMRequest, LLMResponse, ResolvedModel
 
 _SCHEMA = "CREATE TABLE IF NOT EXISTS responses (key TEXT PRIMARY KEY, body TEXT NOT NULL)"
@@ -26,6 +28,13 @@ def cache_key(request: LLMRequest) -> str:
         "max_tokens": request.max_tokens,
         "prompt_version": request.prompt_version,
         "reasoning_effort": request.model.reasoning_effort,
+        # Per-request overrides: a cacheable call at low effort must not
+        # collide with the same call at the model default.
+        "effort": request.effort,
+        "reserve_reasoning_tokens": request.reserve_reasoning_tokens,
+        # The harness version, so a scoring change never serves verdicts
+        # computed by an older one out of a cache that outlives the run.
+        "harness": HARNESS_VERSION,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 

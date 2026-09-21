@@ -18,9 +18,9 @@ import pysbd
 from benchmarks.harness.grading.prompts import CLAIM_SUPPORT, render_claim_support
 from benchmarks.harness.grading.verdicts import parse_support
 from benchmarks.harness.llm.client import ChatMessage, LLMClient, LLMRequest, ResolvedModel
+from benchmarks.harness.citation_markers import cited_indices, strip_markers
 from benchmarks.harness.models import Citation, ClaimSupport, Prediction, answer_fingerprint
 
-_MARKER = re.compile(r"\[(\d+)\](?:\([^)\s]*\))?")
 _MIN_CLAIM_CHARS = 20
 _EVIDENCE_CHARS = 4000
 _segmenter = pysbd.Segmenter(language="en", clean=False)
@@ -36,8 +36,8 @@ class Claim:
 def split_claims(answer: str, max_claims: int) -> list[Claim]:
     claims: list[Claim] = []
     for sentence in _segmenter.segment(answer or ""):
-        cited = tuple(dict.fromkeys(int(n) for n in _MARKER.findall(sentence)))
-        text = _MARKER.sub("", sentence).strip()
+        cited = cited_indices(sentence)
+        text = strip_markers(sentence)
         if len(text) >= _MIN_CLAIM_CHARS:
             claims.append(Claim(index=len(claims), text=text, cited=cited))
         if len(claims) == max_claims:

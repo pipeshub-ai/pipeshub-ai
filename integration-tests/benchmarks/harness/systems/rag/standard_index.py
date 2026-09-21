@@ -24,6 +24,7 @@ from benchmarks.harness.config import StandardIndexConfig
 from benchmarks.harness.corpus.view import CorpusView
 from benchmarks.harness.llm.client import LLMClient, ResolvedModel
 from benchmarks.harness.models import CorpusManifest, IndexReport, IngestedRecord, IngestManifest
+from benchmarks.harness.systems.rag.retrieval import hybrid_points
 from benchmarks.harness.store import atomic_write_text
 from benchmarks.harness.systems.base import PreparedCorpus
 from benchmarks.harness.systems.rag.retrieval import SPARSE_MODEL, Chunk, QueryEncoder, RetrievalMode
@@ -158,8 +159,8 @@ class StandardIndexIngestor:
 
 
 class StandardChunkIndex:
-    """Same query shape as `ChunkIndex` (dense/sparse prefetch at 2 × limit,
-    RRF), over the dedicated collection — no scope filter needed."""
+    """`hybrid_points` over the dedicated collection — same query as the
+    PipesHub-index path, without the record scope filter."""
 
     def __init__(self, client: Any, collection: str, encoder: QueryEncoder) -> None:  # noqa: ANN401
         self._client = client
@@ -167,21 +168,8 @@ class StandardChunkIndex:
         self._encoder = encoder
 
     def search(self, query: str, mode: RetrievalMode, limit: int) -> list[Chunk]:
-        from qdrant_client import models
-
-        prefetch = []
-        if mode in ("dense", "hybrid"):
-            prefetch.append(models.Prefetch(query=self._encoder.dense(query), using="dense", limit=limit * 2))
-        if mode in ("sparse", "hybrid"):
-            indices, values = self._encoder.sparse(query)
-            prefetch.append(models.Prefetch(
-                query=models.SparseVector(indices=indices, values=values), using="sparse", limit=limit * 2,
-            ))
-        response = self._client.query_points(
-            collection_name=self._collection, prefetch=prefetch, query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=limit, with_payload=True,
-        )
+        points = hybrid_points(self._client, self._collection, self._encoder, query, mode, limit)
         return [
             Chunk(p.payload["url"], int(p.payload["chunk_index"]), p.payload.get("text", ""), float(p.score or 0.0))
-            for p in response.points if p.payload and p.payload.get("url")
+            for p in points if p.payload and p.payload.get("url")
         ]

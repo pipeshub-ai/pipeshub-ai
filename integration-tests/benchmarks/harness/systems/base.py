@@ -25,6 +25,9 @@ class AdapterCapabilities(BaseModel):
     # system that is *defined* as having perfect retrieval; any other
     # adapter declaring it is reading the answer key.
     needs_gold_refs: bool = False
+    # Which corpus index this system reads, for the diagnostics'
+    # same-index controls. A RAG adapter overrides it per config.
+    reads_index: str = "none"
 
 
 class PreparedCorpus(BaseModel):

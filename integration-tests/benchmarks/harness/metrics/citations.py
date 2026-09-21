@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import re
+
 from collections.abc import Callable, Collection, Sequence
 
 from rapidfuzz import fuzz
 
+from benchmarks.harness.citation_markers import cited_indices
 from benchmarks.harness.models import Citation, ClaimSupport
 
-_MARKER = re.compile(r"\[(\d+)\]")
 _WHITESPACE = re.compile(r"\s+")
 _MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
 _MD_EMPHASIS = re.compile(r"(\*\*|__|`)")
@@ -54,7 +55,7 @@ def citation_integrity(
     text_for: Callable[[str], str],
     threshold: int,
 ) -> bool:
-    markers = {int(n) for n in _MARKER.findall(answer or "")}
+    markers = set(cited_indices(answer))
     indexes = {c.display_index for c in citations}
     if not markers <= indexes:
         return False
