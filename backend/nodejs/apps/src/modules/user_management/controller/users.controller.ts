@@ -663,7 +663,14 @@ export class UserController {
         syncAction: SyncAction.Immediate,
       } as UserAddedEvent,
     };
-    newUser.pendingEvents.push({ eventId, status: 'pending', event });
+    newUser.pendingEvents.push({
+      eventId,
+      eventType: event.eventType,
+      payload: event.payload,
+      timestamp: event.timestamp,
+      status: 'pending',
+      retries: 0,
+    });
     
     await newUser.save();
 
@@ -735,7 +742,14 @@ export class UserController {
         syncAction: SyncAction.Immediate,
       } as UserAddedEvent,
     };
-    newUser.pendingEvents.push({ eventId, status: 'pending', event });
+    newUser.pendingEvents.push({
+      eventId,
+      eventType: event.eventType,
+      payload: event.payload,
+      timestamp: event.timestamp,
+      status: 'pending',
+      retries: 0,
+    });
     
     await newUser.save();
 
@@ -1426,7 +1440,14 @@ export class UserController {
           email: user.email,
         } as UserDeletedEvent,
       };
-      user.pendingEvents.push({ eventId, status: 'pending', event });
+      user.pendingEvents.push({
+      eventId,
+      eventType: event.eventType,
+      payload: event.payload,
+      timestamp: event.timestamp,
+      status: 'pending',
+      retries: 0,
+    });
 
       await UserCredentials.updateOne(
         { userId },
@@ -1993,17 +2014,49 @@ export class UserController {
       await assertCanPromoteAdmin(String(orgId), additionalAdmins);
     }
 
-    let restoredUsers: User[] = [];
+    const restoredUsers: (User & { __injectedEventId?: string; __injectedEvent?: Event })[] = [];
     if (deletedUsers.length > 0) {
-      await Users.updateMany(
-        { email: { $in: deletedEmails }, isDeleted: true, orgId },
-        { $set: { isDeleted: false } },
-      );
-      restoredUsers = await Users.find({
-        email: { $in: deletedEmails },
-        orgId,
-        isDeleted: false,
-      });
+      for (const email of deletedEmails) {
+        const userToRestore = deletedUsers.find((u) => u.email === email);
+        if (!userToRestore) continue;
+
+        const eventId = new mongoose.Types.ObjectId().toString();
+        const event: Event = {
+          eventType: EventType.NewUserEvent,
+          timestamp: Date.now(),
+          payload: {
+            orgId: orgId.toString(),
+            userId: userToRestore._id?.toString(),
+            email,
+            syncAction: SyncAction.Immediate,
+          } as UserAddedEvent,
+        };
+
+        const updatedUser = await Users.findOneAndUpdate(
+          { _id: userToRestore._id, isDeleted: true, orgId },
+          {
+            $set: { isDeleted: false },
+            $push: {
+              pendingEvents: {
+                eventId,
+                eventType: event.eventType,
+                payload: event.payload,
+                timestamp: event.timestamp,
+                status: 'pending',
+                retries: 0,
+              },
+            },
+          },
+          { new: true }
+        ).lean().exec();
+
+        if (updatedUser) {
+          const u = updatedUser as (User & { __injectedEventId?: string; __injectedEvent?: Event });
+          u.__injectedEventId = eventId;
+          u.__injectedEvent = event;
+          restoredUsers.push(u);
+        }
+      }
     }
 
     for (let i = 0; i < existingUsers.length; ++i) {
@@ -2044,7 +2097,16 @@ export class UserController {
             hasLoggedIn: false,
             orgId,
             role: inviteRole,
-            pendingEvents: [{ eventId, status: 'pending', event }],
+            pendingEvents: [
+              {
+                eventId,
+                eventType: event.eventType,
+                payload: event.payload,
+                timestamp: event.timestamp,
+                status: 'pending',
+                retries: 0,
+              },
+            ],
           };
         }),
       );
@@ -2129,7 +2191,7 @@ export class UserController {
         if (newUserDoc && newUserDoc.pendingEvents && newUserDoc.pendingEvents.length > 0) {
           const pendingEvent = newUserDoc.pendingEvents[0];
           if (pendingEvent) {
-            await this.eventService.dispatchInline(Users, userId.toString(), pendingEvent.eventId, pendingEvent.event);
+            await this.eventService.dispatchInline(Users, userId.toString(), pendingEvent.eventId, pendingEvent);
           }
         } else {
           const eventId = new mongoose.Types.ObjectId().toString();
@@ -2145,7 +2207,16 @@ export class UserController {
           };
           await Users.updateOne(
             { _id: userId },
-            { $push: { pendingEvents: { eventId, status: 'pending', event } } }
+            { $push: {
+              pendingEvents: {
+                eventId,
+                eventType: event.eventType,
+                payload: event.payload,
+                timestamp: event.timestamp,
+                status: 'pending',
+                retries: 0,
+              },
+            } }
           );
           await this.eventService.dispatchInline(Users, userId.toString(), eventId, event);
         }
@@ -2177,22 +2248,11 @@ export class UserController {
           'User ID missing while inviting restored user. Please ensure user restoration was successful.',
         );
       }
-      const eventId = new mongoose.Types.ObjectId().toString();
-      const event: Event = {
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: orgId.toString(),
-          userId,
-          email,
-          syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
-      };
-      await Users.updateOne(
-        { _id: userId },
-        { $push: { pendingEvents: { eventId, status: 'pending', event } } }
-      );
-      await this.eventService.dispatchInline(Users, userId.toString(), eventId, event);
+      const eventId = restoredUsers[i]?.__injectedEventId;
+      const event = restoredUsers[i]?.__injectedEvent;
+      if (eventId && event) {
+        await this.eventService.dispatchInline(Users, userId.toString(), eventId, event);
+      }
 
       const statusCode = await this.sendInviteMail(
         email,

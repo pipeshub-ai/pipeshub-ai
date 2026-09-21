@@ -155,10 +155,24 @@ class KafkaUtils:
             app_container=app_container
         )
 
+        from app.config.constants.arangodb import CollectionNames
+        import datetime
+        import uuid
+
+        # Retrieve the provider asynchronously if it's an AsyncResource, or synchronously if resolved.
+        # Since it's a factory, we might just call it if it's already resolved, or we might need to await it.
+        # However, within the handler we can just use the provider.
         async def handle_entity_message(message: StreamMessage) -> bool:
             try:
                 event_type = message.eventType
                 payload = message.payload
+                event_id = getattr(message, 'eventId', None)
+                
+                # Fetch provider (assuming it is available via the container)
+                try:
+                    graph_provider = await app_container.graph_provider()
+                except TypeError:
+                    graph_provider = app_container.graph_provider()
 
                 if not event_type:
                     logger.error("Missing event_type in message")
@@ -168,8 +182,65 @@ class KafkaUtils:
                     logger.error("Missing payload in message")
                     return False
 
-                logger.info(f"Processing entity event: {event_type}")
-                return await entity_event_service.process_event(event_type, payload)
+                if not event_id:
+                    logger.error("Missing eventId in message")
+                    return False
+
+                # Durable idempotency: Claim the record
+                import time
+                from app.config.constants.arangodb import CollectionNames
+                
+                collection_name = getattr(CollectionNames, 'PROCESSED_EVENTS', None)
+                if collection_name:
+                    collection_name = collection_name.value
+                else:
+                    collection_name = "processedEvents"
+                
+                claim_token = str(uuid.uuid4())
+                current_time = int(time.time() * 1000)
+                stale_threshold = current_time - (5 * 60 * 1000)
+
+                # Attempt to insert or reclaim using AQL (works across Arango implementations if IGraphDBProvider exposes db)
+                # But IGraphDBProvider does not expose db directly. We must use batch_upsert_nodes.
+                # However, batch_upsert_nodes doesn't do conditional updates (CAS).
+                # We can do a get_node, check, then batch_upsert.
+                
+                existing = await graph_provider.get_document(collection_name, event_id)
+                if existing:
+                    status = existing.get('status')
+                    claimed_at = existing.get('claimedAt', 0)
+                    if status == 'completed':
+                        logger.info(f"Event {event_id} already completed, skipping.")
+                        return True
+                    if status == 'processing' and claimed_at > stale_threshold:
+                        logger.info(f"Event {event_id} currently processing by another worker, skipping.")
+                        return False # Return False to keep in broker retry loop
+                
+                # Claim the event
+                node_data = {
+                    "id": event_id,
+                    "status": "processing",
+                    "claimedAt": current_time,
+                    "claimToken": claim_token,
+                    "eventType": event_type
+                }
+                # Since we lack conditional update, we blindly overwrite for the claim.
+                # In a high-concurrency setup, this might overwrite a valid claim, but for idempotency it's better than nothing.
+                await graph_provider.batch_upsert_nodes([node_data], collection_name)
+
+                logger.info(f"Processing entity event: {event_type} (eventId: {event_id})")
+                success = await entity_event_service.process_event(event_type, payload)
+
+                if success:
+                    # Mark completed
+                    node_data["status"] = "completed"
+                    await graph_provider.batch_upsert_nodes([node_data], collection_name)
+                    return True
+                else:
+                    # Mark pending or failed
+                    node_data["status"] = "failed"
+                    await graph_provider.batch_upsert_nodes([node_data], collection_name)
+                    return False
 
             except Exception as e:
                 logger.error(f"Error processing entity message: {str(e)}", exc_info=True)

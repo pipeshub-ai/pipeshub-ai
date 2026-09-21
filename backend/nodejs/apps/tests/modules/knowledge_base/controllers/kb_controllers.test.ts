@@ -147,12 +147,12 @@ function createMockRecordRelationService(): any {
     resyncConnectorRecords: sinon.stub().resolves({ success: true }),
     eventProducer: {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     },
     syncEventProducer: {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     },
   }

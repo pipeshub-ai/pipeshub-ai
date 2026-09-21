@@ -55,19 +55,19 @@ describe('ConfigurationManager Routes', () => {
 
     mockEntityEventService = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     }
 
     mockAiConfigEventService = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     }
 
     mockSyncEventService = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     }
 
@@ -660,9 +660,9 @@ describe('Configuration Manager Routes - inline handler branch coverage', () => 
       scopedJwtSecret: 'test-scoped-secret',
     }
 
-    const mockEntityEventService = { publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
-    const mockAiConfigEventService = { publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
-    const mockSyncEventService = { publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
+    const mockEntityEventService = { dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
+    const mockAiConfigEventService = { dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
+    const mockSyncEventService = { dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
     const mockConfigService = { updateConfig: sinon.stub().resolves(), getConfig: sinon.stub().resolves({}) }
 
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
@@ -861,17 +861,17 @@ describe('Configuration Manager Routes - handler coverage', () => {
     }
 
     const mockEntityEventService = {
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       start: sinon.stub().resolves(),
     }
 
     const mockAiConfigEventService = {
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       start: sinon.stub().resolves(),
     }
 
     const mockSyncEventService = {
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       start: sinon.stub().resolves(),
     }
 
@@ -1105,19 +1105,19 @@ describe('AI Model Registry Proxy Routes', () => {
 
     const mockEntityEventService = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     }
 
     const mockSyncEventService = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     }
 
     const mockAiConfigEventService = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     }
 

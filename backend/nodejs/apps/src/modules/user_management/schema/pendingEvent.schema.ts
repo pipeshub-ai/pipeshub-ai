@@ -1,13 +1,26 @@
+import { Event } from '../services/entity_events.service';
 import { Schema, Document } from 'mongoose';
 
-export interface PendingEvent extends Document {
+export interface IPendingEvent {
   eventId: string;
   eventType: string;
-  payload: any;
+  payload: Event['payload'];
   timestamp: number;
   status: 'pending' | 'processing' | 'failed';
   retries: number;
   claimedAt?: Date;
+  claimToken?: string;
+}
+
+export interface PendingEvent extends IPendingEvent, Document {
+  eventId: string;
+  eventType: string;
+  payload: Event['payload'];
+  timestamp: number;
+  status: 'pending' | 'processing' | 'failed';
+  retries: number;
+  claimedAt?: Date;
+  claimToken?: string;
 }
 
 export const pendingEventSchema = new Schema<PendingEvent>({
@@ -22,4 +35,5 @@ export const pendingEventSchema = new Schema<PendingEvent>({
   },
   retries: { type: Number, default: 0 },
   claimedAt: { type: Date },
+  claimToken: { type: String },
 });

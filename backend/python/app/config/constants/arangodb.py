@@ -195,6 +195,7 @@ class CollectionNames(Enum):
     MEETINGS = "meetings"
     PRODUCTS = "products"
     DEALS = "deals"
+    PROCESSED_EVENTS = "processedEvents"
     ARTIFACTS = "artifacts"
     CODE_FILES = "codeFiles"
     SQL_TABLES = "sqlTables"

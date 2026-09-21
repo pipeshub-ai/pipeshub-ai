@@ -1,3 +1,4 @@
+import { IMessageProducer } from '../../../../src/libs/types/messaging.types';
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
@@ -59,8 +60,8 @@ describe('UserController', () => {
   let mockAuthService: any;
   let mockLogger: any;
   let mockEventService: any;
-  let fakeKafkaProducer: any;
-  let realEventService: any;
+  let fakeKafkaProducer: IMessageProducer;
+  let realEventService: EntitiesEventProducer;
   let mockNotificationProducer: any;
   let req: any;
   let res: any;
@@ -97,21 +98,20 @@ describe('UserController', () => {
       connect: sinon.stub().resolves(),
     };
     realEventService = new EntitiesEventProducer(
-      fakeKafkaProducer as any,
-      mockLogger,
-      { get: sinon.stub().returns('entity-events') } as any,
+      fakeKafkaProducer as IMessageProducer,
+      mockLogger
     );
     mockEventService = {
       start: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
-      dispatchInline: (...args: any[]) => realEventService.dispatchInline.apply(realEventService, args),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
+      dispatchInline: (model: ModelWithPendingEvents, documentId: string, eventId: string, event: Event) => realEventService.dispatchInline(model, documentId, eventId, event),
     };
 
     mockNotificationProducer = {
       start: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       isConnected: sinon.stub().returns(true),
     };
 
@@ -944,7 +944,7 @@ describe('UserController', () => {
 
       expect(mockUser.save.calledOnce).to.be.true;
       expect(mockEventService.start.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
       expect(res.json.calledOnce).to.be.true;
     });
 
@@ -1230,7 +1230,7 @@ describe('UserController', () => {
 
       expect(mockUser.fullName).to.equal('New Full Name');
       expect(mockUser.save.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
     });
 
     it('should call next with UnauthorizedError when user is missing', async () => {
@@ -1425,7 +1425,7 @@ describe('UserController', () => {
       expect(mockUser.isDeleted).to.be.true;
       expect(mockUser.hasLoggedIn).to.be.false;
       expect(mockUser.save.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
       expect(res.json.calledWith({ message: 'User deleted successfully' })).to.be.true;
     });
   });
@@ -3128,7 +3128,7 @@ describe('UserController', () => {
 
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.called).to.be.true;
+      expect(mockEventService.dispatchInline.called).to.be.true;
 
       // Verify all invite emails use #token= hash fragment, not ?token= query param
       for (const call of mockMailService.sendMail.getCalls()) {
@@ -3263,7 +3263,7 @@ describe('UserController', () => {
 
       expect(saveStub.calledOnce).to.be.true;
       expect(mockEventService.start.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
       expect(result).to.have.property('fullName');
     });
 
@@ -3275,7 +3275,7 @@ describe('UserController', () => {
         fullName: 'SAML User',
       });
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-      mockEventService.publishEvent.rejects(new Error('Kafka down'));
+      mockEventService.dispatchInline.rejects(new Error('Kafka down'));
 
       const result = await controller.provisionSamlUser(
         'saml@test.com',
@@ -3325,7 +3325,7 @@ describe('UserController', () => {
         fullName: 'JIT User',
       });
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-      mockEventService.publishEvent.rejects(new Error('Kafka down'));
+      mockEventService.dispatchInline.rejects(new Error('Kafka down'));
 
       const result = await controller.provisionJitUser(
         'jit@test.com',
@@ -3358,7 +3358,7 @@ describe('UserController', () => {
 
       expect(res.status.calledWith(201)).to.be.true;
       expect(mockEventService.start.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
     });
   });
 
@@ -3431,7 +3431,7 @@ describe('UserController', () => {
       expect(jsonArg.message).to.equal('User deleted successfully');
       expect(mockUser.isDeleted).to.be.true;
       expect(mockUser.hasLoggedIn).to.be.false;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
     });
   });
 
@@ -3766,8 +3766,8 @@ describe('UserController', () => {
 
       await controller.updateFullName(req, res, next);
 
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
-      const event = mockEventService.publishEvent.firstCall.args[0];
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
+      const event = mockEventService.dispatchInline.firstCall.args[0];
       expect(event.payload).to.have.property('firstName', 'John');
       expect(event.payload).to.have.property('lastName', 'Doe');
       expect(event.payload).to.have.property('designation', 'Engineer');
@@ -3793,8 +3793,8 @@ describe('UserController', () => {
 
       await controller.updateFullName(req, res, next);
 
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
-      const event = mockEventService.publishEvent.firstCall.args[0];
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
+      const event = mockEventService.dispatchInline.firstCall.args[0];
       expect(event.payload).to.not.have.property('firstName');
       expect(event.payload).to.not.have.property('lastName');
       expect(event.payload).to.not.have.property('designation');
@@ -3820,8 +3820,8 @@ describe('UserController', () => {
 
       await controller.updateFullName(req, res, next);
 
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
-      const event = mockEventService.publishEvent.firstCall.args[0];
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
+      const event = mockEventService.dispatchInline.firstCall.args[0];
       expect(event.payload).to.not.have.property('firstName');
       expect(event.payload).to.not.have.property('lastName');
       expect(event.payload).to.not.have.property('designation');
@@ -3850,7 +3850,7 @@ describe('UserController', () => {
       await controller.updateFirstName(req, res, next);
 
       if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
+        const event = mockEventService.dispatchInline.firstCall.args[0];
         expect(event.payload).to.have.property('firstName', 'Jane');
         expect(event.payload).to.have.property('lastName', 'Doe');
         expect(event.payload).to.have.property('designation', 'CTO');
@@ -3878,7 +3878,7 @@ describe('UserController', () => {
       await controller.updateFirstName(req, res, next);
 
       if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
+        const event = mockEventService.dispatchInline.firstCall.args[0];
         expect(event.payload).to.have.property('firstName', 'Jane');
         expect(event.payload).to.not.have.property('lastName');
         expect(event.payload).to.not.have.property('designation');
@@ -3908,7 +3908,7 @@ describe('UserController', () => {
       await controller.updateLastName(req, res, next);
 
       if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
+        const event = mockEventService.dispatchInline.firstCall.args[0];
         expect(event.payload).to.have.property('firstName', 'John');
         expect(event.payload).to.have.property('lastName', 'Smith');
         expect(event.payload).to.have.property('designation', 'Dev');
@@ -3936,7 +3936,7 @@ describe('UserController', () => {
       await controller.updateLastName(req, res, next);
 
       if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
+        const event = mockEventService.dispatchInline.firstCall.args[0];
         expect(event.payload).to.not.have.property('firstName');
         expect(event.payload).to.have.property('lastName', 'Smith');
         expect(event.payload).to.not.have.property('designation');
@@ -3966,7 +3966,7 @@ describe('UserController', () => {
       await controller.updateDesignation(req, res, next);
 
       if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
+        const event = mockEventService.dispatchInline.firstCall.args[0];
         expect(event.payload).to.have.property('firstName', 'F');
         expect(event.payload).to.have.property('lastName', 'L');
         expect(event.payload).to.have.property('designation', 'VP');
@@ -3994,7 +3994,7 @@ describe('UserController', () => {
       await controller.updateDesignation(req, res, next);
 
       if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
+        const event = mockEventService.dispatchInline.firstCall.args[0];
         expect(event.payload).to.not.have.property('firstName');
         expect(event.payload).to.not.have.property('lastName');
         expect(event.payload).to.have.property('designation', 'VP');
@@ -4024,7 +4024,7 @@ describe('UserController', () => {
       await controller.updateEmail(req, res, next);
 
       if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
+        const event = mockEventService.dispatchInline.firstCall.args[0];
         expect(event.payload).to.have.property('firstName', 'F');
         expect(event.payload).to.have.property('lastName', 'L');
         expect(event.payload).to.have.property('designation', 'Dev');
@@ -4052,7 +4052,7 @@ describe('UserController', () => {
       await controller.updateEmail(req, res, next);
 
       if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
+        const event = mockEventService.dispatchInline.firstCall.args[0];
         expect(event.payload).to.not.have.property('firstName');
         expect(event.payload).to.not.have.property('lastName');
         expect(event.payload).to.not.have.property('designation');
@@ -4085,7 +4085,7 @@ describe('UserController', () => {
       await controller.updateUser(req, res, next);
 
       if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
+        const event = mockEventService.dispatchInline.firstCall.args[0];
         expect(event.payload).to.have.property('firstName', 'First');
         expect(event.payload).to.have.property('lastName', 'Last');
         expect(event.payload).to.have.property('designation', 'Manager');
@@ -4113,7 +4113,7 @@ describe('UserController', () => {
       await controller.updateUser(req, res, next);
 
       if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
+        const event = mockEventService.dispatchInline.firstCall.args[0];
         expect(event.payload).to.not.have.property('firstName');
         expect(event.payload).to.not.have.property('lastName');
         expect(event.payload).to.not.have.property('designation');
@@ -5265,7 +5265,7 @@ describe('UserController', () => {
       expect(sent).to.include.members(['a@test.com', 'c@test.com']);
 
       // The failure is surfaced after the response, via the notification.
-      expect(mockNotificationProducer.publishEvent.called).to.be.true;
+      expect(mockNotificationProducer.dispatchInline.called).to.be.true;
       const payload =
         mockNotificationProducer.publishEvent.lastCall.args[0].payload;
       expect(payload.message).to.include('failed to email');
@@ -5481,7 +5481,7 @@ describe('UserController', () => {
 
       await new Promise((resolve) => setTimeout(resolve, 40));
 
-      expect(mockNotificationProducer.publishEvent.called).to.be.true;
+      expect(mockNotificationProducer.dispatchInline.called).to.be.true;
       const event = mockNotificationProducer.publishEvent.lastCall.args[0];
       expect(event.payload.title).to.equal('Bulk invite finished');
       expect(event.payload.severity).to.equal('success');

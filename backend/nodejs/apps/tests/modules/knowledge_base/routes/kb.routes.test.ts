@@ -78,13 +78,13 @@ describe('Knowledge Base Routes', () => {
 
     mockRecordsEventProducer = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     };
 
     mockSyncEventProducer = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     };
 

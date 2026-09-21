@@ -203,6 +203,13 @@ export class UserManagerContainer {
           await keyValueStoreService.disconnect();
           this.logger.info('KeyValueStoreService disconnected successfully');
         }
+        const eventDispatcher = this.instance.isBound('EntitiesEventDispatcher')
+          ? this.instance.get<EntitiesEventDispatcher>('EntitiesEventDispatcher')
+          : null;
+        if (eventDispatcher) {
+          eventDispatcher.stop();
+          this.logger.info('EntitiesEventDispatcher stopped successfully');
+        }
         if (messageProducer && messageProducer.isConnected()) {
           await messageProducer.disconnect();
           this.logger.info('MessageProducer disconnected successfully');

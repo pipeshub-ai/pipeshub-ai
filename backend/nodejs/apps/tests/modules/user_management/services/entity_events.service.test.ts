@@ -186,8 +186,8 @@ describe('EntitiesEventProducer - additional coverage', () => {
       expect(EntitiesEventProducer.prototype.stop).to.be.a('function')
     })
 
-    it('should have publishEvent method on prototype', () => {
-      expect(EntitiesEventProducer.prototype.publishEvent).to.be.a('function')
+    it('should have dispatchInline method on prototype', () => {
+      expect(EntitiesEventProducer.prototype.dispatchInline).to.be.a('function')
     })
   })
 
@@ -275,7 +275,7 @@ describe('EntitiesEventProducer - additional coverage', () => {
     })
   })
 
-  describe('publishEvent method', () => {
+  describe('dispatchInline method', () => {
     it('should publish event to entity-events topic', async () => {
       const instance = Object.create(EntitiesEventProducer.prototype)
       ;(instance as any).topic = 'entity-events'
@@ -300,7 +300,7 @@ describe('EntitiesEventProducer - additional coverage', () => {
         } as OrgAddedEvent,
       }
 
-      await instance.publishEvent(event)
+      await instance.dispatchInline(event)
 
       expect(mockProducer.publish.calledOnce).to.be.true
       const [topic, message] = mockProducer.publish.firstCall.args
@@ -336,7 +336,7 @@ describe('EntitiesEventProducer - additional coverage', () => {
         } as UserAddedEvent,
       }
 
-      await instance.publishEvent(event)
+      await instance.dispatchInline(event)
       expect(instance.logger.error.calledOnce).to.be.true
     })
 
@@ -365,7 +365,7 @@ describe('EntitiesEventProducer - additional coverage', () => {
         } as UserDeletedEvent,
       }
 
-      await instance.publishEvent(event)
+      await instance.dispatchInline(event)
 
       const message = mockProducer.publish.firstCall.args[1]
       expect(message.headers.timestamp).to.equal('1234567890')

@@ -83,7 +83,7 @@ describe('User Routes', () => {
     mockEventService = {
       start: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
     };
 
     mockOrgController = {
@@ -1041,7 +1041,7 @@ describe('User Routes - handler coverage', () => {
     container.bind<UserController>('UserController').toConstantValue(mockUserController as any)
     container.bind<MailService>('MailService').toConstantValue({ sendMail: sinon.stub() } as any)
     container.bind<AuthService>('AuthService').toConstantValue({ passwordMethodEnabled: sinon.stub() } as any)
-    container.bind<EntitiesEventProducer>('EntitiesEventProducer').toConstantValue({ publishEvent: sinon.stub() } as any)
+    container.bind<EntitiesEventProducer>('EntitiesEventProducer').toConstantValue({ dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub() } as any)
     container.bind<OrgController>('OrgController').toConstantValue({ createOrg: sinon.stub() } as any)
 
     router = createUserRouter(container)
@@ -1455,7 +1455,7 @@ describe('User Routes - handler coverage 2', () => {
     container.bind<UserController>('UserController').toConstantValue(mockUserController as any)
     container.bind<MailService>('MailService').toConstantValue({ sendMail: sinon.stub() } as any)
     container.bind<AuthService>('AuthService').toConstantValue({ passwordMethodEnabled: sinon.stub() } as any)
-    container.bind<EntitiesEventProducer>('EntitiesEventProducer').toConstantValue({ publishEvent: sinon.stub() } as any)
+    container.bind<EntitiesEventProducer>('EntitiesEventProducer').toConstantValue({ dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub() } as any)
     container.bind<OrgController>('OrgController').toConstantValue({ createOrg: sinon.stub() } as any)
 
     router = createUserRouter(container)

@@ -12,13 +12,13 @@ describe('RecordRelationService', () => {
   beforeEach(() => {
     mockEventProducer = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     }
 
     mockSyncEventProducer = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     }
 
@@ -97,7 +97,7 @@ describe('RecordRelationService', () => {
 
       await service.publishRecordEvents(records, fileRecords, mockKeyValueStore)
 
-      expect(mockEventProducer.publishEvent.calledOnce).to.be.true
+      expect(mockEventProducer.dispatchInline.calledOnce).to.be.true
     })
 
     it('should handle empty records array gracefully', async () => {
@@ -115,7 +115,7 @@ describe('RecordRelationService', () => {
       await service.publishRecordEvents([], [], mockKeyValueStore)
 
       // Should complete without error
-      expect(mockEventProducer.publishEvent.called).to.be.false
+      expect(mockEventProducer.dispatchInline.called).to.be.false
     })
   })
 
@@ -395,7 +395,7 @@ describe('RecordRelationService', () => {
       })
 
       expect(result.success).to.be.true
-      expect(mockSyncEventProducer.publishEvent.calledOnce).to.be.true
+      expect(mockSyncEventProducer.dispatchInline.calledOnce).to.be.true
     })
 
     it('should return failure when publishEvent throws', async () => {
@@ -489,12 +489,12 @@ describe('RecordRelationService - additional coverage', () => {
   beforeEach(() => {
     mockEventProducer = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     }
     mockSyncEventProducer = {
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
     }
     mockDefaultConfig = {
@@ -510,7 +510,7 @@ describe('RecordRelationService - additional coverage', () => {
     it('should throw InternalServerError when event producer start fails', async () => {
       const failingProducer = {
         start: sinon.stub().rejects(new Error('Kafka connection failed')),
-        publishEvent: sinon.stub(),
+        dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub(),
         stop: sinon.stub(),
       }
 
@@ -534,7 +534,7 @@ describe('RecordRelationService - additional coverage', () => {
     it('should throw InternalServerError when sync event producer start fails', async () => {
       const failingSyncProducer = {
         start: sinon.stub().rejects(new Error('Sync kafka failed')),
-        publishEvent: sinon.stub(),
+        dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub(),
         stop: sinon.stub(),
       }
 

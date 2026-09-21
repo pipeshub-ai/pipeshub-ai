@@ -16,7 +16,7 @@ function makeService() {
   const events = {
     start: sinon.stub().resolves(),
     stop: sinon.stub().resolves(),
-    publishEvent: sinon.stub().resolves(),
+    dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
   };
   return {
     service: new ServiceAccountsService(logger as any, events as any),
@@ -101,8 +101,8 @@ describe('ServiceAccountsService', () => {
       expect(restore.firstCall.args[0]).to.include({ isDeleted: true });
       // The graph keys its node by the address, so it has to be told the
       // account is back.
-      expect(events.publishEvent.calledOnce).to.equal(true);
-      expect(events.publishEvent.firstCall.args[0].eventType).to.equal(
+      expect(events.dispatchInline.calledOnce).to.equal(true);
+      expect(events.dispatchInline.firstCall.args[0].eventType).to.equal(
         'userAdded',
       );
     });
@@ -135,7 +135,7 @@ describe('ServiceAccountsService', () => {
         expect((error as Error).message).to.contain('already exists');
       }
       expect(restore.called).to.equal(false);
-      expect(events.publishEvent.called).to.equal(false);
+      expect(events.dispatchInline.called).to.equal(false);
     });
 
     it('will not restore a deleted human who happens to hold the address', async () => {
@@ -220,7 +220,7 @@ describe('ServiceAccountsService', () => {
         expect((error as Error).message).to.contain('already exists');
       }
       // Nothing was announced to the permission graph for the loser.
-      expect(events.publishEvent.called).to.equal(false);
+      expect(events.dispatchInline.called).to.equal(false);
     });
 
     it('turns a duplicate-key race into a conflict rather than a 500', async () => {
@@ -319,12 +319,12 @@ describe('ServiceAccountsService', () => {
 
       const disabling = makeService();
       await disabling.service.update(orgId, id, { isDisabled: true });
-      expect(disabling.events.publishEvent.called).to.equal(false);
+      expect(disabling.events.dispatchInline.called).to.equal(false);
 
       const renaming = makeService();
       await renaming.service.update(orgId, id, { fullName: 'New name' });
-      expect(renaming.events.publishEvent.calledOnce).to.equal(true);
-      expect(renaming.events.publishEvent.firstCall.args[0].eventType).to.equal(
+      expect(renaming.events.dispatchInline.calledOnce).to.equal(true);
+      expect(renaming.events.dispatchInline.firstCall.args[0].eventType).to.equal(
         'userUpdated',
       );
     });

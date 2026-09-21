@@ -70,7 +70,7 @@ export class JitProvisioningService {
       eventType: EventType.NewUserEvent,
       timestamp: Date.now(),
       payload: {
-        orgId: orgId.toString(),
+        orgId,
         userId: newUser._id,
         fullName: newUser.fullName,
         email: newUser.email,
@@ -78,14 +78,16 @@ export class JitProvisioningService {
       } as UserAddedEvent,
     };
 
-    newUser.pendingEvents = [{
-      eventId,
-      eventType: event.eventType,
-      payload: event.payload,
-      timestamp: event.timestamp,
-      status: 'pending',
-      retries: 0
-    }];
+    newUser.pendingEvents = [
+      {
+        eventId,
+        eventType: event.eventType,
+        payload: event.payload,
+        timestamp: event.timestamp,
+        status: 'pending',
+        retries: 0,
+      },
+    ];
 
     await newUser.save();
 

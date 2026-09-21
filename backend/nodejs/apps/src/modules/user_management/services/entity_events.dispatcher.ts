@@ -1,6 +1,6 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { EntitiesEventProducer } from './entity_events.service';
+import { EntitiesEventProducer, ModelWithPendingEvents, Event } from './entity_events.service';
 import { Users } from '../schema/users.schema';
 import { Org } from '../schema/org.schema';
 
@@ -11,7 +11,7 @@ export class EntitiesEventDispatcher {
 
   constructor(
     @inject('Logger') private readonly logger: Logger,
-    @inject('EntitiesEventProducer') private readonly eventProducer: EntitiesEventProducer,
+    @inject('EntitiesEventProducer') private readonly eventProducer: EntitiesEventProducer
   ) {}
 
   start(intervalMs: number = 10000): void {
@@ -39,7 +39,7 @@ export class EntitiesEventDispatcher {
     await this.processModel(Org, 'Orgs');
   }
 
-  private async processModel(model: any, modelName: string): Promise<void> {
+  private async processModel(model: ModelWithPendingEvents, modelName: string): Promise<void> {
     // 1. Recover stale 'processing' events (older than 5 minutes)
     const staleThreshold = new Date(Date.now() - 5 * 60 * 1000);
     const staleDocs = await model.find({
@@ -50,8 +50,12 @@ export class EntitiesEventDispatcher {
       for (const event of doc.pendingEvents) {
         if (event.status === 'processing' && event.claimedAt && new Date(event.claimedAt) < staleThreshold) {
           this.logger.warn(`Recovering stuck processing event ${event.eventId} for ${modelName} ${doc._id}`);
+          const query: any = { _id: doc._id, 'pendingEvents.eventId': event.eventId, 'pendingEvents.status': 'processing' };
+          if (event.claimToken) {
+            query['pendingEvents.claimToken'] = event.claimToken;
+          }
           await model.updateOne(
-            { _id: doc._id, 'pendingEvents.eventId': event.eventId },
+            query,
             { 
               $set: { 'pendingEvents.$.status': 'pending' },
               $inc: { 'pendingEvents.$.retries': 1 }
@@ -88,7 +92,7 @@ export class EntitiesEventDispatcher {
               eventType: event.eventType,
               timestamp: event.timestamp,
               payload: event.payload
-            } as any
+            } as Event
           );
         }
       }

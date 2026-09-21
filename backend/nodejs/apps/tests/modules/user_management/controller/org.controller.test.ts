@@ -46,7 +46,7 @@ describe('OrgController', () => {
     mockEventService = {
       start: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       isConnected: sinon.stub().returns(false),
     };
 
@@ -179,7 +179,7 @@ describe('OrgController', () => {
       await controller.updateOrganizationDetails(req, res, next);
 
       expect(mockEventService.start.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
       expect(mockEventService.stop.calledOnce).to.be.true;
       expect(res.status.calledWith(200)).to.be.true;
     });
@@ -211,7 +211,7 @@ describe('OrgController', () => {
 
       expect(mockOrg.isDeleted).to.be.true;
       expect(mockOrg.save.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
       expect(res.status.calledWith(200)).to.be.true;
     });
 
@@ -698,7 +698,7 @@ describe('OrgController', () => {
       try {
         await controller.createOrg(req, res);
         expect(mockEventService.start.calledOnce).to.be.true;
-        expect(mockEventService.publishEvent.calledTwice).to.be.true;
+        expect(mockEventService.dispatchInline.calledTwice).to.be.true;
         expect(mockEventService.stop.calledOnce).to.be.true;
       } catch (error: any) {
         expect.fail(`Unexpected error: ${error.message}`);
@@ -743,7 +743,7 @@ describe('OrgController', () => {
 
       await controller.updateOrganizationDetails(req, res, next);
 
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true;
       expect(res.status.calledWith(200)).to.be.true;
     });
   });
@@ -974,7 +974,7 @@ describe('OrgController - additional coverage', () => {
     mockEventService = {
       start: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       isConnected: sinon.stub().returns(false),
     }
     controller = new OrgController(
@@ -1028,7 +1028,7 @@ describe('OrgController - additional coverage', () => {
 
       await controller.updateOrganizationDetails(req, res, next)
 
-      expect(mockEventService.publishEvent.calledOnce).to.be.true
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true
       expect(res.status.calledWith(200)).to.be.true
     })
 
@@ -1135,7 +1135,7 @@ describe('OrgController - additional coverage', () => {
 
       await controller.deleteOrganization(req, res, next)
 
-      const event = mockEventService.publishEvent.firstCall.args[0]
+      const event = mockEventService.dispatchInline.firstCall.args[0]
       expect(event.eventType).to.equal('orgDeleted')
       expect(event.payload.orgId).to.equal('507f1f77bcf86cd799439012')
     })
@@ -1449,7 +1449,7 @@ describe('OrgController - additional coverage 2', () => {
     mockEventService = {
       start: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       isConnected: sinon.stub().returns(false),
     }
     controller = new OrgController(
@@ -1792,7 +1792,7 @@ describe('OrgController - additional coverage 2', () => {
 
       await controller.deleteOrganization(req, res, next)
       expect(mockOrg.isDeleted).to.be.true
-      expect(mockEventService.publishEvent.calledOnce).to.be.true
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true
     })
 
     it('should throw NotFoundError when org not found', async () => {

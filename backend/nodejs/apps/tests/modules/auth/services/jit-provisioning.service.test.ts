@@ -20,7 +20,7 @@ describe('JitProvisioningService', () => {
   } as any;
   const mockEventService = {
     start: sinon.stub().resolves(),
-    publishEvent: sinon.stub().resolves(),
+    dispatchInline: sinon.stub().resolves(), dispatchInline: sinon.stub().resolves(),
     stop: sinon.stub().resolves(),
   } as any;
 
@@ -31,7 +31,7 @@ describe('JitProvisioningService', () => {
     mockLogger.warn.resetHistory();
     mockLogger.error.resetHistory();
     mockEventService.start.resetHistory();
-    mockEventService.publishEvent.resetHistory();
+    mockEventService.dispatchInline.resetHistory();
     mockEventService.stop.resetHistory();
   });
 
@@ -395,7 +395,7 @@ describe('JitProvisioningService - additional coverage', () => {
   } as any
   const mockEventService = {
     start: sinon.stub().resolves(),
-    publishEvent: sinon.stub().resolves(),
+    dispatchInline: sinon.stub().resolves(), dispatchInline: sinon.stub().resolves(),
     stop: sinon.stub().resolves(),
   } as any
 
@@ -404,7 +404,7 @@ describe('JitProvisioningService - additional coverage', () => {
     mockLogger.info.resetHistory()
     mockLogger.error.resetHistory()
     mockEventService.start.resetHistory()
-    mockEventService.publishEvent.resetHistory()
+    mockEventService.dispatchInline.resetHistory()
     mockEventService.stop.resetHistory()
   })
 
@@ -497,17 +497,17 @@ describe('JitProvisioningService - additional coverage', () => {
       expect(result).to.have.property('email', 'new@example.com')
       expect(result).to.have.property('fullName', 'New User')
       expect(mockEventService.start.calledOnce).to.be.true
-      expect(mockEventService.publishEvent.calledOnce).to.be.true
+      expect(mockEventService.dispatchInline.calledOnce).to.be.true
       expect(mockEventService.stop.calledOnce).to.be.true
       expect(mockLogger.info.calledWith(sinon.match(/Auto-provisioning user/))).to.be.true
       expect(mockLogger.info.calledWith(sinon.match(/auto-provisioned successfully/))).to.be.true
     })
 
-    it('should call eventService.stop even when publishEvent fails', async () => {
+    it('should call eventService.stop even when dispatchInline fails', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
       sinon.stub(Users.prototype, 'save').resolves()
       sinon.stub(UserGroups, 'updateOne').resolves({} as any)
-      mockEventService.publishEvent.rejects(new Error('Kafka down'))
+      mockEventService.dispatchInline.rejects(new Error('Kafka down'))
 
       const result = await jitService.provisionUser(
         'new2@example.com',

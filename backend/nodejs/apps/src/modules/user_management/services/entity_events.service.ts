@@ -1,5 +1,6 @@
+import { PendingEvent } from '../schema/pendingEvent.schema';
+import { Document, Model } from 'mongoose';
 import { injectable, inject } from 'inversify';
-import { Model } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.types';
 
@@ -80,6 +81,8 @@ export interface UserUpdatedEvent {
 }
 
 @injectable()
+export type ModelWithPendingEvents = Model<Document & { pendingEvents?: PendingEvent[] }>;
+
 export class EntitiesEventProducer {
   private readonly topic = 'entity-events';
 
@@ -107,10 +110,11 @@ export class EntitiesEventProducer {
   async publishEvent(event: Event): Promise<void> {
     const message: StreamMessage<string> = {
       key: event.eventType,
-      value: JSON.stringify(event),
+      value: JSON.stringify({ ...event, eventId }),
       headers: {
         eventType: event.eventType,
         timestamp: event.timestamp.toString(),
+        eventId,
       },
     };
 
@@ -125,7 +129,7 @@ export class EntitiesEventProducer {
   }
 
   async dispatchInline(
-    model: Model<any>,
+    model: ModelWithPendingEvents,
     documentId: string,
     eventId: string,
     event: Event,
@@ -151,10 +155,11 @@ export class EntitiesEventProducer {
 
     const message: StreamMessage<string> = {
       key: event.eventType,
-      value: JSON.stringify(event),
+      value: JSON.stringify({ ...event, eventId }),
       headers: {
         eventType: event.eventType,
         timestamp: event.timestamp.toString(),
+        eventId,
       },
     };
 

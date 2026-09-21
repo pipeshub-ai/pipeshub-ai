@@ -36,7 +36,7 @@ describe('Connector Routes', () => {
     mockEventService = {
       start: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
     }
 
     const mockScheduler = {
@@ -54,11 +54,11 @@ describe('Connector Routes', () => {
     container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
     container.bind<any>('RecordsEventProducer').toConstantValue({
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
     })
     container.bind<any>('SyncEventProducer').toConstantValue({
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
     })
 
 
@@ -1044,7 +1044,7 @@ describe('Connector Routes - handler coverage', () => {
     const mockEventService = {
       start: sinon.stub().resolves(),
       stop: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
       isConnected: sinon.stub().returns(false),
     }
 
@@ -1068,11 +1068,11 @@ describe('Connector Routes - handler coverage', () => {
     container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
     container.bind<any>('RecordsEventProducer').toConstantValue({
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
     })
     container.bind<any>('SyncEventProducer').toConstantValue({
       start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
+      dispatchInline: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(),
     })
     container.bind<any>('KeyValueStoreService').toConstantValue(mockKeyValueStoreService)
 
