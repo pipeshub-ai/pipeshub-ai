@@ -129,6 +129,7 @@ describe('isUserActionScope', () => {
       TokenScopes.DESKTOP_COMMAND,
       TokenScopes.CALLER_ROLE,
       TokenScopes.SLACK_BOT_VERIFY,
+      TokenScopes.ENTITY_USER_WRITE,
       'not:a:scope',
     ].forEach((scope) => expect(isUserActionScope(scope)).to.be.false);
   });
