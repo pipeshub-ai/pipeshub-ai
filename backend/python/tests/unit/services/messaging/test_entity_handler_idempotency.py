@@ -1,7 +1,7 @@
 """Unit tests for idempotency of app.services.messaging.kafka.handlers.entity.EntityEventService."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.config.constants.arangodb import CollectionNames
 from app.services.messaging.kafka.handlers.entity import EntityEventService
@@ -42,12 +42,23 @@ class TestIdempotency:
         assert args2[1] == CollectionNames.TEAMS.value
 
     @pytest.mark.asyncio
-    async def test_handle_app_enabled_is_idempotent(self):
+    @patch("app.services.messaging.kafka.utils.utils.EntityEventService.process_event")
+    async def test_handle_app_enabled_is_idempotent(self, mock_process_event):
         svc = _make_service()
         svc.graph_provider.get_document = AsyncMock(
             return_value={"_key": "org-1", "accountType": "enterprise"}
         )
-        svc._handle_sync_event = AsyncMock(return_value=True)
+        
+        # Configure app_container to return our graph_provider
+        svc.app_container.graph_provider = AsyncMock(return_value=svc.graph_provider)
+        
+        # Configure claim and finalize
+        svc.graph_provider.claim_or_reclaim_entity_event = AsyncMock(
+            side_effect=["claimed", "already_completed"]
+        )
+        svc.graph_provider.finalize_entity_event = AsyncMock(return_value=True)
+        
+        mock_process_event.return_value = True
         
         payload = {
             "orgId": "org-1",
@@ -64,12 +75,8 @@ class TestIdempotency:
                 
         msg = MockMsg("appEnabled", payload, "event-id-123")
         
-        # Create the handler
-        from app.services.messaging.kafka.utils.utils import create_entity_message_handler
-        handler = await create_entity_message_handler(svc.app_container, svc.graph_provider)
-        
-        # We need to spy on process_event
-        svc.process_event = AsyncMock(return_value=True)
+        from app.services.messaging.kafka.utils.utils import KafkaUtils
+        handler = await KafkaUtils.create_entity_message_handler(svc.app_container, svc.graph_provider)
         
         # Event delivered first time
         result1 = await handler(msg)
@@ -81,13 +88,12 @@ class TestIdempotency:
         assert result2 is True
         
         # Should only process once
-        assert svc.process_event.await_count == 1
-        
-        # Should have sent sync events twice, but sync manager handles deduplication
-        assert svc._handle_sync_event.await_count == 2
+        assert mock_process_event.await_count == 1
+        assert svc.graph_provider.finalize_entity_event.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_handle_app_disabled_is_idempotent(self):
+    @patch("app.services.messaging.kafka.utils.utils.EntityEventService.process_event")
+    async def test_handle_app_disabled_is_idempotent(self, mock_process_event):
         svc = _make_service()
         svc.graph_provider.get_document = AsyncMock(
             return_value={
@@ -98,8 +104,17 @@ class TestIdempotency:
                 "createdAtTimestamp": 1000,
             }
         )
-        svc.graph_provider.batch_upsert_nodes = AsyncMock()
-        svc.graph_provider.reset_indexing_status_for_connector = AsyncMock()
+        
+        # Configure app_container to return our graph_provider
+        svc.app_container.graph_provider = AsyncMock(return_value=svc.graph_provider)
+        
+        # Configure claim and finalize
+        svc.graph_provider.claim_or_reclaim_entity_event = AsyncMock(
+            side_effect=["claimed", "already_completed"]
+        )
+        svc.graph_provider.finalize_entity_event = AsyncMock(return_value=True)
+        
+        mock_process_event.return_value = True
 
         # Mock sync_task_manager
         import app.services.messaging.kafka.handlers.entity as entity_module
@@ -115,16 +130,22 @@ class TestIdempotency:
                 "connectorId": "conn-1",
             }
             
-            result1 = await svc.process_event("appDisabled", payload)
-            result2 = await svc.process_event("appDisabled", payload)
+            class MockMsg:
+                def __init__(self, event_type, payload, event_id):
+                    self.eventType = event_type
+                    self.payload = payload
+                    self.eventId = event_id
+                    
+            msg = MockMsg("appDisabled", payload, "event-id-456")
+            
+            from app.services.messaging.kafka.utils.utils import KafkaUtils
+            handler = await KafkaUtils.create_entity_message_handler(svc.app_container, svc.graph_provider)
+            
+            result1 = await handler(msg)
+            result2 = await handler(msg)
             
             assert result1 is True
             assert result2 is True
             
-            assert svc.graph_provider.batch_upsert_nodes.await_count == 2
-            
-            args1 = svc.graph_provider.batch_upsert_nodes.call_args_list[0][0]
-            args2 = svc.graph_provider.batch_upsert_nodes.call_args_list[1][0]
-            
-            assert args1[0][0]["isActive"] is False
-            assert args2[0][0]["isActive"] is False
+            assert mock_process_event.await_count == 1
+            assert svc.graph_provider.finalize_entity_event.await_count == 1

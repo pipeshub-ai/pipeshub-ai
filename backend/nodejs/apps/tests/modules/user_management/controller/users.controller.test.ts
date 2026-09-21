@@ -4727,9 +4727,22 @@ describe('UserController', () => {
       sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
       (mockNewUser as any).constructor = Users;
       sinon.stub(UserGroups, 'updateOne').resolves();
-      mockEventService.dispatchInline.rejects(new Error('Kafka down'));
+      const failingProducer = {
+        publish: sinon.stub().rejects(new Error('Kafka down')),
+        isConnected: sinon.stub().returns(true),
+      };
+      const failingEventService = new EntitiesEventProducer(failingProducer as any, mockLogger);
+      
+      const failingController = new UserController(
+        mockConfig,
+        mockMailService,
+        mockAuthService,
+        mockLogger,
+        failingEventService,
+        mockNotificationProducer,
+      );
 
-      await controller.provisionSamlUser(
+      await failingController.provisionSamlUser(
         'saml@test.com',
         { firstName: 'SAML' },
         '507f1f77bcf86cd799439012',
@@ -4761,9 +4774,22 @@ describe('UserController', () => {
       };
       sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
       sinon.stub(UserGroups, 'updateOne').resolves();
-      mockEventService.dispatchInline.rejects(new Error('Kafka down'));
+      const failingProducer = {
+        publish: sinon.stub().rejects(new Error('Kafka down')),
+        isConnected: sinon.stub().returns(true),
+      };
+      const failingEventService = new EntitiesEventProducer(failingProducer as any, mockLogger);
+      
+      const failingController = new UserController(
+        mockConfig,
+        mockMailService,
+        mockAuthService,
+        mockLogger,
+        failingEventService,
+        mockNotificationProducer,
+      );
 
-      await controller.provisionJitUser(
+      await failingController.provisionJitUser(
         'jit@test.com',
         { fullName: 'JIT User' },
         'org789',

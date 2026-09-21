@@ -485,17 +485,11 @@ describe('JitProvisioningService - additional coverage', () => {
     it('should create user, add to group, and publish event on success', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
       
-      const mockNewUser = {
-        _id: 'new-user-id',
-        email: 'new@example.com',
-        fullName: 'New User',
-        pendingEvents: [],
-      } as any;
-      sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
-      (Users.prototype as any)._id = mockNewUser._id;
-      (Users.prototype as any).email = mockNewUser.email;
-      (Users.prototype as any).fullName = mockNewUser.fullName;
-      (Users.prototype as any).pendingEvents = mockNewUser.pendingEvents;
+      sinon.stub(Users.prototype, 'save').callsFake(function(this: any) {
+        this._id = 'new-user-id';
+        if (!this.pendingEvents) this.pendingEvents = [];
+        return Promise.resolve(this);
+      });
       
       sinon.stub(UserGroups, 'updateOne').resolves({} as any)
 
@@ -516,49 +510,38 @@ describe('JitProvisioningService - additional coverage', () => {
 
     it('should call throw and revert pending events if dispatchInline fails', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
-      const mockNewUser = {
-        _id: 'new-user-id',
-        email: 'new2@example.com',
-        fullName: 'Another User',
-        pendingEvents: [],
-      } as any;
-      sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
-      (Users.prototype as any)._id = mockNewUser._id;
-      (Users.prototype as any).email = mockNewUser.email;
-      (Users.prototype as any).fullName = mockNewUser.fullName;
-      (Users.prototype as any).pendingEvents = mockNewUser.pendingEvents;
+      sinon.stub(Users.prototype, 'save').callsFake(function(this: any) {
+        this._id = 'new-user-id';
+        if (!this.pendingEvents) this.pendingEvents = [];
+        return Promise.resolve(this);
+      });
       
       sinon.stub(UserGroups, 'updateOne').resolves({} as any)
       sinon.stub(Users, 'updateOne').resolves({} as any)
-      mockEventService.dispatchInline.rejects(new Error('Kafka down'))
+      sinon.stub(Users, 'findOneAndUpdate').resolves({ _id: 'new-user-id' } as any)
+      
+      const { EntitiesEventProducer } = require('../../../../src/modules/user_management/services/entity_events.service');
+      const failingProducer = {
+        publish: sinon.stub().rejects(new Error('Kafka down')),
+        isConnected: sinon.stub().returns(true),
+      };
+      const failingEventService = new EntitiesEventProducer(failingProducer as any, mockLogger);
+      const failingJitService = new JitProvisioningService(mockLogger, failingEventService);
 
-      try {
-        await jitService.provisionUser(
-          'new2@example.com',
-          { fullName: 'Another User' },
-          'org456',
-          'microsoft',
-        )
-      } catch (e) {}
-
-      expect(mockLogger.error.calledWith(sinon.match(/Failed to publish/))).to.be.true
-      expect(Users.updateOne.calledOnce).to.be.true
-    })
-      sinon.stub(Users, 'findOne').resolves(null)
-      sinon.stub(Users.prototype, 'save').resolves()
-      sinon.stub(UserGroups, 'updateOne').resolves({} as any)
-      mockEventService.start.rejects(new Error('Connection refused'))
-
-      const result = await jitService.provisionUser(
-        'new3@example.com',
-        { fullName: 'Third User' },
-        'org789',
-        'saml',
+      await failingJitService.provisionUser(
+        'new2@example.com',
+        { fullName: 'Another User' },
+        'org456',
+        'microsoft',
       )
 
-      expect(result).to.have.property('email', 'new3@example.com')
-      expect(mockEventService.stop.calledOnce).to.be.true
+      expect(mockLogger.error.calledWith(sinon.match(/Failed to publish/))).to.be.true
+      expect((Users.updateOne as sinon.SinonStub).calledWithMatch(
+        sinon.match.any,
+        sinon.match({ $set: { 'pendingEvents.$.status': 'pending' }, $inc: { 'pendingEvents.$.retries': 1 } })
+      )).to.be.true;
     })
+
 
     it('should have correct parameter count', () => {
       expect(jitService.provisionUser.length).to.equal(4)
