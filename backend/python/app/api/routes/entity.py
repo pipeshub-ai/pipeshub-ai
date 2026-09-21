@@ -788,7 +788,15 @@ async def update_user_email(
     except HTTPException:
         raise
     except GraphUserEmailConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        logger.warning(
+            "Graph email conflict for userId %s: %s",
+            user_id,
+            e,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="Email already belongs to another login user in the graph",
+        ) from e
     except Exception as e:
         logger.error(f"Error updating graph user email: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update user email")

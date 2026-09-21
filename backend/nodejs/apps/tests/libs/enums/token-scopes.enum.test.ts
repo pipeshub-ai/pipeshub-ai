@@ -112,6 +112,7 @@ describe('isUserActionScope', () => {
       TokenScopes.USER_LOOKUP,
       TokenScopes.STORAGE_TOKEN,
       TokenScopes.CONVERSATION_CREATE,
+      TokenScopes.ENTITY_USER_WRITE,
       'not:a:scope',
     ].forEach((scope) => expect(isUserActionScope(scope)).to.be.false);
   });
