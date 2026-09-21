@@ -49,8 +49,8 @@ describe('TokenScopes', () => {
     expect(TokenScopes.EMAIL_VERIFIED).to.equal('email:verified');
   });
 
-  it('should have exactly 11 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(11);
+  it('should have exactly 12 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(12);
   });
 
   it('should contain only the expected keys', () => {
@@ -107,6 +107,7 @@ describe('isUserActionScope', () => {
       TokenScopes.USER_LOOKUP,
       TokenScopes.STORAGE_TOKEN,
       TokenScopes.CONVERSATION_CREATE,
+      TokenScopes.ENTITY_USER_WRITE,
       'not:a:scope',
     ].forEach((scope) => expect(isUserActionScope(scope)).to.be.false);
   });
