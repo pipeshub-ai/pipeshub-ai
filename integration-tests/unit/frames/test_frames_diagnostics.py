@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from benchmarks.frames.models import Prediction, QuestionScore, StreamTrace, SystemFailure, ToolCallTrace
-from benchmarks.frames.report.diagnostics import diagnose, render_diagnostics
+from benchmarks.harness.models import Prediction, QuestionScore, StreamTrace, SystemFailure, ToolCallTrace
+from benchmarks.harness.report.diagnostics import diagnose, render_diagnostics
 
 GOLD = ["u/a", "u/b"]
 INDEX = {"ph": "pipeshub", "naive": "pipeshub", "std": "standard", "oracle": "oracle"}
@@ -58,7 +58,7 @@ def test_errors_and_rendering() -> None:
 def test_backend_log_lines_group_by_template_and_attach_to_questions() -> None:
     from datetime import UTC, datetime, timedelta
 
-    from benchmarks.frames.report.backend_logs import group_issues, windows
+    from benchmarks.harness.report.backend_logs import group_issues, windows
 
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     pred = Prediction(system="ph", question_id="4", repeat=0, started_at=t0, latency_ms=10_000)
@@ -76,7 +76,7 @@ def test_backend_log_lines_group_by_template_and_attach_to_questions() -> None:
 def test_skills_list_is_a_disclosure_tool_not_a_violation() -> None:
     """It enumerates attached skills — no retrieval, no execution — like the
     other meta-tools (`list_toolsets`, `search_tools`)."""
-    from benchmarks.frames.guard import ToolCallGuard
+    from benchmarks.harness.guard import ToolCallGuard
 
     guard = ToolCallGuard()
     assert guard.violations(["skills_list", "knowledgegraph__search"]) == []

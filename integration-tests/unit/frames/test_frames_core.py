@@ -8,15 +8,15 @@ import pytest
 import yaml
 from frames_testkit import FakeLLM, make_model
 
-from benchmarks.frames.config import ModelSelector, RunConfig, load_config
-from benchmarks.frames.errors import ConfigError, ModelNotRegisteredError, ResumeMismatchError
-from benchmarks.frames.guard import ToolCallGuard
-from benchmarks.frames.llm.cache import CachedLLMClient, LLMCache
-from benchmarks.frames.llm.client import ChatMessage, LLMRequest, build_completion_kwargs
-from benchmarks.frames.llm.registry import ModelResolver
-from benchmarks.frames.models import Question
-from benchmarks.frames.paths import CONFIG_DIR
-from benchmarks.frames.store import RunStore
+from benchmarks.harness.config import ModelSelector, RunConfig, load_config
+from benchmarks.harness.errors import ConfigError, ModelNotRegisteredError, ResumeMismatchError
+from benchmarks.harness.guard import ToolCallGuard
+from benchmarks.harness.llm.cache import CachedLLMClient, LLMCache
+from benchmarks.harness.llm.client import ChatMessage, LLMRequest, build_completion_kwargs
+from benchmarks.harness.llm.registry import ModelResolver
+from benchmarks.harness.models import Question
+from benchmarks.datasets.frames.paths import CONFIG_DIR
+from benchmarks.harness.store import RunStore
 
 BASE_CONFIG = {
     "run_name": "unit",
@@ -153,7 +153,7 @@ def test_run_parallel_reports_results_as_they_finish() -> None:
     batch hides progress and loses everything in flight on a crash."""
     import threading
 
-    from benchmarks.frames.concurrency import run_parallel
+    from benchmarks.harness.concurrency import run_parallel
 
     seen: list[int] = []
     first_seen = threading.Event()

@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 from frames_testkit import write_frames_tsv
 
-from benchmarks.frames.config import DatasetConfig
-from benchmarks.frames.dataset.loader import load_questions
-from benchmarks.frames.dataset.split import (
+from benchmarks.harness.config import DatasetConfig
+from benchmarks.datasets.frames.loader import load_questions
+from benchmarks.harness.dataset.split import (
     apply_split,
     load_split,
     select_questions,
@@ -18,10 +18,10 @@ from benchmarks.frames.dataset.split import (
     stratified_split,
     stratum,
 )
-from benchmarks.frames.dataset.urls import normalize_wiki_url, parse_wiki_links_cell, split_link_field
-from benchmarks.frames.errors import DatasetIntegrityError
-from benchmarks.frames.models import Question
-from benchmarks.frames.paths import SPLIT_FILE
+from benchmarks.datasets.frames.urls import normalize_wiki_url, parse_wiki_links_cell, split_link_field
+from benchmarks.harness.errors import DatasetIntegrityError
+from benchmarks.harness.models import Question
+from benchmarks.datasets.frames.paths import SPLIT_FILE
 
 
 class TestNormalizeWikiUrl:

@@ -6,13 +6,13 @@ import hashlib
 
 import pytest
 
-from benchmarks.frames.grading.prompts import (
+from benchmarks.harness.grading.prompts import (
     ANSWER_PROMPT_PINS,
     answer_prompt_texts,
     verify_prompt_pins,
 )
-from benchmarks.frames.models import QuestionScore
-from benchmarks.frames.report.summary import _per_question
+from benchmarks.harness.models import QuestionScore
+from benchmarks.harness.report.summary import _per_question
 
 
 class TestPromptPins:
@@ -62,9 +62,9 @@ class TestConfigHashScope:
     def _config(self):
         from pathlib import Path
 
-        from benchmarks.frames.config import load_config
+        from benchmarks.harness.config import load_config
 
-        return load_config(Path("benchmarks/frames/configs/blog-dev-fixed2.yaml"))
+        return load_config(Path("benchmarks/datasets/frames/configs/blog-dev-fixed2.yaml"))
 
     @pytest.mark.parametrize("field", ["max_cost_usd", "max_error_rate", "min_items_for_breaker"])
     def test_budget_and_breaker_do_not_change_the_hash(self, field: str) -> None:
@@ -91,3 +91,47 @@ class TestConfigHashScope:
         cfg = self._config()
         other = cfg.model_copy(update={"answerer": cfg.answerer.model_copy(update={"model": "other-model"})})
         assert cfg.config_hash() != other.config_hash()
+
+
+class TestRunIsSelfSufficient:
+    """The corpus cache is shared and not part of any run. Clearing it must not
+    make a finished run unrescorable — its numbers are the published evidence."""
+
+    def _manifest(self):
+        from datetime import UTC, datetime
+
+        from benchmarks.harness.models import CorpusDocument, CorpusManifest
+
+        return CorpusManifest(
+            snapshot=datetime(2024, 10, 15, tzinfo=UTC), tier="G", harness_version="t",
+            documents=[CorpusDocument(
+                canonical_url="https://en.wikipedia.org/wiki/X", title="X", tier="gold",
+                filename="X.html", text_filename="X.txt", sha256="a" * 64,
+                revision="1", outlinks=("https://en.wikipedia.org/wiki/Y",),
+            )],
+            gold_aliases={"en.wikipedia.org/X": "https://en.wikipedia.org/wiki/X"},
+        )
+
+    def test_round_trips_through_the_run_copy(self, tmp_path) -> None:
+        from benchmarks.harness.corpus.manifest import load_run_manifest, save_run_manifest
+
+        original = self._manifest()
+        save_run_manifest(tmp_path, original)
+        restored = load_run_manifest(tmp_path)
+        assert restored is not None
+        assert restored.corpus_version == original.corpus_version
+        assert restored.gold_aliases == original.gold_aliases
+
+    def test_the_link_graph_survives(self, tmp_path) -> None:
+        """Outlinks are 94% of the manifest; dropping them to save space would
+        silently downgrade the 'answer was one link away' diagnosis."""
+        from benchmarks.harness.corpus.manifest import load_run_manifest, save_run_manifest
+
+        save_run_manifest(tmp_path, self._manifest())
+        restored = load_run_manifest(tmp_path)
+        assert restored.documents[0].outlinks == ("https://en.wikipedia.org/wiki/Y",)
+
+    def test_absent_copy_reads_as_none(self, tmp_path) -> None:
+        from benchmarks.harness.corpus.manifest import load_run_manifest
+
+        assert load_run_manifest(tmp_path) is None

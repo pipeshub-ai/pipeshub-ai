@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 from frames_testkit import FakeArticleSource, html_page
 
-from benchmarks.frames.config import FRAMES_SNAPSHOT
-from benchmarks.frames.corpus.builder import CorpusBuilder
-from benchmarks.frames.corpus.cleaner import clean_article_html
-from benchmarks.frames.corpus.manifest import load_manifest, safe_filename
-from benchmarks.frames.dataset.urls import normalize_wiki_url
-from benchmarks.frames.errors import CorpusError
+from benchmarks.harness.config import FRAMES_SNAPSHOT
+from benchmarks.datasets.frames.builder import CorpusBuilder
+from benchmarks.datasets.frames.cleaner import clean_article_html
+from benchmarks.harness.corpus.manifest import load_manifest, safe_filename
+from benchmarks.datasets.frames.urls import normalize_wiki_url
+from benchmarks.harness.errors import CorpusError
 
 ARTICLE = html_page("""
 <div class="hatnote">For other uses, see X.</div>

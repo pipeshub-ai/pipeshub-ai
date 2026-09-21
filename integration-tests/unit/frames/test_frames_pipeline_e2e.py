@@ -10,16 +10,16 @@ from pathlib import Path
 import pytest
 from frames_testkit import FakeArticleSource, FakeLLM, write_frames_tsv
 
-from benchmarks.frames.systems.baselines.answering import ANSWER_PROMPT_VERSION
-from benchmarks.frames.config import RunConfig
-from benchmarks.frames.corpus.manifest import record_name
-from benchmarks.frames.credentials import Credentials
-from benchmarks.frames.dataset.loader import FRAMES_REVISION
-import benchmarks.frames.dataset.plugin  # noqa: F401  (registers the dataset)
-from benchmarks.frames.dataset.split import write_split
-from benchmarks.frames.datasets import dataset_plugin
-from benchmarks.frames.llm.registry import ModelResolver
-from benchmarks.frames.models import (
+from benchmarks.harness.systems.baselines.answering import ANSWER_PROMPT_VERSION
+from benchmarks.harness.config import RunConfig
+from benchmarks.harness.corpus.manifest import record_name
+from benchmarks.harness.credentials import Credentials
+from benchmarks.datasets.frames.loader import FRAMES_REVISION
+import benchmarks.datasets.frames.plugin  # noqa: F401  (registers the dataset)
+from benchmarks.harness.dataset.split import write_split
+from benchmarks.harness.datasets import dataset_plugin
+from benchmarks.harness.llm.registry import ModelResolver
+from benchmarks.harness.models import (
     AskItem,
     Citation,
     CorpusManifest,
@@ -32,9 +32,9 @@ from benchmarks.frames.models import (
     StreamTrace,
     ToolCallTrace,
 )
-from benchmarks.frames.pipeline import run_pipeline
-from benchmarks.frames.services import RunContext, Services
-from benchmarks.frames.stages import (
+from benchmarks.harness.pipeline import run_pipeline
+from benchmarks.harness.services import RunContext, Services
+from benchmarks.harness.stages import (
     AskStage,
     CorpusStage,
     DatasetStage,
@@ -44,9 +44,9 @@ from benchmarks.frames.stages import (
     ScoreStage,
     SearchStage,
 )
-from benchmarks.frames.store import RunStore
-from benchmarks.frames.systems import ADAPTER_REGISTRY, AdapterDeps, AdapterSpec
-from benchmarks.frames.systems.base import AdapterCapabilities, PreparedCorpus
+from benchmarks.harness.store import RunStore
+from benchmarks.harness.systems import ADAPTER_REGISTRY, AdapterDeps, AdapterSpec
+from benchmarks.harness.systems.base import AdapterCapabilities, PreparedCorpus
 
 QUESTIONS = [
     {"prompt": "What is the capital of the country ruled by Rufus T. Firefly?", "answer": "Fredville",
@@ -143,7 +143,7 @@ class FakeTraceSystem:
         )
 
     def ranked_search(self, item: AskItem, prepared: PreparedCorpus, k: int):  # noqa: ANN201
-        from benchmarks.frames.models import RankedList
+        from benchmarks.harness.models import RankedList
 
         return RankedList(system=self.system_id, question_id=item.question_id, ranked_refs=self._corpus.resolve_refs(item.gold_refs))
 
@@ -230,8 +230,8 @@ def test_a_disallowed_tool_call_invalidates_the_run(tmp_path: Path) -> None:
 
 
 def test_missing_prefetch_frame_is_a_contract_error(tmp_path: Path) -> None:
-    from benchmarks.frames.errors import BackendContractError
-    from benchmarks.frames.stages import _check_trace_contract
+    from benchmarks.harness.errors import BackendContractError
+    from benchmarks.harness.stages import _check_trace_contract
 
     with pytest.raises(BackendContractError):
         _check_trace_contract(Prediction(system="s", question_id="1", repeat=0, trace=StreamTrace()))

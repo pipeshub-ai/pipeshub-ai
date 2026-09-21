@@ -20,24 +20,25 @@ from frames_testkit import (
     sse,
 )
 
-from benchmarks.frames.config import FRAMES_SNAPSHOT
-from benchmarks.frames.corpus.builder import CorpusBuilder
-from benchmarks.frames.corpus.view import CorpusView
-from benchmarks.frames.dataset.urls import normalize_wiki_url
-from benchmarks.frames.errors import IndexTimeoutError
-from benchmarks.frames.guard import ToolCallGuard
-from benchmarks.frames.models import AskItem, IngestedRecord, IngestManifest
-from benchmarks.frames.systems.base import PreparedCorpus
-from benchmarks.frames.systems.baselines.answering import ANSWER_PROMPT_VERSION, ContextDocument, fit_documents
-from benchmarks.frames.systems.baselines.bm25 import Bm25Answerer
-from benchmarks.frames.systems.baselines.closed_book import ClosedBookAnswerer
-from benchmarks.frames.systems.baselines.oracle import OracleAnswerer
-from benchmarks.frames.systems.pipeshub.adapter import PipesHubAdapter, build_stream_body
-from benchmarks.frames.systems.pipeshub.indexing import IndexWaiter
-from benchmarks.frames.systems.pipeshub.ingest import PipesHubIngestor
-from benchmarks.frames.systems.pipeshub.kb_api import RecordStatus, UploadResult
-from benchmarks.frames.systems.pipeshub.session import PIPESHUB_CLIENT_ERRORS, UserSession
-from benchmarks.frames.systems.pipeshub.stream import StreamCollector
+from benchmarks.harness.config import FRAMES_SNAPSHOT
+from benchmarks.datasets.frames.builder import CorpusBuilder
+from benchmarks.datasets.frames.plugin import FramesDataset
+from benchmarks.harness.corpus.view import CorpusView
+from benchmarks.datasets.frames.urls import normalize_wiki_url
+from benchmarks.harness.errors import IndexTimeoutError
+from benchmarks.harness.guard import ToolCallGuard
+from benchmarks.harness.models import AskItem, IngestedRecord, IngestManifest
+from benchmarks.harness.systems.base import PreparedCorpus
+from benchmarks.harness.systems.baselines.answering import ANSWER_PROMPT_VERSION, ContextDocument, fit_documents
+from benchmarks.harness.systems.baselines.bm25 import Bm25Answerer
+from benchmarks.harness.systems.baselines.closed_book import ClosedBookAnswerer
+from benchmarks.harness.systems.baselines.oracle import OracleAnswerer
+from benchmarks.harness.systems.pipeshub.adapter import PipesHubAdapter, build_stream_body
+from benchmarks.harness.systems.pipeshub.indexing import IndexWaiter
+from benchmarks.harness.systems.pipeshub.ingest import PipesHubIngestor
+from benchmarks.harness.systems.pipeshub.kb_api import RecordStatus, UploadResult
+from benchmarks.harness.systems.pipeshub.session import PIPESHUB_CLIENT_ERRORS, UserSession
+from benchmarks.harness.systems.pipeshub.stream import StreamCollector
 
 PAGES = {
     "Harriet Lane": "<p>Harriet Lane was the niece of James Buchanan. Her mother was Jane Buchanan.</p>",
@@ -52,7 +53,7 @@ def corpus(tmp_path: Path) -> CorpusView:
     manifest = CorpusBuilder(
         lambda _h: FakeArticleSource(PAGES), tmp_path, snapshot=FRAMES_SNAPSHOT, workers=1, harness_version="t",
     ).build(refs, tier="G", distractor_count=0, seed=1, max_failed_gold_ratio=0.0)
-    return CorpusView(tmp_path, manifest)
+    return CorpusView(tmp_path, manifest, FramesDataset().normalize_ref)
 
 
 ITEM = AskItem(
@@ -321,7 +322,7 @@ class TestPipesHubAdapter:
         assert prediction.policy_violations == ["dynamic__web_search", "run_code"]
 
     def test_retries_once_when_nothing_streamed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("benchmarks.frames.systems.pipeshub.adapter.time.sleep", lambda _s: None)
+        monkeypatch.setattr("benchmarks.harness.systems.pipeshub.adapter.time.sleep", lambda _s: None)
         responses = iter([FakeStreamResponse(status_code=503), FakeStreamResponse(sse(agui_transcript()))])
         session = FakeSession(lambda *_a: next(responses))
         prediction = _adapter(session).answer(ITEM, PREPARED_PH, 0)

@@ -11,8 +11,8 @@ from typing import Any
 
 import pandas as pd
 
-from benchmarks.frames.corpus.mediawiki import ParsedPage, RevisionRef
-from benchmarks.frames.llm.client import LLMRequest, LLMResponse, ResolvedModel
+from benchmarks.datasets.frames.mediawiki import ParsedPage, RevisionRef
+from benchmarks.harness.llm.client import LLMRequest, LLMResponse, ResolvedModel
 
 REVISION_TIME = datetime(2024, 9, 1, tzinfo=UTC)
 

@@ -5,20 +5,20 @@ from __future__ import annotations
 import pytest
 from frames_testkit import FakeLLM, make_model
 
-from benchmarks.frames.grading.claims import ClaimSupportJudge, split_claims
-from benchmarks.frames.grading.judges import FramesJudge, GradingSubject, StrictJudge
-from benchmarks.frames.grading.prompts import (
+from benchmarks.harness.grading.claims import ClaimSupportJudge, split_claims
+from benchmarks.harness.grading.judges import FramesJudge, GradingSubject, StrictJudge
+from benchmarks.harness.grading.prompts import (
     FRAMES_AUTORATER,
     render_frames_autorater,
     render_simpleqa_grader,
     verify_prompt_pins,
 )
-from benchmarks.frames.grading.verdicts import parse_frames_decision, parse_simpleqa_grade, parse_support
-from benchmarks.frames.metrics.citations import alce_scores, cited_vs_gold, citation_integrity
-from benchmarks.frames.metrics.failures import Failure, FailureEvidence, classify
-from benchmarks.frames.metrics.retrieval import ndcg_at_k, recall, recall_at_k, reciprocal_rank
-from benchmarks.frames.metrics.stats import bootstrap_mean, cohen_kappa, mcnemar_exact
-from benchmarks.frames.models import Citation, ClaimSupport, Prediction
+from benchmarks.harness.grading.verdicts import parse_frames_decision, parse_simpleqa_grade, parse_support
+from benchmarks.harness.metrics.citations import alce_scores, cited_vs_gold, citation_integrity
+from benchmarks.harness.metrics.failures import Failure, FailureEvidence, classify
+from benchmarks.harness.metrics.retrieval import ndcg_at_k, recall, recall_at_k, reciprocal_rank
+from benchmarks.harness.metrics.stats import bootstrap_mean, cohen_kappa, mcnemar_exact
+from benchmarks.harness.models import Citation, ClaimSupport, Prediction
 
 
 class TestPrompts:
@@ -140,14 +140,14 @@ class TestRetrievalMetrics:
 
 class TestCitationMetrics:
     def test_inline_markdown_in_blocks_still_matches_the_plain_article(self) -> None:
-        from benchmarks.frames.metrics.citations import content_matches_source
+        from benchmarks.harness.metrics.citations import content_matches_source
 
         block = "**Wilhelm Zander** (22 April 1911) was an [adjutant](https://en.wikipedia.org/wiki/Adjutant) to Bormann."
         article = "Intro. Wilhelm Zander (22 April 1911) was an adjutant to Bormann. More text."
         assert content_matches_source(block, article, 90)
 
     def test_table_rows_match_whatever_the_serialization(self) -> None:
-        from benchmarks.frames.metrics.citations import content_matches_source
+        from benchmarks.harness.metrics.citations import content_matches_source
 
         row = "Event: Mistral (sailboard), Gold: Lanee Butler United States, Silver: Dominique Vallee Canada"
         article = "Results\nEvent | Gold | Silver\nMistral ( sailboard ) | Lanee Butler United States | Dominique Vallee Canada"

@@ -8,20 +8,21 @@ from pathlib import Path
 import pytest
 from frames_testkit import FakeArticleSource, FakeLLM, make_model
 
-from benchmarks.frames.config import FRAMES_SNAPSHOT, ModelPrice
-from benchmarks.frames.corpus.builder import CorpusBuilder
-from benchmarks.frames.corpus.view import CorpusView
-from benchmarks.frames.dataset.urls import normalize_wiki_url
-from benchmarks.frames.llm.client import LLMRequest
-from benchmarks.frames.models import AskItem, CallUsage, IngestManifest, QuestionScore
-from benchmarks.frames.pricing import call_cost, calls_cost
-from benchmarks.frames.report.summary import _cost
-from benchmarks.frames.systems.base import PreparedCorpus
-from benchmarks.frames.systems.pipeshub.adapter import build_stream_body
-from benchmarks.frames.systems.pipeshub.stream import parse_run_usage
-from benchmarks.frames.systems.rag.answerer import RAG_ANSWER_PROMPT_VERSION, RagAnswerer, RagOptions, RecordRef
-from benchmarks.frames.systems.rag.retrieval import Chunk, interleave, rrf_merge
-from benchmarks.frames.systems.rag.transforms import DECOMPOSITION_PROMPT_VERSION, EXPANSION_PROMPT_VERSION
+from benchmarks.harness.config import FRAMES_SNAPSHOT, ModelPrice
+from benchmarks.datasets.frames.builder import CorpusBuilder
+from benchmarks.datasets.frames.plugin import FramesDataset
+from benchmarks.harness.corpus.view import CorpusView
+from benchmarks.datasets.frames.urls import normalize_wiki_url
+from benchmarks.harness.llm.client import LLMRequest
+from benchmarks.harness.models import AskItem, CallUsage, IngestManifest, QuestionScore
+from benchmarks.harness.pricing import call_cost, calls_cost
+from benchmarks.harness.report.summary import _cost
+from benchmarks.harness.systems.base import PreparedCorpus
+from benchmarks.harness.systems.pipeshub.adapter import build_stream_body
+from benchmarks.harness.systems.pipeshub.stream import parse_run_usage
+from benchmarks.harness.systems.rag.answerer import RAG_ANSWER_PROMPT_VERSION, RagAnswerer, RagOptions, RecordRef
+from benchmarks.harness.systems.rag.retrieval import Chunk, interleave, rrf_merge
+from benchmarks.harness.systems.rag.transforms import DECOMPOSITION_PROMPT_VERSION, EXPANSION_PROMPT_VERSION
 
 LUNA = ModelPrice(
     input_per_mtok=0.20, cached_input_per_mtok=0.02, output_per_mtok=1.20,
@@ -107,7 +108,7 @@ def corpus(tmp_path: Path) -> CorpusView:
     manifest = CorpusBuilder(
         lambda _h: FakeArticleSource(PAGES), tmp_path, snapshot=FRAMES_SNAPSHOT, workers=1, harness_version="t",
     ).build(REFS, tier="G", distractor_count=0, seed=1, max_failed_gold_ratio=0.0)
-    return CorpusView(tmp_path, manifest)
+    return CorpusView(tmp_path, manifest, FramesDataset().normalize_ref)
 
 
 @pytest.fixture
@@ -189,7 +190,7 @@ class TestRag:
 
 
 def test_rerank_keeps_the_best_scored(monkeypatch: pytest.MonkeyPatch) -> None:
-    from benchmarks.frames.systems.rag.rerank import CrossEncoderReranker
+    from benchmarks.harness.systems.rag.rerank import CrossEncoderReranker
 
     class _Model:
         def predict(self, pairs: Sequence[tuple[str, str]], **_kw: object) -> list[float]:
@@ -205,8 +206,8 @@ class TestVectorCoverage:
     def _services(self, present: dict[str, int]):  # noqa: ANN202
         from types import SimpleNamespace
 
-        from benchmarks.frames.config import RunConfig
-        from benchmarks.frames.services import Services
+        from benchmarks.harness.config import RunConfig
+        from benchmarks.harness.services import Services
 
         services = Services.__new__(Services)
         services.config = RunConfig.model_validate({
@@ -218,7 +219,7 @@ class TestVectorCoverage:
         return services
 
     def test_missing_gold_vectors_fail_the_run(self) -> None:
-        from benchmarks.frames.errors import IngestError
+        from benchmarks.harness.errors import IngestError
 
         services = self._services({"v1": 3})
         with pytest.raises(IngestError, match="1 gold"):
@@ -231,7 +232,7 @@ class TestVectorCoverage:
 def test_stream_keeps_transcript_previews_and_run_stats() -> None:
     import json
 
-    from benchmarks.frames.systems.pipeshub.stream import StreamCollector
+    from benchmarks.harness.systems.pipeshub.stream import StreamCollector
 
     frames = [
         {"type": "TOOL_CALL_START", "toolCallId": "t1", "toolCallName": "knowledgegraph__search"},
@@ -253,9 +254,9 @@ def test_stream_keeps_transcript_previews_and_run_stats() -> None:
 def test_services_rag_lock_is_reentrant() -> None:
     """`rag_index` holds the lock and calls `virtual_record_ids`, which takes it
     again via `kb_records`; a plain Lock deadlocks the first RAG answer."""
-    from benchmarks.frames.config import RunConfig
-    from benchmarks.frames.credentials import Credentials
-    from benchmarks.frames.services import Services
+    from benchmarks.harness.config import RunConfig
+    from benchmarks.harness.credentials import Credentials
+    from benchmarks.harness.services import Services
 
     services = Services(
         RunConfig.model_validate({
@@ -274,7 +275,7 @@ class TestAuxiliaryCallBudget:
     minutes and stall the run."""
 
     def _kwargs(self, **overrides):  # noqa: ANN202
-        from benchmarks.frames.llm.client import ChatMessage, LLMRequest, build_completion_kwargs
+        from benchmarks.harness.llm.client import ChatMessage, LLMRequest, build_completion_kwargs
 
         model = make_model("gpt-5.6-luna", "openAI", reasoning=True).model_copy(update={"reasoning_effort": "high"})
         request = LLMRequest(
@@ -292,7 +293,7 @@ class TestAuxiliaryCallBudget:
         assert kwargs["reasoning_effort"] == "low" and kwargs["max_tokens"] == 1024
 
     def test_transforms_use_those_settings(self) -> None:
-        from benchmarks.frames.systems.rag.transforms import expand
+        from benchmarks.harness.systems.rag.transforms import expand
 
         llm = FakeLLM(lambda _r: "a\nb")
         expand(llm, make_model("m", "openAI", reasoning=True), "q", 2, FRAMES_SNAPSHOT)

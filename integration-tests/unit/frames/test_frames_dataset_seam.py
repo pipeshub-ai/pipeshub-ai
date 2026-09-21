@@ -8,16 +8,16 @@ from pathlib import Path
 
 import pytest
 
-import benchmarks.frames.dataset.plugin  # noqa: F401  (registers "frames")
-from benchmarks.frames import stages
-from benchmarks.frames.datasets import (
+import benchmarks.datasets.frames.plugin  # noqa: F401  (registers "frames")
+from benchmarks.harness import stages
+from benchmarks.harness.datasets import (
     DatasetPlugin,
     dataset_plugin,
     register_dataset,
     registered_datasets,
 )
-from benchmarks.frames.errors import ConfigError
-from benchmarks.frames.models import AskItem, Question
+from benchmarks.harness.errors import ConfigError
+from benchmarks.harness.models import AskItem, Question
 
 
 class TestRegistry:
@@ -51,7 +51,7 @@ class TestRegistry:
         try:
             assert dataset_plugin("fake").load(None)[0].id == "a1"
         finally:
-            from benchmarks.frames import datasets as registry
+            from benchmarks.harness import datasets as registry
             registry._REGISTRY.pop("fake", None)
 
     def test_plugin_satisfies_the_protocol(self) -> None:
@@ -79,6 +79,39 @@ class TestGoldRefsAreWithheld:
         assert AskItem.from_question(question, with_gold=True).gold_refs == ("http://x",)
 
     def test_oracle_is_the_one_adapter_granted_gold(self) -> None:
-        from benchmarks.frames.systems.baselines.oracle import OracleAnswerer
+        from benchmarks.harness.systems.baselines.oracle import OracleAnswerer
 
         assert OracleAnswerer.capabilities.needs_gold_refs is True
+
+
+class TestLayerBoundary:
+    """`benchmarks/harness` is the dataset-agnostic engine and
+    `benchmarks/datasets/<name>` is one benchmark. The engine may not reach
+    into a dataset — if it does, that dataset is not really pluggable."""
+
+    def _harness_files(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2] / "benchmarks" / "harness"
+        return [p for p in root.rglob("*.py") if "__pycache__" not in str(p)]
+
+    def test_harness_has_no_module_level_dataset_imports(self) -> None:
+        offenders = []
+        for path in self._harness_files():
+            for lineno, line in enumerate(path.read_text().splitlines(), 1):
+                stripped = line.strip()
+                if not stripped.startswith(("from benchmarks.datasets", "import benchmarks.datasets")):
+                    continue
+                # The CLI imports each dataset once purely to register it.
+                if path.name == "cli.py" and "noqa: F401" in stripped:
+                    continue
+                offenders.append(f"{path.name}:{lineno} {stripped}")
+        assert offenders == [], offenders
+
+    def test_the_engine_is_not_named_after_one_dataset(self) -> None:
+        from pathlib import Path
+
+        benchmarks = Path(__file__).resolve().parents[2] / "benchmarks"
+        assert (benchmarks / "harness").is_dir()
+        assert (benchmarks / "datasets" / "frames").is_dir()
+        assert not (benchmarks / "frames").exists()
