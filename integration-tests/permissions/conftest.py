@@ -68,6 +68,8 @@ def _app(key: str) -> dict[str, Any]:
         "id": key, "name": key, "type": _CONNECTOR, "appGroup": "GitLab",
         "scope": "team", "orgId": ORG, "permissionModel": "RECORD_LEVEL",
         "isActive": True, "isConfigured": True, "isAuthenticated": True,
+        # Without this the container filter refuses to narrow at all
+        "vectorMembershipBackfilled": True,
         "createdBy": CREATOR_UID, "authenticatedBy": CREATOR_UID,
         "createdAtTimestamp": _NOW, "updatedAtTimestamp": _NOW,
     }

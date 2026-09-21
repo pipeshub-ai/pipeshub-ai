@@ -5122,6 +5122,13 @@ class Neo4jProvider(IGraphDBProvider):
         query = """
         MATCH (u:User {userId: $user_id})
 
+        // Principals: the user everywhere, plus each source account the user authenticated a
+        // connector as, counted for that connector only
+        OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User)
+        WITH u, [{user: u, connectorId: null}] +
+                [p IN collect({user: source_account, connectorId: linked.connectorId})
+                   WHERE p.user IS NOT NULL] AS principals
+
         // Every way a user reaches an app: ownership/instance membership
         // (USER_APP_RELATION, direct and via team) and sharing (PERMISSION,
         // direct and via team). Both halves are needed — a Collection shared
@@ -5150,11 +5157,19 @@ class Neo4jProvider(IGraphDBProvider):
                            -[:PERMISSION {type: 'TEAM'}]->(teamPermApp:App)
             RETURN collect(DISTINCT teamPermApp) AS tpa
         }
-        // Duplicates across the four are harmless — every list below is turned
+        // The link itself is the grant on its connector's app, as it is in the app
+        // permission-role query.
+        CALL {
+            WITH principals
+            UNWIND principals AS principal
+            OPTIONAL MATCH (linkedApp:App {id: principal.connectorId})
+            RETURN collect(DISTINCT linkedApp) AS la
+        }
+        // Duplicates across these are harmless — every list below is turned
         // into a set by the caller — but a null id would poison `IN`, which is
         // three-valued in Cypher and would silently drop rows.
-        WITH u, [a IN da + ta + pa + tpa WHERE a.id IS NOT NULL] AS app_docs
-        WITH u, app_docs,
+        WITH u, principals, [a IN da + ta + pa + tpa + la WHERE a.id IS NOT NULL] AS app_docs
+        WITH u, principals, app_docs,
              [a IN app_docs | a.id] AS reachable_apps,
              // `$scope_ids IS NOT NULL` is what admits a hidden Collection: a
              // scoped request can only reach one by naming it, and the scope
@@ -5183,26 +5198,34 @@ class Neo4jProvider(IGraphDBProvider):
                 | a.id] AS root_scoped_apps
 
         CALL {
-            WITH u, reachable_apps
-            OPTIONAL MATCH (u)-[:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
+            WITH principals, reachable_apps
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, reachable_apps
+            OPTIONAL MATCH (pu)-[:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
             OPTIONAL MATCH (rgApp:App {id: rg.connectorId})
-            WITH rg, rgApp, reachable_apps
+            WITH rg, rgApp, reachable_apps, linked_connector
             WHERE rg IS NOT NULL
+              AND (linked_connector IS NULL OR rg.connectorId = linked_connector)
               AND ((rgApp IS NOT NULL AND rgApp.type = $kb_type)
                    OR rg.connectorId IN reachable_apps)
             RETURN collect(DISTINCT rg) AS s1
         }
         CALL {
-            WITH u, reachable_apps
-            OPTIONAL MATCH (u)-[:PERMISSION]->(gr)-[:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
+            WITH principals, reachable_apps
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, reachable_apps
+            OPTIONAL MATCH (pu)-[:PERMISSION]->(gr)-[:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
             WHERE (gr:Group OR gr:Role)
             OPTIONAL MATCH (rgApp:App {id: rg.connectorId})
-            WITH rg, rgApp, reachable_apps
+            WITH rg, rgApp, reachable_apps, linked_connector
             WHERE rg IS NOT NULL
+              AND (linked_connector IS NULL OR rg.connectorId = linked_connector)
               AND ((rgApp IS NOT NULL AND rgApp.type = $kb_type)
                    OR rg.connectorId IN reachable_apps)
             RETURN collect(DISTINCT rg) AS s2
         }
+        // s3 and d3 need no principals: an ORG grant reaches every member of the org, so a
+        // linked account adds nothing the caller does not already hold.
         CALL {
             WITH u, reachable_apps
             OPTIONAL MATCH (u)-[:BELONGS_TO]->(:Organization)
@@ -5215,15 +5238,18 @@ class Neo4jProvider(IGraphDBProvider):
             RETURN collect(DISTINCT rg) AS s3
         }
         CALL {
-            WITH u, reachable_apps
-            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+            WITH principals, reachable_apps
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector, reachable_apps
+            OPTIONAL MATCH (pu)-[:PERMISSION {type: 'USER'}]->(:Teams)
                            -[:PERMISSION {type: 'TEAM'}]->(rg:RecordGroup {orgId: $org_id})
-            WITH rg, reachable_apps
+            WITH rg, reachable_apps, linked_connector
             WHERE rg IS NOT NULL
+              AND (linked_connector IS NULL OR rg.connectorId = linked_connector)
               AND (rg.connectorName = $kb_type OR rg.connectorId IN reachable_apps)
             RETURN collect(DISTINCT rg) AS s4
         }
-        WITH u, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids,
+        WITH u, principals, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids,
              root_scoped_apps, s1 + s2 + s3 + s4 AS seed_rgs
 
         // Unlike the AQL twin this has no `uniqueVertices: global` or `PRUNE`
@@ -5245,7 +5271,7 @@ class Neo4jProvider(IGraphDBProvider):
         }
         // Root-scoped connectors match on the record's root instead, so
         // enumerating their descendants would only inflate the filter.
-        WITH u, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids,
+        WITH u, principals, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids,
              root_scoped_apps, seed_rgs,
              [rg IN seed_rgs
                 WHERE $scope_ids IS NULL OR rg.connectorId IN $scope_ids]
@@ -5253,7 +5279,7 @@ class Neo4jProvider(IGraphDBProvider):
                   WHERE d IS NOT NULL
                     AND NOT d.connectorId IN root_scoped_apps
                     AND ($scope_ids IS NULL OR d.connectorId IN $scope_ids)] AS all_rgs
-        WITH u, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids, all_rgs,
+        WITH u, principals, reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids, all_rgs,
              [rg IN seed_rgs
                 WHERE rg.id IS NOT NULL AND rg.connectorId IN root_scoped_apps
                   AND ($scope_ids IS NULL OR rg.connectorId IN $scope_ids)
@@ -5261,16 +5287,22 @@ class Neo4jProvider(IGraphDBProvider):
              [rg IN all_rgs WHERE rg.id IS NOT NULL | rg.id] AS all_rg_ids
 
         CALL {
-            WITH u
-            OPTIONAL MATCH (u)-[:PERMISSION]->(r1:Record {orgId: $org_id})
-            WHERE $scope_ids IS NULL OR r1.connectorId IN $scope_ids
+            WITH principals
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector
+            OPTIONAL MATCH (pu)-[:PERMISSION]->(r1:Record {orgId: $org_id})
+            WHERE ($scope_ids IS NULL OR r1.connectorId IN $scope_ids)
+              AND (linked_connector IS NULL OR r1.connectorId = linked_connector)
             RETURN collect(DISTINCT r1) AS d1
         }
         CALL {
-            WITH u
-            OPTIONAL MATCH (u)-[:PERMISSION]->(gr2)-[:PERMISSION]->(r2:Record {orgId: $org_id})
+            WITH principals
+            UNWIND principals AS principal
+            WITH principal.user AS pu, principal.connectorId AS linked_connector
+            OPTIONAL MATCH (pu)-[:PERMISSION]->(gr2)-[:PERMISSION]->(r2:Record {orgId: $org_id})
             WHERE (gr2:Group OR gr2:Role)
               AND ($scope_ids IS NULL OR r2.connectorId IN $scope_ids)
+              AND (linked_connector IS NULL OR r2.connectorId = linked_connector)
             RETURN collect(DISTINCT r2) AS d2
         }
         CALL {
@@ -14635,7 +14667,14 @@ class Neo4jProvider(IGraphDBProvider):
                            -[:PERMISSION {type: 'TEAM'}]->(teamPermApp:App)
             RETURN collect(DISTINCT teamPermApp.id) AS a4
         }
-        WITH u, a1 + a2 + a3 + a4 AS reachable_apps
+        // The link is the grant on its connector's app, as it is in the app
+        // permission-role query; the role resolution below counts the same link.
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(:User)
+            RETURN collect(DISTINCT linked.connectorId) AS a5
+        }
+        WITH u, a1 + a2 + a3 + a4 + a5 AS reachable_apps
         """
 
         trusted_apps = frozenset(trusted_app_ids or ())

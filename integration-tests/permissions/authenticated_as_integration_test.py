@@ -31,6 +31,7 @@ built in ``conftest.py``:
   order 10 TC-AA-REINDEX-001   — both reindex gates: the checkers AND the worker listing
   order 11 TC-AA-PROC-001      — the connector-side hook writes the stub and the link
   order 12 TC-AA-NEG-001       — a user with no link is unaffected
+  order 13 TC-AA-CONTAINER-001 — the container permission filter, chat's other search path
 """
 
 from __future__ import annotations
@@ -290,3 +291,35 @@ class TestAuthenticatedAs:
         # The source account's own view does not change because someone links to it
         source_ids = await graph_provider.get_accessible_virtual_record_ids(seeded_graph["source_uid"], org)
         assert {"v-it-aa-rec-src-only", "v-it-aa-rec-other"} <= set(source_ids)
+
+    @pytest.mark.order(13)
+    async def test_the_container_filter_covers_the_linked_connector(self, graph_provider, seeded_graph) -> None:
+        """TC-AA-CONTAINER-001: with ENABLE_CONTAINER_PERMISSION_FILTER on, chat builds its
+        vector filter from the containers a user reaches and never calls
+        get_accessible_virtual_record_ids, so the link has to hold here too."""
+        org = seeded_graph["org"]
+
+        containers = await graph_provider.get_accessible_containers(seeded_graph["creator_uid"], org)
+        assert containers.fallback_reason is None
+        groups = containers.record_group_ids
+        assert "it-aa-rg-src-only" in groups, "a group only the source account holds is still searchable"
+        assert {"it-aa-rg-own", "it-aa-rg-src-stronger", "it-aa-rg-own-stronger"} <= groups
+        assert "it-aa-rg-other" not in groups, "the link never reaches the unlinked connector"
+
+        # The filter only widens; this is the adjudicator that narrows it back
+        vids = [f"v-{rec}" for rec in seeded_graph["record_of"].values()]
+        granted = await graph_provider.filter_accessible_virtual_record_ids(
+            vids, seeded_graph["creator_uid"], org,
+            trusted_app_ids=containers.app_ids_trusted,
+            trusted_group_ids=containers.record_group_ids_trusted,
+        )
+        assert set(granted) == set(vids) - {"v-it-aa-rec-other"}
+
+        scoped = await graph_provider.get_accessible_containers(
+            seeded_graph["creator_uid"], org, {"apps": [seeded_graph["app_linked"]]}
+        )
+        assert "it-aa-rg-src-only" in scoped.record_group_ids
+        assert "it-aa-rg-own" not in scoped.record_group_ids
+
+        stranger = await graph_provider.get_accessible_containers(seeded_graph["stranger_uid"], org)
+        assert stranger.fallback_reason is None and stranger.is_empty
