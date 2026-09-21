@@ -73,6 +73,15 @@ describe('enterprise_search/utils/ai-chat-payload', () => {
       expect(payload).not.to.have.property('agentCapabilities')
     })
 
+    it('forwards includeRetrievalContext on a non-agent assistant turn', () => {
+      const { payload } = buildAiChatRequest(
+        { kind: 'assistant' },
+        { query: 'q', chatMode: 'internal_search', includeRetrievalContext: true },
+        context(),
+      )
+      expect(payload.includeRetrievalContext).to.equal(true)
+    })
+
     it('sends an agent turn to its own route, escaping the key, with caller context', () => {
       const { path, payload } = buildAiChatRequest(
         { kind: 'agent', agentKey: 'a/b c' },

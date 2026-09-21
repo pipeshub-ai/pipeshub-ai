@@ -63,10 +63,19 @@ export const assignAgentCapabilitiesToPayload = (
   ) {
     payload.agentCapabilities = caps;
   }
-  // Opt-in measurement surface: Python only streams `retrieval_context` and
-  // `run_usage` frames when this is true. Forwarded alongside the capability
-  // toggles because it travels the same path and has the same default-off
-  // contract; omitted entirely when absent so Python sees no key at all.
+};
+
+/**
+ * Forward the opt-in telemetry flag. Deliberately NOT folded into
+ * `assignAgentCapabilitiesToPayload`: that one is only called in agent mode,
+ * and this flag has to reach Python on every stream mode — `internal_search`
+ * most of all, since that is the mode the benchmark measures. Omitted when
+ * absent so Python sees no key rather than an explicit false.
+ */
+export const assignRetrievalContextToPayload = (
+  payload: Record<string, unknown>,
+  body: Record<string, unknown>,
+): void => {
   if (body.includeRetrievalContext === true) {
     payload.includeRetrievalContext = true;
   }
@@ -122,6 +131,7 @@ export const buildAiChatRequest = (
     conversationId: nullable(context.conversationId),
     runId: nullable(body.runId),
   };
+  assignRetrievalContextToPayload(payload, body);
 
   let path: string;
   if (target.kind === 'agent') {
