@@ -99,7 +99,7 @@ permissions:
   contents: read
 
 # The matrix reads labels from each event's frozen payload, so an opened/synchronize
-# event firing before a label lands resolves to the default "both" and would otherwise
+# event firing before a label lands resolves to the neo4j default and would otherwise
 # burn a runner alongside the labeled run. Non-PR events get a unique group per run so
 # a manual dispatch never cancels the nightly cron.
 concurrency:
@@ -122,10 +122,10 @@ jobs:
       fail-fast: false
       matrix:
         # One job per value; "both" runs both backends sequentially in one job.
-        # Select backends via the graph_db dispatch input or the
-        # it-neo4j / it-arango / it-parallel PR labels (default: sequential "both").
+        # PRs default to neo4j alone; it-arango / it-both / it-parallel (or
+        # it-neo4j + it-arango) widen that. Cron and dispatch still get "both".
         # `strategy` can't read the job env block, so derive from inputs/labels here.
-        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
+        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request_target' && '["neo4j"]') || '["both"]') }}
         # Split the suite into parallel shards, each with its own stack, so the
         # slow connector suites do not all serialize on one worker. Two connector
         # shards (heavy suites balanced across them) plus a "core" shard for
