@@ -415,6 +415,9 @@ class TestAbstractMethodInventory:
         "filter_nodes_with_permission_role",
         "filter_accessible_virtual_record_ids",
         "get_record_parent_adjacency",
+        # Entity event idempotency operations
+        "claim_or_reclaim_entity_event",
+        "finalize_entity_event",
     ]
 
     def test_all_expected_methods_are_abstract(self):
