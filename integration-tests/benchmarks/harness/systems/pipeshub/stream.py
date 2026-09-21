@@ -140,12 +140,21 @@ class StreamCollector:
                 logger.warning("unparseable retrieval_context frame: %s", exc)
         elif name == "run_usage" and not child:
             self._llm_calls = parse_run_usage(value)
-            self._run_stats = RunStats(
-                turns=value.get("turns"), max_turns=value.get("maxTurns"),
-                completion_gate_nudges=int(value.get("completionGateNudges") or 0),
-                auxiliary_llm_calls=int(value.get("auxiliaryLlmCalls") or 0),
-                agent_error=value.get("agentError"),
-            )
+            # Telemetry is measurement surface, not an answer: a backend that
+            # ships a malformed frame costs us `hit_turn_cap` for one question,
+            # and `report` already treats missing run_stats as unknown. Killing
+            # the process here instead would throw away every answer bought so
+            # far in the run — which is what a `turns: []` regression did.
+            try:
+                self._run_stats = RunStats(
+                    turns=value.get("turns"), max_turns=value.get("maxTurns"),
+                    completion_gate_nudges=int(value.get("completionGateNudges") or 0),
+                    auxiliary_llm_calls=int(value.get("auxiliaryLlmCalls") or 0),
+                    agent_error=value.get("agentError"),
+                )
+            except (ValidationError, TypeError, ValueError) as exc:
+                self._counts["_bad_run_usage"] += 1
+                logger.warning("unparseable run_usage frame: %s", exc)
 
     def _on_tool_start(self, payload: dict[str, Any], child: bool) -> None:
         call_id = str(payload.get("toolCallId") or f"_anon{len(self._tool_calls)}")

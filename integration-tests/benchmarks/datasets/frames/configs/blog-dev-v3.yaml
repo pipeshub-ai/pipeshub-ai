@@ -1,0 +1,53 @@
+# Where PipesHub stands now, on the same 200-question dev split.
+#
+# Differs from blog-dev (89.5%) by: the KB-listing and indexing bug fixes, the
+# search_tools/query keyword steering, and the opt-in telemetry. The five
+# agent-loop tuning changes measured in blog-dev-fixed2 are NOT in this build.
+#
+# oracle is the in-run control: it shares the answering model and judges but no
+# retrieval, so a move in its score means something drifted outside PipesHub.
+run_name: blog-dev-v3
+dataset:
+  split: dev
+corpus:
+  tier: GD
+  scope: all
+  distractor_count: 10000
+pipeshub:
+  index_timeout_s: 172800
+  stream_timeout_s: 1800
+  # Every gold article, and all but ~12 of ~12.5k articles, must reach Qdrant.
+  min_gold_indexed_ratio: 1.0
+  min_indexed_ratio: 0.999
+answerer:
+  model: gpt-5.6-luna
+  provider: azureOpenAI
+  is_reasoning: true
+  reasoning_effort: high
+embedding:
+  model: text-embedding-3-small
+  provider: azureOpenAI
+pricing:
+  gpt-5.6-luna:
+    input_per_mtok: 0.20
+    cached_input_per_mtok: 0.02
+    output_per_mtok: 1.20
+    long_context_threshold: 272000
+    long_context_input_multiplier: 2.0
+    long_context_output_multiplier: 1.5
+    source: "OpenAI API pricing, standard tier, effective 2026-07-30"
+systems:
+  - kind: oracle
+    concurrency: 8
+  - kind: pipeshub
+    concurrency: 3
+grading:
+  primary:
+    model: claude-sonnet-5
+    provider: anthropic
+  secondary:
+    model: gemini-3.8-flash
+    provider: gemini
+limits:
+  max_cost_usd: 300
+  max_error_rate: 0.2

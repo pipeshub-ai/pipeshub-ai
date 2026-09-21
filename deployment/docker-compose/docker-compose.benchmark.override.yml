@@ -9,6 +9,12 @@
 # mode, and `guard.py` fails the run if a disallowed tool is called anyway.
 # See integration-tests/benchmarks/frames/README.md.
 #
+# Skills are off for the same reason, and because leaving them on is strictly
+# waste here: every builtin pack (pdf, docx, xlsx, pptx, data-analysis, ...)
+# executes in the coding sandbox that the line above just disabled, so the
+# ~1.7k prompt tokens they cost per request (4 pinned tool schemas plus the
+# catalog section) advertise capabilities no run can reach.
+#
 # The RAG baselines read PipesHub's Qdrant directly; with the default
 # docker-compose.yml (which doesn't publish it) also layer
 # docker-compose.benchmark.ports.yml.
@@ -16,3 +22,4 @@ services:
   pipeshub-ai:
     environment:
       - PIPESHUB_ENABLE_CODE_EXECUTION=false
+      - PIPESHUB_ENABLE_SKILLS=false
