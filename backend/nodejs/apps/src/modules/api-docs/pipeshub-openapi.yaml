@@ -7103,6 +7103,15 @@ components:
             that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -7309,6 +7318,15 @@ components:
             send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -7540,6 +7558,15 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -7711,6 +7738,15 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid

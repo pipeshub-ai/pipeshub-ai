@@ -63,6 +63,13 @@ export const assignAgentCapabilitiesToPayload = (
   ) {
     payload.agentCapabilities = caps;
   }
+  // Opt-in measurement surface: Python only streams `retrieval_context` and
+  // `run_usage` frames when this is true. Forwarded alongside the capability
+  // toggles because it travels the same path and has the same default-off
+  // contract; omitted entirely when absent so Python sees no key at all.
+  if (body.includeRetrievalContext === true) {
+    payload.includeRetrievalContext = true;
+  }
 };
 
 /** Which AI-backend chat a turn is for: the assistant, or one saved agent. */

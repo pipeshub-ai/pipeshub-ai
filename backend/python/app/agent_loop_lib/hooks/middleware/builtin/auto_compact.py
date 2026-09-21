@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import logging
 from collections.abc import Awaitable, Callable
 
@@ -82,12 +85,21 @@ def _naive_summary(messages: list[Message]) -> str:
     return joined or "(no content)"
 
 
-def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summarizer:
+def make_llm_summarizer(
+    transport_registry,
+    provider: str,
+    model: str,
+    on_usage: Callable[[Any], None] | None = None,
+) -> Summarizer:
     """Build a ``Summarizer`` that calls the real LLM via the already-lazy
     ``TransportRegistry`` — resolving (and thus instantiating) the
     transport only the first time compaction actually triggers, not at
     wiring time.  Single source of truth for both ``ControlPlane`` and
-    ``PipesHubAgentFactory``."""
+    ``PipesHubAgentFactory``.
+
+    ``on_usage`` receives each summarisation call's token usage. These calls
+    happen outside the agent's own turn loop, so nothing else counts them —
+    and a long run can spend a real share of its budget here."""
     from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage
     from app.agent_loop_lib.core.tokens import extract_text
 
@@ -155,6 +167,8 @@ def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summar
                 system=_SUMMARIZER_SYSTEM,
                 model=model,
             )
+            if on_usage is not None and getattr(response, "usage", None) is not None:
+                on_usage(response.usage)
             text = response.message.text
             if not text or not text.strip():
                 return _naive_summary(messages)
