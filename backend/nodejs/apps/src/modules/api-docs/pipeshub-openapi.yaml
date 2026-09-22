@@ -881,6 +881,7 @@ components:
             - At least 1 lowercase letter
             - At least 1 number
             - At least 1 special character (#?!@$%^&*-)
+            - At most 72 bytes (bcrypt ignores anything past that)
           minLength: 8
           pattern: '^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[#?!@$%^&*-]).{8,}$'
         cf-turnstile-response:
@@ -18390,10 +18391,18 @@ paths:
         - `role`: Optional, `admin` or `member` (defaults to `member` when omitted)
         - `mobile`: Optional, must match `^\+?[0-9]{10,15}$`
         - `designation`: Optional string
+        - `password`: Optional starting password, accepted only for the bundled
+          demo personas. The address must end in `@acme-demo.example`, and the
+          password must be at least 8 characters with an uppercase letter, a
+          lowercase letter, a number and a special character, and at most 72
+          bytes (bcrypt ignores anything past that). Invite real users instead,
+          so they choose their own password.
 
         **Side effects:**
 
         - User is automatically added to the "everyone" group via `$addToSet`
+        - When `password` is given, the bcrypt hash is written to the user's
+          `UserCredentials` record, so the account can sign in straight away
         - A `NewUserEvent` is published to the event bus
 
         **Authorization:** Admin privileges required (`userAdminCheck` middleware).
@@ -18437,6 +18446,14 @@ paths:
                   type: string
                   description: Job title or designation
                   example: "Software Engineer"
+                password:
+                  type: string
+                  minLength: 8
+                  description: |
+                    Starting password for a bundled demo persona. Only accepted when
+                    `email` ends in `@acme-demo.example`. At least 8 characters with an
+                    uppercase letter, a lowercase letter, a number and a special
+                    character, and at most 72 bytes.
       responses:
         '201':
           description: User created successfully
@@ -18452,6 +18469,8 @@ paths:
             - Invalid email format
             - Invalid role (must be `admin` or `member` when provided)
             - Invalid mobile number format
+            - `password` given for an address outside `@acme-demo.example`
+            - `password` fails the complexity rules or is longer than 72 bytes
             - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:

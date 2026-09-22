@@ -503,7 +503,7 @@ export class UserAccountController {
       const isPasswordValid = passwordValidator(newPassword);
       if (!isPasswordValid) {
         throw new BadRequestError(
-          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number, and one special character.',
+          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number, and one special character, and be no longer than 72 bytes.',
         );
       }
       let userCredentialData = await UserCredentials.findOne({
