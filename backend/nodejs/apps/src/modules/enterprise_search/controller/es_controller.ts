@@ -3012,7 +3012,82 @@ export const getAllConversations = async (
   }
 };
 
-export const getConversationById = async (
+const CONVERSATION_PERMISSION_SYNC_TIMEOUT_MS = 15_000;
+// Awaited on a shared viewer's conversation load, so a degraded AI service must
+// not stall the read.
+const CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS = 3_000;
+
+interface ConversationPermissionSyncOptions {
+  appConfig: AppConfig;
+  records: 'attachments' | 'artifacts';
+  method: typeof HttpMethod.POST | typeof HttpMethod.DELETE;
+  // Conversation owner. Python only grants/revokes on records this user OWNS,
+  // so callers must have verified ownership or sharing in Mongo first.
+  grantorUserId: string;
+  orgId: string;
+  body: Record<string, unknown>;
+  requestId?: string;
+  conversationId?: string;
+  timeoutMs?: number;
+  maxAttempts?: number;
+}
+
+// Best-effort: a failure is logged and never fails the share/unshare/view.
+const syncConversationRecordPermissions = async ({
+  appConfig,
+  records,
+  method,
+  grantorUserId,
+  orgId,
+  body,
+  requestId,
+  conversationId,
+  timeoutMs = CONVERSATION_PERMISSION_SYNC_TIMEOUT_MS,
+  maxAttempts,
+}: ConversationPermissionSyncOptions): Promise<void> => {
+  const logContext = { requestId, conversationId, records, method };
+  try {
+    const serviceToken = new AuthTokenService(
+      appConfig.jwtSecret,
+      appConfig.scopedJwtSecret,
+    ).generateScopedToken(
+      {
+        userId: grantorUserId,
+        orgId,
+        scopes: [TokenScopes.CONVERSATION_PERMISSIONS],
+      },
+      '5m',
+    );
+    const response = await new AIServiceCommand({
+      uri: `${appConfig.aiBackend}/api/v1/chat/${records}/permissions`,
+      method,
+      headers: {
+        Authorization: `Bearer ${serviceToken}`,
+        'Content-Type': 'application/json',
+      },
+      body,
+      timeoutMs,
+      maxAttempts,
+    }).execute();
+    // execute() resolves on 4xx/5xx; only transport errors reject.
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      logger.warn('Conversation record permission sync rejected', {
+        ...logContext,
+        statusCode: response.statusCode,
+        response: response.data,
+      });
+    }
+  } catch (error: any) {
+    logger.warn('Conversation record permission sync failed', {
+      ...logContext,
+      error: error.message,
+    });
+  }
+};
+
+export const getConversationById =
+  (appConfig: AppConfig) =>
+  async (
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
@@ -3088,6 +3163,26 @@ export const getConversationById = async (
 
     if (!session) {
       throw new NotFoundError('Conversation not found');
+    }
+
+    // Sharing only grants READER on artifacts that existed at share time, so a
+    // shared viewer is caught up on artifacts created since. Awaited so the edges
+    // exist before the client requests artifact content; older pages carry no
+    // new artifacts and skip it.
+    const initiatorId = session.initiator?.toString();
+    if (page === 1 && initiatorId && initiatorId !== userId) {
+      await syncConversationRecordPermissions({
+        appConfig,
+        records: 'artifacts',
+        method: HttpMethod.POST,
+        grantorUserId: initiatorId,
+        orgId,
+        body: { conversationId, userIds: [userId] },
+        requestId,
+        conversationId,
+        timeoutMs: CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS,
+        maxAttempts: 1,
+      });
     }
 
     const sessionId = session._id as unknown as Types.ObjectId;
@@ -3481,30 +3576,26 @@ export const shareConversationById =
         ),
       ];
 
+      const grantor = {
+        appConfig,
+        method: HttpMethod.POST,
+        grantorUserId: String(userId),
+        orgId: String(orgId),
+        requestId,
+        conversationId,
+      } as const;
       if (attachmentRecordIds.length > 0) {
-        try {
-          const permissionPayload = {
-            userIds,
-            recordIds: attachmentRecordIds,
-          };
-          const permissionCommandOptions: AICommandOptions = {
-            uri: `${appConfig.aiBackend}/api/v1/chat/attachments/permissions`,
-            method: HttpMethod.POST,
-            headers: {
-              ...(req.headers as Record<string, string>),
-              'Content-Type': 'application/json',
-            },
-            body: permissionPayload,
-          };
-          await new AIServiceCommand(permissionCommandOptions).execute();
-        } catch (permissionError: any) {
-          logger.warn('Failed to grant attachment permissions after sharing conversation', {
-            requestId,
-            conversationId,
-            error: permissionError.message,
-          });
-        }
+        await syncConversationRecordPermissions({
+          ...grantor,
+          records: 'attachments',
+          body: { userIds, recordIds: attachmentRecordIds },
+        });
       }
+      await syncConversationRecordPermissions({
+        ...grantor,
+        records: 'artifacts',
+        body: { conversationId, userIds },
+      });
 
       logger.debug('Conversation shared successfully', {
         requestId,
@@ -3655,30 +3746,26 @@ export const unshareConversationById =
       ),
     ];
 
+    const grantor = {
+      appConfig,
+      method: HttpMethod.DELETE,
+      grantorUserId: String(userId),
+      orgId: String(orgId),
+      requestId,
+      conversationId,
+    } as const;
     if (attachmentRecordIds.length > 0) {
-      try {
-        const revokePayload = {
-          userIds,
-          recordIds: attachmentRecordIds,
-        };
-        const revokeCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/chat/attachments/permissions`,
-          method: HttpMethod.DELETE,
-          headers: {
-            ...(req.headers as Record<string, string>),
-            'Content-Type': 'application/json',
-          },
-          body: revokePayload,
-        };
-        await new AIServiceCommand(revokeCommandOptions).execute();
-      } catch (revokeError: any) {
-        logger.warn('Failed to revoke attachment permissions after unsharing conversation', {
-          requestId,
-          conversationId,
-          error: revokeError.message,
-        });
-      }
+      await syncConversationRecordPermissions({
+        ...grantor,
+        records: 'attachments',
+        body: { userIds, recordIds: attachmentRecordIds },
+      });
     }
+    await syncConversationRecordPermissions({
+      ...grantor,
+      records: 'artifacts',
+      body: { conversationId, userIds },
+    });
 
     logger.debug('Conversation unshared successfully', {
       requestId,

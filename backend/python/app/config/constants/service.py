@@ -52,6 +52,9 @@ class TokenScopes(Enum):
     # (the name predates the route; it is not tied to signed URLs).
     CONNECTOR_SIGNED_URL = "connector:signedUrl"
     CONVERSATION_CREATE = "conversation:create"
+    # Node -> query: grant/revoke permission edges on a conversation's attachments
+    # and artifacts, after Node has checked ownership/sharing in Mongo.
+    CONVERSATION_PERMISSIONS = "conversation:permissions"
 
 
 class OAuthScopes(str, Enum):

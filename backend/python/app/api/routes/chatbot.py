@@ -1,10 +1,10 @@
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 import base64
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from dependency_injector.wiring import inject
@@ -25,7 +25,7 @@ from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import require_scopes, require_service_token
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.config.constants.arangodb import CollectionNames, Connectors
@@ -50,6 +50,7 @@ from app.utils.attachment_mime_types import (
     SUPPORTED_ATTACHMENT_MIME_TYPES,
     TEXT_ATTACHMENT_MIME_TYPES,
 )
+from app.utils.concurrency import gather_with_concurrency
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -846,103 +847,295 @@ class AttachmentPermissionRequest(BaseModel):
     recordIds: list[str]
 
 
-@router.post("/chat/attachments/permissions", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+class ArtifactPermissionRequest(BaseModel):
+    conversationId: str
+    userIds: list[str]
+
+
+_PermissionRequestT = TypeVar("_PermissionRequestT", bound=BaseModel)
+
+_PERMISSION_EDGE_LOOKUP_CONCURRENCY = 16
+
+
+async def _parse_permission_request(
+    request: Request, model: type[_PermissionRequestT]
+) -> _PermissionRequestT:
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+
+    try:
+        return model(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
+
+
+def _permission_grantor(claims: Mapping[str, Any]) -> tuple[str, str]:
+    """Node signs the conversation owner's `userId`/`orgId` into the service token
+    only after checking ownership or sharing in Mongo; the body is never trusted
+    for either."""
+    org_id = claims.get("orgId")
+    grantor_user_id = claims.get("userId")
+    if not org_id or not grantor_user_id:
+        raise HTTPException(status_code=400, detail="Service token must carry orgId and userId")
+    return org_id, grantor_user_id
+
+
+async def _resolve_user_keys(
+    graph_provider: IGraphDBProvider, user_ids: list[str]
+) -> list[str]:
+    """Resolve auth `userId`s to the User node's internal `_key`/`id` — permission
+    edges MATCH the User node, not the auth `userId`. Unresolvable users are logged
+    and skipped rather than failing the whole batch."""
+    user_keys: list[str] = []
+    for user_id in user_ids:
+        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        if not user_doc:
+            logger.warning("User not found for permission grant/revoke, skipping: %s", user_id)
+            continue
+        user_key = user_doc.get("_key") or user_doc.get("id")
+        if not user_key:
+            logger.warning("Resolved user missing _key/id, skipping: %s", user_id)
+            continue
+        user_keys.append(user_key)
+    return user_keys
+
+
+async def _get_permission_edges(
+    graph_provider: IGraphDBProvider, pairs: list[tuple[str, str]]
+) -> list[dict[str, Any] | None]:
+    """`USER -> RECORD` permission edge (or None) for each `(user_key, record_id)`, in order."""
+    return await gather_with_concurrency(
+        _PERMISSION_EDGE_LOOKUP_CONCURRENCY,
+        *(
+            graph_provider.get_edge(
+                from_id=user_key,
+                from_collection=CollectionNames.USERS.value,
+                to_id=record_id,
+                to_collection=CollectionNames.RECORDS.value,
+                collection=CollectionNames.PERMISSION.value,
+            )
+            for user_key, record_id in pairs
+        ),
+    )
+
+
+async def _records_owned_by(
+    graph_provider: IGraphDBProvider, grantor_user_id: str, record_ids: list[str]
+) -> set[str]:
+    """Only records the grantor OWNS may be shared onward. Attachment recordIds come
+    from the client's message body, so without this a sharer could hand out (or
+    strip) access to records they cannot see themselves."""
+    grantor_keys = await _resolve_user_keys(graph_provider, [grantor_user_id])
+    if not grantor_keys or not record_ids:
+        return set()
+    edges = await _get_permission_edges(
+        graph_provider, [(grantor_keys[0], record_id) for record_id in record_ids]
+    )
+    return {
+        record_id
+        for record_id, edge in zip(record_ids, edges)
+        if edge and edge.get("role") == "OWNER"
+    }
+
+
+async def _user_record_pairs(
+    graph_provider: IGraphDBProvider, user_ids: list[str], record_ids: list[str]
+) -> tuple[list[tuple[str, str]], list[dict[str, Any] | None]]:
+    user_keys = await _resolve_user_keys(graph_provider, list(dict.fromkeys(user_ids)))
+    pairs = [
+        (user_key, record_id)
+        for user_key in dict.fromkeys(user_keys)
+        for record_id in dict.fromkeys(record_ids)
+    ]
+    return pairs, await _get_permission_edges(graph_provider, pairs)
+
+
+async def _grant_reader_permissions(
+    graph_provider: IGraphDBProvider,
+    grantor_user_id: str,
+    user_ids: list[str],
+    record_ids: list[str],
+) -> int:
+    """Create READER edges for pairs with no permission edge yet, on records the
+    grantor owns. Existing edges are left alone: `batch_create_edges` overwrites
+    every property, so re-granting would downgrade an OWNER edge and rewrite edges
+    on every shared conversation view."""
+    if not user_ids or not record_ids:
+        return 0
+
+    pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
+    missing = [pair for pair, edge in zip(pairs, existing) if edge is None]
+    if not missing:
+        return 0
+
+    owned = await _records_owned_by(
+        graph_provider, grantor_user_id, list(dict.fromkeys(record_id for _, record_id in missing))
+    )
+    ts = get_epoch_timestamp_in_ms()
+    edges: list[dict[str, Any]] = [
+        {
+            "from_id": user_key,
+            "from_collection": CollectionNames.USERS.value,
+            "to_id": record_id,
+            "to_collection": CollectionNames.RECORDS.value,
+            "type": "USER",
+            "role": "READER",
+            "createdAtTimestamp": ts,
+            "updatedAtTimestamp": ts,
+        }
+        for user_key, record_id in missing
+        if record_id in owned
+    ]
+    if edges:
+        await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
+    return len(edges)
+
+
+async def _revoke_reader_permissions(
+    graph_provider: IGraphDBProvider,
+    grantor_user_id: str,
+    user_ids: list[str],
+    record_ids: list[str],
+) -> int:
+    """Remove READER edges on records the grantor owns. `batch_delete_edges` matches
+    `(_from, _to)` regardless of role, so without the READER filter an unshare that
+    names the owner would delete the owner's own OWNER edges."""
+    if not user_ids or not record_ids:
+        return 0
+
+    pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
+    readers = [
+        pair for pair, edge in zip(pairs, existing) if edge and edge.get("role") == "READER"
+    ]
+    if not readers:
+        return 0
+
+    owned = await _records_owned_by(
+        graph_provider, grantor_user_id, list(dict.fromkeys(record_id for _, record_id in readers))
+    )
+    edges: list[dict[str, Any]] = [
+        {
+            "from_id": user_key,
+            "from_collection": CollectionNames.USERS.value,
+            "to_id": record_id,
+            "to_collection": CollectionNames.RECORDS.value,
+        }
+        for user_key, record_id in readers
+        if record_id in owned
+    ]
+    if edges:
+        await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
+    return len(edges)
+
+
+async def _get_artifact_record_ids_for_conversation(
+    graph_provider: IGraphDBProvider, org_id: str, conversation_id: str
+) -> list[str]:
+    """Every artifact record id (`_key`, shared with its `records` doc) in a
+    conversation. Sorted so SKIP/LIMIT pages don't overlap or skip, and raises on
+    graph errors rather than reporting them as "no artifacts"."""
+    record_ids: list[str] = []
+    skip = 0
+    page_size = 200
+    while True:
+        docs = await graph_provider.get_documents_paginated(
+            CollectionNames.ARTIFACTS.value,
+            skip=skip,
+            limit=page_size,
+            filters={"orgId": org_id, "conversationId": conversation_id},
+            sort_field="_key",
+            raise_on_error=True,
+        )
+        if not docs:
+            break
+        for doc in docs:
+            record_id = doc.get("_key") or doc.get("id")
+            if record_id:
+                record_ids.append(record_id)
+        if len(docs) < page_size:
+            break
+        skip += page_size
+    return record_ids
+
+
+@router.post("/chat/attachments/permissions")
 @inject
 async def grant_attachment_permissions(
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
 ) -> dict[str, Any]:
-    """Grant READER permission edges on chat attachment records to the specified users."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
-
-    try:
-        payload = AttachmentPermissionRequest(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
-
-    if not payload.userIds or not payload.recordIds:
-        return {"granted": 0}
-
-    ts = get_epoch_timestamp_in_ms()
-    edges: list[dict[str, Any]] = []
-
-    for user_id in payload.userIds:
-        user_doc = await graph_provider.get_user_by_user_id(user_id)
-        if not user_doc:
-            logger.warning("User not found for permission grant, skipping: %s", user_id)
-            continue
-        user_key = user_doc.get("_key") or user_doc.get("id")
-        if not user_key:
-            logger.warning("Resolved user missing _key/id, skipping: %s", user_id)
-            continue
-        for record_id in payload.recordIds:
-            edges.append(
-                {
-                    "from_id": user_key,
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_id": record_id,
-                    "to_collection": CollectionNames.RECORDS.value,
-                    "type": "USER",
-                    "role": "READER",
-                    "createdAtTimestamp": ts,
-                    "updatedAtTimestamp": ts,
-                }
-            )
-
-    if edges:
-        await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
-
-    return {"granted": len(edges)}
+    """Grant READER on chat attachment records to the users a conversation was shared with."""
+    _, grantor_user_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, AttachmentPermissionRequest)
+    granted = await _grant_reader_permissions(
+        graph_provider, grantor_user_id, payload.userIds, payload.recordIds
+    )
+    return {"granted": granted}
 
 
-@router.delete("/chat/attachments/permissions", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@router.delete("/chat/attachments/permissions")
 @inject
 async def revoke_attachment_permissions(
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
 ) -> dict[str, Any]:
-    """Remove READER permission edges on chat attachment records for the specified users."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+    """Revoke READER on chat attachment records from users a conversation was unshared from."""
+    _, grantor_user_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, AttachmentPermissionRequest)
+    revoked = await _revoke_reader_permissions(
+        graph_provider, grantor_user_id, payload.userIds, payload.recordIds
+    )
+    return {"revoked": revoked}
 
-    try:
-        payload = AttachmentPermissionRequest(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
 
-    if not payload.userIds or not payload.recordIds:
+@router.post("/chat/artifacts/permissions")
+@inject
+async def grant_artifact_permissions(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
+) -> dict[str, Any]:
+    """Grant READER on a conversation's artifacts. Node calls this on share, and on
+    each shared viewer's first-page load so artifacts created after the share
+    become readable."""
+    org_id, grantor_user_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, ArtifactPermissionRequest)
+    if not payload.userIds:
+        return {"granted": 0}
+
+    record_ids = await _get_artifact_record_ids_for_conversation(
+        graph_provider, org_id, payload.conversationId
+    )
+    granted = await _grant_reader_permissions(
+        graph_provider, grantor_user_id, payload.userIds, record_ids
+    )
+    return {"granted": granted}
+
+
+@router.delete("/chat/artifacts/permissions")
+@inject
+async def revoke_artifact_permissions(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
+) -> dict[str, Any]:
+    """Revoke READER on a conversation's artifacts from users it was unshared from."""
+    org_id, grantor_user_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, ArtifactPermissionRequest)
+    if not payload.userIds:
         return {"revoked": 0}
 
-    edges: list[dict[str, Any]] = []
-
-    for user_id in payload.userIds:
-        user_doc = await graph_provider.get_user_by_user_id(user_id)
-        if not user_doc:
-            logger.warning("User not found for permission revoke, skipping: %s", user_id)
-            continue
-        user_key = user_doc.get("_key") or user_doc.get("id")
-        if not user_key:
-            logger.warning("Resolved user missing _key/id, skipping: %s", user_id)
-            continue
-        for record_id in payload.recordIds:
-            edges.append(
-                {
-                    "from_id": user_key,
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_id": record_id,
-                    "to_collection": CollectionNames.RECORDS.value,
-                }
-            )
-
-    if edges:
-        await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
-
-    return {"revoked": len(edges)}
+    record_ids = await _get_artifact_record_ids_for_conversation(
+        graph_provider, org_id, payload.conversationId
+    )
+    revoked = await _revoke_reader_permissions(
+        graph_provider, grantor_user_id, payload.userIds, record_ids
+    )
+    return {"revoked": revoked}
 
 
 @router.delete(
