@@ -370,13 +370,15 @@ export class StorageController {
       }
 
       const orgId = extractOrgId(req);
+      if (!mongoose.isValidObjectId(orgId)) {
+        throw new BadRequestError('Invalid organization ID');
+      }
+
       const escapedPrefix = pathPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const query: Record<string, any> = {
         documentPath: { $regex: `^${escapedPrefix}(?:/|$)` },
       };
-      if (orgId && mongoose.isValidObjectId(orgId)) {
-        query.orgId = new mongoose.Types.ObjectId(orgId);
-      }
+      query.orgId = new mongoose.Types.ObjectId(orgId);
       const documents = await DocumentModel.find(query);
 
       const successfulDocIds: mongoose.Types.ObjectId[] = [];
