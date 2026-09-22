@@ -53,7 +53,7 @@ def conversation_enrichment(context: AgentContext) -> "Middleware[TurnContext]":
     return _middleware
 
 
-def _tool_names_used_in_history(previous_conversations: list[dict[str, Any]]) -> set[str]:
+def tool_names_used_in_history(previous_conversations: list[dict[str, Any]]) -> set[str]:
     """Every `tool_name` recorded in each turn's `tool_results` (same shape
     `_convert_conversation_turn` replays into context — see
     `factory.py::_convert_conversation_turn`'s docstring for the field
@@ -113,7 +113,7 @@ def seed_visible_tools_from_history(context: AgentContext) -> "Middleware[TurnCo
             return
 
         spec = run_scope.spec
-        prior_names = _tool_names_used_in_history(context.previous_conversations)
+        prior_names = tool_names_used_in_history(context.previous_conversations)
         registered = set(registry.names())
         prior_names &= registered
         if spec.tool_names:
@@ -127,4 +127,4 @@ def seed_visible_tools_from_history(context: AgentContext) -> "Middleware[TurnCo
     return _middleware
 
 
-__all__ = ["conversation_enrichment", "seed_visible_tools_from_history"]
+__all__ = ["conversation_enrichment", "seed_visible_tools_from_history", "tool_names_used_in_history"]

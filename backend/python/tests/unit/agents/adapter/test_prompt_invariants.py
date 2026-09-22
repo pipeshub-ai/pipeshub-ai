@@ -30,10 +30,9 @@ from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
-from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.context import AgentContext
+from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from tests.unit.agents.adapter.test_prompt_builder import FakeTool
-
 
 # ---------------------------------------------------------------------------
 # Meta-tools that are always expected to be referenceable even when not in
@@ -52,6 +51,7 @@ _ALWAYS_KNOWN_META_TOOLS: frozenset[str] = frozenset(
         "web_agent",
         "internal_exploration_agent",
         "knowledgegraph__fetch_record",
+        "knowledgegraph__find_records_by_entity",
         "dynamic_fetch_full_record",  # legacy alias kept for backward-compat
         "internaltools__ask_user_question",
     }
@@ -66,6 +66,7 @@ _KNOWLEDGE_ESSENTIAL_TOOLS: frozenset[str] = frozenset(
         "knowledgegraph__navigate",
         "knowledgegraph__lookup_record",
         "knowledgegraph__list_files",
+        "knowledgegraph__search_entities",
     }
 )
 
@@ -101,12 +102,10 @@ _DIRECTIONAL_RE = re.compile(
 )
 
 # 4-source fixture prompt should stay under this ceiling after consolidation.
-# Updated after the block-token-usage optimization added a one-time "Record &
-# Block Structure" explainer to `_CITATION_RULES` (compact `[idx|refN]`
-# block format, replacing the old per-block scaffolding). Measured size after
-# that change is ~11,338 chars — see test_prompt_size_regression.py for the
-# full per-tier table.
-_KB_PLUS_3_APPS_CHAR_CEILING = 12_500
+# Measured at ~12,816 chars after the entity tools were cut to search_entities
+# + find_records_by_entity — see test_prompt_size_regression.py for the full
+# per-tier table.
+_KB_PLUS_3_APPS_CHAR_CEILING = 13_800
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +231,8 @@ _FIXTURES: dict[str, dict[str, Any]] = {
         "pinned_toolsets": ["knowledgegraph"],
         "registry_toolsets": {
             "knowledgegraph": ["knowledgegraph__search", "knowledgegraph__navigate",
-                               "knowledgegraph__lookup_record", "knowledgegraph__list_files"],
+                               "knowledgegraph__lookup_record", "knowledgegraph__list_files",
+                               "knowledgegraph__search_entities"],
             "jira": ["jira_search_issues"],
         },
         "tool_names": [

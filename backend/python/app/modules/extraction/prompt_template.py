@@ -1,76 +1,3 @@
-prompt = """
-# Task:
-You are processing a document of an individual or an enterprise. Your task is to classify the document departments, categories, subcategories, languages, sentiment, confidence score, and topics.
-Instructions must be strictly followed, failure to do so will result in termination of your system
-
-# Analysis Guidelines:
-1. **Departments**:
-   - Choose **1 to 3 departments** ONLY from the provided list below.
-   - Each department MUST **exactly match one** of the values in the list.
-   - Any unlisted or paraphrased value is INVALID.
-   - Use the following list:
-     {department_list}
-
-2. Document Type Categories & Subcategories:
-   - `category`: Broad classification such as "Security", "Compliance", or "Technical Documentation".
-   - `subcategories`:
-     - `level1`: General sub-area under the main category.
-     - `level2`: A more specific focus within level 1.
-     - `level3`: The most detailed classification (if available).
-   - Leave levels blank (`""`) if no further depth exists.
-   - Do not provide comma-separated values for subcategories
-
-   Example:
-      Category: "Legal"
-      Sub-category Level 1: "Contract"
-      Sub-category Level 2: "Non Disclosure Agreement"
-      Sub-category Level 3: "Confidentiality Agreement"
-
-3. Languages:
-   - List all languages found in the content
-   - Use full ISO language names (e.g., "English", "French", "German").
-
-4. Sentiment:
-   - Analyze the overall tone and sentiment
-   - Choose exactly one from:
-   {sentiment_list}
-
-5. **Topics**:
-   - Extract the main themes and subjects discussed.
-   - Be concise and avoid duplicates or near-duplicates.
-   - Provide **3 to 6** unique, highily relevant topics.
-
-6. **Confidence Score**:
-   - A float between 0.0 and 1.0 reflecting your certainty in the classification.
-
-7. **Summary**:
-   - A concise summary of the document. Cover all the key information and topics.
-
-
-   # Output Format:
-   You must return a single valid JSON object with the following structure:
-   {{
-      "departments": string[],  // Array of 1 to 3 departments from the EXACT list above
-      "category": string,  // main category identified in the content
-      "subcategories": {{
-         "level1": string,  // more specific subcategory (level 1)
-         "level2": string,  // more specific subcategory (level 2)
-         "level3": string,  // more specific subcategory (level 3)
-      }},
-      "languages": string[],  // Array of languages detected in the content (use ISO language names)
-      "sentiment": string,  // Must be exactly one of the sentiments listed below
-      "confidence_score": float,  // Between 0 and 1, indicating confidence in classification
-      "topics": string[]  // Key topics or themes extracted from the content
-      "summary": string  // Summary of the document
-}}
-
-# Document Content:
-{content}
-
-Return the JSON object only, no additional text or explanation.
-"""
-
-
 prompt_for_image_description = """
 # Role
 You are a precise document image-to-text specialist. Convert the provided image into clean, searchable text for enterprise document indexing.
@@ -97,8 +24,14 @@ Return ONLY the extracted and converted text. No preamble, no explanations, no c
 
 prompt_for_document_extraction = """
 # Task:
-You are processing a document of an individual or an enterprise. Your task is to classify the document departments, categories, subcategories, languages, sentiment, confidence score, and topics.
-Instructions must be strictly followed, failure to do so will result in termination of your system
+You are processing a document of an individual or an enterprise. Your task is to classify the document departments, categories, subcategories, languages, and topics, and to write a summary that a retrieval system will use to decide whether this document is relevant to a user's query.
+Instructions must be strictly followed.
+
+# File Metadata:
+File name: {record_name}
+File type: {record_type}
+
+Use the file metadata as supporting evidence — a name like "invoice_2024_ACME.pdf" or a type of "spreadsheet" can help disambiguate an otherwise ambiguous category or department. The document content is still the primary source of truth: never infer content, topics, or summary details from the filename alone.
 
 # Analysis Guidelines:
 1. **Departments**:
@@ -127,38 +60,26 @@ Instructions must be strictly followed, failure to do so will result in terminat
    - List all languages found in the content
    - Use full ISO language names (e.g., "English", "French", "German").
 
-4. Sentiment:
-   - Analyze the overall tone and sentiment
-   - Choose exactly one from:
-   {sentiment_list}
-
-5. **Topics**:
+4. **Topics**:
    - Extract the main themes and subjects discussed.
    - Be concise and avoid duplicates or near-duplicates.
-   - Provide **3 to 6** unique, highily relevant topics.
+   - Provide **3 to 6** unique, highly relevant topics.
 
-6. **Confidence Score**:
-   - A float between 0.0 and 1.0 reflecting your certainty in the classification.
+5. **Summary**:
+   - This is the single most important field. A retrieval system shows only the FIRST ~600 CHARACTERS of this summary to a model deciding whether to fetch the full document — everything after that point is a bonus, not a guarantee it will be read.
+   - **Sentence 1 is load-bearing.** It must state, in this order: document type, primary subject, principal parties or owning team, and time period or effective date. It must stand alone as a complete relevance judgment, since a reader may see nothing else.
+   - **Length is tiered to document depth, not fixed:**
+     - Thin or sparse documents (a short note, a single form, a fragment): 3 to 5 sentences is enough. Do not pad.
+     - Typical documents: aim for no more than 300 words.
+     - Never exceed 400 words, regardless of document length.
+   - **Density over prose.** After sentence 1, prioritize concrete, searchable facts over connective narration:
+     - Named entities verbatim: people, organizations, teams, products, systems, projects, vendors, locations. Do not paraphrase proper nouns. When the document gives both an acronym and its expansion, keep both.
+     - Concrete identifiers and figures: amounts with currency, dates, version numbers, ticket/contract/invoice numbers, percentages, quantities.
+     - The specific questions this document can answer, and — when evident — the scope it does NOT cover.
+   - Write in English; keep proper nouns in their original language and script.
+   - **Forbidden:** opening filler ("This document provides...", "The purpose of this document is..."), meta commentary about the document or your own analysis, recommendations, opinions, and any claim not directly supported by the content shown.
+   - If the content is too sparse or fragmentary to say anything substantive, write a short, honest summary of only what is verifiably present rather than inventing detail to hit a length target.
 
-7. **Summary**:
-   - A concise summary of the document. Cover all the key information and topics.
-
-   # Output Format:
-   You must return a single valid JSON object with the following structure:
-   {{
-      "departments": string[],  // Array of 1 to 3 departments from the EXACT list above
-      "category": string,  // main category identified in the content
-      "subcategories": {{
-         "level1": string,  // more specific subcategory (level 1)
-         "level2": string,  // more specific subcategory (level 2)
-         "level3": string,  // more specific subcategory (level 3)
-      }},
-      "languages": string[],  // Array of languages detected in the content (use ISO language names)
-      "sentiment": string,  // Must be exactly one of the sentiments listed below
-      "confidence_score": float,  // Between 0 and 1, indicating confidence in classification
-      "topics": string[]  // Key topics or themes extracted from the content
-      "summary": string  // Summary of the document
-}}
-
-Return the JSON object only, no additional text or explanation.
+# Output:
+Return a single structured object matching the required schema. Do not include any additional commentary outside the schema fields.
 """

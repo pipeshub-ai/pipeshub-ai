@@ -7,6 +7,8 @@ Usage::
         block_container=container,
         org_id="org-123",
         departments=["Engineering", "Finance"],
+        record_name="Q3 Board Deck.pdf",
+        record_type="FILE",
     )
 """
 from __future__ import annotations
@@ -59,6 +61,8 @@ class ExtractionClient(BaseServiceClient):
         block_container: BlocksContainer,
         org_id: str,
         departments: list[str] | None = None,
+        record_name: str = "",
+        record_type: str = "",
     ) -> SemanticMetadata | None:
         """Call ``POST /api/v1/extract/classify`` and return SemanticMetadata.
 
@@ -70,6 +74,8 @@ class ExtractionClient(BaseServiceClient):
             "block_container": block_container.model_dump(mode="json"),
             "org_id": org_id,
             "departments": departments or [],
+            "record_name": record_name,
+            "record_type": record_type,
         }
 
         response = await self._post_json(

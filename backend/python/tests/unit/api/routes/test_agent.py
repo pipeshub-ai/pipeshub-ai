@@ -3253,6 +3253,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value=None)
@@ -3283,6 +3284,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3326,6 +3328,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3369,6 +3372,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3423,6 +3427,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3474,6 +3479,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3515,6 +3521,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -4116,6 +4123,7 @@ class TestServiceAccountAgentRoutes:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
@@ -4176,6 +4184,7 @@ class TestServiceAccountAgentRoutes:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "_key": "sa-org-a",

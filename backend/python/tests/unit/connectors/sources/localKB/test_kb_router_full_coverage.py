@@ -633,6 +633,29 @@ class TestKbRouterDependencyWiring:
         svc = await get_kb_service(request)
         assert svc.graph_provider is request.app.state.graph_provider
         assert svc.processor is request.app.state.kb_entities_processor
+        # container.entity_vector_store is unconfigured on this bare MagicMock,
+        # so awaiting it raises — must degrade to None rather than propagate.
+        assert svc.entity_vector_store is None
+
+    @pytest.mark.asyncio
+    async def test_get_kb_service_resolves_entity_vector_store(self):
+        """When the container resolves entity_vector_store successfully, it
+        must be threaded into the KnowledgeBaseService for KB-delete cleanup."""
+        from app.connectors.sources.localKB.api.kb_router import get_kb_service
+
+        request = MagicMock()
+        request.app.container = MagicMock()
+        request.app.container.logger.return_value = MagicMock()
+        request.app.container.kafka_service.return_value = AsyncMock()
+        request.app.container.config_service.return_value = MagicMock()
+        request.app.state.graph_provider = AsyncMock()
+        request.app.state.kb_entities_processor = AsyncMock()
+        entity_store = MagicMock()
+        request.app.container.entity_vector_store = AsyncMock(return_value=entity_store)
+
+        svc = await get_kb_service(request)
+
+        assert svc.entity_vector_store is entity_store
 
     @pytest.mark.asyncio
     async def test_get_kafka_service_from_container(self):

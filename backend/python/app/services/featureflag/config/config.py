@@ -31,3 +31,6 @@ class CONFIG:
     # Defaults to enabled; admins may opt out from Labs. Agent Builder agents
     # use their own per-agent `sendUserContext` field instead of this flag.
     ENABLE_USER_CONTEXT = "ENABLE_USER_CONTEXT"
+    # Controls whether coding_sandbox.* tools are exposed to agents.
+    # Defaults to enabled; admins can disable from Labs.
+    ENABLE_CODE_EXECUTION = "ENABLE_CODE_EXECUTION"

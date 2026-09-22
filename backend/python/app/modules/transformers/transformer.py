@@ -15,6 +15,9 @@ class TransformContext(BaseModel):
     event_type: Optional[str] = None
     reconciliation_context: Optional[ReconciliationContext] = None
     prev_virtual_record_id: Optional[str] = None
+    # ``EntityResolution`` set by the resolver in apply mode and read by
+    # GraphDBTransformer; ``Any`` keeps this module free of that import.
+    entity_resolution: Optional[Any] = None
 
 class Transformer(ABC):
     @abstractmethod

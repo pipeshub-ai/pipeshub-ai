@@ -76,7 +76,9 @@ def render_candidate_table(
     Render the inline candidate list appended to the retrieval tool result.
 
     Identity, topics, held/total counts, and coverage percentage sit side by
-    side so the model can tell whether reading further would add anything.
+    side so the model can tell whether reading further would add anything. A
+    summary line (when the record has one) follows each row, giving the model
+    a relevance signal beyond the record name and topics alone.
 
     For the two paths where fetching is the default — whole-document
     requests and low-coverage records — the call-to-action leads BEFORE the
@@ -112,6 +114,8 @@ def render_candidate_table(
         row_lines.append(
             f"{i}. Record ID: {c.record_id} | {name_part} | {held_str} | Topics: {topics_str}"
         )
+        if c.summary:
+            row_lines.append(f"   Summary: {c.summary}")
     rows = "\n".join(row_lines)
 
     if needs_whole_document:

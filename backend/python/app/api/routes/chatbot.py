@@ -1,25 +1,25 @@
 import asyncio
-from collections.abc import AsyncGenerator
 import base64
+import inspect
 import json
 import logging
+from collections.abc import AsyncGenerator
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pdfplumber
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from io import BytesIO
-
-import pdfplumber
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, Field, field_validator
 
-from app.config.constants.ai_models import validate_reasoning_effort
-from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_as_pil_from_bytes_sync
-from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
-from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry, RunOwner
+from app.agents.agent_loop.cancellation.registry import (
+    RunCancellationRegistry,
+    RunOwner,
+)
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
@@ -27,21 +27,34 @@ from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
+from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.containers.query import QueryAppContainer
 from app.events.processor import convert_record_dict_to_record
-from app.models.blocks import Block, BlockType, BlocksContainer, CitationMetadata, DataFormat
+from app.models.blocks import (
+    Block,
+    BlocksContainer,
+    BlockType,
+    CitationMetadata,
+    DataFormat,
+)
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.parsers.pdf.pdf_rasterizer import (
+    render_all_pages_as_pil_from_bytes_sync,
+)
+from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+    PDFPlumberOpenCVProcessor,
+)
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import TransformContext
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.telemetry.event_buffer import record_event
+from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import get_generator_model_async
 from app.utils.attachment_mime_types import (
     DELIMITED_MIME_TYPES,
@@ -1013,6 +1026,26 @@ async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) ->
     return await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
 
 
+async def _load_entity_vector_store(container: Any, logger_: Any) -> Any | None:  # noqa: ANN401
+    """The entity store backing the knowledge-graph entity tools, or None.
+
+    Never raises: without a store the tools are simply not granted, and
+    chat must not fail because an optional dependency is missing, not yet
+    initialised, or (in tests) not awaitable at all.
+    """
+    provider = getattr(container, "entity_vector_store", None)
+    if provider is None:
+        return None
+    try:
+        result = provider()
+        if not inspect.isawaitable(result):
+            return None
+        return await result
+    except Exception as exc:
+        logger_.warning("entity_vector_store unavailable for chat: %s", exc)
+        return None
+
+
 async def load_system_prompts(
     config_service: ConfigurationService, logger_: Any,
 ) -> dict[str, Any]:
@@ -1065,9 +1098,9 @@ async def _generate_chat_stream_via_agent_loop(
     user_id = user.get("userId")
     protocol = resolve_protocol(query_info.protocol, request)
 
-    # LLM init, system prompts and user/org enrichment are independent of each
-    # other and all sit before the first streamed byte, so they run as one wave
-    # instead of four serial round trips.
+    # LLM init, system prompts, user/org enrichment, and the entity vector
+    # store are independent of each other and all sit before the first
+    # streamed byte, so they run as one wave instead of serial round trips.
     llm_task = asyncio.ensure_future(
         get_llm_for_chat(
             config_service, query_info.modelKey, query_info.modelName, query_info.chatMode,
@@ -1078,6 +1111,16 @@ async def _generate_chat_stream_via_agent_loop(
     user_doc_task = asyncio.ensure_future(_load_user_doc(graph_provider, user_id))
     org_doc_task = asyncio.ensure_future(_load_org_doc(graph_provider, org_id))
     user_context_flag_task = asyncio.ensure_future(is_user_context_enabled(config_service))
+    # Optional — backs the knowledgegraph search_entities /
+    # find_records_by_entity tools. When unavailable those tools are simply
+    # not granted, rather than blocking chat.
+    entity_vector_store_task = asyncio.ensure_future(
+        _load_entity_vector_store(container, logger_)
+    )
+    background_tasks = [
+        prompts_task, user_doc_task, org_doc_task,
+        user_context_flag_task, entity_vector_store_task,
+    ]
 
     try:
         llm_bundle = await llm_task
@@ -1085,12 +1128,9 @@ async def _generate_chat_stream_via_agent_loop(
             raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
         llm, model_config, ai_models_config = llm_bundle
     except Exception as exc:
-        for pending in (prompts_task, user_doc_task, org_doc_task, user_context_flag_task):
+        for pending in background_tasks:
             pending.cancel()
-        await asyncio.gather(
-            prompts_task, user_doc_task, org_doc_task, user_context_flag_task,
-            return_exceptions=True,
-        )
+        await asyncio.gather(*background_tasks, return_exceptions=True)
         logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
         error_code, user_message = classify_exception(exc)
         if error_code == "unknown":
@@ -1187,6 +1227,8 @@ async def _generate_chat_stream_via_agent_loop(
     if not user_context_enabled:
         user_info["sendUserInfo"] = False
 
+    entity_vector_store = await entity_vector_store_task
+
     client_name = request.headers.get("client-name")
 
     async for event in run_chat_stream(
@@ -1200,6 +1242,7 @@ async def _generate_chat_stream_via_agent_loop(
         system_prompts_config=system_prompts_config, protocol=protocol,
         client_name=client_name,
         cancellation_registry=cancellation_registry,
+        entity_vector_store=entity_vector_store,
     ):
         yield event
 

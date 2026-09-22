@@ -207,6 +207,16 @@ class SourceCatalog:
         # decide which tool to use for what kind of question.
         lookup = granted("knowledgegraph.lookup_record", _tool_names)
         fetch = granted("knowledgegraph.fetch_record", _tool_names)
+        # Only an agent actually granted search_entities gets the Entities
+        # paragraph — the exploration child renders this catalog without tool
+        # names and has no entity tools. find_records_by_entity is named
+        # literally: it unlocks mid-run, and the prompt text must not change.
+        search_entities = granted("knowledgegraph.search_entities", _tool_names)
+        content_search = (
+            granted("knowledgegraph.search", _tool_names)
+            or granted("retrieval.search_internal_knowledge", _tool_names)
+        )
+        exploration_agent = granted("internal_exploration_agent", _tool_names)
         if not lookup:
             lookup = "knowledgegraph__lookup_record"
         lines.extend([
@@ -234,6 +244,30 @@ class SourceCatalog:
             "the record group or scope list_files to one source, then read what matters.",
             "",
         ])
+        if search_entities:
+            if content_search:
+                entity_content_hint = (
+                    f"To search content inside an entity, pass its id as "
+                    f"`{content_search}(query=..., entity_ids=[...])`."
+                )
+            elif exploration_agent:
+                entity_content_hint = (
+                    f"To search content inside an entity, ask `{exploration_agent}` to run "
+                    "search with `entity_ids=[...]` set to its id."
+                )
+            else:
+                entity_content_hint = ""
+            lines.extend([
+                "**Entities.** Records are tagged with departments, categories, subcategories, "
+                "topics and languages; record groups (a project, space, folder, channel) and "
+                "record titles are indexed too. When a question names one, call "
+                f"`{search_entities}(query=...)`: it returns the entity's type, the apps it "
+                "appears in, and a few openable records for the best matches. "
+                "`knowledgegraph__find_records_by_entity(entity_id=...)` (available after "
+                f"{search_entities}) lists the records connected to one entity, newest first, "
+                f"paging with `cursor`. {entity_content_hint}".rstrip(),
+                "",
+            ])
         # ID-specific header — only when connector IDs are actionable (agent route).
         # On the chat route the model has no IDs to pass so we skip this instruction.
         if self.ids_actionable:
