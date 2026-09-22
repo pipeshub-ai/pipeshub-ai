@@ -280,19 +280,6 @@ export class ServiceTokenService {
     const mcpScopes = await this.configService.getMcpScopes();
     this.scopeValidatorService.validateScopesForApp(scopes, mcpScopes);
 
-    // Refused rather than trimmed. A cap enforced when tokens are issued is
-    // what keeps every one of them visible to the administrator who may need
-    // to revoke it; a cap applied when listing would hide the excess instead.
-    const active = await this.oauthTokenService.countActiveAccessTokensForUser(
-      serviceTokenClientId(orgId),
-      account.id,
-    );
-    if (active >= SERVICE_TOKEN_MAX_ACTIVE) {
-      throw new BadRequestError(
-        `This service account already holds ${String(SERVICE_TOKEN_MAX_ACTIVE)} active tokens. Revoke one before issuing another.`,
-      );
-    }
-
     const expiryDays = this.resolveExpiryDays(request.expiryDays);
     const lifetimeSeconds = expiryDays * SECONDS_PER_DAY;
 
@@ -314,6 +301,29 @@ export class ServiceTokenService {
         name: request.name,
       },
     );
+
+    // Checked after the token exists rather than before, because counting
+    // first and creating second is not a limit: two requests can both count
+    // 49 and both create. Counting afterwards means every token is already in
+    // the number it is measured against, so of two racing requests at the
+    // boundary at least one sees itself over and withdraws — and the token it
+    // withdraws is revoked, not merely unreported.
+    const active = await this.oauthTokenService.countActiveAccessTokensForUser(
+      app.clientId,
+      account.id,
+    );
+    if (active > SERVICE_TOKEN_MAX_ACTIVE) {
+      await this.oauthTokenService.revokeAccessTokenById(
+        tokens.accessTokenId,
+        app.clientId,
+        account.id,
+        actingUserId,
+        'Exceeded the active token limit',
+      );
+      throw new BadRequestError(
+        `This service account already holds ${String(SERVICE_TOKEN_MAX_ACTIVE)} active tokens. Revoke one before issuing another.`,
+      );
+    }
 
     this.logger.info('Service token created', {
       orgId,

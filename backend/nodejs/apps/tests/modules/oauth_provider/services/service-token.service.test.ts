@@ -192,14 +192,16 @@ describe('ServiceTokenService', () => {
   });
 
   describe('the number of live tokens is bounded', () => {
-    it('refuses a new token once the account is at the cap', async () => {
-      // Bounding issuance is what keeps the list complete: no account can
-      // hold more tokens than an administrator can be shown, so none can hide
-      // from revocation.
+    it('refuses a token that takes the account over the cap, and revokes it', async () => {
+      // The count happens after the token exists, so two racing requests
+      // cannot both see room. Whichever sees itself over withdraws, and the
+      // token it withdraws is revoked rather than merely left unreported.
       stubServiceAccount({ fullName: 'Nightly sync', isDisabled: false });
       sinon.stub(OAuthApp, 'findOne').resolves({ clientId: 'x' } as any);
       const { service, tokens } = makeService();
-      tokens.countActiveAccessTokensForUser.resolves(SERVICE_TOKEN_MAX_ACTIVE);
+      tokens.countActiveAccessTokensForUser.resolves(
+        SERVICE_TOKEN_MAX_ACTIVE + 1,
+      );
 
       try {
         await service.createToken(orgId, adminId, {
@@ -211,7 +213,26 @@ describe('ServiceTokenService', () => {
       } catch (error) {
         expect((error as Error).message).to.contain('already holds');
       }
-      expect(tokens.generateTokens.called).to.equal(false);
+      expect(tokens.revokeAccessTokenById.calledOnce).to.equal(true);
+      expect(tokens.revokeAccessTokenById.firstCall.args[0]).to.equal(
+        'token-id-1',
+      );
+    });
+
+    it('allows the token that lands exactly on the cap', async () => {
+      stubServiceAccount({ fullName: 'Nightly sync', isDisabled: false });
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: 'x' } as any);
+      const { service, tokens } = makeService();
+      tokens.countActiveAccessTokensForUser.resolves(SERVICE_TOKEN_MAX_ACTIVE);
+
+      const token = await service.createToken(orgId, adminId, {
+        serviceAccountId: accountId,
+        name: 'the fiftieth',
+        scopes: ['kb:read'],
+      });
+
+      expect(token.accessToken).to.be.a('string');
+      expect(tokens.revokeAccessTokenById.called).to.equal(false);
     });
 
     it('stays well under the number the list can return', () => {

@@ -181,6 +181,7 @@ describe('ServiceAccountsService', () => {
       const restore = sinon.stub(Users, 'findOneAndUpdate').returns({
         exec: sinon.stub().resolves({ ...deleted, isDeleted: false }),
       } as any);
+      sinon.stub(Users, 'updateOne').returns({ exec: sinon.stub().resolves({}) } as any);
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
 
       await service.create(orgId, {
@@ -212,6 +213,7 @@ describe('ServiceAccountsService', () => {
       const restore = sinon.stub(Users, 'findOneAndUpdate').returns({
         exec: sinon.stub().resolves({ ...deleted, isDeleted: false }),
       } as any);
+      sinon.stub(Users, 'updateOne').returns({ exec: sinon.stub().resolves({}) } as any);
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
 
       await service.create(orgId, {
@@ -225,6 +227,9 @@ describe('ServiceAccountsService', () => {
       expect(
         restore.calledBefore(revoker.revokeAllForServiceAccount),
       ).to.equal(true);
+      // And it comes back disabled, so no pre-deletion token can authenticate
+      // in the interval before revocation finishes.
+      expect(restore.firstCall.args[1].$set.isDisabled).to.equal(true);
     });
 
     it('puts the account back to deleted if revocation fails after the restore', async () => {
@@ -258,11 +263,17 @@ describe('ServiceAccountsService', () => {
       } catch (error) {
         expect((error as Error).message).to.contain('broker down');
       }
-      // Compensated, so the account is not left live with pre-deletion tokens.
+      // Compensated, so the account is not left usable with pre-deletion
+      // tokens — and scoped to this attempt, so a restore that failed slowly
+      // cannot delete an account somebody else has since restored.
       expect(compensate.calledOnce).to.equal(true);
-      expect(compensate.firstCall.args[1]).to.deep.equal({
-        $set: { isDeleted: true },
+      expect(compensate.firstCall.args[1].$set).to.deep.equal({
+        isDeleted: true,
       });
+      expect(compensate.firstCall.args[0]).to.have.property('restoreOpId');
+      expect(compensate.firstCall.args[1].$unset).to.have.property(
+        'restoreOpId',
+      );
     });
 
     it('refuses to restore at all when no revoker is wired', async () => {

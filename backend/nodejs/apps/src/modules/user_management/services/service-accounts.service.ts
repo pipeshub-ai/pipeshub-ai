@@ -1,5 +1,6 @@
 import { injectable, inject } from 'inversify';
 import mongoose from 'mongoose';
+import { randomUUID } from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
@@ -253,6 +254,10 @@ export class ServiceAccountsService {
       );
     }
 
+    // Identifies this attempt, so the steps that finish or undo it cannot act
+    // on somebody else's.
+    const restoreOpId = randomUUID();
+
     // One conditional update rather than read-then-save, because two
     // administrators can reach here with the same deleted document in hand.
     // Mongoose's version key does not guard scalar assignments, so both saves
@@ -274,8 +279,16 @@ export class ServiceAccountsService {
           fullName: input.fullName.trim(),
           kind: 'service',
           role: SERVICE_ACCOUNT_ROLE,
-          isDisabled: false,
+          // Restored disabled, and enabled only once the old tokens are gone.
+          // Clearing isDeleted is what makes this account's tokens acceptable
+          // again, so doing that before revoking would let a credential from
+          // before the deletion authorise a request — and no amount of
+          // undoing afterwards un-authorises one that already succeeded.
+          // Disabled is refused by both authentication paths, so the account
+          // exists, holds its place, and can do nothing.
+          isDisabled: true,
           isDeleted: false,
+          restoreOpId,
           // A description the caller did give.
           ...(input.description === undefined
             ? {}
@@ -301,35 +314,44 @@ export class ServiceAccountsService {
     }
 
     // Only the request that won the update above revokes. Revoking before it
-    // would mean the loser of a race — which is a request that restores
-    // nothing and returns a conflict — destroying tokens the winner's client
-    // had already minted from its own success.
-    //
-    // That leaves a moment where the account is live and its old tokens are
-    // not yet revoked, so a failure here is compensated rather than ignored:
-    // the account goes back to deleted. Better a restore that reports failure
-    // than one that quietly hands back an identity along with credentials
-    // from before it was deleted.
+    // would mean the loser of a race — a request that restores nothing and
+    // returns a conflict — destroying tokens the winner's client had already
+    // minted from its own success.
     try {
       await this.tokenRevoker.revokeAllForServiceAccount(orgId, idOf(restored));
     } catch (error) {
+      // Put it back, but only if this attempt is still the one in progress.
+      // Matching on the marker as well as the id means a restore that failed
+      // slowly cannot delete an account that has since been deleted,
+      // recreated and restored by somebody else.
       await Users.updateOne(
-        { _id: restored._id },
-        { $set: { isDeleted: true } },
+        { _id: restored._id, restoreOpId },
+        { $set: { isDeleted: true }, $unset: { restoreOpId: '' } },
       ).exec();
       throw error;
     }
 
+    // The old credentials are gone, so the account can now be used.
+    const enabled = await Users.findOneAndUpdate(
+      { _id: restored._id, restoreOpId },
+      { $set: { isDisabled: false }, $unset: { restoreOpId: '' } },
+      { new: true },
+    ).exec();
+
+    // If the marker no longer matches, something else has already moved this
+    // account on and its state is not ours to describe.
+    const finished = enabled ?? restored;
+
     await UserGroups.updateOne(
-      { orgId: restored.orgId, type: 'everyone' },
-      { $addToSet: { users: restored._id } },
+      { orgId: finished.orgId, type: 'everyone' },
+      { $addToSet: { users: finished._id } },
     );
 
     const addedPayload: UserAddedEvent = {
       orgId,
-      userId: idOf(restored),
-      fullName: restored.fullName,
-      email: restored.email,
+      userId: idOf(finished),
+      fullName: finished.fullName,
+      email: finished.email,
       syncAction: SyncAction.Immediate,
     };
     await this.publish({
@@ -340,11 +362,11 @@ export class ServiceAccountsService {
 
     this.logger.info('Service account restored', {
       orgId,
-      serviceAccountId: idOf(restored),
+      serviceAccountId: idOf(finished),
       slug,
     });
 
-    return toView(restored, orgId);
+    return toView(finished, orgId);
   }
 
   async list(orgId: string): Promise<ServiceAccountView[]> {
