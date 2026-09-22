@@ -243,25 +243,15 @@ export class ServiceAccountsService {
     slug: string,
     input: CreateServiceAccountInput,
   ): Promise<ServiceAccountView> {
-    // Before the account is made live again, not after. The update below
-    // clears isDeleted, and from that moment the auth middleware accepts any
-    // token this record still holds. Revoking afterwards leaves a window in
-    // which an old token works, and if the revocation then fails there is no
-    // rollback — the account stays live with credentials someone else may be
-    // holding. Doing it first means a failure leaves the account deleted,
-    // which is the safe direction to fail in.
-    //
-    // Refusing outright when no revoker is wired is deliberate for the same
-    // reason. The application supplies one at startup, so its absence means
-    // something is wrong rather than that there is nothing to revoke, and
-    // guessing would hand back an identity whose old credentials may still
-    // work.
+    // Checked before anything is written. The application supplies a revoker
+    // at startup, so its absence means something is wrong rather than that
+    // there is nothing to revoke, and restoring an identity whose old
+    // credentials might still work is not a guess worth making.
     if (!this.tokenRevoker) {
       throw new InternalServerError(
         'Cannot restore a service account without the token revoker',
       );
     }
-    await this.tokenRevoker.revokeAllForServiceAccount(orgId, idOf(existing));
 
     // One conditional update rather than read-then-save, because two
     // administrators can reach here with the same deleted document in hand.
@@ -308,6 +298,26 @@ export class ServiceAccountsService {
       throw new ConflictError(
         `A service account named "${slug}" already exists`,
       );
+    }
+
+    // Only the request that won the update above revokes. Revoking before it
+    // would mean the loser of a race — which is a request that restores
+    // nothing and returns a conflict — destroying tokens the winner's client
+    // had already minted from its own success.
+    //
+    // That leaves a moment where the account is live and its old tokens are
+    // not yet revoked, so a failure here is compensated rather than ignored:
+    // the account goes back to deleted. Better a restore that reports failure
+    // than one that quietly hands back an identity along with credentials
+    // from before it was deleted.
+    try {
+      await this.tokenRevoker.revokeAllForServiceAccount(orgId, idOf(restored));
+    } catch (error) {
+      await Users.updateOne(
+        { _id: restored._id },
+        { $set: { isDeleted: true } },
+      ).exec();
+      throw error;
     }
 
     await UserGroups.updateOne(

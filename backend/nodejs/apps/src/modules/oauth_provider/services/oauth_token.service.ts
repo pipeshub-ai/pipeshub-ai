@@ -541,6 +541,19 @@ export class OAuthTokenService {
    * credential it holds in order to revoke them, and a token they cannot see
    * is one they cannot revoke.
    */
+  /** How many active access tokens a user holds for a client. */
+  async countActiveAccessTokensForUser(
+    clientId: string,
+    userId: string,
+  ): Promise<number> {
+    return OAuthAccessToken.countDocuments({
+      clientId: { $eq: clientId },
+      userId: { $eq: new Types.ObjectId(userId) },
+      isRevoked: { $eq: false },
+      expiresAt: { $gt: new Date() },
+    }).exec()
+  }
+
   async listAccessTokensForUser(
     clientId: string,
     userId: string,

@@ -219,12 +219,15 @@ describe('ServiceAccountsService', () => {
         fullName: 'Nightly sync',
       });
 
+      // After the update, not before: the request that loses this race
+      // restores nothing, and must not revoke tokens the winner's client has
+      // already minted.
       expect(
-        revoker.revokeAllForServiceAccount.calledBefore(restore),
+        restore.calledBefore(revoker.revokeAllForServiceAccount),
       ).to.equal(true);
     });
 
-    it('leaves the account deleted when revocation fails', async () => {
+    it('puts the account back to deleted if revocation fails after the restore', async () => {
       const { service } = makeService();
       const deleted = {
         _id: id,
@@ -236,11 +239,13 @@ describe('ServiceAccountsService', () => {
       sinon
         .stub(Users, 'findOne')
         .returns({ exec: sinon.stub().resolves(deleted) } as any);
-      const restore = sinon.stub(Users, 'findOneAndUpdate');
-      const service2 = service as unknown as {
-        setTokenRevoker: (r: unknown) => void;
-      };
-      service2.setTokenRevoker({
+      sinon.stub(Users, 'findOneAndUpdate').returns({
+        exec: sinon.stub().resolves({ ...deleted, isDeleted: false }),
+      } as any);
+      const compensate = sinon
+        .stub(Users, 'updateOne')
+        .returns({ exec: sinon.stub().resolves({}) } as any);
+      (service as unknown as { setTokenRevoker: (r: unknown) => void }).setTokenRevoker({
         revokeAllForServiceAccount: sinon.stub().rejects(new Error('broker down')),
       });
 
@@ -253,8 +258,11 @@ describe('ServiceAccountsService', () => {
       } catch (error) {
         expect((error as Error).message).to.contain('broker down');
       }
-      // The account is still deleted, which is the safe direction to fail in.
-      expect(restore.called).to.equal(false);
+      // Compensated, so the account is not left live with pre-deletion tokens.
+      expect(compensate.calledOnce).to.equal(true);
+      expect(compensate.firstCall.args[1]).to.deep.equal({
+        $set: { isDeleted: true },
+      });
     });
 
     it('refuses to restore at all when no revoker is wired', async () => {

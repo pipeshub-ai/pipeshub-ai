@@ -25,8 +25,20 @@ const CLIENT_SECRET_BYTES = 32;
 const SECONDS_PER_DAY = 86400;
 
 /**
- * How many of a service account's tokens the list returns. Far above anything
- * healthy: it exists so the revocation view is complete, not to paginate.
+ * The most active tokens one service account may hold at once.
+ *
+ * This is what makes the list below complete rather than merely large: with
+ * issuance bounded well under the list limit, there is no number of tokens an
+ * administrator could hold and not be shown, so none can hide from revocation.
+ * It is also a reasonable thing to bound on its own — an account accumulating
+ * dozens of live credentials is a sign of a rotation that never revokes.
+ */
+export const SERVICE_TOKEN_MAX_ACTIVE = 50;
+
+/**
+ * How many of a service account's tokens the list returns. Far above
+ * SERVICE_TOKEN_MAX_ACTIVE, so the revocation view is always complete — the
+ * headroom covers tokens issued before the cap existed.
  */
 export const SERVICE_TOKEN_LIST_LIMIT = 1000;
 
@@ -267,6 +279,19 @@ export class ServiceTokenService {
     // after this method computed `available` cannot slip through.
     const mcpScopes = await this.configService.getMcpScopes();
     this.scopeValidatorService.validateScopesForApp(scopes, mcpScopes);
+
+    // Refused rather than trimmed. A cap enforced when tokens are issued is
+    // what keeps every one of them visible to the administrator who may need
+    // to revoke it; a cap applied when listing would hide the excess instead.
+    const active = await this.oauthTokenService.countActiveAccessTokensForUser(
+      serviceTokenClientId(orgId),
+      account.id,
+    );
+    if (active >= SERVICE_TOKEN_MAX_ACTIVE) {
+      throw new BadRequestError(
+        `This service account already holds ${String(SERVICE_TOKEN_MAX_ACTIVE)} active tokens. Revoke one before issuing another.`,
+      );
+    }
 
     const expiryDays = this.resolveExpiryDays(request.expiryDays);
     const lifetimeSeconds = expiryDays * SECONDS_PER_DAY;

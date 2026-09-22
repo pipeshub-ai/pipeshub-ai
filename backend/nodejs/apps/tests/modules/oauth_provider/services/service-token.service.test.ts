@@ -8,6 +8,7 @@ import {
   SERVICE_TOKEN_DEFAULT_EXPIRY_DAYS,
   SERVICE_TOKEN_MAX_EXPIRY_DAYS,
   SERVICE_TOKEN_LIST_LIMIT,
+  SERVICE_TOKEN_MAX_ACTIVE,
 } from '../../../../src/modules/oauth_provider/services/service-token.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
@@ -42,6 +43,7 @@ function makeService(overrides: { mcpScopes?: string[] } = {}) {
     revokeAccessTokenById: sinon.stub().resolves(true),
     revokeAllTokensForUser: sinon.stub().resolves(),
     revokeEveryTokenForUser: sinon.stub().resolves(),
+    countActiveAccessTokensForUser: sinon.stub().resolves(0),
   };
   const scopeValidator = { validateScopesForApp: sinon.stub() };
   return {
@@ -186,6 +188,34 @@ describe('ServiceTokenService', () => {
       } catch (error) {
         expect((error as Error).message).to.contain('cannot exceed');
       }
+    });
+  });
+
+  describe('the number of live tokens is bounded', () => {
+    it('refuses a new token once the account is at the cap', async () => {
+      // Bounding issuance is what keeps the list complete: no account can
+      // hold more tokens than an administrator can be shown, so none can hide
+      // from revocation.
+      stubServiceAccount({ fullName: 'Nightly sync', isDisabled: false });
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: 'x' } as any);
+      const { service, tokens } = makeService();
+      tokens.countActiveAccessTokensForUser.resolves(SERVICE_TOKEN_MAX_ACTIVE);
+
+      try {
+        await service.createToken(orgId, adminId, {
+          serviceAccountId: accountId,
+          name: 'one too many',
+          scopes: ['kb:read'],
+        });
+        expect.fail('expected the cap to be enforced');
+      } catch (error) {
+        expect((error as Error).message).to.contain('already holds');
+      }
+      expect(tokens.generateTokens.called).to.equal(false);
+    });
+
+    it('stays well under the number the list can return', () => {
+      expect(SERVICE_TOKEN_MAX_ACTIVE).to.be.lessThan(SERVICE_TOKEN_LIST_LIMIT);
     });
   });
 
