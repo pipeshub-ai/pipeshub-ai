@@ -269,7 +269,7 @@ def _env_disabled_toolsets() -> set[str]:
     other system does in-model. `PIPESHUB_ENABLE_CODE_EXECUTION` already
     covers the sandbox; this covers everything else without a flag per tool.
     """
-    raw = os.getenv("PIPESHUB_DISABLED_TOOLSETS", "")
+    raw = os.getenv("PIPESHUB_AGENT_DISABLED_TOOLSETS", "")
     return {name.strip() for name in raw.split(",") if name.strip()}
 
 

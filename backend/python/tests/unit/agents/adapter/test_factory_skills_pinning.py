@@ -279,16 +279,16 @@ class TestRenderedPromptCarriesNoSkillTextWhenDisabled:
 
 
 class TestEnvDisabledToolsets:
-    """`PIPESHUB_DISABLED_TOOLSETS` — the deployment-level tool denylist a
+    """`PIPESHUB_AGENT_DISABLED_TOOLSETS` — the deployment-level tool denylist a
     measurement harness needs to hold the tool surface fixed across systems.
     Empty by default, so an ordinary deployment is unaffected."""
 
     def test_unset_disables_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("PIPESHUB_DISABLED_TOOLSETS", raising=False)
+        monkeypatch.delenv("PIPESHUB_AGENT_DISABLED_TOOLSETS", raising=False)
         assert _env_disabled_toolsets() == set()
 
     def test_parses_a_comma_separated_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PIPESHUB_DISABLED_TOOLSETS", "calculator, date_calculator ,")
+        monkeypatch.setenv("PIPESHUB_AGENT_DISABLED_TOOLSETS", "calculator, date_calculator ,")
         assert _env_disabled_toolsets() == {"calculator", "date_calculator"}
 
     async def test_a_disabled_app_does_not_reach_the_registry(
@@ -297,7 +297,7 @@ class TestEnvDisabledToolsets:
         """`_fake_load` registers a `jira` connector tool; naming that app in
         the denylist must keep it out of `skip_apps`'s reach — asserted through
         the real factory, not by re-reading the env var."""
-        monkeypatch.setenv("PIPESHUB_DISABLED_TOOLSETS", "jira")
+        monkeypatch.setenv("PIPESHUB_AGENT_DISABLED_TOOLSETS", "jira")
         seen: dict[str, set[str]] = {}
 
         async def _capture(self, context, *, skip_apps=None):  # noqa: ANN001, ANN202

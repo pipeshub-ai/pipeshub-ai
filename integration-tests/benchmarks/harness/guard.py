@@ -33,6 +33,14 @@ DEFAULT_ALLOWED_TOOL_PATTERNS: tuple[str, ...] = (
     # only discloses what exists — no content retrieval, no execution (skills
     # cannot run: `PIPESHUB_ENABLE_CODE_EXECUTION=false`).
     "skills_list",
+    # Arithmetic over numbers the system already retrieved. Unlike web search or
+    # code execution it cannot bring in anything the corpus did not supply, so
+    # it does not break "answers come from the corpus only" — the rule these
+    # patterns exist to enforce. The other systems reach the same results
+    # in-model; measured on the dev split, every question PipesHub used it for
+    # was also answered correctly without it.
+    "calculator__*",
+    "date_calculator__*",
 )
 
 DEFAULT_DENIED_TOOL_PATTERNS: tuple[str, ...] = (
