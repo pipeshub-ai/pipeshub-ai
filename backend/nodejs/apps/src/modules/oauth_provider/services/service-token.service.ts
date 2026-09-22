@@ -24,6 +24,12 @@ import { Users } from '../../user_management/schema/users.schema';
 const CLIENT_SECRET_BYTES = 32;
 const SECONDS_PER_DAY = 86400;
 
+/**
+ * How many of a service account's tokens the list returns. Far above anything
+ * healthy: it exists so the revocation view is complete, not to paginate.
+ */
+export const SERVICE_TOKEN_LIST_LIMIT = 1000;
+
 export const SERVICE_TOKEN_DEFAULT_EXPIRY_DAYS = 90;
 export const SERVICE_TOKEN_MAX_EXPIRY_DAYS = 365;
 
@@ -318,9 +324,14 @@ export class ServiceTokenService {
       return [];
     }
 
+    // Every one of them, not the most recent page. This list is what an
+    // administrator revokes from, and a token that does not appear here is a
+    // credential nobody can switch off. A service account holding more than
+    // this is already wrong, and the service logs when the ceiling is reached.
     const tokens = await this.oauthTokenService.listAccessTokensForUser(
       clientId,
       account.id,
+      SERVICE_TOKEN_LIST_LIMIT,
     );
     return tokens.map((t) => ({
       id: t.id,

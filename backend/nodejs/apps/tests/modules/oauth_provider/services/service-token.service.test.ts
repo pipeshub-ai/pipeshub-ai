@@ -7,6 +7,7 @@ import {
   SERVICE_TOKEN_DENIED_SCOPES,
   SERVICE_TOKEN_DEFAULT_EXPIRY_DAYS,
   SERVICE_TOKEN_MAX_EXPIRY_DAYS,
+  SERVICE_TOKEN_LIST_LIMIT,
 } from '../../../../src/modules/oauth_provider/services/service-token.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
@@ -185,6 +186,23 @@ describe('ServiceTokenService', () => {
       } catch (error) {
         expect((error as Error).message).to.contain('cannot exceed');
       }
+    });
+  });
+
+  describe('listTokens', () => {
+    it('asks for every token, not the first page', async () => {
+      // This list is what an administrator revokes from. A token missing from
+      // it is a credential nobody can switch off.
+      stubServiceAccount({ fullName: 'Nightly sync', isDisabled: false });
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: 'x' } as any);
+      const { service, tokens } = makeService();
+
+      await service.listTokens(orgId, accountId);
+
+      expect(tokens.listAccessTokensForUser.calledOnce).to.equal(true);
+      expect(tokens.listAccessTokensForUser.firstCall.args[2]).to.equal(
+        SERVICE_TOKEN_LIST_LIMIT,
+      );
     });
   });
 

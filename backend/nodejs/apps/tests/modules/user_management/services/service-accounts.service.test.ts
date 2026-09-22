@@ -193,6 +193,108 @@ describe('ServiceAccountsService', () => {
       expect(update.$set).to.not.have.property('description');
     });
 
+    it('revokes the old tokens before the account is live again', async () => {
+      // Ordering is the point. Clearing isDeleted is what makes the auth
+      // middleware start accepting this account's tokens again, so revoking
+      // afterwards leaves a window where an old one works — and if that
+      // revocation fails there is no rollback.
+      const { service, revoker } = makeService();
+      const deleted = {
+        _id: id,
+        email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
+        orgId: { toString: () => orgId },
+        kind: 'service',
+        isDeleted: true,
+      };
+      sinon
+        .stub(Users, 'findOne')
+        .returns({ exec: sinon.stub().resolves(deleted) } as any);
+      const restore = sinon.stub(Users, 'findOneAndUpdate').returns({
+        exec: sinon.stub().resolves({ ...deleted, isDeleted: false }),
+      } as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+
+      await service.create(orgId, {
+        slug: 'nightly-sync',
+        fullName: 'Nightly sync',
+      });
+
+      expect(
+        revoker.revokeAllForServiceAccount.calledBefore(restore),
+      ).to.equal(true);
+    });
+
+    it('leaves the account deleted when revocation fails', async () => {
+      const { service } = makeService();
+      const deleted = {
+        _id: id,
+        email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
+        orgId: { toString: () => orgId },
+        kind: 'service',
+        isDeleted: true,
+      };
+      sinon
+        .stub(Users, 'findOne')
+        .returns({ exec: sinon.stub().resolves(deleted) } as any);
+      const restore = sinon.stub(Users, 'findOneAndUpdate');
+      const service2 = service as unknown as {
+        setTokenRevoker: (r: unknown) => void;
+      };
+      service2.setTokenRevoker({
+        revokeAllForServiceAccount: sinon.stub().rejects(new Error('broker down')),
+      });
+
+      try {
+        await service.create(orgId, {
+          slug: 'nightly-sync',
+          fullName: 'Nightly sync',
+        });
+        expect.fail('expected the restore to fail');
+      } catch (error) {
+        expect((error as Error).message).to.contain('broker down');
+      }
+      // The account is still deleted, which is the safe direction to fail in.
+      expect(restore.called).to.equal(false);
+    });
+
+    it('refuses to restore at all when no revoker is wired', async () => {
+      const logger = {
+        info: sinon.stub(),
+        debug: sinon.stub(),
+        warn: sinon.stub(),
+        error: sinon.stub(),
+      };
+      const events = {
+        start: sinon.stub().resolves(),
+        stop: sinon.stub().resolves(),
+        publishEvent: sinon.stub().resolves(),
+      };
+      // Deliberately no setTokenRevoker: its absence means something is wrong
+      // at startup, not that there is nothing to revoke.
+      const bare = new ServiceAccountsService(logger as any, events as any);
+      sinon.stub(Users, 'findOne').returns({
+        exec: sinon.stub().resolves({
+          _id: id,
+          email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
+          orgId: { toString: () => orgId },
+          kind: 'service',
+          isDeleted: true,
+        }),
+      } as any);
+      const restore = sinon.stub(Users, 'findOneAndUpdate');
+
+      try {
+        await bare.create(orgId, {
+          slug: 'nightly-sync',
+          fullName: 'Nightly sync',
+        });
+        expect.fail('expected the restore to be refused');
+      } catch (error) {
+        expect((error as Error).message).to.contain('token revoker');
+      }
+      expect(restore.called).to.equal(false);
+    });
+
     it('refuses the loser of a restore race rather than restoring twice', async () => {
       // Both requests read the same deleted document; the conditional update
       // matches for the first and nothing for the second.

@@ -4,6 +4,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   ConflictError,
+  InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { Users, User } from '../schema/users.schema';
@@ -242,6 +243,26 @@ export class ServiceAccountsService {
     slug: string,
     input: CreateServiceAccountInput,
   ): Promise<ServiceAccountView> {
+    // Before the account is made live again, not after. The update below
+    // clears isDeleted, and from that moment the auth middleware accepts any
+    // token this record still holds. Revoking afterwards leaves a window in
+    // which an old token works, and if the revocation then fails there is no
+    // rollback — the account stays live with credentials someone else may be
+    // holding. Doing it first means a failure leaves the account deleted,
+    // which is the safe direction to fail in.
+    //
+    // Refusing outright when no revoker is wired is deliberate for the same
+    // reason. The application supplies one at startup, so its absence means
+    // something is wrong rather than that there is nothing to revoke, and
+    // guessing would hand back an identity whose old credentials may still
+    // work.
+    if (!this.tokenRevoker) {
+      throw new InternalServerError(
+        'Cannot restore a service account without the token revoker',
+      );
+    }
+    await this.tokenRevoker.revokeAllForServiceAccount(orgId, idOf(existing));
+
     // One conditional update rather than read-then-save, because two
     // administrators can reach here with the same deleted document in hand.
     // Mongoose's version key does not guard scalar assignments, so both saves
@@ -288,11 +309,6 @@ export class ServiceAccountsService {
         `A service account named "${slug}" already exists`,
       );
     }
-
-    // Before the identity is handed back. Restoring reuses the original
-    // record, so a token minted before the deletion would otherwise start
-    // working again for whoever reused the name.
-    await this.tokenRevoker?.revokeAllForServiceAccount(orgId, idOf(restored));
 
     await UserGroups.updateOne(
       { orgId: restored.orgId, type: 'everyone' },

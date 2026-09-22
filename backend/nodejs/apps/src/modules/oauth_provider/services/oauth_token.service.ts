@@ -24,6 +24,10 @@ import {
 import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig'
 import { stripTokenDisplayPrefix } from '../constants/constants'
 
+
+/** What the personal-token views show; callers that need more pass their own. */
+const DEFAULT_TOKEN_LIST_LIMIT = 100
+
 @injectable()
 export class OAuthTokenService {
   private algorithm: Algorithm
@@ -530,10 +534,17 @@ export class OAuthTokenService {
    * List a single user's active access tokens for a client — the
    * per-user counterpart to {@link listTokensForApp}, used by the
    * personal access token list view.
+   *
+   * `limit` exists because the answer is read for different reasons. A person
+   * glancing at their own tokens is well served by the most recent hundred;
+   * an administrator looking at a service account is trying to find every
+   * credential it holds in order to revoke them, and a token they cannot see
+   * is one they cannot revoke.
    */
   async listAccessTokensForUser(
     clientId: string,
     userId: string,
+    limit: number = DEFAULT_TOKEN_LIST_LIMIT,
   ): Promise<TokenListItem[]> {
     const tokens = await OAuthAccessToken.find({
       clientId: { $eq: clientId },
@@ -542,8 +553,18 @@ export class OAuthTokenService {
       expiresAt: { $gt: new Date() },
     })
       .sort({ createdAt: -1 })
-      .limit(100)
+      .limit(limit)
       .exec()
+
+    // A caller that hits the ceiling is being shown less than it asked for,
+    // and for a revocation screen that means credentials nobody can see to
+    // revoke. Saying so is the difference between a cap and a silent one.
+    if (tokens.length === limit) {
+      this.logger.warn(
+        'Token list reached its limit; older tokens are not shown',
+        { clientId, userId, limit },
+      )
+    }
 
     return tokens.map((t) => ({
       id: (t._id as Types.ObjectId).toString(),
