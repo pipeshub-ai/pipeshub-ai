@@ -120,17 +120,3 @@ async def cleanup_storage_and_mongo_for_prefix(
     except Exception as e:
         logger.warning(f"⚠️ Local blob storage cleanup warning for {path_prefix}: {e}")
 
-    # 3. Direct MongoDB document cleanup fallback (only if any unhandled records remain)
-    try:
-        client, db_name = _get_mongo_client()
-        if client and db_name:
-            db = client[db_name]
-            regex = f"^{re.escape(path_prefix)}"
-            result = db["documents"].delete_many({"documentPath": {"$regex": regex}})
-            if result.deleted_count > 0:
-                logger.info(
-                    f"✅ Direct cleanup removed {result.deleted_count} remaining MongoDB storage document(s) matching prefix {path_prefix}"
-                )
-            client.close()
-    except Exception as e:
-        logger.warning(f"⚠️ Direct MongoDB cleanup warning for {path_prefix}: {e}")

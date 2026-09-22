@@ -379,18 +379,18 @@ class LocalStorageAdapter implements StorageServiceInterface {
   }
 
   async objectExists(document: Document): Promise<boolean> {
-    try {
-      let localPath = this.getLocalPathFromUrl(
-        document.local?.localPath || document.local?.url,
-      );
-      if (!localPath && document.documentPath) {
+    let localPath = this.getLocalPathFromUrl(
+      document.local?.localPath || document.local?.url,
+    );
+    if (!localPath && document.documentPath) {
+      try {
         localPath = this.sanitizePath(document.documentPath);
+      } catch {
+        localPath = document.documentPath;
       }
-      if (!localPath) return false;
-      return await this.objectExistsAtPath(localPath);
-    } catch {
-      return false;
     }
+    if (!localPath) return false;
+    return await this.objectExistsAtPath(localPath);
   }
 
   // These methods are not implemented for local storage
