@@ -51,10 +51,18 @@ export class EntitiesEventDispatcher {
       for (const event of doc.pendingEvents) {
         if (event.status === 'processing' && event.claimedAt && new Date(event.claimedAt) < staleThreshold) {
           this.logger.warn(`Recovering stuck processing event ${event.eventId} for ${modelName} ${doc._id}`);
-          const query: FilterQuery<ModelWithPendingEvents> = { _id: doc._id, 'pendingEvents.eventId': event.eventId, 'pendingEvents.status': 'processing' };
+          const elemMatch: any = { 
+            eventId: event.eventId, 
+            status: 'processing',
+            claimedAt: event.claimedAt
+          };
           if (event.claimToken) {
-            query['pendingEvents.claimToken'] = event.claimToken;
+            elemMatch.claimToken = event.claimToken;
           }
+          const query: FilterQuery<ModelWithPendingEvents> = { 
+            _id: doc._id, 
+            pendingEvents: { $elemMatch: elemMatch } 
+          };
           await model.updateOne(
             query,
             { 
@@ -78,7 +86,7 @@ export class EntitiesEventDispatcher {
             // Dead-letter
             this.logger.error(`Dead-lettering event ${event.eventId} for ${modelName} ${doc._id} after ${this.MAX_RETRIES} retries`);
             await model.updateOne(
-              { _id: doc._id, 'pendingEvents.eventId': event.eventId },
+              { _id: doc._id, pendingEvents: { $elemMatch: { eventId: event.eventId, status: 'pending' } } },
               { $set: { 'pendingEvents.$.status': 'failed' } }
             );
             continue;

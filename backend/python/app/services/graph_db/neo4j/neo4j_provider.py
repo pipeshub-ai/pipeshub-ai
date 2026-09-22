@@ -19575,10 +19575,11 @@ class Neo4jProvider(IGraphDBProvider):
         import time
         current_time = int(time.time() * 1000)
         stale_cutoff = current_time - stale_threshold_ms
+        label = collection_to_label(collection)
 
         # Cypher MERGE to handle upsert with conditional atomic updates
         query = f"""
-        MERGE (n:{collection} {{id: $event_id}})
+        MERGE (n:{label} {{id: $event_id}})
         ON CREATE SET 
             n.status = 'processing',
             n.claimToken = $claim_token,
@@ -19636,8 +19637,9 @@ class Neo4jProvider(IGraphDBProvider):
         status: str,
         transaction: str | None = None
     ) -> bool:
+        label = collection_to_label(collection)
         query = f"""
-        MATCH (n:{collection} {{id: $event_id}})
+        MATCH (n:{label} {{id: $event_id}})
         WHERE n.claimToken = $claim_token
         SET n.status = $status
         RETURN n

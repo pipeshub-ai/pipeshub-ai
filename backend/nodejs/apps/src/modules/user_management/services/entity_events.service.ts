@@ -1,4 +1,6 @@
-import { Model, Types } from 'mongoose';
+import { Model, Types, Document } from 'mongoose';
+import * as crypto from 'crypto';
+import { IPendingEvent } from '../schema/pendingEvent.schema';
 import { inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.types';
@@ -80,7 +82,10 @@ export interface UserUpdatedEvent {
 }
 
 
-export type ModelWithPendingEvents = Model<any>;
+export interface IDocumentWithPendingEvents extends Document {
+  pendingEvents: IPendingEvent[];
+}
+export type ModelWithPendingEvents = Model<IDocumentWithPendingEvents>;
 
 export class EntitiesEventProducer {
   private readonly topic = 'entity-events';
@@ -134,6 +139,7 @@ export class EntitiesEventProducer {
     eventId: string,
     event: Event,
   ): Promise<void> {
+    const claimToken = crypto.randomUUID();
     const claimed = await model.findOneAndUpdate(
       {
         _id: documentId,
@@ -143,6 +149,7 @@ export class EntitiesEventProducer {
         $set: {
           'pendingEvents.$.status': 'processing',
           'pendingEvents.$.claimedAt': new Date(),
+          'pendingEvents.$.claimToken': claimToken,
         },
       },
       { new: true },
@@ -173,13 +180,13 @@ export class EntitiesEventProducer {
       );
 
       await model.updateOne(
-        { _id: documentId },
+        { _id: documentId, pendingEvents: { $elemMatch: { eventId, status: 'processing', claimToken } } },
         { $pull: { pendingEvents: { eventId } } },
       );
     } catch (error) {
       this.logger.error(`Failed to publish event: ${event.eventType}`, error);
       await model.updateOne(
-        { _id: documentId, 'pendingEvents.eventId': eventId },
+        { _id: documentId, pendingEvents: { $elemMatch: { eventId, status: 'processing', claimToken } } },
         {
           $set: { 'pendingEvents.$.status': 'pending' },
           $inc: { 'pendingEvents.$.retries': 1 },

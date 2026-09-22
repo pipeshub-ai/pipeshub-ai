@@ -2192,7 +2192,12 @@ export class UserController {
         if (newUserDoc && newUserDoc.pendingEvents && newUserDoc.pendingEvents.length > 0) {
           const pendingEvent = newUserDoc.pendingEvents[0];
           if (pendingEvent) {
-            await this.eventService.dispatchInline(Users, userId.toString(), pendingEvent.eventId, pendingEvent as unknown as Event);
+            const plainEvent: Event = {
+              eventType: pendingEvent.eventType as EventType,
+              timestamp: pendingEvent.timestamp,
+              payload: pendingEvent.payload,
+            };
+            await this.eventService.dispatchInline(Users, userId.toString(), pendingEvent.eventId, plainEvent);
           }
         } else {
           const eventId = new mongoose.Types.ObjectId().toString();

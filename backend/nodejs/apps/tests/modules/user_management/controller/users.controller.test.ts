@@ -96,9 +96,12 @@ describe('UserController', () => {
       publish: sinon.stub().resolves(),
       isConnected: sinon.stub().returns(true),
       connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      publishBatch: sinon.stub().resolves(),
+      healthCheck: sinon.stub().resolves(true),
     };
     realEventService = new EntitiesEventProducer(
-      fakeKafkaProducer as IMessageProducer,
+      fakeKafkaProducer,
       mockLogger
     );
     mockEventService = {
@@ -4727,11 +4730,15 @@ describe('UserController', () => {
       sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
       (mockNewUser as any).constructor = Users;
       sinon.stub(UserGroups, 'updateOne').resolves();
-      const failingProducer = {
+      const failingProducer: IMessageProducer = {
         publish: sinon.stub().rejects(new Error('Kafka down')),
         isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publishBatch: sinon.stub().rejects(new Error('Kafka down')),
+        healthCheck: sinon.stub().resolves(true),
       };
-      const failingEventService = new EntitiesEventProducer(failingProducer as any, mockLogger);
+      const failingEventService = new EntitiesEventProducer(failingProducer, mockLogger);
       
       const failingController = new UserController(
         mockConfig,
@@ -4774,11 +4781,15 @@ describe('UserController', () => {
       };
       sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
       sinon.stub(UserGroups, 'updateOne').resolves();
-      const failingProducer = {
+      const failingProducer: IMessageProducer = {
         publish: sinon.stub().rejects(new Error('Kafka down')),
         isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publishBatch: sinon.stub().rejects(new Error('Kafka down')),
+        healthCheck: sinon.stub().resolves(true),
       };
-      const failingEventService = new EntitiesEventProducer(failingProducer as any, mockLogger);
+      const failingEventService = new EntitiesEventProducer(failingProducer, mockLogger);
       
       const failingController = new UserController(
         mockConfig,

@@ -220,6 +220,9 @@ class KafkaUtils:
                 if claim_result == "actively_claimed":
                     logger.info(f"Event {event_id} currently processing by another worker, skipping.")
                     return False
+                if claim_result != "claimed":
+                    logger.error(f"Event {event_id} claim failed with unrecognized result: {claim_result}")
+                    return False
                 
                 logger.info(f"Processing entity event: {event_type} (eventId: {event_id})")
                 success = await entity_event_service.process_event(event_type, payload)

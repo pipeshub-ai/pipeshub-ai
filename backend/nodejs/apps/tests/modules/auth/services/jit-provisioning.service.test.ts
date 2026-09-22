@@ -6,6 +6,8 @@ import {
   JitUserDetails,
 } from '../../../../src/modules/auth/services/jit-provisioning.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
+import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { IMessageProducer } from '../../../../src/libs/types/messaging.types';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { BadRequestError } from '../../../../src/libs/errors/http.errors';
 import { JitProvider } from '../../../../src/modules/auth/services/jit-provisioning.service';
@@ -521,11 +523,15 @@ describe('JitProvisioningService - additional coverage', () => {
       sinon.stub(Users, 'findOneAndUpdate').resolves({ _id: 'new-user-id' } as any)
       
       const { EntitiesEventProducer } = require('../../../../src/modules/user_management/services/entity_events.service');
-      const failingProducer = {
+      const failingProducer: IMessageProducer = {
         publish: sinon.stub().rejects(new Error('Kafka down')),
         isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publishBatch: sinon.stub().rejects(new Error('Kafka down')),
+        healthCheck: sinon.stub().resolves(true),
       };
-      const failingEventService = new EntitiesEventProducer(failingProducer as any, mockLogger);
+      const failingEventService = new EntitiesEventProducer(failingProducer, mockLogger);
       const failingJitService = new JitProvisioningService(mockLogger, failingEventService);
 
       await failingJitService.provisionUser(
