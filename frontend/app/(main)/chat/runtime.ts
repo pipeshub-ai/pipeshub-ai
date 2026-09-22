@@ -316,6 +316,8 @@ export function buildStreamChatRequestForSlot(
             agentCapabilities: currentState.settings.agentCapabilities,
           }
         : {}),
+    ...(currentState.debugDisableSemantic ? { disableSemantic: true } : {}),
+    ...(currentState.debugDisablePatternMatch ? { disablePatternMatch: true } : {}),
   };
 
   return request;

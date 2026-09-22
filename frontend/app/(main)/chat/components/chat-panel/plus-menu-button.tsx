@@ -60,6 +60,10 @@ export interface PlusMenuCapabilities {
    */
   agentHasInternalSearch?: boolean;
   agentHasWebSearch?: boolean;
+  debugDisableSemantic: boolean;
+  debugDisablePatternMatch: boolean;
+  onToggleDebugDisableSemantic: (v: boolean) => void;
+  onToggleDebugDisablePatternMatch: (v: boolean) => void;
 }
 
 interface PlusMenuContentProps extends PlusMenuCapabilities {
@@ -149,6 +153,10 @@ export function PlusMenuContent({
   onToggleWebSearch,
   agentHasInternalSearch,
   agentHasWebSearch,
+  debugDisableSemantic,
+  debugDisablePatternMatch,
+  onToggleDebugDisableSemantic,
+  onToggleDebugDisablePatternMatch,
 }: PlusMenuContentProps) {
   const { t } = useTranslation();
   const notConfiguredLabel = t('chat.agentCapabilities.notConfiguredOnAgent', {
@@ -181,6 +189,19 @@ export function PlusMenuContent({
         disabled={agentHasWebSearch === false}
         disabledTooltip={notConfiguredLabel}
         onCheckedChange={onToggleWebSearch}
+      />
+
+      <Separator size="4" style={{ margin: 'var(--space-1) 0' }} />
+
+      <PlusMenuToggleRow
+        label="Disable Semantic"
+        checked={debugDisableSemantic}
+        onCheckedChange={onToggleDebugDisableSemantic}
+      />
+      <PlusMenuToggleRow
+        label="Disable Pattern Match"
+        checked={debugDisablePatternMatch}
+        onCheckedChange={onToggleDebugDisablePatternMatch}
       />
     </Flex>
   );
