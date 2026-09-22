@@ -904,7 +904,15 @@ class SalesforceConnector(BaseConnector):
         while not response.data.get("done", True):
             next_url = response.data.get("nextRecordsUrl")
             if not next_url:
-                break
+                message = "SOQL result truncated: done is false and there is no nextRecordsUrl"
+                self.logger.error(message)
+                raise_for_stream_fetch(
+                    success=False,
+                    has_payload=False,
+                    connector=self.display_name,
+                    status=response.status_code,
+                    message=message,
+                )
             response = await self.data_source.soql_query_next(next_url=next_url)
             if not response.success:
                 self.logger.error(
