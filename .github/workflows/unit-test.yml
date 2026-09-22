@@ -157,7 +157,7 @@ jobs:
       # delay the guard exists to remove, so it runs here too.
       - name: Run the graph-entity schema guard
         run: |
-          uv pip install --system pyyaml
+          uv pip install --system pyyaml pytest-order
           PYTHONPATH=backend/python:integration-tests \
             pytest integration-tests/unit/test_graph_entity_schemas.py -v
 

@@ -40,9 +40,10 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
     const parsedTarget = new URL(url);
 
     // Ensure the target origin exactly matches the configured connector service origin
-    const configuredOrigin = process.env.CONNECTOR_BACKEND 
-      ? new URL(process.env.CONNECTOR_BACKEND).origin 
-      : new URL(this.uri).origin; // Fallback for mock URLs in integration tests
+    if (!process.env.CONNECTOR_BACKEND) {
+      throw new InternalServerError('CONNECTOR_BACKEND is not configured');
+    }
+    const configuredOrigin = new URL(process.env.CONNECTOR_BACKEND).origin;
 
     if (parsedTarget.origin !== configuredOrigin) {
       throw new InternalServerError('Blocked connector request to an untrusted origin');
