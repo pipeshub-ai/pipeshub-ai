@@ -332,15 +332,27 @@ export class ServiceAccountsService {
     }
 
     // The old credentials are gone, so the account can now be used.
-    const enabled = await Users.findOneAndUpdate(
-      { _id: restored._id, restoreOpId },
+    //
+    // `isDeleted: false` is part of the match, not just the marker. `remove`
+    // does not clear the marker, so a delete landing between the revoke above
+    // and this update would otherwise still match — re-enabling a deleted
+    // account, adding it back to every group, announcing it to the permission
+    // graph and returning 201 for a row that no longer exists.
+    const finished = await Users.findOneAndUpdate(
+      { _id: restored._id, restoreOpId, isDeleted: false },
       { $set: { isDisabled: false }, $unset: { restoreOpId: '' } },
       { new: true },
     ).exec();
 
-    // If the marker no longer matches, something else has already moved this
-    // account on and its state is not ours to describe.
-    const finished = enabled ?? restored;
+    // Nothing matched, so something else has moved this account on while the
+    // restore was in flight. Carrying on with the document read earlier would
+    // mean describing a state that is no longer true — and doing the group
+    // and event work for it. Stop instead.
+    if (!finished) {
+      throw new ConflictError(
+        `The service account "${slug}" changed while it was being restored`,
+      );
+    }
 
     await UserGroups.updateOne(
       { orgId: finished.orgId, type: 'everyone' },

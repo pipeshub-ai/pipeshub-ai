@@ -314,6 +314,48 @@ describe('ServiceAccountsService', () => {
       expect(restore.called).to.equal(false);
     });
 
+    it('stops if the account is deleted while the restore is in flight', async () => {
+      // remove() does not clear the restore marker, so matching on the marker
+      // alone would re-enable a deleted row, add it back to every group,
+      // announce it to the permission graph and return 201 for an account
+      // that no longer exists.
+      const { service, events, revoker } = makeService();
+      const deleted = {
+        _id: id,
+        email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
+        orgId: { toString: () => orgId },
+        kind: 'service',
+        isDeleted: true,
+      };
+      sinon
+        .stub(Users, 'findOne')
+        .returns({ exec: sinon.stub().resolves(deleted) } as any);
+      const update = sinon.stub(Users, 'findOneAndUpdate');
+      // The compare-and-set wins.
+      update.onFirstCall().returns({
+        exec: sinon.stub().resolves({ ...deleted, isDeleted: false }),
+      } as any);
+      // The enable finds nothing, because a delete landed in between.
+      update.onSecondCall().returns({ exec: sinon.stub().resolves(null) } as any);
+      const groups = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+
+      try {
+        await service.create(orgId, {
+          slug: 'nightly-sync',
+          fullName: 'Nightly sync',
+        });
+        expect.fail('expected the restore to stop');
+      } catch (error) {
+        expect((error as Error).message).to.contain('changed while it was being restored');
+      }
+      // Revocation still happened, which is safe. Nothing after it did.
+      expect(revoker.revokeAllForServiceAccount.calledOnce).to.equal(true);
+      expect(groups.called).to.equal(false);
+      expect(events.publishEvent.called).to.equal(false);
+      // And the enable required the account to still exist.
+      expect(update.secondCall.args[0]).to.include({ isDeleted: false });
+    });
+
     it('refuses the loser of a restore race rather than restoring twice', async () => {
       // Both requests read the same deleted document; the conditional update
       // matches for the first and nothing for the second.
