@@ -466,6 +466,103 @@ class TestCheckDuplicateMd5CrossCollectionMatrix:
 
 
 # ===========================================================================
+# _check_duplicate_by_md5 - entities-collection sync on the finished-
+# duplicate branch (SinkOrchestrator.sync_entities_for_duplicate)
+# ===========================================================================
+
+
+class TestCheckDuplicateMd5EntitySync:
+    """sync_entities_for_duplicate must run only for same-collection,
+    already-processed duplicates -- a different-collection duplicate
+    continues to full indexing and gets entity sync from
+    SinkOrchestrator.index()/enrich() instead."""
+
+    _DUP = {
+        "_key": "dup-1",
+        "connectorName": "GOOGLE_DRIVE",
+        "virtualRecordId": "vr-1",
+        "indexingStatus": ProgressStatus.COMPLETED.value,
+        "extractionStatus": ProgressStatus.COMPLETED.value,
+    }
+
+    @pytest.mark.asyncio
+    async def test_same_collection_finished_duplicate_syncs_entities(self):
+        ep, gp = _make_multi_collection_event_processor()
+        ep.sink_orchestrator = AsyncMock()
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "GOOGLE_DRIVE",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        ep.sink_orchestrator.sync_entities_for_duplicate.assert_awaited_once_with(doc)
+
+    @pytest.mark.asyncio
+    async def test_different_collection_finished_duplicate_skips_entity_sync(self):
+        ep, gp = _make_multi_collection_event_processor()
+        ep.sink_orchestrator = AsyncMock()
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "SLACK",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is False
+        ep.sink_orchestrator.sync_entities_for_duplicate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_sink_orchestrator_does_not_raise(self):
+        """ep.sink_orchestrator defaults to None; must not AttributeError."""
+        ep, gp = _make_multi_collection_event_processor()
+        assert ep.sink_orchestrator is None
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "GOOGLE_DRIVE",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+
+    @pytest.mark.asyncio
+    async def test_entity_sync_failure_is_non_fatal(self):
+        """A raising sink still returns the normal dedup decision -- entity
+        sync is bookkeeping, not part of the correctness of the decision."""
+        ep, gp = _make_multi_collection_event_processor()
+        ep.sink_orchestrator = AsyncMock()
+        ep.sink_orchestrator.sync_entities_for_duplicate = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "GOOGLE_DRIVE",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result == DedupDecision(virtual_record_id="vr-1", skip_indexing=True)
+
+
+# ===========================================================================
 # on_event - Additional Edge Cases
 # ===========================================================================
 

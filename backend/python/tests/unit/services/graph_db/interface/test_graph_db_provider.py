@@ -14,12 +14,11 @@ import importlib
 import sys
 import types
 from abc import ABC
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -250,6 +249,12 @@ class TestAbstractMethodInventory:
         "get_record_path",
         "get_record_path_segments",
         "get_file_record_by_id",
+        # Knowledge-graph taxonomy entities
+        "get_taxonomy_entities_for_record",
+        "get_entity_candidate_records",
+        "find_taxonomy_nodes",
+        "create_taxonomy_node_if_absent",
+        "add_taxonomy_aliases",
         # User operations
         "get_user_by_email",
         "get_user_by_source_id",
@@ -317,6 +322,7 @@ class TestAbstractMethodInventory:
         "get_accessible_record_groups_for_connector",
         "get_records_by_virtual_record_id",
         "check_vrids_accessible",
+        "get_entity_access_context",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
         "get_file_permissions",
@@ -501,7 +507,6 @@ class TestConcreteMethodCalls:
 
     @pytest.mark.asyncio
     async def test_batch_upsert_people(self):
-        from app.models.entities import Person
         ConcreteProvider = _make_concrete_class()
         instance = ConcreteProvider()
         instance.batch_upsert_people.return_value = None
