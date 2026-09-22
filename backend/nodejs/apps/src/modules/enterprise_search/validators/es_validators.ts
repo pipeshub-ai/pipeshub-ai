@@ -228,6 +228,8 @@ const enterpriseSearchCreateBodySchema = z.object({
     // (enterprise_search/utils/project-context.ts). Ignored on follow-up turns.
     projectId: objectId('project ID').optional(),
     projectVisibility: z.enum(['private', 'project']).optional(),
+    disableSemantic: z.boolean().optional(),
+    disablePatternMatch: z.boolean().optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
     ...retrievalContextFieldsSchema,
@@ -383,6 +385,8 @@ const addMessageBodySchema = z.object({
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
     chatMode: z.nativeEnum(PIPESHUB_CHAT_MODE).optional(),
+    disableSemantic: z.boolean().optional(),
+    disablePatternMatch: z.boolean().optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
     ...retrievalContextFieldsSchema,

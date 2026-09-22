@@ -144,35 +144,70 @@ export class StorageServiceAdapter {
       : Promise.reject(new Error('Method not implemented'));
   }
 
-  /**
-   * Whether the document's current file is in storage.
-   * @param document - Metadata of the document.
-   * @returns A promise resolving to false only when storage confirms the file is absent.
-   */
   objectExists(document: Document): Promise<boolean> {
     return this.adapter.objectExists
       ? this.adapter.objectExists(document)
       : Promise.reject(new Error('Method not implemented'));
   }
 
-  /**
-   * Whether a file is stored at this path.
-   * @param documentPath - The storage path to check.
-   * @returns A promise resolving to false only when storage confirms the path is empty.
-   */
   objectExistsAtPath(documentPath: string): Promise<boolean> {
     return this.adapter.objectExistsAtPath
       ? this.adapter.objectExistsAtPath(documentPath)
       : Promise.reject(new Error('Method not implemented'));
   }
 
-  /**
-   * Removes the document's current file from storage.
-   * @param document - Metadata of the document.
-   */
   deleteObject(document: Document): Promise<void> {
     return this.adapter.deleteObject
       ? this.adapter.deleteObject(document)
       : Promise.reject(new Error('Method not implemented'));
+  }
+
+  deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {
+    return this.adapter.deleteTree
+      ? this.adapter.deleteTree(storagePath)
+      : Promise.reject(new Error('deleteTree not implemented for this storage provider'));
+  }
+
+  copyObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    return this.adapter.copyObject
+      ? this.adapter.copyObject(sourcePath, destinationPath)
+      : Promise.reject(new Error('copyObject not implemented for this storage provider'));
+  }
+
+  copyTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    return this.adapter.copyTree
+      ? this.adapter.copyTree(sourcePrefix, destinationPrefix)
+      : Promise.reject(new Error('copyTree not implemented for this storage provider'));
+  }
+
+  renameTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    return this.adapter.renameTree
+      ? this.adapter.renameTree(sourcePrefix, destinationPrefix)
+      : Promise.reject(new Error('renameTree not implemented for this storage provider'));
+  }
+
+  renameObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    return this.adapter.renameObject
+      ? this.adapter.renameObject(sourcePath, destinationPath)
+      : this.copyObject(sourcePath, destinationPath);
+  }
+
+  getObjectUrl(storageKey: string): string {
+    if (!this.adapter.getObjectUrl) {
+      throw new Error('getObjectUrl not implemented for this storage provider');
+    }
+    return this.adapter.getObjectUrl(storageKey);
   }
 }

@@ -130,6 +130,8 @@ export const buildAiChatRequest = (
     currentTime: nullable(body.currentTime),
     conversationId: nullable(context.conversationId),
     runId: nullable(body.runId),
+    ...(body.disableSemantic === true ? { disableSemantic: true } : {}),
+    ...(body.disablePatternMatch === true ? { disablePatternMatch: true } : {}),
   };
   assignRetrievalContextToPayload(payload, body);
 

@@ -496,7 +496,7 @@ class RetrievalService:
                     return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             elif not accessible_virtual_id_to_record_id:
                 self.logger.warning(f"No accessible documents found for user {user_id} and org {org_id}")
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND, accessible_vrids=accessible_virtual_id_to_record_id)
 
             # Graph key for KH permission_role checks (Location trails).
             user_key = (user.get("_key") or user.get("id")) if user else None
@@ -544,7 +544,7 @@ class RetrievalService:
 
             if not search_results:
                 self.logger.debug("No search results found")
-                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE, accessible_vrids=accessible_virtual_id_to_record_id)
 
             self.logger.debug(f"Search results count: {len(search_results) if search_results else 0}")
 
@@ -561,7 +561,7 @@ class RetrievalService:
             self.logger.debug(f"Vector DB returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
 
             if not returned_virtual_record_ids:
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND, accessible_vrids=accessible_virtual_id_to_record_id)
 
             # Resolve only the permission-verified recordIds for the returned virtual IDs.
             # This prevents cross-connector leakage: if multiple connectors share the same
@@ -579,7 +579,7 @@ class RetrievalService:
 
             if not fetched_records:
                 self.logger.error("Failed to fetch records by record IDs")
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND, accessible_vrids=accessible_virtual_id_to_record_id)
 
             record_id_to_record_map = {}
             for r in fetched_records:
@@ -599,8 +599,8 @@ class RetrievalService:
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
 
             if not unique_record_ids:
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
-            self.logger.debug(f"Unique record IDs count: {len(unique_record_ids)}")
+                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND, accessible_vrids=accessible_virtual_id_to_record_id)
+            self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
 
             file_record_ids_to_fetch = []
             mail_record_ids_to_fetch = []
@@ -875,6 +875,7 @@ class RetrievalService:
                     "status_code": 200,
                     "message": "Query processed successfully. Relevant records retrieved.",
                     "virtual_to_record_map": virtual_to_record_map,
+                    "accessible_virtual_id_to_record_id": accessible_virtual_id_to_record_id,
                 }
 
                 # Add KB filtering info to response if KB filtering was applied
@@ -886,7 +887,7 @@ class RetrievalService:
 
                 return response_data
             else:
-                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE, accessible_vrids=accessible_virtual_id_to_record_id)
         except VectorDBEmptyError:
             self.logger.error("VectorDBEmptyError")
             return self._create_empty_response(
@@ -1570,7 +1571,7 @@ class RetrievalService:
             for batches in per_query
         ]
 
-    def _create_empty_response(self, message: str, status: Status) -> dict[str, Any]:
+    def _create_empty_response(self, message: str, status: Status, accessible_vrids: dict[str, str] | None = None) -> dict[str, Any]:
         """Helper to create empty response with appropriate HTTP status codes"""
         # Map status types to appropriate HTTP status codes
         status_code_mapping = {
@@ -1591,6 +1592,7 @@ class RetrievalService:
             "status": status.value,
             "status_code": status_code,
             "message": message,
+            "accessible_virtual_id_to_record_id": accessible_vrids or {},
         }
 
 

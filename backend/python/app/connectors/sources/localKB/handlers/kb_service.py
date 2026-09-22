@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
@@ -10,6 +11,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_cleanup_events import (
     build_connector_vector_cleanup_events,
@@ -743,6 +745,14 @@ class KnowledgeBaseService:
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
 
+            # Fire-and-forget: etcd config + blob storage cleanup runs in the
+            # background so the API response is not blocked (mirrors the async
+            # connector-delete pattern in event_service._handle_delete).
+            asyncio.create_task(
+                self._cleanup_kb_storage(org_id, kb_id),
+                name=f"kb-cleanup-{kb_id}",
+            )
+
             self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by user_key={user_key}")
             return {
                 "success": True,
@@ -764,6 +774,20 @@ class KnowledgeBaseService:
                 "code": 500,
                 "reason": action_failed("delete this knowledge base")
             }
+
+    async def _cleanup_kb_storage(self, org_id: str, kb_id: str) -> None:
+        """Background task: delete blob storage for a deleted KB."""
+        try:
+            cleanup_helper = StorageCleanupHelper(
+                self.logger, self.graph_provider, self.config_service
+            )
+            deleted = await cleanup_helper.delete_connector_storage(org_id, kb_id)
+            self.logger.info(f"✅ Deleted {deleted} storage documents for KB {kb_id}")
+        except Exception as storage_err:
+            self.logger.error(
+                f"❌ Failed to delete blob storage for KB {kb_id}: {storage_err}. "
+                f"Orphaned blobs may remain in storage."
+            )
 
     def _build_kb_folder_record(
         self,

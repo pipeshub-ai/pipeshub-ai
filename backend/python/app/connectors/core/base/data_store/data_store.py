@@ -131,6 +131,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_record_path_segments(self, record_id: str) -> list[str]:
+        """Return individual record names from root ancestor to this record."""
+        pass
+
+    @abstractmethod
     async def get_records_by_status(
         self,
         org_id: str,

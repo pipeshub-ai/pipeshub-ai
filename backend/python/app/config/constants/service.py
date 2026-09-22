@@ -132,6 +132,8 @@ class Routes(Enum):
     STORAGE_DOWNLOAD = "/api/v1/document/internal/{documentId}/download"
     STORAGE_BUFFER = "/api/v1/document/internal/{documentId}/buffer"
     STORAGE_DOCUMENT = "/api/v1/document/internal/{documentId}"
+    STORAGE_MOVE_TREE = "/api/v1/document/internal/move-tree"
+    STORAGE_DELETE_CONNECTOR = "/api/v1/document/internal/connector/{connector_id}"
 
     # User-facing, permission-checked record bytes
     KB_STREAM_RECORD = "/api/v1/knowledgeBase/stream/record/{recordId}"

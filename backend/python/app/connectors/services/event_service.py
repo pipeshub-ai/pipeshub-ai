@@ -27,6 +27,9 @@ from app.connectors.services.vector_cleanup_events import (
     build_connector_vector_cleanup_events,
     log_cleanup_publish_failure,
 )
+from app.connectors.core.base.data_processor.storage_cleanup import (
+    StorageCleanupHelper,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.services.cache.invalidation_hooks import notify_connector_sync_completed
 from app.edition_services import get_data_entities_processor_cls
@@ -846,6 +849,24 @@ class EventService:
                 self.logger.error(
                     f"❌ Failed to delete etcd config for connector {connector_id}: {config_err}. "
                     f"Orphaned configuration may remain."
+                )
+
+            # Delete blob storage and MongoDB storage documents
+            try:
+                config_service = self.app_container.config_service()
+                cleanup_helper = StorageCleanupHelper(
+                    self.logger, self.graph_provider, config_service
+                )
+                deleted = await cleanup_helper.delete_connector_storage(
+                    org_id, connector_id
+                )
+                self.logger.info(
+                    f"✅ Deleted {deleted} storage documents for connector {connector_id}"
+                )
+            except Exception as storage_err:
+                self.logger.error(
+                    f"❌ Failed to delete blob storage for connector {connector_id}: {storage_err}. "
+                    f"Orphaned blobs may remain in storage."
                 )
 
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")

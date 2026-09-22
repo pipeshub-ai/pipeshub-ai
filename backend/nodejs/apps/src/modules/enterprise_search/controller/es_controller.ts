@@ -3296,6 +3296,8 @@ async function regenerateAnswersInternal(
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
       runId: req.body.runId || null,
+      ...(req.body.disableSemantic === true ? { disableSemantic: true } : {}),
+      ...(req.body.disablePatternMatch === true ? { disablePatternMatch: true } : {}),
       ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
     };
     if (agentKey || regenIsAgentMode) {

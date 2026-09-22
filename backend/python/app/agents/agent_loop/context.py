@@ -105,6 +105,8 @@ class AgentContext(BaseModel):
     # (mirrored here for typed access) before minting a shortener — never
     # created when this is False, so full record ids pass through unchanged.
     enable_record_id_shortening: bool = False
+    disable_semantic: bool = False
+    disable_pattern_match: bool = False
 
     # Opt-in per request (`ChatQuery.includeRetrievalContext`). When True the
     # stream carries CUSTOM `retrieval_context` frames naming the records and
@@ -409,6 +411,8 @@ class AgentContext(BaseModel):
             query=str(state.get("query") or ""),
             enable_record_id_shortening=bool(state.get("enable_record_id_shortening", False)),
             include_retrieval_context=bool(state.get("include_retrieval_context", False)),
+            disable_semantic=bool(state.get("disable_semantic", False)),
+            disable_pattern_match=bool(state.get("disable_pattern_match", False)),
             system_prompt=state.get("system_prompt"),
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
@@ -525,6 +529,8 @@ class AgentContext(BaseModel):
             # Mirrored so a tool can see the flag without reaching for the
             # context (`fetch.py` records render outcomes only when it is on).
             "include_retrieval_context": self.include_retrieval_context,
+            "disable_semantic": self.disable_semantic,
+            "disable_pattern_match": self.disable_pattern_match,
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,
