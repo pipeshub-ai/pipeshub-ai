@@ -8,6 +8,8 @@ metadata:
     app.kubernetes.io/component: zookeeper
 spec:
   clusterIP: None
+  # Peers must resolve each other to elect a leader, before any is Ready.
+  publishNotReadyAddresses: true
   ports:
     - port: 2181
       name: client
@@ -108,13 +110,17 @@ spec:
               export ZOOKEEPER_SERVER_ID="$ZK_SERVER_ID"
               echo "$ZK_SERVER_ID" > /var/lib/zookeeper/data/myid
               
-              # Build server list for ensemble
-              export ZOO_SERVERS=""
-              for i in {0..{{ sub .Values.zookeeper.replicaCount 1 }}}; do
-                ZOO_SERVERS="$ZOO_SERVERS
-              server.$((i+1))={{ include "pipeshub-ai.fullname" . }}-zookeeper-$i.{{ include "pipeshub-ai.fullname" . }}-zookeeper-headless.{{ .Release.Namespace }}.svc.cluster.local:2888:3888;2181"
+              {{- if gt (int .Values.zookeeper.replicaCount) 1 }}
+              # The Confluent image writes server.N entries from ZOOKEEPER_SERVERS
+              # (host:2888:3888, ';'-separated, N = position). Without it every
+              # replica runs standalone and Kafka brokers can register in
+              # different, unconnected ZooKeepers.
+              servers=""
+              for i in {0..{{ sub (int .Values.zookeeper.replicaCount) 1 }}}; do
+                servers="${servers:+$servers;}{{ include "pipeshub-ai.fullname" . }}-zookeeper-$i.{{ include "pipeshub-ai.fullname" . }}-zookeeper-headless.{{ .Release.Namespace }}.svc.cluster.local:2888:3888"
               done
-              export ZOO_SERVERS
+              export ZOOKEEPER_SERVERS="$servers"
+              {{- end }}
               
               exec /etc/confluent/docker/run
           resources:

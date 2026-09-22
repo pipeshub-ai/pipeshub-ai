@@ -3,7 +3,7 @@
 // ============================================================================
 
 /** Supported entity types for sharing */
-export type ShareEntityType = 'collection' | 'conversation' | 'search' | 'connector' | 'agent';
+export type ShareEntityType = 'collection' | 'conversation' | 'search' | 'connector' | 'agent' | 'project';
 
 /** Permission roles */
 export type ShareRole = 'OWNER' | 'WRITER' | 'READER';

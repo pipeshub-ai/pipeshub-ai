@@ -170,8 +170,8 @@ describe('MailService', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(InternalServerError);
-        expect((error as InternalServerError).message).to.equal(
-          'Unexpected error occurred',
+        expect((error as InternalServerError).message).to.contain(
+          'PipesHub tried to send that email',
         );
       } finally {
         axios.defaults.adapter = origAdapter;

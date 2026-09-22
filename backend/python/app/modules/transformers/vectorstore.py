@@ -28,6 +28,8 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
     EmbeddingError,
+    EmbeddingModelUnavailableError,
+    EmbeddingNotConfiguredError,
     IndexingError,
     VectorStoreError,
 )
@@ -47,7 +49,7 @@ from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     reset_membership_context,
-    resolve_vector_membership,
+    resolve_virtual_record_state,
     rewrite_or_delete_virtual_record,
     set_membership_context,
     sync_vector_membership,
@@ -543,6 +545,7 @@ class VectorStore(Transformer):
             strategy=collection_registry.strategy,
             manifest_store=collection_registry.manifest_store,
             logger=logger,
+            list_managed=collection_registry.list_managed_collections,
         )
 
         self.dense_embeddings = None
@@ -586,9 +589,9 @@ class VectorStore(Transformer):
                     await embedder._ensure_initialized()
                 except Exception as e:
                     raise IndexingError(
-                        "Failed to initialise sparse embeddings: " + str(e),
+                        "Failed to initialise sparse embeddings",
                         details={"error": str(e)},
-                    )
+                    ) from e
                 self._sparse_embedder = embedder
         return self._sparse_embedder
 
@@ -751,9 +754,9 @@ class VectorStore(Transformer):
                 await self.get_embedding_model_instance()
             except Exception as e:
                 raise IndexingError(
-                    "Failed to get embedding model instance: " + str(e),
+                    "Failed to get embedding model instance",
                     details={"error": str(e)},
-                )
+                ) from e
 
         collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
 
@@ -946,9 +949,12 @@ class VectorStore(Transformer):
         instead so it retries.
         """
         try:
-            connector_ids, record_group_ids = await resolve_vector_membership(
+            state = await resolve_virtual_record_state(
                 self.graph_provider, virtual_record_id, current_record=record
             )
+            connector_ids = state.connector_ids
+            record_group_ids = state.record_group_ids
+            root_record_group_ids = state.root_record_group_ids
         except Exception as e:
             self.logger.error(
                 "Failed to resolve vector membership for %s: %s",
@@ -966,7 +972,9 @@ class VectorStore(Transformer):
                 "vector filters until backfilled",
                 virtual_record_id,
             )
-        return set_membership_context(connector_ids, record_group_ids)
+        return set_membership_context(
+            connector_ids, record_group_ids, root_record_group_ids
+        )
 
     # ------------------------------------------------------------------
     # Embedding model initialisation
@@ -986,7 +994,7 @@ class VectorStore(Transformer):
         ai_models = await self.config_service.get_config(
             config_node_constants.AI_MODELS.value, use_cache=False
         )
-        embedding_configs = ai_models["embedding"]
+        embedding_configs = ai_models.get("embedding") if ai_models else None
         config_hash = embedding_config_hash(embedding_configs)
 
         # The config is re-read every record so an admin-UI change takes effect
@@ -1010,8 +1018,18 @@ class VectorStore(Transformer):
         configuration = None
 
         if not embedding_configs:
-            dense_embeddings = get_default_embedding_model()
-            self.logger.info("Using default embedding model")
+            self.logger.info(
+                "No embedding model configured for this organisation; "
+                "falling back to the local embedding service."
+            )
+            try:
+                dense_embeddings = get_default_embedding_model()
+            except Exception as e:
+                raise EmbeddingNotConfiguredError(
+                    "No embedding model is configured for this organisation "
+                    "and the local fallback embedding service is unavailable.",
+                    details={"error": str(e)},
+                ) from e
         else:
             config = next(
                 (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]
@@ -1025,10 +1043,10 @@ class VectorStore(Transformer):
             sample = await dense_embeddings.aembed_query("test")
             embedding_size = len(sample)
         except Exception as e:
-            raise IndexingError(
-                "Failed to get embedding model: " + str(e),
+            raise EmbeddingModelUnavailableError(
+                "Failed to get embedding model",
                 details={"error": str(e)},
-            )
+            ) from e
 
         model_name = (
             getattr(dense_embeddings, "model_name", None)
@@ -1145,7 +1163,9 @@ class VectorStore(Transformer):
             )
         except Exception as e:
             self.logger.error(f"Error deleting blocks by IDs: {e}")
-            raise EmbeddingError(f"Failed to delete blocks by IDs: {e}")
+            raise VectorStoreError(
+                "Failed to delete blocks by IDs", details={"error": str(e)}
+            ) from e
 
     # ------------------------------------------------------------------
     # Embeddings deletion (full record)
@@ -1162,7 +1182,9 @@ class VectorStore(Transformer):
             )
         except Exception as e:
             self.logger.error(f"Error deleting embeddings: {e}")
-            raise EmbeddingError(f"Failed to delete embeddings: {e}")
+            raise VectorStoreError(
+                "Failed to delete embeddings", details={"error": str(e)}
+            ) from e
 
     async def purge_record_vectors(
         self, org_id: str, virtual_record_id: str, record: Optional["Record"] = None
@@ -1434,9 +1456,9 @@ class VectorStore(Transformer):
                     await process_batch(start, batch)
                 except Exception as e:
                     raise VectorStoreError(
-                        f"Failed to store batch {idx}: {e}",
+                        f"Failed to store batch {idx}",
                         details={"error": str(e), "batch_index": idx},
-                    )
+                    ) from e
         else:
             semaphore = asyncio.Semaphore(_DEFAULT_CONCURRENCY_LIMIT)
 
@@ -1450,9 +1472,9 @@ class VectorStore(Transformer):
             for idx, result in enumerate(results):
                 if isinstance(result, Exception):
                     raise VectorStoreError(
-                        f"Failed to store batch {idx}: {result}",
+                        f"Failed to store batch {idx}",
                         details={"error": str(result), "batch_index": idx},
-                    )
+                    ) from result
 
     # ------------------------------------------------------------------
     # Embedding creation entry point
@@ -1494,9 +1516,9 @@ class VectorStore(Transformer):
                 await self._process_document_chunks(langchain_docs, record_id, collection_name)
             except Exception as e:
                 raise VectorStoreError(
-                    "Failed to store documents in vector store: " + str(e),
+                    "Failed to store documents in vector store",
                     details={"error": str(e)},
-                )
+                ) from e
 
         self.logger.info(f"✅ Embeddings created and stored for record '{record_id}'")
 
@@ -1519,9 +1541,9 @@ class VectorStore(Transformer):
             collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
         except Exception as e:
             raise IndexingError(
-                "Failed to get embedding model instance: " + str(e),
+                "Failed to get embedding model instance",
                 details={"error": str(e)},
-            )
+            ) from e
 
         # No LLM is resolved here any more: the only thing it was used for was
         # describing images, which now happens before the record is stored
@@ -1630,9 +1652,9 @@ class VectorStore(Transformer):
                     )
                 except Exception as e:
                     raise DocumentProcessingError(
-                        "Failed to create text document objects: " + str(e),
+                        "Failed to create text document objects",
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             # ── Image blocks ──
             if image_blocks:
@@ -1674,9 +1696,9 @@ class VectorStore(Transformer):
                                 )
                 except Exception as e:
                     raise DocumentProcessingError(
-                        "Failed to create image document objects: " + str(e),
+                        "Failed to create image document objects",
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             # ── Block groups (SQL tables/views and regular tables) ──
             for block_group in block_groups:
@@ -1905,8 +1927,8 @@ class VectorStore(Transformer):
             raise
         except Exception as e:
             raise IndexingError(
-                f"Unexpected error during indexing: {str(e)}",
-                details={"error_type": type(e).__name__},
-            )
+                "Unexpected error during indexing",
+                details={"error_type": type(e).__name__, "error": str(e)},
+            ) from e
         finally:
             reset_membership_context(tokens)

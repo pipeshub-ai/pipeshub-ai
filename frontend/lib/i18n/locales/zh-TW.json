@@ -29,6 +29,24 @@
     "missingAgentKey": "缺少代理程式金鑰。請從對話側邊欄開啟代理程式，或使用有效的連結。",
     "loading": "載入中…"
   },
+  "projects": {
+    "pageTitle": "專案",
+    "searchPlaceholder": "搜尋專案…",
+    "emptyState": "尚無專案",
+    "emptyStateHint": "建立專案來整理聊天、檔案和指示。",
+    "failedToLoad": "載入專案失敗",
+    "chatCount_one": "{{count}} 個對話",
+    "chatCount_other": "{{count}} 個對話",
+    "lastActive": "活躍於 {{date}}",
+    "pinnedSection": "已置頂",
+    "allSection": "所有專案",
+    "backToAllProjects": "所有專案",
+    "loadMore": "載入更多",
+    "tabYourProjects": "您的專案",
+    "tabArchived": "已封存",
+    "archivedEmptyState": "尚無封存的專案",
+    "archivedEmptyStateHint": "您封存的專案會顯示在這裡。"
+  },
   "timeGroup": {
     "today": "今天",
     "yesterday": "昨天",
@@ -212,6 +230,8 @@
     "moreConnectors": "更多連接器",
     "all": "全部",
     "agents": "代理程式",
+    "projects": "專案",
+    "beta": "測試版",
     "searchChats": "搜尋對話",
     "inbox": "收件匣",
     "notifications": "通知"
@@ -377,6 +397,7 @@
       "subtitleExisting": "確認或更新您的 PipesHub 伺服器 URL。",
       "label": "伺服器 URL",
       "submit": "連線",
+      "changeServer": "變更伺服器",
       "errors": {
         "empty": "請輸入伺服器 URL。",
         "invalid": "請輸入有效的 URL（例如 http://localhost:3000）。",
@@ -407,7 +428,11 @@
     "language": "語言",
     "english": "英文",
     "german": "德文",
-    "rotateLandscape": "旋轉您的裝置以獲得最佳體驗"
+    "rotateLandscape": "旋轉您的裝置以獲得最佳體驗",
+    "beta": {
+      "label": "測試版",
+      "tooltip": "此功能為測試版，未來可能會有所變動。"
+    }
   },
   "units": {
     "bytes": "位元組",
@@ -544,6 +569,13 @@
       "resetDefaults": "重設為預設值",
       "knowledgeScopeClearedWarning": "本次執行未包含任何知識來源，因此代理將不會搜尋您的連接器或集合來尋找答案。"
     },
+    "projectResources": {
+      "noConnectors": "此專案未啟用任何連接器。",
+      "noCollections": "此專案未啟用任何集合。",
+      "noActions": "此專案未啟用任何操作（工具集）。",
+      "noMcpServers": "此專案未啟用任何 MCP 伺服器。",
+      "resetDefaults": "重設為專案預設值"
+    },
     "aiModelsTooltip": "AI 模型",
     "attachmentTooltip": "附加檔案",
     "micTooltip": "語音輸入",
@@ -555,6 +587,7 @@
     "loadingConversation": "正在載入對話...",
     "recents": "最近的對話",
     "sharedChats": "共享的對話",
+    "sharedBy": "由 {{name}} 分享",
     "noSharedChats": "沒有共享的對話",
     "yourChats": "您的對話",
     "noChatsFound": "找不到任何對話",
@@ -790,7 +823,132 @@
         "有沒有需要注意的相依性或阻礙",
         "目前為止學到了哪些經驗"
       ]
-    ]
+    ],
+    "projects": {
+      "title": "專案",
+      "newProject": "新建專案",
+      "noProjects": "尚無專案",
+      "failedToLoad": "載入專案失敗",
+      "moreProjects": "更多專案",
+      "moveToProject": "移至專案",
+      "removeFromProject": "從專案中移除",
+      "pinProject": "置頂",
+      "unpinProject": "取消置頂",
+      "archiveProject": "封存專案",
+      "unarchiveProject": "取消封存",
+      "restoreSuccess": "專案已復原",
+      "deleteProject": "刪除專案",
+      "shareProject": "分享專案",
+      "backToProjects": "所有專案",
+      "backToProject": "返回專案",
+      "newChatInProject": "新對話",
+      "recentChats": "最近對話",
+      "noChats": "此專案中尚無對話",
+      "startChatInProject": "在此專案中開始對話",
+      "createDialog": {
+        "title": "新建專案",
+        "nameLabel": "名稱",
+        "namePlaceholder": "例如：Q3 行銷計畫",
+        "descriptionLabel": "描述",
+        "descriptionPlaceholder": "這個專案是關於什麼的？（選填）",
+        "instructionsLabel": "指令",
+        "instructionsPlaceholder": "助理在此專案中應始終遵循的指令（選填）",
+        "create": "建立專案",
+        "creating": "建立中…",
+        "nameRequired": "名稱為必填"
+      },
+      "workspace": {
+        "failedToLoad": "載入此專案失敗",
+        "instructionsTitle": "指令",
+        "instructionsPlaceholder": "新增助理在此專案每次對話中應遵循的指令…",
+        "noInstructions": "尚未新增指令",
+        "save": "儲存",
+        "saving": "儲存中…",
+        "editInstructions": "編輯指令",
+        "noDescription": "無描述",
+        "filesTitle": "檔案",
+        "filesSubtitle": "此處的檔案僅在此專案內被搜尋。",
+        "uploadFiles": "上傳檔案",
+        "uploading": "上傳中…",
+        "noFiles": "尚無檔案",
+        "removeFile": "移除檔案",
+        "connectorsTitle": "連接器",
+        "connectorsSubtitle": "此專案中的對話僅搜尋這些連接器。",
+        "noConnectorsAvailable": "尚無可新增的連接器。",
+        "failedToLoadConnectors": "載入連接器失敗",
+        "updateConnectorsFailed": "更新連接器失敗",
+        "toolsTitle": "工具與 MCP",
+        "noToolsAvailable": "尚無可新增的已驗證操作或 MCP 伺服器。",
+        "knowledgeBaseUnavailable": "無法準備此專案的檔案儲存空間",
+        "uploadSessionLabel_one": "{{count}} 個檔案",
+        "uploadSessionLabel_other": "{{count}} 個檔案",
+        "membersTitle": "成員",
+        "memberCount_one": "{{count}} 位成員",
+        "memberCount_other": "{{count}} 位成員",
+        "share": "分享",
+        "saveInstructionsFailed": "無法儲存指示",
+        "updateToolsFailed": "無法更新工具",
+        "updatePinFailed": "無法更新釘選狀態",
+        "updateArchiveFailed": "無法更新封存狀態",
+        "shareRefreshFailed": "無法重新整理共用詳細資料",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone.",
+        "heroTitle": "我們要處理什麼？",
+        "heroSubtitle": "您在這裡發起的每個聊天都會沿用此專案的指令、檔案和工具。",
+        "addDescription": "新增描述",
+        "descriptionPlaceholder": "這個專案是關於什麼的？",
+        "descriptionSaveFailed": "儲存描述失敗",
+        "visibilityBadgePrivate": "私人",
+        "visibilityBadgeOrg": "組織",
+        "visibilityLabel": "可見性",
+        "visibilityPrivate": "僅您自己可見",
+        "visibilityOrg": "對您的組織可見",
+        "ownerLabel": "擁有者",
+        "youLabel": "您",
+        "aboutTitle": "關於",
+        "chatDefaultsTitle": "聊天預設設定",
+        "modelLabel": "模型",
+        "projectSetupTitle": "專案設定",
+        "projectSetupProgress": "{{done}} / {{total}}",
+        "statusSet": "已設定",
+        "statusNotSet": "未設定",
+        "filesStatusNone": "無檔案",
+        "filesStatusCount_one": "{{count}} 個檔案",
+        "filesStatusCount_other": "{{count}} 個檔案",
+        "filesStatusCountWithSize_one": "{{count}} 個檔案 · {{size}}",
+        "filesStatusCountWithSize_other": "{{count}} 個檔案 · {{size}}",
+        "connectorsStatusNone": "無",
+        "connectorsStatusCount_one": "已連接 {{count}} 個",
+        "connectorsStatusCount_other": "已連接 {{count}} 個",
+        "toolsStatusDefault": "預設",
+        "toolsStatusCount_one": "已啟用 {{count}} 個",
+        "toolsStatusCount_other": "已啟用 {{count}} 個",
+        "membersStatusOnlyYou": "僅您自己",
+        "suggestSummariseDocument": "總結文件",
+        "suggestPlanWork": "規劃一項工作",
+        "suggestWriteInstructions": "撰寫專案指令",
+        "suggestSummariseDocumentPrompt": "請總結此專案檔案中最重要的文件。",
+        "suggestPlanWorkPrompt": "請幫我為此專案規劃一項工作，並將其拆分為具體的後續步驟。"
+      },
+      "moveDialog": {
+        "title": "移至專案",
+        "noProjects": "您還沒有任何專案",
+        "removeOption": "無專案",
+        "moving": "移動中…"
+      },
+      "deleteDialog": {
+        "title": "刪除此專案？",
+        "description": "這將刪除專案並取消與對話的關聯。對話本身不會被刪除。",
+        "confirm": "刪除專案",
+        "deleting": "刪除中…",
+        "failed": "無法刪除專案"
+      },
+      "roles": {
+        "owner": "擁有者",
+        "editor": "編輯者",
+        "viewer": "檢視者"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -830,6 +988,8 @@
         "changeRoleSuccess": "角色已更新",
         "changeRoleSuccessDescription": "{{name}} 現在是 {{role}}",
         "changeRoleError": "變更角色失敗",
+        "maxAdminsReachedTitle": "無法再新增管理員",
+        "maxAdminsReached": "一個組織最多可以有 5 位管理員。",
         "removeFromWorkspace": "從工作區移除",
         "demoteAdminBeforeRemoveTitle": "無法移除管理員",
         "demoteAdminBeforeRemove": "請先將管理員降級為成員，再將其移除。",
@@ -1216,7 +1376,7 @@
         "errorOptionalUrlInvalid": "選填的 URL 若有填寫，必須是有效的 http(s) 位址。",
         "grantRequiredTitle": "必須選取授權類型",
         "grantRequiredDescription": "至少必須保留一種已選取的授權類型。",
-        "clientCredentialsWarning": "用戶端憑證 token 一律以建立此應用程式的使用者身分存取 Pipeshub，而非以呼叫 token 端點的人的身分。使用者仍可透過授權碼流程為自己授權此應用程式。"
+        "clientCredentialsWarning": "用戶端憑證 token 一律以建立此應用程式的使用者身分存取 Pipeshub，而非以呼叫 token 端點的人的身分。在您授予的權限範圍（scope）內，token 可以存取該使用者能存取的一切，並繼承其角色，因此由管理員建立的應用程式將擁有管理員權限。若該帳號被刪除，token 也會失效。若此應用程式同時支援授權碼流程，使用者仍可透過該方式為自己授權。"
       }
     },
     "personalAccessTokens": {
@@ -1908,6 +2068,8 @@
         "additionalSettingsDescription": "設定連接器專屬的同步選項",
         "nonEditableUrlFieldTooltip": "網站 URL 設定後即無法變更。",
         "nonEditableLockedFieldTooltip": "此值設定後即無法變更。",
+        "localFsDesktopOnlyBanner": "本機檔案系統設定只能在 PipesHub 桌面應用程式中變更。此檢視為唯讀。",
+        "localFsDesktopOnlySaveTooltip": "請開啟 PipesHub 桌面應用程式以變更這些設定。",
         "importDate": "匯入起始日期",
         "importDateDescription": "選擇要從哪個日期開始匯入訊息",
         "importAllTime": "匯入所有歷史資料",
@@ -1989,7 +2151,9 @@
           "needsAuth": "需要驗證",
           "needsAuthTooltip": "設定已儲存，但此執行個體仍需要驗證。",
           "ready": "已完成",
-          "readyTooltip": "設定已完成並通過驗證。啟用後即可執行同步。"
+          "readyTooltip": "設定已完成並通過驗證。啟用後即可執行同步。",
+          "desktopOffline": "桌面端離線",
+          "desktopOfflineTooltip": "擁有此資料夾的桌面應用程式未連線。請在該電腦上開啟它以進行同步。"
         },
         "sync": {
           "kind": "同步",
@@ -2000,6 +2164,14 @@
           "removing": "移除中",
           "removingTooltip": "此執行個體正在刪除中。"
         }
+      },
+      "localFsDesktop": {
+        "offlineToast": "請在擁有此資料夾的電腦上開啟 PipesHub 桌面應用程式以進行同步。",
+        "offlineNamedToast": "擁有此資料夾的裝置 {{deviceName}} 未連線。請在該裝置上開啟 PipesHub 桌面應用程式以進行同步。",
+        "unclaimedToast": "此連接器尚未在桌面端設定。請在擁有此資料夾的電腦上開啟 PipesHub 桌面應用程式，並在其中啟用一次同步。",
+        "ownedByOtherDeviceToast": "此連接器屬於 {{deviceName}}。請在該裝置上的 PipesHub 桌面應用程式中啟用同步。",
+        "ownedByOtherDeviceUnknownToast": "此連接器屬於另一台裝置。請在該裝置上的 PipesHub 桌面應用程式中啟用同步。",
+        "deviceIdentityError": "無法識別此裝置：{{error}}"
       },
       "schemaForm": {
         "tagsPlaceholder": "輸入文字後按 Enter 鍵新增標籤",
@@ -2286,7 +2458,10 @@
         "rollbackError": "回復失敗",
         "candidateApproved": "已核准「{{name}}」",
         "candidateRejected": "已拒絕「{{name}}」",
-        "candidateActionError": "更新候選項目失敗"
+        "candidateActionError": "更新候選項目失敗",
+        "conflict": "此技能已在其他位置被變更",
+        "conflictDescription": "請重新載入最新版本，然後再次套用您的編輯。",
+        "conflictReload": "重新載入"
       },
       "builtinReadOnly": "這是內建技能，無法編輯。",
       "editorPanel": {
@@ -2364,7 +2539,10 @@
         "confirmImport": "匯入技能",
         "source": "來源：{{source}}",
         "resourceCount": "{{count}} 個資源",
-        "skippedBinary": "已略過 {{count}} 個二進位檔案（尚不支援）"
+        "skippedBinary": "已略過 {{count}} 個二進位檔案（尚不支援）",
+        "nameHint": "使用小寫加連字號。如果原始名稱已是內建技能（例如 pptx），請改用其他名稱。",
+        "nameInvalid": "名稱只能包含小寫字母、數字和單一連字號。",
+        "originalName": "原始名稱：{{name}}"
       },
       "candidates": {
         "title": "待審核的技能候選項目",
@@ -2930,6 +3108,8 @@
     "noCollections": "沒有可用的集合",
     "noSkills": "尚無技能 — 請在「您的技能」下建立或匯入",
     "skillNodeTemplateDescription": "您的代理可以呼叫的自訂技能",
+    "skillDeprecated": "此技能已棄用",
+    "skillDeprecatedReplacedBy": "此技能已棄用。請改用 {{name}}。",
     "collapse": "收合",
     "expand": "展開",
     "serviceAccountCreated": "服務代理已建立。請使用元件面板中的鑰匙圖示設定每個工具組。",
@@ -2996,6 +3176,7 @@
     "toolsetsSection": "工具組",
     "mcpServersSection": "MCP 伺服器",
     "skillsSection": "技能",
+    "noSkillsAvailable": "沒有可用的技能",
     "inputSection": "輸入",
     "responseSection": "回應",
     "connectModel": "連接模型",
@@ -3011,8 +3192,10 @@
     "lineCount": "{{count}} 行",
     "instructionsLabel": "指示",
     "startingMessageLabel": "起始訊息",
-    "defaultReasoningEffortLabel": "預設推理強度",
-    "defaultReasoningEffortHint": "未設定時預設為高。",
+    "defaultReasoningEffortLabel": "預設推理力度",
+    "defaultReasoningEffortHint": "當使用者在聊天中未選擇時使用的備用推理力度。",
+    "sendUserContextLabel": "傳送使用者與組織內容",
+    "sendUserContextHint": "關閉後，此代理不會在系統提示中收到使用者的姓名、電子郵件或組織名稱，將僅依賴工具、動作與知識來源。",
     "moreItems": "還有 {{count}} 個",
     "toolsetNodeSubtitle": "工具組",
     "toolsLabel": "工具",
@@ -3173,9 +3356,7 @@
     "deprecatedToolsBanner": "此代理上有 {{count}} 個工具已淘汰，請移除：{{tools}}",
     "removeDeprecatedTools": "移除已淘汰的工具",
     "showMore": "顯示更多",
-    "showLess": "顯示較少",
-    "defaultReasoningEffortLabel": "預設推理力度",
-    "defaultReasoningEffortHint": "當使用者在聊天中未選擇時使用的備用推理力度。"
+    "showLess": "顯示較少"
   },
   "recordView": {
     "sections": {

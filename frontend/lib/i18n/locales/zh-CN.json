@@ -29,6 +29,24 @@
     "missingAgentKey": "缺少智能体密钥。请从聊天侧边栏打开智能体，或使用有效的链接。",
     "loading": "正在加载…"
   },
+  "projects": {
+    "pageTitle": "项目",
+    "searchPlaceholder": "搜索项目…",
+    "emptyState": "暂无项目",
+    "emptyStateHint": "创建一个项目来整理聊天、文件和指令。",
+    "failedToLoad": "加载项目失败",
+    "chatCount_one": "{{count}} 个对话",
+    "chatCount_other": "{{count}} 个对话",
+    "lastActive": "活跃于 {{date}}",
+    "pinnedSection": "已置顶",
+    "allSection": "所有项目",
+    "backToAllProjects": "所有项目",
+    "loadMore": "加载更多",
+    "tabYourProjects": "您的项目",
+    "tabArchived": "已归档",
+    "archivedEmptyState": "暂无归档项目",
+    "archivedEmptyStateHint": "您归档的项目会显示在这里。"
+  },
   "timeGroup": {
     "today": "今天",
     "yesterday": "昨天",
@@ -212,6 +230,8 @@
     "moreConnectors": "更多连接器",
     "all": "全部",
     "agents": "智能体",
+    "projects": "项目",
+    "beta": "测试版",
     "searchChats": "搜索聊天",
     "inbox": "收件箱",
     "notifications": "通知"
@@ -377,6 +397,7 @@
       "subtitleExisting": "确认或更新您的 PipesHub 服务器 URL。",
       "label": "服务器 URL",
       "submit": "连接",
+      "changeServer": "更改服务器",
       "errors": {
         "empty": "请输入服务器 URL。",
         "invalid": "请输入有效的 URL（例如 http://localhost:3000）。",
@@ -407,7 +428,11 @@
     "language": "语言",
     "english": "英语",
     "german": "德语",
-    "rotateLandscape": "旋转您的设备以获得最佳体验"
+    "rotateLandscape": "旋转您的设备以获得最佳体验",
+    "beta": {
+      "label": "测试版",
+      "tooltip": "此功能处于测试阶段，可能会有变动。"
+    }
   },
   "units": {
     "bytes": "字节",
@@ -544,6 +569,13 @@
       "resetDefaults": "重置为默认值",
       "knowledgeScopeClearedWarning": "本次运行未包含任何知识来源，因此智能体不会搜索您的连接器或收藏集来查找答案。"
     },
+    "projectResources": {
+      "noConnectors": "此项目未启用任何连接器。",
+      "noCollections": "此项目未启用任何集合。",
+      "noActions": "此项目未启用任何操作（工具集）。",
+      "noMcpServers": "此项目未启用任何 MCP 服务器。",
+      "resetDefaults": "重置为项目默认值"
+    },
     "aiModelsTooltip": "AI 模型",
     "attachmentTooltip": "附加文件",
     "micTooltip": "语音输入",
@@ -555,6 +587,7 @@
     "loadingConversation": "正在加载对话…",
     "recents": "最近",
     "sharedChats": "共享的聊天",
+    "sharedBy": "由 {{name}} 共享",
     "noSharedChats": "没有共享的聊天",
     "yourChats": "您的聊天",
     "noChatsFound": "未找到聊天",
@@ -790,7 +823,132 @@
         "有没有需要注意的依赖项或阻碍",
         "到目前为止学到了哪些经验教训"
       ]
-    ]
+    ],
+    "projects": {
+      "title": "项目",
+      "newProject": "新建项目",
+      "noProjects": "暂无项目",
+      "failedToLoad": "加载项目失败",
+      "moreProjects": "更多项目",
+      "moveToProject": "移至项目",
+      "removeFromProject": "从项目中移除",
+      "pinProject": "置顶",
+      "unpinProject": "取消置顶",
+      "archiveProject": "归档项目",
+      "unarchiveProject": "取消归档",
+      "restoreSuccess": "项目已恢复",
+      "deleteProject": "删除项目",
+      "shareProject": "分享项目",
+      "backToProjects": "所有项目",
+      "backToProject": "返回项目",
+      "newChatInProject": "新对话",
+      "recentChats": "最近对话",
+      "noChats": "此项目中暂无对话",
+      "startChatInProject": "在此项目中开始对话",
+      "createDialog": {
+        "title": "新建项目",
+        "nameLabel": "名称",
+        "namePlaceholder": "例如：Q3 营销计划",
+        "descriptionLabel": "描述",
+        "descriptionPlaceholder": "这个项目是关于什么的？（可选）",
+        "instructionsLabel": "指令",
+        "instructionsPlaceholder": "助手在此项目中应始终遵循的指令（可选）",
+        "create": "创建项目",
+        "creating": "创建中…",
+        "nameRequired": "名称为必填项"
+      },
+      "workspace": {
+        "failedToLoad": "加载此项目失败",
+        "instructionsTitle": "指令",
+        "instructionsPlaceholder": "添加助手在此项目每次对话中应遵循的指令…",
+        "noInstructions": "尚未添加指令",
+        "save": "保存",
+        "saving": "保存中…",
+        "editInstructions": "编辑指令",
+        "noDescription": "无描述",
+        "filesTitle": "文件",
+        "filesSubtitle": "此处的文件仅在此项目内被搜索。",
+        "uploadFiles": "上传文件",
+        "uploading": "上传中…",
+        "noFiles": "暂无文件",
+        "removeFile": "移除文件",
+        "connectorsTitle": "连接器",
+        "connectorsSubtitle": "此项目中的对话仅搜索这些连接器。",
+        "noConnectorsAvailable": "暂无可添加的连接器。",
+        "failedToLoadConnectors": "加载连接器失败",
+        "updateConnectorsFailed": "更新连接器失败",
+        "toolsTitle": "工具和 MCP",
+        "noToolsAvailable": "暂无可添加的已认证操作或 MCP 服务器。",
+        "knowledgeBaseUnavailable": "无法准备此项目的文件存储",
+        "uploadSessionLabel_one": "{{count}} 个文件",
+        "uploadSessionLabel_other": "{{count}} 个文件",
+        "membersTitle": "成员",
+        "memberCount_one": "{{count}} 位成员",
+        "memberCount_other": "{{count}} 位成员",
+        "share": "分享",
+        "saveInstructionsFailed": "保存说明失败",
+        "updateToolsFailed": "更新工具失败",
+        "updatePinFailed": "更新置顶状态失败",
+        "updateArchiveFailed": "更新归档状态失败",
+        "shareRefreshFailed": "刷新共享详情失败",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone.",
+        "heroTitle": "我们要处理什么？",
+        "heroSubtitle": "您在这里发起的每个聊天都会沿用此项目的指令、文件和工具。",
+        "addDescription": "添加描述",
+        "descriptionPlaceholder": "这个项目是关于什么的？",
+        "descriptionSaveFailed": "保存描述失败",
+        "visibilityBadgePrivate": "私有",
+        "visibilityBadgeOrg": "组织",
+        "visibilityLabel": "可见性",
+        "visibilityPrivate": "仅您自己可见",
+        "visibilityOrg": "对您的组织可见",
+        "ownerLabel": "拥有者",
+        "youLabel": "您",
+        "aboutTitle": "关于",
+        "chatDefaultsTitle": "聊天默认设置",
+        "modelLabel": "模型",
+        "projectSetupTitle": "项目设置",
+        "projectSetupProgress": "{{done}} / {{total}}",
+        "statusSet": "已设置",
+        "statusNotSet": "未设置",
+        "filesStatusNone": "无文件",
+        "filesStatusCount_one": "{{count}} 个文件",
+        "filesStatusCount_other": "{{count}} 个文件",
+        "filesStatusCountWithSize_one": "{{count}} 个文件 · {{size}}",
+        "filesStatusCountWithSize_other": "{{count}} 个文件 · {{size}}",
+        "connectorsStatusNone": "无",
+        "connectorsStatusCount_one": "已连接 {{count}} 个",
+        "connectorsStatusCount_other": "已连接 {{count}} 个",
+        "toolsStatusDefault": "默认",
+        "toolsStatusCount_one": "已启用 {{count}} 个",
+        "toolsStatusCount_other": "已启用 {{count}} 个",
+        "membersStatusOnlyYou": "仅您自己",
+        "suggestSummariseDocument": "总结文档",
+        "suggestPlanWork": "规划一项工作",
+        "suggestWriteInstructions": "编写项目指令",
+        "suggestSummariseDocumentPrompt": "请总结此项目文件中最重要的文档。",
+        "suggestPlanWorkPrompt": "请帮我为此项目规划一项工作，并将其拆分为具体的后续步骤。"
+      },
+      "moveDialog": {
+        "title": "移至项目",
+        "noProjects": "您还没有任何项目",
+        "removeOption": "无项目",
+        "moving": "移动中…"
+      },
+      "deleteDialog": {
+        "title": "删除此项目？",
+        "description": "这将删除项目并取消与对话的关联。对话本身不会被删除。",
+        "confirm": "删除项目",
+        "deleting": "删除中…",
+        "failed": "删除项目失败"
+      },
+      "roles": {
+        "owner": "拥有者",
+        "editor": "编辑者",
+        "viewer": "查看者"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -830,6 +988,8 @@
         "changeRoleSuccess": "角色已更新",
         "changeRoleSuccessDescription": "{{name}} 现在是 {{role}}",
         "changeRoleError": "更改角色失败",
+        "maxAdminsReachedTitle": "无法再添加管理员",
+        "maxAdminsReached": "一个组织最多可以有 5 位管理员。",
         "removeFromWorkspace": "从工作区移除",
         "demoteAdminBeforeRemoveTitle": "无法移除管理员",
         "demoteAdminBeforeRemove": "请先将该管理员降级为成员，然后再移除。",
@@ -1216,7 +1376,7 @@
         "errorOptionalUrlInvalid": "可选 URL 如已填写，必须是有效的 http(s) 地址。",
         "grantRequiredTitle": "需要授权类型",
         "grantRequiredDescription": "必须至少保留一种已选择的授权类型。",
-        "clientCredentialsWarning": "客户端凭据令牌始终以创建此应用的用户身份访问 Pipeshub，而不是以调用令牌端点的任何人的身份。用户仍可通过授权码流程为自己授权此应用。"
+        "clientCredentialsWarning": "客户端凭据令牌始终以创建此应用的用户身份访问 Pipeshub，而不是以调用令牌端点的任何人的身份。在您授予的权限范围（scope）内，令牌可以访问该用户能访问的一切，并继承其角色，因此由管理员创建的应用将拥有管理员权限。如果该账户被删除，令牌也会失效。如果此应用同时支持授权码流程，用户仍可通过该方式为自己授权。"
       }
     },
     "personalAccessTokens": {
@@ -1908,6 +2068,8 @@
         "additionalSettingsDescription": "配置连接器专属的同步选项",
         "nonEditableUrlFieldTooltip": "网站 URL 设置后无法更改。",
         "nonEditableLockedFieldTooltip": "此值设置后无法更改。",
+        "localFsDesktopOnlyBanner": "本地文件系统设置只能在 PipesHub 桌面应用中更改。此视图为只读。",
+        "localFsDesktopOnlySaveTooltip": "请打开 PipesHub 桌面应用以更改这些设置。",
         "importDate": "导入起始日期",
         "importDateDescription": "选择从哪个日期开始导入消息",
         "importAllTime": "导入全部历史数据",
@@ -1989,7 +2151,9 @@
           "needsAuth": "需要认证",
           "needsAuthTooltip": "配置已保存，但此实例仍需要认证。",
           "ready": "已完成",
-          "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。"
+          "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。",
+          "desktopOffline": "桌面端离线",
+          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。"
         },
         "sync": {
           "kind": "同步",
@@ -2000,6 +2164,14 @@
           "removing": "正在移除",
           "removingTooltip": "此实例正在被删除。"
         }
+      },
+      "localFsDesktop": {
+        "offlineToast": "请在拥有此文件夹的电脑上打开 PipesHub 桌面应用以进行同步。",
+        "offlineNamedToast": "拥有此文件夹的设备 {{deviceName}} 未连接。请在该设备上打开 PipesHub 桌面应用以进行同步。",
+        "unclaimedToast": "此连接器尚未在桌面端设置。请在拥有此文件夹的电脑上打开 PipesHub 桌面应用，并在其中启用一次同步。",
+        "ownedByOtherDeviceToast": "此连接器属于 {{deviceName}}。请在该设备上的 PipesHub 桌面应用中启用同步。",
+        "ownedByOtherDeviceUnknownToast": "此连接器属于另一台设备。请在该设备上的 PipesHub 桌面应用中启用同步。",
+        "deviceIdentityError": "无法识别此设备：{{error}}"
       },
       "schemaForm": {
         "tagsPlaceholder": "输入内容并按 Enter 添加标签",
@@ -2286,7 +2458,10 @@
         "rollbackError": "回滚失败",
         "candidateApproved": "已批准“{{name}}”",
         "candidateRejected": "已拒绝“{{name}}”",
-        "candidateActionError": "更新候选技能失败"
+        "candidateActionError": "更新候选技能失败",
+        "conflict": "此技能已在其他位置被更改",
+        "conflictDescription": "请重新加载最新版本，然后再次应用您的编辑。",
+        "conflictReload": "重新加载"
       },
       "builtinReadOnly": "这是内置技能，无法编辑。",
       "editorPanel": {
@@ -2364,7 +2539,10 @@
         "confirmImport": "导入技能",
         "source": "来源：{{source}}",
         "resourceCount": "{{count}} 个资源",
-        "skippedBinary": "已跳过 {{count}} 个二进制文件（暂不支持）"
+        "skippedBinary": "已跳过 {{count}} 个二进制文件（暂不支持）",
+        "nameHint": "使用小写加连字符。如果原始名称已是内置技能（例如 pptx），请改用其他名称。",
+        "nameInvalid": "名称只能包含小写字母、数字和单个连字符。",
+        "originalName": "原始名称：{{name}}"
       },
       "candidates": {
         "title": "待审核的候选技能",
@@ -2930,6 +3108,8 @@
     "noCollections": "没有可用的合集",
     "noSkills": "暂无技能——请在“您的技能”下创建或导入一个",
     "skillNodeTemplateDescription": "您的智能体可调用的自定义技能",
+    "skillDeprecated": "此技能已弃用",
+    "skillDeprecatedReplacedBy": "此技能已弃用。请改用 {{name}}。",
     "collapse": "收起",
     "expand": "展开",
     "serviceAccountCreated": "服务智能体已创建。请使用面板中的钥匙图标配置每个工具集。",
@@ -2996,6 +3176,7 @@
     "toolsetsSection": "工具集",
     "mcpServersSection": "MCP 服务器",
     "skillsSection": "技能",
+    "noSkillsAvailable": "没有可用的技能",
     "inputSection": "输入",
     "responseSection": "回复",
     "connectModel": "连接模型",
@@ -3011,8 +3192,10 @@
     "lineCount": "{{count}} 行",
     "instructionsLabel": "指令",
     "startingMessageLabel": "起始消息",
-    "defaultReasoningEffortLabel": "默认推理强度",
-    "defaultReasoningEffortHint": "未设置时默认为高。",
+    "defaultReasoningEffortLabel": "默认推理力度",
+    "defaultReasoningEffortHint": "当用户在聊天中未选择时使用的备用推理力度。",
+    "sendUserContextLabel": "发送用户和组织上下文",
+    "sendUserContextHint": "关闭后，此智能体不会在系统提示中收到用户的姓名、邮箱或组织名称，将仅依赖工具、操作和知识来源。",
     "moreItems": "还有 {{count}} 项",
     "toolsetNodeSubtitle": "工具集",
     "toolsLabel": "工具",
@@ -3173,9 +3356,7 @@
     "deprecatedToolsBanner": "此智能体上有 {{count}} 个工具已弃用，请移除它们：{{tools}}",
     "removeDeprecatedTools": "移除已弃用的工具",
     "showMore": "显示更多",
-    "showLess": "显示更少",
-    "defaultReasoningEffortLabel": "默认推理力度",
-    "defaultReasoningEffortHint": "当用户在聊天中未选择时使用的备用推理力度。"
+    "showLess": "显示更少"
   },
   "recordView": {
     "sections": {

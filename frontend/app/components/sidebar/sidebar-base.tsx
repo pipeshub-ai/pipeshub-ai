@@ -228,7 +228,8 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
         </Box>
       )}
 
-      {/* Drag handle */}
+      {/* Drag handle — kept fully inside the sidebar; the app shell clips the
+          slot (overflow: hidden) so anything past the border edge is unreachable. */}
       <Box
         onMouseDown={handleMouseDown}
         onMouseEnter={() => setDragHandleHovered(true)}
@@ -236,7 +237,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
         style={{
           position: 'absolute',
           top: 0,
-          right: -2,
+          right: 0,
           width: 4,
           height: '100%',
           cursor: 'col-resize',
@@ -247,7 +248,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
           style={{
             position: 'absolute',
             top: 0,
-            left: 1,
+            right: 0,
             width: 2,
             height: '100%',
             borderRadius: 1,

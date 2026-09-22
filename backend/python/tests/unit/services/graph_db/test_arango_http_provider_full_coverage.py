@@ -124,10 +124,23 @@ class TestCheckRecordGroupPermissions:
         assert result["allowed"] is False
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_check_that_could_not_run_says_so(self, connected_provider):
+        """"We could not tell" is not "you are not allowed".
+
+        Without that distinction the caller answers 403 and puts the exception's
+        own words in it, which the dashboard shows as a toast.
+        """
         connected_provider.execute_query = AsyncMock(side_effect=Exception("err"))
         result = await connected_provider._check_record_group_permissions("rg1", "u1", "org1")
         assert result["allowed"] is False
+        assert result["checkFailed"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_is_not_marked_as_a_failed_check(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[{"allowed": False}])
+        result = await connected_provider._check_record_group_permissions("rg1", "u1", "org1")
+        assert result["allowed"] is False
+        assert not result.get("checkFailed")
 
 
 class TestCheckConnectorNameExists:
@@ -255,6 +268,21 @@ class TestReindexRecordGroupRecords:
         connected_provider._check_record_group_permissions = AsyncMock(return_value={"allowed": True, "role": "OWNER"})
         result = await connected_provider.reindex_record_group_records("rg1", -1, "u1", "org1")
         assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_permission_check_is_a_500_not_a_403(self, connected_provider):
+        connected_provider.get_document = AsyncMock(side_effect=[
+            {"id": "rg1", "connectorId": "c1", "connectorName": "Drive"},
+            {"_key": "c1", "isActive": True, "name": "Drive"},
+        ])
+        connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        connected_provider._check_record_group_permissions = AsyncMock(return_value={
+            "allowed": False, "role": None, "checkFailed": True,
+            "reason": "Transaction 7c1b-41 not found",
+        })
+
+        result = await connected_provider.reindex_record_group_records("rg1", 0, "u1", "org1")
+        assert result["code"] == 500
 
     @pytest.mark.asyncio
     async def test_record_group_not_found(self, connected_provider):

@@ -257,8 +257,11 @@ export function ShareSidebar({
       updateSearchQuery('');
 
       onShareSuccess?.();
-    } catch {
-      toast.error('Failed to share', { description: 'Could not share access. Please try again.' });
+    } catch (error) {
+      // Error is already processed by apiClient interceptor
+      const processedError = error as { message?: string };
+      const message = processedError?.message ?? 'Could not share access. Please try again.';
+      toast.error('Failed to share', { description: message });
     } finally {
       setIsSubmitting(false);
     }

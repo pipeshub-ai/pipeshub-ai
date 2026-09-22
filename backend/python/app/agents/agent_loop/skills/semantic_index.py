@@ -27,7 +27,7 @@ from app.agent_loop_lib.modules.providers.skills.base import (
     SkillFilter,
     SkillMatch,
     SkillMetadata,
-    SkillStatus,
+    is_advertised,
     matches_filter,
 )
 from app.agent_loop_lib.modules.providers.skills.index import SkillIndex
@@ -177,7 +177,7 @@ class SemanticSkillIndex(SkillIndex):
         if filter is not None:
             candidates = [m for m in candidates if matches_filter(m, filter)]
         if filter is None or filter.status is None:
-            candidates = [m for m in candidates if m.status != SkillStatus.DEPRECATED]
+            candidates = [m for m in candidates if is_advertised(m)]
 
         query = (query or "").strip()
         if not query:

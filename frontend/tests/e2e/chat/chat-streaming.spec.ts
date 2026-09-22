@@ -22,6 +22,7 @@
 
 import { test, expect } from '../fixtures/base.fixture';
 import {
+  buildAguiConversation,
   buildAguiSseBody,
   buildAguiErrorSseBody,
   buildAguiPartialSseBody,
@@ -112,6 +113,18 @@ async function mockBaselineApis(page: import('@playwright/test').Page) {
     }
     return route.continue();
   });
+
+  // The page resolves the user ids on a conversation or agent ('user-e2e' in
+  // these mocks) to user records. The real backend rejects a made-up id with
+  // a 400, and the error toast covers the composer's send and stop buttons.
+  await page.route('**/api/v1/users/by-ids', (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([]),
+    });
+  });
 }
 
 /**
@@ -145,6 +158,59 @@ async function sendMessage(page: import('@playwright/test').Page, message: strin
   await textarea.click();
   await textarea.fill(message);
   await textarea.press('Enter');
+}
+
+/** The composer's send button, whichever composer layout is on screen. */
+function sendButton(page: import('@playwright/test').Page) {
+  return page
+    .locator('button')
+    .filter({ has: page.locator('span.material-icons-outlined').filter({ hasText: 'arrow_upward' }) })
+    .filter({ visible: true });
+}
+
+type StoredConversation = ReturnType<typeof buildAguiConversation>;
+
+/**
+ * Serve GET <apiBase>/:id/ for a conversation the test streamed.
+ *
+ * Pass a function when the stored conversation changes during the test: the
+ * backend saves each question before it streams the answer, so a page that
+ * reloads the conversation mid-test must find the questions sent so far.
+ *
+ * As soon as a stream hands the page a conversation id, the page fetches that
+ * conversation to show who it is shared with (the avatars in the header). The
+ * ids here are made up, so left unmocked that request reaches the backend and
+ * comes back 400 — and the error toast, which stays until dismissed, sits over
+ * the composer's send and stop buttons. The list mocks do not cover it: a
+ * `conversations*` glob does not match past a `/`.
+ */
+async function mockConversationDetail(
+  page: import('@playwright/test').Page,
+  stored: StoredConversation | (() => StoredConversation),
+  apiBase = '/api/v1/conversations',
+) {
+  const current = typeof stored === 'function' ? stored : () => stored;
+  const path = `${apiBase}/${current()._id}`;
+  await page.route(
+    (url) => url.pathname.replace(/\/$/, '') === path,
+    (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      const conversation = current();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          conversation: {
+            ...conversation,
+            id: conversation._id,
+            access: { isOwner: true, accessLevel: 'OWNER' },
+          },
+          filters: {},
+          meta: {},
+        }),
+      });
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +276,7 @@ test.describe('Chat — SSE streaming (mocked backend)', () => {
 
   // ── AG-UI frame: TEXT_MESSAGE_CONTENT → answer rendered ─────────────────
 
-  test('assistant answer is rendered in the message list', async ({ page }) => {
+  test('assistant answer is rendered in the message list @smoke', async ({ page }) => {
     await sendMessage(page, QUESTION);
     await expect(page.locator(`text=${ANSWER}`).first()).toBeVisible({ timeout: 20_000 });
   });
@@ -347,6 +413,15 @@ test.describe('Chat — stop streaming (assistant)', () => {
   test('stop posts a cancel request with the runId, preserves the partial answer, and shows the Stopped marker', async ({ page }) => {
     let cancelBody: { runId?: string } | null = null;
 
+    await mockConversationDetail(
+      page,
+      buildAguiConversation({
+        conversationId: 'conv-stop-001',
+        userMessageId: 'msg-user-stop-001',
+        question: 'A slow query',
+        modelInfo: MOCK_MODEL_INFO,
+      }),
+    );
     await page.route('**/api/v1/conversations/stream', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       // conversation_created + one delta, no RUN_FINISHED — see suite comment above.
@@ -390,19 +465,23 @@ test.describe('Chat — stop streaming (assistant)', () => {
     // Simulates the fast path: `/chat/cancel` reached the run's owner and
     // `AnswerFinalizer`'s cancelled branch (respond.py) persisted +
     // re-emitted RUN_FINISHED before the client's 5s grace timer could fire.
+    const turn = {
+      conversationId: 'conv-stop-confirmed-001',
+      userMessageId: 'msg-user-stop-confirmed',
+      botMessageId: 'msg-bot-stop-confirmed',
+      question: 'Confirmed-stop query',
+      answer: 'Answer truncated by a confirmed stop.',
+      modelInfo: MOCK_MODEL_INFO,
+    };
+    // Stored as the backend saves a stopped run, so a history load after
+    // RUN_FINISHED still shows the Stopped marker.
+    await mockConversationDetail(page, buildAguiConversation({ ...turn, stopped: true }));
     await page.route('**/api/v1/conversations/stream', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAguiStoppedSseBody({
-          conversationId: 'conv-stop-confirmed-001',
-          userMessageId: 'msg-user-stop-confirmed',
-          botMessageId: 'msg-bot-stop-confirmed',
-          question: 'Confirmed-stop query',
-          answer: 'Answer truncated by a confirmed stop.',
-          modelInfo: MOCK_MODEL_INFO,
-        }),
+        body: buildAguiStoppedSseBody(turn),
       });
     });
 
@@ -423,28 +502,43 @@ test.describe('Chat — stop streaming (assistant)', () => {
     // First turn completes normally so the slot's `convId` is a real,
     // already-known id (not null) — required for the cooperative branch:
     // `cancelStreamForSlot` hard-aborts immediately whenever `!convId`.
+    const firstTurn = {
+      conversationId: convId,
+      userMessageId: 'msg-user-thinking-1',
+      botMessageId: 'msg-bot-thinking-1',
+      question: 'First question',
+      answer: 'First answer.',
+      modelInfo: MOCK_MODEL_INFO,
+    };
+    let stored = buildAguiConversation(firstTurn);
+    await mockConversationDetail(page, () => stored);
     await page.route('**/api/v1/conversations/stream', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAguiSseBody({
-          conversationId: convId,
-          userMessageId: 'msg-user-thinking-1',
-          botMessageId: 'msg-bot-thinking-1',
-          question: 'First question',
-          answer: 'First answer.',
-          modelInfo: MOCK_MODEL_INFO,
-        }),
+        body: buildAguiSseBody(firstTurn),
       });
     });
     await sendMessage(page, 'First question');
     await expect(page.locator('text=First answer.').first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('[data-testid="chat-stop-button"]')).not.toBeVisible({ timeout: 5_000 });
 
     // Second turn: hangs with zero tokens streamed ("Thinking") until the
     // grace timer's hard-abort ends the (mocked) connection.
+    const firstTurnMessages = stored.messages;
+    const secondTurn = {
+      conversationId: convId,
+      userMessageId: 'msg-user-thinking-2',
+      botMessageId: 'msg-bot-thinking-2',
+      question: 'A question that never gets an answer',
+      modelInfo: MOCK_MODEL_INFO,
+    };
     await page.route(`**/api/v1/conversations/${convId}/messages/stream`, async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
+      // Saved before any answer streams.
+      const question = buildAguiConversation(secondTurn);
+      stored = { ...stored, messages: [...firstTurnMessages, ...question.messages] };
       await new Promise<void>((resolve) => setTimeout(resolve, 8_000));
       await route.fulfill({
         status: 200,
@@ -455,6 +549,10 @@ test.describe('Chat — stop streaming (assistant)', () => {
     await page.route(`**/api/v1/conversations/${convId}/cancel`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       cancelFired = true;
+      // A stopped run is saved with whatever text arrived — none here — as a
+      // stopped reply. The page must not show it (see loadHistoricalMessages).
+      const stoppedTurn = buildAguiConversation({ ...secondTurn, answer: '', stopped: true });
+      stored = { ...stored, messages: [...firstTurnMessages, ...stoppedTurn.messages] };
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -479,20 +577,37 @@ test.describe('Chat — stop streaming (assistant)', () => {
     await expect(page.locator('[data-testid="chat-stopped-marker"]')).not.toBeVisible();
     await expect(page.locator('text=A question that never gets an answer').first()).toBeVisible();
 
+    // The backend saved that run as an empty stopped reply (see the cancel
+    // route above). Reloading must not turn it into an empty "Stopped" bubble.
+    await page.reload();
+    await expect(page.locator('text=A question that never gets an answer').first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('text=First answer.').first()).toBeVisible();
+    await expect(page.locator('[data-testid="chat-stopped-marker"]')).not.toBeVisible();
+
     await page.unrouteAll({ behavior: 'ignoreErrors' });
   });
 
   test('stop during tool execution ends the run without crashing the activity timeline', async ({ page }) => {
     const convId = 'conv-stop-tool-001';
 
-    await page.route('**/api/v1/conversations/stream', async (route) => {
+    await mockConversationDetail(
+      page,
+      buildAguiConversation({
+        conversationId: convId,
+        userMessageId: 'msg-user-stop-tool',
+        question: 'Search for something and use a tool',
+        modelInfo: MOCK_MODEL_INFO,
+      }),
+    );
+    // TOOL_CALL_START with no RUN_FINISHED: the tool is still running when the
+    // test stops it, the same way the partial-answer tests leave a run open.
+    await page.route('**/api/v1/conversations/stream', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
-      await new Promise<void>((resolve) => setTimeout(resolve, 8_000));
-      await route.fulfill({
+      return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
         body: buildAguiToolCallStartSseBody(convId, 'tool-call-e2e-001', 'search_knowledge_base'),
-      }).catch(() => {});
+      });
     });
     await page.route(`**/api/v1/conversations/${convId}/cancel`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -507,24 +622,35 @@ test.describe('Chat — stop streaming (assistant)', () => {
 
     const stopBtn = page.locator('[data-testid="chat-stop-button"]');
     await expect(stopBtn).toBeVisible({ timeout: 10_000 });
+    // Stop only once the tool call is on screen; stopping earlier would test
+    // a stop while "Thinking", which has its own test.
+    await expect(page.getByText(/search[ _]knowledge[ _]base/i).first()).toBeVisible({ timeout: 10_000 });
     await stopBtn.click();
 
     // Grace-timeout fallback ends the run — composer returns to Send and no
     // error bubble is shown for what is an intentional, user-initiated stop.
     await expect(stopBtn).not.toBeVisible({ timeout: 8_000 });
-    const sendBtn = page
-      .locator('button')
-      .filter({ has: page.locator('span.material-icons-outlined').filter({ hasText: 'arrow_upward' }) });
-    await expect(sendBtn.first()).toBeVisible({ timeout: 3_000 });
+    await expect(sendButton(page)).toBeVisible({ timeout: 3_000 });
     await expect(page.locator('text=/unavailable|failed|Failed|Error/i')).not.toBeVisible({ timeout: 2_000 });
 
     await page.unrouteAll({ behavior: 'ignoreErrors' });
   });
 
-  test('stop then immediately sending a new message starts a fresh run — cancel only ever carries the old runId', async ({ page }) => {
+  test('stop then sending a new message starts a fresh run — cancel only ever carries the old runId', async ({ page }) => {
     const convId = 'conv-stop-resend-001';
     const cancelRunIds: string[] = [];
     let secondStreamRunId: string | undefined;
+
+    // The first run is stopped before any answer is stored.
+    await mockConversationDetail(
+      page,
+      buildAguiConversation({
+        conversationId: convId,
+        userMessageId: 'msg-user-resend-1',
+        question: 'A slow query to interrupt',
+        modelInfo: MOCK_MODEL_INFO,
+      }),
+    );
 
     await page.route('**/api/v1/conversations/stream', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -550,6 +676,12 @@ test.describe('Chat — stop streaming (assistant)', () => {
     await expect(stopBtn).toBeVisible({ timeout: 10_000 });
     await stopBtn.click();
     await expect.poll(() => cancelRunIds.length > 0, { timeout: 5_000 }).toBe(true);
+
+    // The composer takes no new message while a run is stopping: its submit
+    // guard checks `isStreaming`, which stays true until the backend confirms
+    // the stop or the grace timeout (STOP_GRACE_MS) ends it. This mock never
+    // confirms, so wait for the stop to settle before sending the next one.
+    await expect(stopBtn).not.toBeVisible({ timeout: 8_000 });
 
     // Second (fresh) run on the same conversation, with its own runId.
     await page.route(`**/api/v1/conversations/${convId}/messages/stream`, (route) => {
@@ -585,19 +717,21 @@ test.describe('Chat — stop streaming (assistant)', () => {
     const originalMsgId = 'msg-bot-regen-original';
     let cancelFired = false;
 
+    const firstTurn = {
+      conversationId: convId,
+      userMessageId: 'msg-user-regen',
+      botMessageId: originalMsgId,
+      question: 'Explain regeneration',
+      answer: 'Original answer before regenerate.',
+      modelInfo: MOCK_MODEL_INFO,
+    };
+    await mockConversationDetail(page, buildAguiConversation(firstTurn));
     await page.route('**/api/v1/conversations/stream', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAguiSseBody({
-          conversationId: convId,
-          userMessageId: 'msg-user-regen',
-          botMessageId: originalMsgId,
-          question: 'Explain regeneration',
-          answer: 'Original answer before regenerate.',
-          modelInfo: MOCK_MODEL_INFO,
-        }),
+        body: buildAguiSseBody(firstTurn),
       });
     });
 
@@ -605,17 +739,17 @@ test.describe('Chat — stop streaming (assistant)', () => {
     await expect(page.locator('text=Original answer before regenerate.').first())
       .toBeVisible({ timeout: 20_000 });
 
-    // Hold the regenerate stream past the grace timeout so the client-side
-    // fallback (not a server RUN_FINISHED) is what replaces the message.
-    await page.route(`**/api/v1/conversations/${convId}/message/*/regenerate`, async (route) => {
+    // Hold the regenerate stream with a partial body (no RUN_FINISHED) so
+    // Stop's grace-timeout fallback — not a server confirmation — replaces
+    // the original message. Fulfill immediately: `route.fulfill` cannot
+    // keep SSE open, and delaying it only races the 10s text assertion.
+    await page.route(`**/api/v1/conversations/${convId}/message/*/regenerate`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
-      const partial = buildAguiPartialSseBody(convId, 'Regenerated partial answer…');
-      await new Promise<void>((resolve) => setTimeout(resolve, 8_000));
-      await route.fulfill({
+      return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: partial,
-      }).catch(() => {});
+        body: buildAguiPartialSseBody(convId, 'Regenerated partial answer…'),
+      });
     });
     await page.route(`**/api/v1/conversations/${convId}/cancel`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -633,7 +767,10 @@ test.describe('Chat — stop streaming (assistant)', () => {
       .first();
     await expect(regenBtn).toBeVisible({ timeout: 8_000 });
     await regenBtn.click();
-    await page.locator('textarea').last().press('Enter');
+    // Regenerating locks the textarea (`readOnly`); confirm via the send button
+    // so the keypress does not depend on focusing a non-editable field.
+    await expect(sendButton(page)).toBeVisible({ timeout: 5_000 });
+    await sendButton(page).click();
 
     const stopBtn = page.locator('[data-testid="chat-stop-button"]');
     await expect(stopBtn).toBeVisible({ timeout: 10_000 });
@@ -666,6 +803,7 @@ test.describe('Chat — stop streaming (assistant)', () => {
 
 test.describe('Chat — stop streaming (agent chat)', () => {
   const AGENT_ID = 'test-agent-stop-e2e';
+  const AGENT_CONVERSATIONS_API = `/api/v1/agents/${AGENT_ID}/conversations`;
 
   const MOCK_AGENT_DETAIL = {
     status: 'success',
@@ -745,6 +883,16 @@ test.describe('Chat — stop streaming (agent chat)', () => {
     const convId = 'conv-agent-stop-001';
     let cancelBody: { runId?: string } | null = null;
 
+    await mockConversationDetail(
+      page,
+      buildAguiConversation({
+        conversationId: convId,
+        userMessageId: 'msg-user-agent-stop',
+        question: 'A slow agent query',
+        modelInfo: MOCK_MODEL_INFO,
+      }),
+      AGENT_CONVERSATIONS_API,
+    );
     await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
@@ -779,19 +927,21 @@ test.describe('Chat — stop streaming (agent chat)', () => {
   });
 
   test('an agent RUN_FINISHED confirming the stop shows the Stopped marker without the grace timeout', async ({ page }) => {
+    const turn = {
+      conversationId: 'conv-agent-stop-confirmed-001',
+      userMessageId: 'msg-user-agent-stop-confirmed',
+      botMessageId: 'msg-bot-agent-stop-confirmed',
+      question: 'Confirmed-stop agent query',
+      answer: 'Agent answer truncated by a confirmed stop.',
+      modelInfo: MOCK_MODEL_INFO,
+    };
+    await mockConversationDetail(page, buildAguiConversation({ ...turn, stopped: true }), AGENT_CONVERSATIONS_API);
     await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAguiStoppedSseBody({
-          conversationId: 'conv-agent-stop-confirmed-001',
-          userMessageId: 'msg-user-agent-stop-confirmed',
-          botMessageId: 'msg-bot-agent-stop-confirmed',
-          question: 'Confirmed-stop agent query',
-          answer: 'Agent answer truncated by a confirmed stop.',
-          modelInfo: MOCK_MODEL_INFO,
-        }),
+        body: buildAguiStoppedSseBody(turn),
       });
     });
 

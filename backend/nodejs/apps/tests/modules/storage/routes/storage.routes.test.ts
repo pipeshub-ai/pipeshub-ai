@@ -4,6 +4,8 @@ import sinon from 'sinon'
 import { Container } from 'inversify'
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
+import express, { Request, Response } from 'express'
+import { AddressInfo } from 'net'
 
 describe('Storage Routes', () => {
   let container: Container
@@ -32,6 +34,7 @@ describe('Storage Routes', () => {
       uploadNextVersionDocument: sinon.stub().resolves(),
       rollBackToPreviousVersion: sinon.stub().resolves(),
       uploadDirectDocument: sinon.stub().resolves(),
+      abortDirectUpload: sinon.stub().resolves(),
       documentDiffChecker: sinon.stub().resolves(),
       watchStorageType: sinon.stub(),
     }
@@ -683,6 +686,78 @@ describe('Storage Routes', () => {
       await handler(mockReq, mockRes, mockNext)
 
       expect(mockStorageController.uploadDirectDocument.calledOnce).to.be.true
+    })
+
+    it('accepts the empty body the knowledge-base cleanup posts, and removes the placeholder', async () => {
+      // Through the real router, with its validator, not the handler alone.
+      interface PlaceholderRow {
+        _id: string
+        orgId: string
+        awaitingDirectUpload: boolean
+      }
+      const rows: PlaceholderRow[] = [
+        { _id: 'doc-1', orgId: 'org-1', awaitingDirectUpload: true },
+      ]
+      const controller = {
+        watchStorageType: sinon.stub(),
+        abortDirectUpload: (req: Request, res: Response): void => {
+          const index = rows.findIndex(
+            (row) => row._id === req.params.documentId && row.awaitingDirectUpload,
+          )
+          rows.splice(index, 1)
+          res.status(200).json({ deleted: true })
+        },
+      }
+      const realContainer = new Container()
+      realContainer
+        .bind<AuthMiddleware>('AuthMiddleware')
+        .toConstantValue(mockAuthMiddleware as AuthMiddleware)
+      realContainer
+        .bind<typeof controller>('StorageController')
+        .toConstantValue(controller)
+      realContainer
+        .bind<typeof mockKeyValueStoreService>('KeyValueStoreService')
+        .toConstantValue(mockKeyValueStoreService)
+
+      const app = express()
+      app.use(express.json())
+      app.use('/api/v1/document', createStorageRouter(realContainer))
+      const server = app.listen(0)
+      try {
+        const port = (server.address() as AddressInfo).port
+        const response = await fetch(
+          `http://127.0.0.1:${port}/api/v1/document/internal/doc-1/abortDirectUpload`,
+          {
+            method: 'POST',
+            headers: { authorization: 'Bearer service-token', 'content-type': 'application/json' },
+            body: '{}',
+          },
+        )
+        expect(response.status, await response.clone().text()).to.equal(200)
+        expect(await response.json()).to.deep.equal({ deleted: true })
+        expect(rows).to.have.length(0)
+      } finally {
+        server.close()
+      }
+    })
+
+    it('POST /internal/:documentId/abortDirectUpload is service-only and calls storageController.abortDirectUpload', async () => {
+      const router = createStorageRouter(container)
+      const layer: any = (router as any).stack.find(
+        (l: any) => l.route && l.route.path === '/internal/:documentId/abortDirectUpload' && l.route.methods.post,
+      )
+      expect(layer).to.not.be.undefined
+      // Guarded by the storage service token, never by a user's session.
+      const guard = layer.route.stack[0].handle
+      expect(guard).to.equal(mockAuthMiddleware.scopedTokenValidator.firstCall.returnValue)
+      expect(layer.route.stack.map((h: any) => h.handle)).to.not.include(mockAuthMiddleware.authenticate)
+      expect((router as any).stack.some((l: any) => l.route && /abortDirectUpload/.test(l.route.path) && !l.route.path.startsWith('/internal/'))).to.be.false
+
+      const handler = findRouteHandler(router, '/internal/:documentId/abortDirectUpload', 'post')
+      const { mockReq, mockRes, mockNext } = createMockReqRes()
+      await handler(mockReq, mockRes, mockNext)
+
+      expect(mockStorageController.abortDirectUpload.calledOnce).to.be.true
     })
 
     it('GET /:documentId/isModified handler should call storageController.documentDiffChecker', async () => {

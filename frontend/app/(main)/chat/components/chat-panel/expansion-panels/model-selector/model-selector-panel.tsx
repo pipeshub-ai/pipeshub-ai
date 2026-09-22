@@ -183,7 +183,7 @@ export function ModelSelectorPanel({
   );
 
   return (
-    <Flex direction="column" gap="4" style={{ flex: 1, overflow: 'hidden' }}>
+    <Flex direction="column" gap="4" data-testid="chat-model-panel" style={{ flex: 1, overflow: 'hidden' }}>
       {/* Header — matches QueryModePanel "Different Modes of Query" style */}
       {!hideHeader && (
         <Flex align="center" justify="between">

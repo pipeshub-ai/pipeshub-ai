@@ -244,6 +244,20 @@ helm template pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set "mongodb.auth.databases[0]=pipeshub"
 ```
 
+CI runs two broader checks on every pull request that touches the chart, and
+weekly (`.github/workflows/helm-chart.yml`). Both run locally too:
+
+```bash
+# Lint, render and schema-check every supported configuration, and confirm
+# the misconfigurations the chart refuses are still refused (helm, kubeconform)
+bash deployment/helm/tests/check_chart.sh
+
+# Install into a throwaway single-node kind cluster and wait for every core
+# service to report healthy (kind, kubectl, helm, docker)
+bash deployment/helm/tests/kind_smoke.sh
+SMOKE_VARIANT=arangodb-redis bash deployment/helm/tests/kind_smoke.sh
+```
+
 ## Production Checklist
 
 - Set all passwords and `secretKey` securely

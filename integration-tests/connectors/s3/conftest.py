@@ -11,6 +11,7 @@ import pytest_asyncio
 from connector_lifecycle import RESOURCE_NAME, constructor, destructor
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol
+from helper.source_credentials import source_unavailable
 
 from connectors.s3.s3_storage_helper import S3StorageHelper
 
@@ -20,7 +21,10 @@ def s3_storage():
     access_key = os.getenv("S3_ACCESS_KEY")
     secret_key = os.getenv("S3_SECRET_KEY")
     if not access_key or not secret_key:
-        pytest.skip("S3 credentials not set.")
+        source_unavailable(
+            "The S3 bucket this suite syncs from is not configured.",
+            secrets=["S3_ACCESS_KEY", "S3_SECRET_KEY"],
+        )
     return S3StorageHelper(access_key=access_key, secret_key=secret_key)
 
 

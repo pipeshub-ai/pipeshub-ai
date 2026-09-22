@@ -11,7 +11,7 @@ import {
   IMessagePart,
 } from '../types/conversation.interfaces';
 import { IAIResponse } from '../types/conversation.interfaces';
-import mongoose, { ClientSession } from 'mongoose';
+import mongoose, { ClientSession, FilterQuery } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
@@ -24,6 +24,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { Response } from 'express';
 import { ChatSession } from '../schema/chat.session.schema';
 import { ChatSessionMessage } from '../schema/chat.session.message.schema';
+import { Users } from '../../user_management/schema/users.schema';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import {
   sanitizeForResponse,
@@ -31,8 +32,15 @@ import {
   validateNoXSS,
   validateNoFormatSpecifiers,
 } from '../../../utils/xss-sanitization';
-import { AGUIEventType, frameAGUI, isAGUI, SSEProtocol } from './agui';
+import {
+  AGUIEventType,
+  aguiRunErrorMetadata,
+  frameAGUI,
+  isAGUI,
+  SSEProtocol,
+} from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
+import { CHAT_ERROR_MESSAGES, userFacingChatError } from './chat-error-messages';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -168,9 +176,9 @@ export const findSessionIdsMatchingContent = async (
   return rows.map((r) => r._id);
 };
 
-export const buildAIFailureResponseMessage = (): IMessage => ({
+export const buildAIFailureResponseMessage = (content?: string): IMessage => ({
   messageType: 'error',
-  content: 'Error Generating Response, Please try again',
+  content: content ?? 'Error Generating Response, Please try again',
   contentFormat: 'MARKDOWN',
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -453,6 +461,40 @@ export const attachPopulatedCitations = async (
   };
 };
 
+export const isClassifiedFailureAnswer = (
+  data: Pick<IAIResponse, 'answerMatchType'> & { errorCode?: string },
+): boolean =>
+  data.answerMatchType === 'Error' ||
+  (typeof data.errorCode === 'string' && data.errorCode.length > 0);
+
+export const recordClassifiedFailureOnSession = (
+  conversation: IChatSessionDocument,
+  completeData: IAIResponse,
+): void => {
+  if (completeData.status === 'stopped') {
+    conversation.status = CONVERSATION_STATUS.STOPPED;
+    return;
+  }
+  if (!isClassifiedFailureAnswer(completeData)) {
+    conversation.status = CONVERSATION_STATUS.COMPLETE;
+    return;
+  }
+  const code = completeData.errorCode || 'unknown_error';
+  conversation.status = CONVERSATION_STATUS.FAILED;
+  conversation.failReason = completeData.answer;
+  addErrorToConversation(
+    conversation,
+    completeData.answer,
+    code,
+    undefined,
+    undefined,
+    new Map<string, unknown>([
+      ['type', AGUIEventType.RUN_FINISHED],
+      ['code', code],
+    ]),
+  );
+};
+
 export const buildAIResponseMessage = (
   aiResponse: AIServiceResponse<IAIResponse>,
   citations: ICitation[] = [],
@@ -466,7 +508,9 @@ export const buildAIResponseMessage = (
   }
 
   const message: IMessage = {
-    messageType: 'bot_response',
+    messageType: isClassifiedFailureAnswer(aiResponse.data)
+      ? 'error'
+      : 'bot_response',
     createdAt: new Date(),
     updatedAt: new Date(),
     content: aiResponse.data?.answer ?? '',
@@ -671,6 +715,115 @@ export const addComputedFields = <
   };
 };
 
+export type SharedByInfo = {
+  userId: string;
+  name: string;
+};
+
+function sharedByDisplayName(user: {
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+}): string {
+  const fullName = user.fullName?.trim();
+  if (fullName) return fullName;
+  const parts = [user.firstName, user.lastName]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join(' ')
+    .trim();
+  if (parts) return parts;
+  return user.email?.trim() || '';
+}
+
+function conversationIsOwnedByCaller(conversation: {
+  isOwner?: boolean;
+  access?: { isOwner?: boolean };
+}): boolean {
+  return conversation.isOwner === true || conversation.access?.isOwner === true;
+}
+
+/** Resolve initiator IDs to display names for recipients (initiator is the sharer). */
+export const attachSharedBy = async <
+  T extends {
+    initiator?: { toString(): string };
+    isOwner?: boolean;
+    access?: { isOwner?: boolean };
+  },
+>(
+  conversations: T[],
+  orgId: string,
+): Promise<Array<T & { sharedBy?: SharedByInfo }>> => {
+  if (conversations.length === 0) {
+    return conversations;
+  }
+
+  const recipientConversations = conversations.filter(
+    (conversation) => !conversationIsOwnedByCaller(conversation),
+  );
+
+  const initiatorIds = [
+    ...new Set(
+      recipientConversations
+        .map((conversation) => conversation.initiator?.toString())
+        .filter((id): id is string => {
+          if (!id) return false;
+          return mongoose.Types.ObjectId.isValid(id);
+        }),
+    ),
+  ];
+
+  if (initiatorIds.length === 0) {
+    return conversations;
+  }
+
+  const users = await Users.find({
+    orgId: new mongoose.Types.ObjectId(orgId),
+    isDeleted: false,
+    _id: { $in: initiatorIds.map((id) => new mongoose.Types.ObjectId(id)) },
+  })
+    .select('fullName firstName lastName email')
+    .lean()
+    .exec();
+
+  const userById = new Map(
+    users.map((user) => [user._id.toString(), user] as const),
+  );
+
+  return conversations.map((conversation) => {
+    const initiatorId = conversation.initiator?.toString();
+    if (!initiatorId) {
+      return conversation;
+    }
+    if (conversationIsOwnedByCaller(conversation)) {
+      return conversation;
+    }
+    const user = userById.get(initiatorId);
+    const name = user ? sharedByDisplayName(user) : '';
+    const sharedBy: SharedByInfo = {
+      userId: initiatorId,
+      name: name || initiatorId,
+    };
+    return { ...conversation, sharedBy };
+  });
+};
+
+export const attachSharedByIfRecipient = async <
+  T extends {
+    initiator?: { toString(): string };
+    access?: { isOwner?: boolean };
+  },
+>(
+  conversation: T,
+  orgId: string | undefined,
+): Promise<T & { sharedBy?: SharedByInfo }> => {
+  if (!orgId || conversation.access?.isOwner) {
+    return conversation;
+  }
+  const [enriched] = await attachSharedBy([conversation], orgId);
+  return enriched ?? conversation;
+};
+
 /**
  * Base access filter for chat sessions / enterprise searches in list and
  * by-id flows. Matches either:
@@ -686,6 +839,35 @@ export const addComputedFields = <
  * `EnterpriseSemanticSearch` call sites, whose documents have no `messages`)
  * get exactly today's title-only search behaviour.
  */
+/** Sentinel accepted by `?projectId=` to mean "sessions with no project link". Mirrors projects/types/project.interfaces.ts::PROJECT_ID_UNASSIGNED. */
+export const PROJECT_ID_UNASSIGNED_QUERY_VALUE = 'unassigned';
+
+/**
+ * AND-composes an optional `?projectId=<id>|unassigned` query filter onto an
+ * existing chatSessions filter object, mutating it in place. Shared by
+ * `buildFilter` and `buildAgentConversationFilter` so both the plain-chat
+ * and agent conversation list/detail endpoints support the same query
+ * contract. A malformed (non-ObjectId, non-'unassigned') value is ignored
+ * rather than thrown, since it only narrows a list — never called on a
+ * `require`d id param.
+ */
+export const applyProjectIdQueryFilter = (
+  filter: FilterQuery<IChatSessionDocument>,
+  req: AuthenticatedUserRequest,
+): void => {
+  const projectIdRaw = req.query?.projectId;
+  if (typeof projectIdRaw !== 'string' || projectIdRaw.length === 0) {
+    return;
+  }
+  if (projectIdRaw === PROJECT_ID_UNASSIGNED_QUERY_VALUE) {
+    filter.projectId = { $exists: false };
+    return;
+  }
+  if (mongoose.Types.ObjectId.isValid(projectIdRaw)) {
+    filter.projectId = new mongoose.Types.ObjectId(projectIdRaw);
+  }
+};
+
 export const buildFilter = (
   req: AuthenticatedUserRequest,
   orgId: string,
@@ -694,6 +876,7 @@ export const buildFilter = (
   owned: boolean = true,
   shared: boolean = true,
   contentMatchIds?: mongoose.Types.ObjectId[],
+  accessibleProjectIds?: mongoose.Types.ObjectId[],
 ) => {
   if (!owned && !shared) {
     throw new BadRequestError('Either owned or shared must be true');
@@ -716,12 +899,25 @@ export const buildFilter = (
             },
           ]
         : []),
+      // Third access branch: a chat explicitly shared to its project
+      // ('projectVisibility: project') is visible to every member with at
+      // least viewer access to that project — see ProjectService.
+      ...(shared && accessibleProjectIds && accessibleProjectIds.length > 0
+        ? [
+            {
+              projectId: { $in: accessibleProjectIds },
+              projectVisibility: 'project',
+            },
+          ]
+        : []),
     ],
   };
 
   if (id) {
     filter._id = new mongoose.Types.ObjectId(id);
   }
+
+  applyProjectIdQueryFilter(filter, req);
 
   // Handle search with XSS validation
   if (req.query.search) {
@@ -1082,6 +1278,8 @@ export const buildConversationResponse = (
     sharedWith: conversation.sharedWith,
     status: conversation.status,
     failReason: conversation.failReason,
+    projectId: conversation.projectId,
+    projectVisibility: conversation.projectVisibility,
     messages: messages.map((message) => ({
       ...message,
       citations:
@@ -1172,10 +1370,7 @@ export const saveCompleteConversation = async (
       }
     }
     conversation.lastActivityAt = Date.now();
-    conversation.status =
-      completeData.status === 'stopped'
-        ? CONVERSATION_STATUS.STOPPED
-        : CONVERSATION_STATUS.COMPLETE;
+    recordClassifiedFailureOnSession(conversation, completeData);
 
     // Save updated conversation
     const updatedConversation = session
@@ -1213,13 +1408,22 @@ export const addErrorToConversation = (
   if (!conversation.conversationErrors) {
     conversation.conversationErrors = [];
   }
+  const aguiCode = errorType || 'unknown_error';
+  const mergedMetadata = metadata
+    ? new Map(metadata)
+    : new Map<string, unknown>();
+  for (const [key, value] of aguiRunErrorMetadata(aguiCode)) {
+    if (!mergedMetadata.has(key)) {
+      mergedMetadata.set(key, value);
+    }
+  }
   conversation.conversationErrors.push({
     message: errorMessage,
-    errorType: errorType || 'unknown',
+    errorType: aguiCode,
     timestamp: new Date(),
     messageId,
     stack,
-    metadata,
+    metadata: mergedMetadata,
   });
 };
 
@@ -1233,8 +1437,7 @@ export const markConversationFailed = async (
 ): Promise<void> => {
   try {
     // Insert the failure message first — see "Ordering" in the Phase 1 plan.
-    const failedMessage = buildAIFailureResponseMessage();
-    failedMessage.content = failReason;
+    const failedMessage = buildAIFailureResponseMessage(failReason);
     await appendMessages(
       conversation._id as mongoose.Types.ObjectId,
       conversation.orgId,
@@ -1382,8 +1585,7 @@ export const replaceMessageWithError = async (
     );
 
     // Replace the message with an error message, preserving its _id/seq
-    const failedMessage = buildAIFailureResponseMessage();
-    failedMessage.content = errorMessage;
+    const failedMessage = buildAIFailureResponseMessage(errorMessage);
     const updatedMessage = await updateMessageById(
       messageId,
       failedMessage,
@@ -1482,10 +1684,7 @@ export const saveCompleteAgentConversation = async (
       }
     }
     conversation.lastActivityAt = Date.now();
-    conversation.status =
-      completeData.status === 'stopped'
-        ? CONVERSATION_STATUS.STOPPED
-        : CONVERSATION_STATUS.COMPLETE;
+    recordClassifiedFailureOnSession(conversation, completeData);
 
     // Save updated conversation
     const updatedConversation = session
@@ -1524,7 +1723,7 @@ export const markAgentConversationFailed = async (
   metadata?: Map<string, any>,
 ): Promise<void> => {
   try {
-    const failedMessage = buildAIFailureResponseMessage();
+    const failedMessage = buildAIFailureResponseMessage(failReason);
     await appendMessages(
       conversation._id as mongoose.Types.ObjectId,
       conversation.orgId,
@@ -1585,18 +1784,31 @@ export const buildAgentConversationFilter = (
   agentKey: string,
   conversationId?: string,
   contentMatchIds?: mongoose.Types.ObjectId[],
+  accessibleProjectIds?: mongoose.Types.ObjectId[],
 ) => {
   const filter: any = {
     ...ONLY_AGENT,
     agentKey,
     orgId: new mongoose.Types.ObjectId(orgId),
-    $or: [{ userId: new mongoose.Types.ObjectId(userId) }],
+    $or: [
+      { userId: new mongoose.Types.ObjectId(userId) },
+      ...(accessibleProjectIds && accessibleProjectIds.length > 0
+        ? [
+            {
+              projectId: { $in: accessibleProjectIds },
+              projectVisibility: 'project',
+            },
+          ]
+        : []),
+    ],
     isDeleted: false,
   };
 
   if (conversationId) {
     filter._id = new mongoose.Types.ObjectId(conversationId);
   }
+
+  applyProjectIdQueryFilter(filter, req);
 
   // Handle search with XSS and format string validation
   if (req.query.search) {
@@ -1828,13 +2040,10 @@ export const sendSSEErrorEvent = async (
     return;
   }
 
+  // `details` only picks the error code; its raw text never reaches the client.
   const errorData: any = {
     error: errorMessage,
   };
-
-  if (details) {
-    errorData.details = details;
-  }
 
   if (conversation) {
     errorData.conversation = conversation;
@@ -1939,7 +2148,7 @@ export const handleRegenerationStreamData = (
         try {
           const errorData = JSON.parse(dataLine);
           if (existingConversation && messageId) {
-            const errorMessage = errorData.message || 'Unknown error occurred';
+            const errorMessage = errorData.message || CHAT_ERROR_MESSAGES.failed;
             replaceMessageWithError(
               existingConversation,
               messageId,
@@ -2037,7 +2246,7 @@ export const handleRegenerationStreamData = (
           const errorData = JSON.parse(dataLine);
           if (existingConversation && messageId) {
             const errorMessage =
-              errorData.error || errorData.message || 'Unknown error occurred';
+              errorData.error || errorData.message || CHAT_ERROR_MESSAGES.failed;
             replaceMessageWithError(
               existingConversation,
               messageId,
@@ -2063,7 +2272,7 @@ export const handleRegenerationStreamData = (
             dataLine,
           });
           if (existingConversation && messageId) {
-            const errorMessage = `Failed to parse error event: ${parseError.message}`;
+            const errorMessage = CHAT_ERROR_MESSAGES.failed;
             replaceMessageWithError(
               existingConversation,
               messageId,
@@ -2212,10 +2421,7 @@ export const handleRegenerationSuccess = async (
   }
 
   existingConversation.lastActivityAt = Date.now();
-  existingConversation.status =
-    completeData.status === 'stopped'
-      ? CONVERSATION_STATUS.STOPPED
-      : CONVERSATION_STATUS.COMPLETE;
+  recordClassifiedFailureOnSession(existingConversation, completeData);
 
   // Save the updated conversation
   const updatedConversation = session
@@ -2258,7 +2464,7 @@ export const handleRegenerationError = async (
   errorType: string = 'regeneration_error',
   protocol?: SSEProtocol,
 ): Promise<void> => {
-  const errorMessage = error.message || 'Unknown error occurred';
+  const errorMessage = userFacingChatError(error);
 
   if (existingConversation && messageId) {
     try {

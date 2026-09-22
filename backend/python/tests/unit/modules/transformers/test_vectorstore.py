@@ -452,14 +452,16 @@ class TestDeleteEmbeddings:
         vs.vector_db_service.delete_points.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_error_raises_embedding_error(self):
-        """Raises EmbeddingError on failure."""
-        from app.exceptions.indexing_exceptions import EmbeddingError
+    async def test_error_raises_vector_store_error(self):
+        """A failed delete is a storage failure, not an embedding-model one."""
+        from app.exceptions.indexing_exceptions import VectorStoreError
         vs = _make_vectorstore()
-        vs.vector_db_service.filter_collection = AsyncMock(side_effect=RuntimeError("fail"))
+        cause = RuntimeError("fail")
+        vs.vector_db_service.filter_collection = AsyncMock(side_effect=cause)
 
-        with pytest.raises(EmbeddingError):
+        with pytest.raises(VectorStoreError) as caught:
             await vs.delete_embeddings("vr-1", "test_collection")
+        assert caught.value.__cause__ is cause
 
 
 # ===================================================================

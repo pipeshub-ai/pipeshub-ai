@@ -670,6 +670,27 @@ class TestRunSyncAndClearStatus:
             # Should not raise
             await service._run_sync_and_clear_status(mock_conn, "c1")
 
+    @pytest.mark.asyncio
+    async def test_skipped_sync_clears_status_without_persisting_error(self, service):
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorSyncSkippedError,
+        )
+        from app.connectors.core.constants import ConnectorErrorCodes
+
+        mock_conn = AsyncMock()
+        mock_conn.run_sync = AsyncMock(
+            side_effect=ConnectorSyncSkippedError(
+                ConnectorErrorCodes.DESKTOP_OFFLINE, "asleep"
+            )
+        )
+        with patch.object(service, "_update_app_status", new_callable=AsyncMock):
+            # A skip is not a crash: it must not propagate, and the only
+            # write is the status reset. Presence is read live by the UI.
+            await service._run_sync_and_clear_status(mock_conn, "c1")
+            service._update_app_status.assert_awaited_once()
+            kwargs = service._update_app_status.await_args.kwargs
+            assert kwargs == {"status": "IDLE"}
+
 
 # ===========================================================================
 # _handle_reindex
@@ -828,6 +849,43 @@ class TestHandleReindex:
         mock_conn.reindex_records.assert_awaited_once()
         # A short batch ends the walk without a second fetch.
         assert service.graph_provider.get_records_by_status.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_run_reindex_stops_as_a_failure_when_a_page_cannot_be_read(self, service):
+        """A failed page must not look like "reached the end".
+
+        The records already flipped to NOT_STARTED in this run would never be
+        handed to the connector, and the run would still log as completed.
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        mock_conn = AsyncMock()
+        mock_conn.reindex_records = AsyncMock()
+
+        batch1 = [MagicMock(id=f"rec-{i:03d}", is_placeholder=False) for i in range(100)]
+        service.graph_provider.get_records_by_status = AsyncMock(
+            side_effect=[batch1, GraphQueryError("db down")]
+        )
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        with pytest.raises(GraphQueryError):
+            await service._run_reindex(
+                connector=mock_conn,
+                connector_name="gmail",
+                connector_id="c1",
+                org_id="org1",
+                record_id=None,
+                record_group_id=None,
+                depth=0,
+                user_key=None,
+                status_filters=["FAILED"],
+            )
+
+        assert mock_conn.reindex_records.await_count == 1
+        assert not any(
+            "Completed reindex" in str(call)
+            for call in service.logger.info.call_args_list
+        )
 
     @pytest.mark.asyncio
     async def test_unknown_connector_name(self, service):

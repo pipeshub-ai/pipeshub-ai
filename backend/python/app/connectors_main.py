@@ -63,6 +63,7 @@ from app.services.messaging.utils import MessagingUtils
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import SOMETHING_WENT_WRONG
 
 container = ConnectorAppContainer.init("connector_service")
 
@@ -896,7 +897,11 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     logger.error("Global error: %s", str(exc), exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"status": "error", "message": str(exc), "path": request.url.path},
+        content={
+            "status": "error",
+            "message": SOMETHING_WENT_WRONG,
+            "path": request.url.path,
+        },
     )
 
 

@@ -16,6 +16,24 @@
     "missingAgentKey": "एजेंट कुंजी गायब है। चैट साइडबार से एजेंट खोलें या वैध लिंक का उपयोग करें।",
     "loading": "लोड हो रहा है…"
   },
+  "projects": {
+    "pageTitle": "प्रोजेक्ट्स",
+    "searchPlaceholder": "प्रोजेक्ट खोजें…",
+    "emptyState": "अभी तक कोई प्रोजेक्ट नहीं",
+    "emptyStateHint": "चैट, फ़ाइलें और निर्देशों को व्यवस्थित करने के लिए एक प्रोजेक्ट बनाएं।",
+    "failedToLoad": "प्रोजेक्ट लोड करने में विफल",
+    "chatCount_one": "{{count}} चैट",
+    "chatCount_other": "{{count}} चैट",
+    "lastActive": "सक्रिय {{date}}",
+    "pinnedSection": "पिन किया गया",
+    "allSection": "सभी प्रोजेक्ट",
+    "backToAllProjects": "सभी प्रोजेक्ट",
+    "loadMore": "और लोड करें",
+    "tabYourProjects": "आपके प्रोजेक्ट",
+    "tabArchived": "संग्रहित",
+    "archivedEmptyState": "कोई संग्रहित प्रोजेक्ट नहीं",
+    "archivedEmptyStateHint": "आपके द्वारा संग्रहित प्रोजेक्ट यहाँ दिखाई देंगे।"
+  },
   "timeGroup": {
     "today": "आज",
     "yesterday": "कल",
@@ -199,6 +217,8 @@
     "moreConnectors": "अधिक कनेक्टर्स",
     "all": "सभी",
     "agents": "एजेंट",
+    "projects": "प्रोजेक्ट्स",
+    "beta": "बीटा",
     "searchChats": "चैट खोजें",
     "inbox": "इनबॉक्स",
     "notifications": "सूचनाएँ"
@@ -364,6 +384,7 @@
       "subtitleExisting": "अपने PipesHub सर्वर URL की पुष्टि करें या उसे अपडेट करें।",
       "label": "सर्वर URL",
       "submit": "कनेक्ट करें",
+      "changeServer": "सर्वर बदलें",
       "errors": {
         "empty": "कृपया एक सर्वर URL दर्ज करें।",
         "invalid": "कृपया एक मान्य URL दर्ज करें (जैसे http://localhost:3000)।",
@@ -395,7 +416,11 @@
     "english": "अंग्रेज़ी",
     "german": "जर्मन",
     "rotateLandscape": "सर्वोत्तम अनुभव के लिए अपना डिवाइस घुमाएँ",
-    "errorOccurred": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।"
+    "errorOccurred": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।",
+    "beta": {
+      "label": "बीटा",
+      "tooltip": "यह सुविधा बीटा में है और इसमें बदलाव हो सकता है।"
+    }
   },
   "units": {
     "bytes": "बाइट",
@@ -527,6 +552,13 @@
       "resetDefaults": "डिफ़ॉल्ट पर रीसेट करें",
       "knowledgeScopeClearedWarning": "इस रन के लिए कोई ज्ञान स्रोत शामिल नहीं हैं, इसलिए एजेंट आपके कनेक्टर या संग्रह में उत्तर खोजेगा नहीं।"
     },
+    "projectResources": {
+      "noConnectors": "इस प्रोजेक्ट के लिए कोई कनेक्टर सक्षम नहीं है।",
+      "noCollections": "इस प्रोजेक्ट के लिए कोई संग्रह सक्षम नहीं है।",
+      "noActions": "इस प्रोजेक्ट के लिए कोई क्रिया (टूलसेट) सक्षम नहीं है।",
+      "noMcpServers": "इस प्रोजेक्ट के लिए कोई MCP सर्वर सक्षम नहीं है।",
+      "resetDefaults": "प्रोजेक्ट डिफ़ॉल्ट पर रीसेट करें"
+    },
     "aiModelsTooltip": "AI मॉडल",
     "attachmentTooltip": "फ़ाइलें संलग्न करें",
     "micTooltip": "वॉइस इनपुट",
@@ -538,6 +570,7 @@
     "loadingConversation": "कन्वर्सेशन लोड हो रहा है...",
     "recents": "हाल के",
     "sharedChats": "साझा किए गए चैट",
+    "sharedBy": "{{name}} द्वारा साझा किया गया",
     "noSharedChats": "कोई साझा चैट नहीं",
     "yourChats": "आपके चैट",
     "noChatsFound": "कोई चैट नहीं मिली",
@@ -773,7 +806,132 @@
     "failedToDeleteAgent": "एजेंट हटाया नहीं जा सका",
     "failedToRename": "चैट का नाम बदलने में विफल",
     "rename": "नाम बदलें",
-    "renaming": "नाम बदला जा रहा है…"
+    "renaming": "नाम बदला जा रहा है…",
+    "projects": {
+      "title": "प्रोजेक्ट",
+      "newProject": "नया प्रोजेक्ट",
+      "noProjects": "अभी तक कोई प्रोजेक्ट नहीं",
+      "failedToLoad": "प्रोजेक्ट लोड करने में विफल",
+      "moreProjects": "और प्रोजेक्ट",
+      "moveToProject": "प्रोजेक्ट में ले जाएँ",
+      "removeFromProject": "प्रोजेक्ट से हटाएँ",
+      "pinProject": "पिन करें",
+      "unpinProject": "अनपिन करें",
+      "archiveProject": "प्रोजेक्ट संग्रहित करें",
+      "unarchiveProject": "प्रोजेक्ट पुनर्स्थापित करें",
+      "restoreSuccess": "प्रोजेक्ट पुनर्स्थापित किया गया",
+      "deleteProject": "प्रोजेक्ट हटाएँ",
+      "shareProject": "प्रोजेक्ट साझा करें",
+      "backToProjects": "सभी प्रोजेक्ट",
+      "backToProject": "प्रोजेक्ट पर वापस जाएं",
+      "newChatInProject": "नई चैट",
+      "recentChats": "हाल की चैट",
+      "noChats": "इस प्रोजेक्ट में अभी तक कोई चैट नहीं",
+      "startChatInProject": "इस प्रोजेक्ट में चैट शुरू करें",
+      "createDialog": {
+        "title": "नया प्रोजेक्ट",
+        "nameLabel": "नाम",
+        "namePlaceholder": "जैसे Q3 मार्केटिंग योजना",
+        "descriptionLabel": "विवरण",
+        "descriptionPlaceholder": "यह प्रोजेक्ट किस बारे में है? (वैकल्पिक)",
+        "instructionsLabel": "निर्देश",
+        "instructionsPlaceholder": "निर्देश जो सहायक को इस प्रोजेक्ट में हमेशा पालन करने चाहिए (वैकल्पिक)",
+        "create": "प्रोजेक्ट बनाएँ",
+        "creating": "बनाया जा रहा है…",
+        "nameRequired": "नाम आवश्यक है"
+      },
+      "workspace": {
+        "failedToLoad": "यह प्रोजेक्ट लोड करने में विफल",
+        "instructionsTitle": "निर्देश",
+        "instructionsPlaceholder": "निर्देश जोड़ें जो सहायक को इस प्रोजेक्ट की प्रत्येक चैट में पालन करने चाहिए…",
+        "noInstructions": "अभी तक कोई निर्देश नहीं जोड़े गए",
+        "save": "सहेजें",
+        "saving": "सहेजा जा रहा है…",
+        "editInstructions": "निर्देश संपादित करें",
+        "noDescription": "कोई विवरण नहीं",
+        "filesTitle": "फ़ाइलें",
+        "filesSubtitle": "यहाँ की फ़ाइलें केवल इस प्रोजेक्ट के भीतर खोजी जाती हैं।",
+        "uploadFiles": "फ़ाइलें अपलोड करें",
+        "uploading": "अपलोड हो रहा है…",
+        "noFiles": "अभी तक कोई फ़ाइल नहीं",
+        "removeFile": "फ़ाइल हटाएँ",
+        "connectorsTitle": "कनेक्टर",
+        "connectorsSubtitle": "इस प्रोजेक्ट की चैट केवल इन कनेक्टरों में खोजती है।",
+        "noConnectorsAvailable": "जोड़ने के लिए अभी तक कोई कनेक्टर नहीं है।",
+        "failedToLoadConnectors": "कनेक्टर लोड करने में विफल",
+        "updateConnectorsFailed": "कनेक्टर अपडेट करने में विफल",
+        "toolsTitle": "टूल्स और MCP",
+        "noToolsAvailable": "जोड़ने के लिए अभी तक कोई प्रमाणित एक्शन या MCP सर्वर नहीं है।",
+        "knowledgeBaseUnavailable": "इस प्रोजेक्ट का फ़ाइल संग्रहण तैयार नहीं किया जा सका",
+        "uploadSessionLabel_one": "{{count}} फ़ाइल",
+        "uploadSessionLabel_other": "{{count}} फ़ाइलें",
+        "membersTitle": "सदस्य",
+        "memberCount_one": "{{count}} सदस्य",
+        "memberCount_other": "{{count}} सदस्य",
+        "share": "साझा करें",
+        "saveInstructionsFailed": "निर्देश सहेजने में विफल",
+        "updateToolsFailed": "टूल अपडेट करने में विफल",
+        "updatePinFailed": "पिन स्थिति अपडेट करने में विफल",
+        "updateArchiveFailed": "संग्रह स्थिति अपडेट करने में विफल",
+        "shareRefreshFailed": "साझाकरण विवरण रीफ़्रेश करने में विफल",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone.",
+        "heroTitle": "हमें किस पर काम करना चाहिए?",
+        "heroSubtitle": "यहाँ शुरू की गई हर चैट को इस प्रोजेक्ट के निर्देश, फ़ाइलें और टूल अपने-आप मिलते हैं।",
+        "addDescription": "विवरण जोड़ें",
+        "descriptionPlaceholder": "यह प्रोजेक्ट किस बारे में है?",
+        "descriptionSaveFailed": "विवरण सहेजा नहीं जा सका",
+        "visibilityBadgePrivate": "निजी",
+        "visibilityBadgeOrg": "संगठन",
+        "visibilityLabel": "दृश्यता",
+        "visibilityPrivate": "केवल आपके लिए निजी",
+        "visibilityOrg": "आपके संगठन को दिखाई देता है",
+        "ownerLabel": "स्वामी",
+        "youLabel": "आप",
+        "aboutTitle": "परिचय",
+        "chatDefaultsTitle": "चैट डिफ़ॉल्ट",
+        "modelLabel": "मॉडल",
+        "projectSetupTitle": "प्रोजेक्ट सेटअप",
+        "projectSetupProgress": "{{done}} / {{total}}",
+        "statusSet": "सेट है",
+        "statusNotSet": "सेट नहीं है",
+        "filesStatusNone": "कोई फ़ाइल नहीं",
+        "filesStatusCount_one": "{{count}} फ़ाइल",
+        "filesStatusCount_other": "{{count}} फ़ाइलें",
+        "filesStatusCountWithSize_one": "{{count}} फ़ाइल · {{size}}",
+        "filesStatusCountWithSize_other": "{{count}} फ़ाइलें · {{size}}",
+        "connectorsStatusNone": "कोई नहीं",
+        "connectorsStatusCount_one": "{{count}} कनेक्टेड",
+        "connectorsStatusCount_other": "{{count}} कनेक्टेड",
+        "toolsStatusDefault": "डिफ़ॉल्ट",
+        "toolsStatusCount_one": "{{count}} सक्षम",
+        "toolsStatusCount_other": "{{count}} सक्षम",
+        "membersStatusOnlyYou": "केवल आप",
+        "suggestSummariseDocument": "किसी दस्तावेज़ का सारांश बनाएँ",
+        "suggestPlanWork": "किसी काम की योजना बनाएँ",
+        "suggestWriteInstructions": "प्रोजेक्ट के निर्देश लिखें",
+        "suggestSummariseDocumentPrompt": "इस प्रोजेक्ट की फ़ाइलों में सबसे महत्वपूर्ण दस्तावेज़ का सारांश दें।",
+        "suggestPlanWorkPrompt": "इस प्रोजेक्ट के लिए किसी काम की योजना बनाने में मेरी मदद करें। इसे ठोस अगले चरणों में बाँटें।"
+      },
+      "moveDialog": {
+        "title": "प्रोजेक्ट में ले जाएँ",
+        "noProjects": "आपके पास अभी तक कोई प्रोजेक्ट नहीं है",
+        "removeOption": "कोई प्रोजेक्ट नहीं",
+        "moving": "ले जाया जा रहा है…"
+      },
+      "deleteDialog": {
+        "title": "क्या यह प्रोजेक्ट हटाना है?",
+        "description": "प्रोजेक्ट हटा दिया जाएगा और चैट अनलिंक हो जाएँगी। चैट स्वयं हटाई नहीं जाएँगी।",
+        "confirm": "प्रोजेक्ट हटाएँ",
+        "deleting": "हटाया जा रहा है…",
+        "failed": "प्रोजेक्ट हटाने में विफल"
+      },
+      "roles": {
+        "owner": "स्वामी",
+        "editor": "संपादक",
+        "viewer": "दर्शक"
+      }
+    }
   },
   "workspaceSettings": {
     "title": "वर्कस्पेस सेटिंग्स"
@@ -816,6 +974,8 @@
         "changeRoleSuccess": "भूमिका अपडेट की गई",
         "changeRoleSuccessDescription": "{{name}} अब {{role}} हैं",
         "changeRoleError": "भूमिका बदलने में विफल",
+        "maxAdminsReachedTitle": "एक और एडमिन नहीं जोड़ सकते",
+        "maxAdminsReached": "एक संगठन में अधिकतम 5 एडमिन हो सकते हैं।",
         "removeFromWorkspace": "कार्यक्षेत्र से हटाएं",
         "removeUserTitle": "उपयोगकर्ता हटाएं?",
         "removeUserMessage": "क्या आप वाकई {{email}} को {{workspace}} कार्यक्षेत्र से हटाना चाहते हैं?",
@@ -1179,7 +1339,7 @@
         "returnToAppsButton": "OAuth 2.0 ऐप्स पर लौटें",
         "showSecretAria": "क्लाइंट सीक्रेट दिखाएँ",
         "hideSecretAria": "क्लाइंट सीक्रेट छिपाएँ",
-        "clientCredentialsWarning": "क्लाइंट क्रेडेंशियल टोकन हमेशा Pipeshub तक उस उपयोगकर्ता की पहचान से पहुँचते हैं जिसने यह एप्लिकेशन बनाया था — न कि टोकन एंडपॉइंट को कॉल करने वाले की। उपयोगकर्ता फिर भी ऑथराइज़ेशन कोड फ़्लो से इस एप्लिकेशन को अपने लिए अधिकृत कर सकते हैं।",
+        "clientCredentialsWarning": "क्लाइंट क्रेडेंशियल टोकन हमेशा Pipeshub तक उस उपयोगकर्ता की पहचान से पहुँचते हैं जिसने यह एप्लिकेशन बनाया था — न कि टोकन एंडपॉइंट को कॉल करने वाले की। आपके द्वारा दिए गए स्कोप के भीतर, टोकन वह सब कुछ देख सकता है जो वह व्यक्ति देख सकता है, और वह उसकी भूमिका भी प्राप्त करता है, इसलिए किसी एडमिन द्वारा बनाए गए एप्लिकेशन को एडमिन पहुँच मिलती है। यदि वह खाता हटा दिया जाए तो टोकन काम करना बंद कर देता है। यदि यह एप्लिकेशन authorization code फ़्लो का भी समर्थन करता है, तो उपयोगकर्ता उस रास्ते से इसे अपने लिए अधिकृत कर सकते हैं।",
         "successTitle": "अनुप्रयोग बनाया गया",
         "successDescription": "आपका OAuth अनुप्रयोग सफलतापूर्वक बनाया गया।",
         "errorCreateTitle": "अनुप्रयोग नहीं बनाया जा सका",
@@ -1815,6 +1975,8 @@
         "additionalSettingsDescription": "Configure connector-specific sync options",
         "nonEditableUrlFieldTooltip": "सेट करने के बाद वेबसाइट URL नहीं बदला जा सकता।",
         "nonEditableLockedFieldTooltip": "सेट करने के बाद यह मान नहीं बदला जा सकता।",
+        "localFsDesktopOnlyBanner": "लोकल फ़ाइलसिस्टम सेटिंग्स केवल PipesHub डेस्कटॉप ऐप में बदली जा सकती हैं। यह व्यू केवल पढ़ने के लिए है।",
+        "localFsDesktopOnlySaveTooltip": "इन सेटिंग्स को बदलने के लिए PipesHub डेस्कटॉप ऐप खोलें।",
         "importDate": "Import start date",
         "importDateDescription": "Choose the date from which messages are imported",
         "importAllTime": "Import All Time Data",
@@ -1896,7 +2058,9 @@
           "needsAuth": "Auth आवश्यक",
           "needsAuthTooltip": "कॉन्फ़िगरेशन सहेजी गई है, लेकिन इस इंस्टेंस को अभी भी प्रमाणीकरण चाहिए।",
           "ready": "पूर्ण",
-          "readyTooltip": "कॉन्फ़िगरेशन पूर्ण और प्रमाणित है। सक्षम होने पर सिंक चल सकता है।"
+          "readyTooltip": "कॉन्फ़िगरेशन पूर्ण और प्रमाणित है। सक्षम होने पर सिंक चल सकता है।",
+          "desktopOffline": "डेस्कटॉप ऑफ़लाइन",
+          "desktopOfflineTooltip": "इस फ़ोल्डर की डेस्कटॉप ऐप कनेक्ट नहीं है। सिंक करने के लिए उसे उस मशीन पर खोलें।"
         },
         "sync": {
           "kind": "Sync",
@@ -1907,6 +2071,14 @@
           "removing": "हटाया जा रहा है",
           "removingTooltip": "यह इंस्टेंस हटाई जा रही है।"
         }
+      },
+      "localFsDesktop": {
+        "offlineToast": "सिंक करने के लिए उस मशीन पर PipesHub डेस्कटॉप ऐप खोलें जिसका यह फ़ोल्डर है।",
+        "offlineNamedToast": "इस फ़ोल्डर का डिवाइस {{deviceName}} कनेक्ट नहीं है। सिंक करने के लिए उस डिवाइस पर PipesHub डेस्कटॉप ऐप खोलें।",
+        "unclaimedToast": "यह कनेक्टर अभी तक किसी डेस्कटॉप पर सेट अप नहीं किया गया है। उस मशीन पर PipesHub डेस्कटॉप ऐप खोलें जिसका यह फ़ोल्डर है और वहाँ एक बार सिंक चालू करें।",
+        "ownedByOtherDeviceToast": "यह कनेक्टर {{deviceName}} का है। उस डिवाइस पर PipesHub डेस्कटॉप ऐप से सिंक चालू करें।",
+        "ownedByOtherDeviceUnknownToast": "यह कनेक्टर किसी दूसरे डिवाइस का है। उस डिवाइस पर PipesHub डेस्कटॉप ऐप से सिंक चालू करें।",
+        "deviceIdentityError": "इस डिवाइस की पहचान नहीं हो सकी: {{error}}"
       },
       "schemaForm": {
         "tagsPlaceholder": "टैग जोड़ने के लिए टाइप करें और एंटर दबाएँ",
@@ -2562,7 +2734,7 @@
     },
     "oauthApps": {
       "title": "OAuth ऐप्स",
-      "subtitle": "कनेक्टर्स और एक्शन्स के लिए OAuth क्रेडेंशियल प्रबंधित करें। \u00abडिफ़ॉल्ट\u00bb के रूप में चिह्नित ऐप्स स्वचालित रूप से नए कनेक्शन के लिए उपयोग की जाती हैं, जब तक ओवरराइड न किया जाए।",
+      "subtitle": "कनेक्टर्स और एक्शन्स के लिए OAuth क्रेडेंशियल प्रबंधित करें। «डिफ़ॉल्ट» के रूप में चिह्नित ऐप्स स्वचालित रूप से नए कनेक्शन के लिए उपयोग की जाती हैं, जब तक ओवरराइड न किया जाए।",
       "addButton": "OAuth ऐप जोड़ें",
       "tabs": {
         "connectors": "कनेक्टर्स",
@@ -2571,15 +2743,15 @@
       "typeSelector": {
         "connectorLabel": "कनेक्टर प्रकार",
         "toolsetLabel": "एक्शन प्रकार",
-        "loading": "लोड हो रहा है\u2026"
+        "loading": "लोड हो रहा है…"
       },
       "scope": {
         "team": "टीम",
         "personal": "व्यक्तिगत"
       },
-      "loading": "लोड हो रहा है\u2026",
+      "loading": "लोड हो रहा है…",
       "search": {
-        "placeholder": "ऐप्स खोजें\u2026"
+        "placeholder": "ऐप्स खोजें…"
       },
       "empty": {
         "title": "{{typeLabel}} के लिए कोई OAuth ऐप नहीं",
@@ -2609,19 +2781,19 @@
         "cancelButton": "रद्द करें",
         "createButton": "बनाएं",
         "saveButton": "परिवर्तन सहेजें",
-        "savingLabel": "सहेजा जा रहा है\u2026",
+        "savingLabel": "सहेजा जा रहा है…",
         "schemaError": "इस प्रकार के लिए स्कीमा लोड करने में विफल।",
         "genericError": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।"
       },
       "delete": {
-        "title": "\u00ab{{name}}\u00bb हटाएं?",
+        "title": "«{{name}}» हटाएं?",
         "message": "यह OAuth ऐप स्थायी रूप से हटा दी जाएगी। इसे वर्तमान में उपयोग करने वाले कनेक्टर इंस्टेंस काम करना बंद कर सकते हैं।",
         "confirmLabel": "हटाएं",
         "forceDeleteButton": "जबरन हटाएं",
-        "forceTitle": "\u00ab{{name}}\u00bb को जबरन हटाएं?",
+        "forceTitle": "«{{name}}» को जबरन हटाएं?",
         "forceMessage": "यह OAuth ऐप अभी उपयोग में है। इसे जबरन हटाने से यह ऐप हट जाएगी और इस पर निर्भर मौजूदा कनेक्टर कनेक्शन टूट सकते हैं। यह क्रिया पूर्ववत नहीं की जा सकती।",
         "forceConfirmLabel": "जबरन हटाएं",
-        "successMessage": "OAuth ऐप \u00ab{{name}}\u00bb हटा दी गई।"
+        "successMessage": "OAuth ऐप «{{name}}» हटा दी गई।"
       },
       "errors": {
         "loadTypes": "उपलब्ध OAuth ऐप प्रकार लोड करने में विफल।",
@@ -2710,6 +2882,11 @@
     "modelSection": "मॉडल",
     "toolsetsSection": "टूलसेट",
     "mcpServersSection": "MCP सर्वर",
+    "skillsSection": "Skills",
+    "noSkillsAvailable": "कोई Skills उपलब्ध नहीं",
+    "skillNodeTemplateDescription": "कस्टम स्किल जिसे आपका एजेंट आह्वान कर सकता है",
+    "skillDeprecated": "यह स्किल बंद कर दी गई है",
+    "skillDeprecatedReplacedBy": "यह स्किल बंद कर दी गई है। इसके बजाय {{name}} का उपयोग करें।",
     "inputSection": "इनपुट",
     "responseSection": "प्रतिक्रिया",
     "connectModel": "मॉडल कनेक्ट करें",
@@ -2726,7 +2903,9 @@
     "instructionsLabel": "निर्देश",
     "startingMessageLabel": "प्रारंभिक संदेश",
     "defaultReasoningEffortLabel": "डिफ़ॉल्ट रीज़निंग प्रयास",
-    "defaultReasoningEffortHint": "सेट न होने पर डिफ़ॉल्ट हाई है।",
+    "defaultReasoningEffortHint": "जब उपयोगकर्ता चैट में कोई विकल्प नहीं चुनता तब उपयोग किया जाने वाला फ़ॉलबैक रीज़निंग प्रयास।",
+    "sendUserContextLabel": "उपयोगकर्ता और संगठन संदर्भ भेजें",
+    "sendUserContextHint": "बंद होने पर यह एजेंट सिस्टम प्रॉम्प्ट में उपयोगकर्ता का नाम, ईमेल या संगठन नहीं पाएगा। यह टूल, एक्शन और ज्ञान स्रोतों पर निर्भर करेगा।",
     "moreItems": "+{{count}} और",
     "toolsetNodeSubtitle": "टूलसेट",
     "toolsLabel": "टूल",
@@ -2942,9 +3121,7 @@
     "deprecatedToolsBanner": "इस एजेंट पर {{count}} टूल(s) पुराने हैं, इन्हें हटाएं: {{tools}}",
     "removeDeprecatedTools": "पुराने टूल हटाएं",
     "showMore": "और दिखाएं",
-    "showLess": "कम दिखाएं",
-    "defaultReasoningEffortLabel": "डिफ़ॉल्ट रीज़निंग प्रयास",
-    "defaultReasoningEffortHint": "जब उपयोगकर्ता चैट में कोई विकल्प नहीं चुनता तब उपयोग किया जाने वाला फ़ॉलबैक रीज़निंग प्रयास।"
+    "showLess": "कम दिखाएं"
   },
   "recordView": {
     "sections": {

@@ -10,8 +10,61 @@ import base64
 import json
 import os
 import time
+from typing import Tuple
 
 import requests
+
+
+# Every scope the backend defines (OAuthScopeNames in oauth-scopes.enum.ts):
+# the test client is a full admin. unit/test_local_auth_scopes.py fails when a
+# new backend scope is missing here, instead of the tests using it getting 403s.
+TEST_CLIENT_SCOPES = (
+    "openid",
+    "profile",
+    "email",
+    "offline_access",
+    "org:read",
+    "org:write",
+    "org:admin",
+    "user:read",
+    "user:write",
+    "user:invite",
+    "user:delete",
+    "usergroup:read",
+    "usergroup:write",
+    "team:read",
+    "team:write",
+    "kb:read",
+    "kb:write",
+    "kb:delete",
+    "kb:upload",
+    "semantic:read",
+    "semantic:write",
+    "semantic:delete",
+    "conversation:read",
+    "conversation:write",
+    "conversation:chat",
+    "agent:read",
+    "agent:write",
+    "agent:execute",
+    "connector:read",
+    "connector:write",
+    "connector:sync",
+    "connector:delete",
+    "config:read",
+    "config:write",
+    "crawl:read",
+    "crawl:write",
+    "crawl:delete",
+    "mcp:read",
+    "mcp:write",
+    "mcp:delete",
+    "project:read",
+    "project:write",
+    "project:delete",
+    "skill:read",
+    "skill:write",
+)
 
 
 def obtain_local_oauth_credentials(base_url: str, timeout: int = 30) -> tuple[str, str]:
@@ -111,7 +164,7 @@ def _authenticate(
     email: str,
     password: str,
     timeout: int,
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """Return ``(accessToken, orgId)``; ``orgId`` is empty on the open-source backend."""
     resp = requests.post(
         f"{base_url}/api/v1/userAccount/authenticate",
@@ -206,45 +259,7 @@ def _post_oauth_app(
         json={
             "name": "Integration Test Client",
             "allowedGrantTypes": ["client_credentials"],
-            "allowedScopes": [
-                "openid",
-                "profile",
-                "email",
-                "offline_access",
-                "org:read",
-                "org:write",
-                "org:admin",
-                "user:read",
-                "user:write",
-                "user:invite",
-                "user:delete",
-                "usergroup:read",
-                "usergroup:write",
-                "team:read",
-                "team:write",
-                "kb:read",
-                "kb:write",
-                "kb:delete",
-                "kb:upload",
-                "semantic:read",
-                "semantic:write",
-                "semantic:delete",
-                "conversation:read",
-                "conversation:write",
-                "conversation:chat",
-                "agent:read",
-                "agent:write",
-                "agent:execute",
-                "connector:read",
-                "connector:write",
-                "connector:sync",
-                "connector:delete",
-                "config:read",
-                "config:write",
-                "crawl:read",
-                "crawl:write",
-                "crawl:delete",
-            ],
+            "allowedScopes": list(TEST_CLIENT_SCOPES),
         },
         timeout=timeout,
     )

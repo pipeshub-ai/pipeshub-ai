@@ -210,16 +210,12 @@ PDF (taramalar dahil), Microsoft Office (Word, Excel, PowerPoint), Google Docs/S
 ### PipesHub'ı nasıl dağıtırım?
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables (refer to env.template)
-# Start production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-Not: Bulut dağıtımları için HTTPS kullanın. HTTP, ön uçta güvenlik engellemelerine yol açabilir.
+Bu, Compose dosyalarını `./pipeshub`'a yazar ve etkileşimli yükleyiciyi başlatır. Bittiğinde **http://localhost:3000**'i açın. Bulut dağıtımları için HTTPS kullanın — HTTP ön uçta güvenlik engellemelerine yol açabilir.
+
+Kaynaktan derleyen geliştiriciler, depoyu klonlamalı ve depo kökünden `./install.sh` (veya `./install.sh --build`) çalıştırmalıdır. [Dağıtım Kılavuzu](#-dağıtım-kılavuzu)'na bakın.
 
 ### PipesHub hangi LLM sağlayıcılarını destekler?
 

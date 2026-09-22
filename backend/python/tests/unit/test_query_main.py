@@ -717,6 +717,29 @@ class TestValidationExceptionHandler:
         assert isinstance(result, JSONResponse)
         assert result.status_code == 422
 
+    async def test_answers_in_plain_words_and_keeps_the_detail_list(self):
+        """The message names the field; each detail entry keeps loc/type with a reworded msg."""
+        import json
+
+        from app.query_main import validation_exception_handler
+
+        mock_request = MagicMock()
+        mock_request.method = "POST"
+        mock_request.url = "http://test/api/v1/search"
+        mock_exc = MagicMock(spec=RequestValidationError)
+        mock_exc.errors.return_value = [
+            {"type": "missing", "loc": ["body", "query"], "msg": "Field required"},
+            {"type": "int_parsing", "loc": ["body", "limit"], "msg": "Input should be a valid integer"},
+        ]
+
+        result = await validation_exception_handler(mock_request, mock_exc)
+
+        body = json.loads(result.body)
+        assert body["message"] == "Query is required. Limit must be a whole number."
+        assert [d["msg"] for d in body["detail"]] == ["Query is required.", "Limit must be a whole number."]
+        assert body["detail"][0]["loc"] == ["body", "query"]
+        assert body["detail"][1]["type"] == "int_parsing"
+
     async def test_body_parse_failure_still_returns_422(self):
         """When request.json() raises, handler still returns 422."""
         from app.query_main import validation_exception_handler

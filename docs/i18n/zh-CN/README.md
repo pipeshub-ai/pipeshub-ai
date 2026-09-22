@@ -210,16 +210,12 @@ PDF（含扫描件）、Microsoft Office（Word、Excel、PowerPoint）、Google
 ### 如何部署 PipesHub？
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables (refer to env.template)
-# Start production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-注意：云端部署请使用 HTTPS。HTTP 可能导致前端被安全机制拦截。
+此命令会把 Compose 文件写到 `./pipeshub` 并启动交互式安装程序。完成后打开 **http://localhost:3000**。云端部署请使用 HTTPS — HTTP 可能导致前端安全拦截。
+
+从源码构建的开发者应克隆仓库并从仓库根目录运行 `./install.sh`（或 `./install.sh --build`）。详见[部署指南](#-部署指南)。
 
 ### PipesHub 支持哪些 LLM 提供商？
 

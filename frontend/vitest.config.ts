@@ -18,36 +18,11 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: false,
-    include: [
-      'app/(main)/notifications/__tests__/store.test.ts',
-      'app/(main)/notifications/__tests__/useNotificationSocket.test.tsx',
-      'app/components/ui/__tests__/help-tooltip.test.ts',
-      'app/(main)/workspace/connectors/utils/__tests__/manual-indexing-tooltip.test.ts',
-      'app/(main)/workspace/connectors/utils/__tests__/admin-access-helpers.test.ts',
-      'lib/socket/__tests__/notification-socket.test.ts',
-      'app/(main)/chat/__tests__/agui-event-handler.test.ts',
-      'app/(main)/chat/__tests__/agent-capabilities.test.ts',
-      'app/(main)/chat/__tests__/api.test.ts',
-      'app/(main)/chat/__tests__/streaming-stop.test.ts',
-      'app/(main)/chat/__tests__/reasoning-effort.test.ts',
-      'app/(main)/chat/__tests__/attachment-types.test.ts',
-      'app/(main)/chat/components/message-area/__tests__/agent-activity.test.tsx',
-      'app/(main)/chat/components/message-area/__tests__/expandable-user-query.test.tsx',
-      'app/(main)/chat/components/message-area/__tests__/answer-content.test.tsx',
-      'app/(main)/chat/utils/__tests__/parse-download-markers.test.ts',
-      'app/(main)/chat/utils/__tests__/repair-streaming-markdown.test.ts',
-      'app/(main)/chat/utils/__tests__/split-streaming-markdown.test.ts',
-      'app/(main)/chat/utils/__tests__/build-chat-artifact.test.ts',
-      'app/(main)/chat/utils/__tests__/paste-attachment.test.ts',
-      'app/(main)/chat/components/__tests__/pasted-text-chip.test.tsx',
-      'app/(main)/chat/components/__tests__/text-preview-dialog.test.tsx',
-      'app/(main)/workspace/skills/personal/__tests__/api.test.ts',
-      'app/(main)/workspace/mcp-servers/__tests__/oauth-dcr-requirement.test.ts',
-      'app/(main)/workspace/ai-models/__tests__/resolve-model-config-save-error.test.ts',
-      'app/(main)/onboarding/utils/__tests__/s3-credentials.test.ts',
-      'app/(main)/workspace/connectors/components/__tests__/vector-store-actions.test.tsx',
-      'lib/store/__tests__/auth-store.test.ts',
-    ],
+    // Every unit test under app/ and lib/. A hand-kept list let new test
+    // files sit unrun: three never ran, and one of them caught a real bug.
+    // Playwright (tests/e2e) and Electron (electron/, run by
+    // test:electron:local-sync) have their own runners.
+    include: ['app/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}'],
     passWithNoTests: false,
   },
   resolve: {

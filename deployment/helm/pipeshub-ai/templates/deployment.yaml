@@ -1,6 +1,7 @@
 {{- /* Validate required secrets before deployment */ -}}
 {{- include "pipeshub-ai.validateRequiredSecrets" . }}
 {{- include "pipeshub-ai.validateSandbox" . }}
+{{- include "pipeshub-ai.validateStores" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -193,6 +194,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "pipeshub-ai.arangoSecretName" . }}
                   key: arango-password
+            {{- end }}
+            {{- if and .Values.arango.enabled (not .Values.neo4j.enabled) }}
+            - name: DATA_STORE
+              value: "arangodb"
             {{- end }}
             {{- if .Values.neo4j.enabled }}
             # Neo4j config (app uses Neo4j as graph DB when DATA_STORE=neo4j)

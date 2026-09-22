@@ -296,7 +296,7 @@ async def test_statuses_track_active_parse_and_index_phases() -> None:
         "updatedAtTimestamp": 1000000,
     }
     graph_provider.get_document = AsyncMock(
-        side_effect=lambda *_args: dict(persisted_record)
+        side_effect=lambda *_args, **_kwargs: dict(persisted_record)
     )
     graph_provider.get_departments = AsyncMock(return_value=[])
     graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)

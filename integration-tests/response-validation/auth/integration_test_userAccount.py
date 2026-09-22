@@ -34,11 +34,16 @@ Requires:
 
 from __future__ import annotations
 
+import datetime
 import logging
 import sys
+import uuid
 from pathlib import Path
 
+import bcrypt
 import pytest
+import requests
+from pymongo import MongoClient
 
 _ROOT = Path(__file__).resolve().parents[2]
 _RV_HELPER = _ROOT / "response-validation" / "helper"
@@ -61,6 +66,8 @@ from utils.auth_helpers import (  # noqa: E402
     require_test_user_credentials,
     session_headers,
 )
+
+from config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD  # noqa: E402
 
 logger = logging.getLogger("user-account-integration-test")
 
@@ -552,3 +559,126 @@ class TestRefreshToken(UserAccountTestBase):
             assert_response_matches_openapi_operation(
                 refresh_token_success_body, "resetPassword"
             )
+
+
+
+# ====================================================================
+# Account blocking must invalidate sessions issued before the block
+# (https://github.com/pipeshub-ai/pipeshub-ai/issues/3239)
+# ====================================================================
+@pytest.mark.integration
+class TestBlockInvalidatesExistingSessions(UserAccountTestBase):
+    """A session issued before an account is auto-blocked must stop working
+    once the block takes effect — see issue #3239."""
+
+    def test_a_token_issued_before_the_block_is_rejected(self) -> None:
+        """Log in once (valid token). Trigger a real auto-block via 5 wrong
+        passwords through the actual API. The pre-block token must then
+        be rejected, not accepted until its natural 24h expiry."""
+        client = self.client
+
+        # 1. Create a disposable user — never the shared test user, which
+        #    every other test in this suite depends on staying unblocked.
+        email = f"it-block-{uuid.uuid4().hex[:10]}@test-pipeshub.com"
+        create_resp = requests.post(
+            f"{client.base_url}/api/v1/users",
+            headers=client._headers(),
+            json={"fullName": "IT Block Test User", "email": email},
+            timeout=client.timeout_seconds,
+        )
+        assert create_resp.status_code < 400, (
+            f"createUser failed for {email}: {create_resp.status_code}: {create_resp.text}"
+        )
+        user = create_resp.json()
+        user_id = str(user.get("_id") or user.get("id"))
+        org_id = str(user.get("orgId") or client.org_id)
+
+        hashed = bcrypt.hashpw(TEST_USER_PASSWORD.encode(), bcrypt.gensalt()).decode()
+        now = datetime.datetime.now(datetime.timezone.utc)
+        mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
+        try:
+            mongo[MONGO_DB_NAME].userCredentials.delete_many(
+                {"userId": user_id, "orgId": org_id}
+            )
+            mongo[MONGO_DB_NAME].userCredentials.insert_one({
+                "userId": user_id,
+                "orgId": org_id,
+                "hashedPassword": hashed,
+                "ipAddress": "127.0.0.1",
+                "wrongCredentialCount": 0,
+                "isBlocked": False,
+                "forceNewPasswordGeneration": False,
+                "isDeleted": False,
+                "createdAt": now,
+                "updatedAt": now,
+            })
+        finally:
+            mongo.close()
+
+        try:
+            # 2. Normal login — this is the token that must be invalidated.
+            access_token, _ = login_with_user(client, email, TEST_USER_PASSWORD)
+            assert access_token
+
+            # 2b. Baseline: this token must work BEFORE the account is
+            #     blocked. Without this, a 401 later wouldn't prove
+            #     anything about the fix.
+            baseline_resp = client.request(
+                "GET",
+                f"/api/v1/users/{user_id}",
+                auth=False,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert baseline_resp.status_code == 200, (
+                f"Pre-block token should work, got "
+                f"{baseline_resp.status_code}: {baseline_resp.text}"
+            )
+            
+            # 3. Trigger the real auto-block path: 5 wrong-password
+            #    attempts through the actual authenticate route — this
+            #    exercises the exact controller code the fix touches.
+            for attempt in range(5):
+                init_resp = self.account.init_auth(email)
+                assert init_resp.status_code == 200, init_resp.text
+                session_token = init_resp.headers.get("x-session-token")
+                assert session_token
+
+                auth_resp = self.account.authenticate(
+                    session_token, email, TEST_USER_PASSWORD + "__wrong__"
+                )
+                assert auth_resp.status_code in (400, 401, 500), (
+                    f"attempt {attempt + 1}: expected a rejection, got "
+                    f"{auth_resp.status_code}: {auth_resp.text}"
+                )
+
+            # 4. The account is now blocked. The token from step 2 was
+            #    issued before the block — it must no longer work.
+            me_resp = client.request(
+                "GET",
+                f"/api/v1/users/{user_id}",
+                auth=False,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert me_resp.status_code == 401, (
+                "A session issued before the account was blocked is still "
+                f"being accepted (got {me_resp.status_code}: {me_resp.text}). "
+                "See #3239 — blocking must invalidate existing sessions, not "
+                "just prevent new logins."
+            )
+        finally:
+            try:
+                mongo2 = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
+                mongo2[MONGO_DB_NAME].userCredentials.delete_many(
+                    {"userId": user_id, "orgId": org_id}
+                )
+                mongo2.close()
+            except Exception:  # noqa: BLE001 - teardown must not fail the run
+                logger.warning("Could not clean up credentials for user %s", user_id)
+            try:
+                requests.delete(
+                    f"{client.base_url}/api/v1/users/{user_id}",
+                    headers=client._headers(),
+                    timeout=client.timeout_seconds,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not delete test user %s", user_id)

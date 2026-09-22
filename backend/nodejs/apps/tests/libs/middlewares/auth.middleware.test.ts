@@ -203,6 +203,58 @@ describe('AuthMiddleware', () => {
       expect(req.user).to.deep.equal(decoded)
     })
 
+    it('rejects a session belonging to a disabled account', async () => {
+      // Sessions handed out before the account was disabled have to stop too,
+      // or disabling only prevents the next sign-in.
+      sinon.restore()
+      sinon.stub(jwt, 'decode').returns({ userId: 'user1', orgId: 'org1' })
+      sinon
+        .stub(Users, 'findOne')
+        .returns(createMockQuery({ _id: 'user1', orgId: 'org1', isDisabled: true }))
+      tokenService = { verifyToken: sinon.stub(), verifyScopedToken: sinon.stub() } as any
+      authMiddleware = new AuthMiddleware(logger as unknown as Logger, tokenService as unknown as AuthTokenService)
+      tokenService.verifyToken.resolves({
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: Math.floor(Date.now() / 1000),
+      })
+
+      const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}` } })
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('disabled')
+    })
+
+    it('rejects a session that claims to belong to a service account', async () => {
+      sinon.restore()
+      sinon.stub(jwt, 'decode').returns({ userId: 'user1', orgId: 'org1' })
+      sinon
+        .stub(Users, 'findOne')
+        .returns(createMockQuery({ _id: 'user1', orgId: 'org1', kind: 'service' }))
+      tokenService = { verifyToken: sinon.stub(), verifyScopedToken: sinon.stub() } as any
+      authMiddleware = new AuthMiddleware(logger as unknown as Logger, tokenService as unknown as AuthTokenService)
+      tokenService.verifyToken.resolves({
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: Math.floor(Date.now() / 1000),
+      })
+
+      const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}` } })
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('cannot sign in')
+    })
+
     it('should reject token if logout activity is newer than token iat', async () => {
       const tokenIat = Math.floor(Date.now() / 1000) - 3600 // 1 hour ago
       const decoded = {

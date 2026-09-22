@@ -41,7 +41,7 @@ export const ShareCommonApi = {
     const { data } = await apiClient.post('/api/v1/users/by-ids', { userIds });
     const users = Array.isArray(data) ? data : data.users ?? [];
     return users.map((u: Record<string, unknown>) => ({
-      id: u.id as string,
+      id: ((u._id ?? u.id) as string),
       name: (u.name as string) ?? (u.fullName as string) ?? '',
       email: (u.email as string) ?? undefined,
       avatarUrl:

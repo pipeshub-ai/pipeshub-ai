@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.utils.user_messages import action_failed
 
 
 # Fixtures live in conftest.py
@@ -71,7 +72,9 @@ class TestCreateKnowledgeBase:
         result = await service.create_knowledge_base("user1", "org1", "My KB")
         assert result["success"] is False
         assert result["code"] == 500
-        assert "tx error" in result["reason"]
+        # the person is told what failed and what to do, never the exception text
+        assert result["reason"] == action_failed("create this knowledge base")
+        assert "tx error" not in result["reason"]
 
     @pytest.mark.asyncio
     async def test_db_operation_fails_rollback(self, service, user_data):
@@ -961,7 +964,9 @@ class TestResolveUserIdsToGraphKeys:
         assert graph_keys is None
         assert err["success"] is False
         assert err["code"] == 400
-        assert "u1" in err["reason"]
+        # Plain words and a next step; the ids go to the log, not the person sharing.
+        assert "Remove them and try sharing again" in err["reason"]
+        assert "u1" not in err["reason"]
 
     @pytest.mark.asyncio
     async def test_partial_mapping(self, service):
@@ -978,7 +983,9 @@ class TestResolveUserIdsToGraphKeys:
         assert graph_keys is None
         assert err["success"] is False
         assert err["code"] == 400
-        assert "u2" in err["reason"]
+        # Plain words and a next step; the ids go to the log, not the person sharing.
+        assert "Remove them and try sharing again" in err["reason"]
+        assert "u2" not in err["reason"]
 
     @pytest.mark.asyncio
     async def test_value_error_from_provider(self, service):
@@ -995,6 +1002,8 @@ class TestResolveUserIdsToGraphKeys:
         assert graph_keys is None
         assert err["success"] is False
         assert err["code"] == 400
+        assert "Remove them and try sharing again" in err["reason"]
+        assert "missing" not in err["reason"] and "graph" not in err["reason"]
 
 
 class TestCreateKbPermissions:
@@ -1020,9 +1029,12 @@ class TestCreateKbPermissions:
     @pytest.mark.asyncio
     async def test_success_teams_only(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(
-            return_value={"id": "rk1", "_key": "rk1"}
+            return_value={"id": "rk1", "_key": "rk1", "orgId": "org-1"}
         )
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.get_nodes_by_field_in = AsyncMock(
+            return_value=[{"id": "t1", "orgId": "org-1"}]
+        )
         service.graph_provider.create_kb_permissions = AsyncMock(
             return_value={"success": True, "grantedCount": 1}
         )
@@ -1073,6 +1085,8 @@ class TestCreateKbPermissions:
         result = await service.create_kb_permissions("kb1", "req1", ["missing"], [], "READER")
         assert result["success"] is False
         assert result["code"] == 400
+        assert "Remove them and try sharing again" in result["reason"]
+        assert "missing" not in result["reason"]
 
     @pytest.mark.asyncio
     async def test_service_returns_failure(self, service):
@@ -1103,6 +1117,35 @@ class TestCreateKbPermissions:
         result = await service.create_kb_permissions("kb1", "req1", ["u1"], [], "READER")
         assert result["success"] is False
         assert result["code"] == 500
+
+
+    @pytest.mark.asyncio
+    async def test_exception_text_from_the_provider_never_reaches_the_person(self, service):
+        """The providers return their failures, so this service's `except` never sees them."""
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.create_kb_permissions = AsyncMock(
+            return_value={"success": False, "reason": "Transaction 7c1b-41 not found"}
+        )
+
+        result = await service.create_kb_permissions("kb1", "req1", ["u1"], [], "READER")
+        assert result["code"] == 500
+        assert result["reason"] == action_failed("share this knowledge base")
+        assert "Transaction" not in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_the_provider_worded_is_kept(self, service):
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.create_kb_permissions = AsyncMock(
+            return_value={
+                "success": False,
+                "reason": "Requester not found or not owner",
+                "code": 403,
+            }
+        )
+
+        result = await service.create_kb_permissions("kb1", "req1", ["u1"], [], "READER")
+        assert result["code"] == 403
+        assert result["reason"] == "Requester not found or not owner"
 
 
 def _setup_kb_owner_resolve(service):
@@ -1256,6 +1299,43 @@ class TestUpdateKbPermission:
         result = await service.update_kb_permission("kb1", "req1", ["u1"], [], "READER")
         assert result["success"] is False
         assert result["code"] == 500
+
+
+    @pytest.mark.asyncio
+    async def test_exception_text_from_the_provider_never_reaches_the_person(self, service):
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.get_kb_permissions = AsyncMock(return_value={
+            "users": {"gk_u1": "READER"}, "teams": {}
+        })
+        service.graph_provider.count_kb_owners = AsyncMock(return_value=2)
+        service.graph_provider.update_kb_permission = AsyncMock(
+            return_value={"success": False, "reason": "Transaction 7c1b-41 not found"}
+        )
+
+        result = await service.update_kb_permission("kb1", "req1", ["u1"], [], "WRITER")
+        assert result["code"] == 500
+        assert result["reason"] == action_failed("update this person's access")
+        assert "Transaction" not in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_neo4j_spelled_as_a_string_is_still_kept(self, service):
+        """Neo4j writes its status as "403"; Arango writes 403."""
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.get_kb_permissions = AsyncMock(return_value={
+            "users": {"gk_u1": "READER"}, "teams": {}
+        })
+        service.graph_provider.count_kb_owners = AsyncMock(return_value=2)
+        service.graph_provider.update_kb_permission = AsyncMock(
+            return_value={
+                "success": False,
+                "reason": "Only KB owners can update permissions",
+                "code": "403",
+            }
+        )
+
+        result = await service.update_kb_permission("kb1", "req1", ["u1"], [], "WRITER")
+        assert result["code"] == 403
+        assert result["reason"] == "Only KB owners can update permissions"
 
 
 class TestRemoveKbPermission:
@@ -1535,7 +1615,7 @@ class TestGetKbChildren:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
         service.graph_provider.get_kb_children = AsyncMock(return_value={
-            "success": False, "reason": "KB not found"
+            "success": False, "reason": "Knowledge base not found", "code": 404
         })
 
         result = await service.get_kb_children("kb1", "user1")
@@ -1572,10 +1652,61 @@ class TestGetKbChildren:
 
     @pytest.mark.asyncio
     async def test_exception(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("err"))
+        service.graph_provider.get_user_by_user_id = AsyncMock(
+            side_effect=Exception("psycopg2.OperationalError: err")
+        )
         result = await service.get_kb_children("kb1", "user1")
         assert result["success"] is False
         assert result["code"] == 500
+        # browsing a collection toasts this reason, so it says what to do instead
+        assert result["reason"] == action_failed("open this knowledge base")
+        assert "OperationalError" not in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_provider_failure_is_not_forwarded(self, service):
+        """The providers answer with a dict, not an exception — the real path."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        service.graph_provider.get_kb_children = AsyncMock(return_value={
+            "success": False, "reason": "psycopg2.OperationalError: connection refused",
+        })
+
+        result = await service.get_kb_children("kb1", "user1")
+        assert result["success"] is False
+        assert result["code"] == 500
+        assert result["reason"] == action_failed("open this knowledge base")
+        assert "OperationalError" not in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_exception_text_saying_not_found_is_not_a_404(self, service):
+        """A failure is a 404 only when the provider says so with its code.
+
+        Exception text can read like anything, including the words the providers
+        use for a missing KB, so the words themselves decide nothing.
+        """
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        service.graph_provider.get_kb_children = AsyncMock(return_value={
+            "success": False,
+            "reason": "ServerSelectionTimeoutError: replica set member not found",
+        })
+
+        result = await service.get_kb_children("kb1", "user1")
+        assert result["code"] == 500
+        assert result["reason"] == action_failed("open this knowledge base")
+        assert "ServerSelectionTimeoutError" not in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_provider_not_found_still_reads_as_missing(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        service.graph_provider.get_kb_children = AsyncMock(return_value={
+            "success": False, "reason": "Knowledge base not found", "code": 404,
+        })
+
+        result = await service.get_kb_children("kb1", "user1")
+        assert result["code"] == 404
+        assert result["reason"] == "Knowledge base not found"
 
 
 class TestGetFolderChildren:
@@ -1616,7 +1747,7 @@ class TestGetFolderChildren:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
         service.graph_provider.get_folder_children = AsyncMock(return_value={
-            "success": False, "reason": "Folder not found"
+            "success": False, "reason": "Folder not found", "code": 404
         })
 
         result = await service.get_folder_children("kb1", "f1", "user1")
@@ -1625,10 +1756,44 @@ class TestGetFolderChildren:
 
     @pytest.mark.asyncio
     async def test_exception(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("err"))
+        service.graph_provider.get_user_by_user_id = AsyncMock(
+            side_effect=Exception("psycopg2.OperationalError: err")
+        )
         result = await service.get_folder_children("kb1", "f1", "user1")
         assert result["success"] is False
         assert result["code"] == 500
+        assert result["reason"] == action_failed("open this folder")
+
+    @pytest.mark.asyncio
+    async def test_exception_text_saying_not_found_is_not_a_404(self, service):
+        """The provider returns its failures, so this text is what a person would see."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        service.graph_provider.get_folder_children = AsyncMock(return_value={
+            "success": False,
+            "reason": "Neo4jError: procedure apoc.path.expand not found",
+        })
+
+        result = await service.get_folder_children("kb1", "f1", "user1")
+        assert result["code"] == 500
+        assert result["reason"] == action_failed("open this folder")
+        assert "apoc" not in result["reason"]
+        assert "OperationalError" not in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_provider_failure_is_not_forwarded(self, service):
+        """The providers answer with a dict, not an exception — the real path."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        service.graph_provider.get_folder_children = AsyncMock(return_value={
+            "success": False, "reason": "psycopg2.OperationalError: connection refused",
+        })
+
+        result = await service.get_folder_children("kb1", "f1", "user1")
+        assert result["success"] is False
+        assert result["code"] == 500
+        assert result["reason"] == action_failed("open this folder")
+        assert "OperationalError" not in result["reason"]
 
 
 class TestErrorResponse:
@@ -2153,3 +2318,72 @@ class TestDuplicateNameValidation:
         
         result = await service.move_record("kb1", "folder1", "new_parent", "user1")
         assert result["success"] is True
+
+
+class TestValidationFailuresReachingThePerson:
+    """Creating a folder and uploading both answer from a returned dict, not an exception.
+
+    The provider writes its own 403 and 404 refusals and hands back `str(e)` with a
+    500 for everything else. Only the first kind is meant for a reader.
+    """
+
+    @pytest.mark.asyncio
+    async def test_creating_a_folder_does_not_hand_over_exception_text(self, service):
+        service.graph_provider._validate_folder_creation = AsyncMock(return_value={
+            "valid": False, "success": False, "code": 500,
+            "reason": "psycopg2.OperationalError: could not connect to server",
+        })
+
+        result = await service.create_folder_in_kb("kb1", "Reports", "user1", "org1")
+        assert result["code"] == 500
+        assert result["reason"] == action_failed("create this folder")
+        assert result["valid"] is False
+        assert "OperationalError" not in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_creating_a_folder_keeps_a_refusal_the_provider_worded(self, service):
+        service.graph_provider._validate_folder_creation = AsyncMock(return_value={
+            "valid": False, "success": False, "code": 403,
+            "reason": "No permission to create folders in this knowledge base",
+        })
+
+        result = await service.create_folder_in_kb("kb1", "Reports", "user1", "org1")
+        assert result["code"] == 403
+        assert result["reason"] == "No permission to create folders in this knowledge base"
+        assert result["valid"] is False
+
+    @pytest.mark.asyncio
+    async def test_uploading_does_not_hand_over_exception_text(self, service):
+        service.graph_provider._validate_upload_context = AsyncMock(return_value={
+            "valid": False, "success": False, "code": 500,
+            "reason": "psycopg2.OperationalError: could not connect to server",
+        })
+
+        result = await service._upload_records("kb1", "user1", "org1", [], None)
+        assert result["code"] == 500
+        assert result["reason"] == action_failed("upload these files")
+        assert result["valid"] is False
+        assert "OperationalError" not in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_validating_an_upload_folder_does_not_hand_over_exception_text(self, service):
+        """The router reads `valid` on this one, so it has to survive."""
+        service.graph_provider.validate_folder_for_upload = AsyncMock(return_value={
+            "valid": False, "success": False, "code": 500,
+            "reason": "psycopg2.OperationalError: could not connect to server",
+        })
+
+        result = await service.validate_folder_for_upload("kb1", "f1", "user1", "org1")
+        assert result["valid"] is False
+        assert result["code"] == 500
+        assert result["reason"] == action_failed("upload to this folder")
+        assert "OperationalError" not in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_validating_an_upload_folder_leaves_a_good_answer_alone(self, service):
+        service.graph_provider.validate_folder_for_upload = AsyncMock(
+            return_value={"valid": True, "folder": {"id": "f1"}}
+        )
+
+        result = await service.validate_folder_for_upload("kb1", "f1", "user1", "org1")
+        assert result == {"valid": True, "folder": {"id": "f1"}}

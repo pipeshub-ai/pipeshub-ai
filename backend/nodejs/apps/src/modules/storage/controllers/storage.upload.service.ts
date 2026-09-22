@@ -14,6 +14,7 @@ import {
   BadRequestError,
   ConflictError,
   InternalServerError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
 import {
@@ -33,9 +34,11 @@ import {
   getVersionFilePath,
   isValidStorageVendor,
   extractOrgId,
+  DocumentInfoResponse,
   extractUserId,
   normalizeExtension,
   validateFileAndDocumentName,
+  writeToStorage,
 } from '../utils/utils';
 import {
   UPLOAD_LEASE_MS,
@@ -46,11 +49,12 @@ import {
   releaseUpload,
   requestFingerprint,
 } from '../utils/idempotency';
-import type { DocumentModel } from '../schema/document.schema';
+import { DocumentModel } from '../schema/document.schema';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import {
   maxFileSizeForPipesHubService,
   endpoint,
+  STORAGE_WRITE_FAILED_MESSAGE,
 } from '../constants/constants';
 import { Logger } from '../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
@@ -117,77 +121,19 @@ export class UploadDocumentService {
       if (!placeholderDocument || !placeholderDocument.document) {
         throw new InternalServerError('Failed to create placeholder document');
       }
-
-      logger.debug('Generating presigned url for direct upload');
-      // Extract required fields to construct path matching regular upload structure
-      const orgId = extractOrgId(req);
-      const placeholderDoc = placeholderDocument.document;
-      const placeholderDocumentPath = placeholderDoc.documentPath;
-      const documentId = placeholderDoc._id;
-      const documentName = placeholderDoc.documentName;
-      const isVersioned = parseBoolean(placeholderDoc.isVersionedFile);
-
-      const strippedDocPath = placeholderDocumentPath
-        ? placeholderDocumentPath.replace(/^.*?PipesHub\/?/, '')
-        : undefined;
-      const ext = normalizeExtension(path.extname(originalname));
-      const rootPath = getDocumentRootPath(
-        orgId ?? '',
-        String(documentId),
-        strippedDocPath,
-      );
-      const fullDocumentPath = getFullDocumentPath(
-        orgId ?? '',
-        strippedDocPath,
-      );
-      const concatenatedPath = getCurrentFilePath(
-        rootPath,
-        documentName ?? '',
-        ext,
-        isVersioned,
-      );
-          
-      const storageURL = await generatePresignedUrlForDirectUpload(
-        this.storageServiceWrapper,
-        concatenatedPath,
-      );
-      if (process.env.NODE_ENV == 'development') {
-        // Never the URL itself. A presigned URL carries its own authorization,
-        // so anyone who can read the log can perform the upload until it
-        // expires — and dev logs get retained, exported and shared.
-        logger.info('Presigned url generated for direct upload', {
-          documentId,
-        });
-      }
-
-      // set location header to the s3URL
-      if (storageURL) {
-        res.setHeader('Location', storageURL);
-        res.setHeader(
-          'x-document-id',
-          placeholderDocument.document._id as string,
+      try {
+        await this.startDirectUpload(
+          req,
+          res,
+          placeholderDocument,
+          originalname,
         );
-        res.setHeader(
-          'x-document-name',
-          placeholderDocument.document.documentName as string,
-        );
-        const baseUrl = getBaseUrl(storageURL);
-        if (!baseUrl) {
-          throw new InternalServerError('Failed to get base url');
-        }
-        if (this.storageVendor === StorageVendor.S3) {
-          placeholderDocument.document.s3 = { url: baseUrl };
-        } else if (this.storageVendor === StorageVendor.AzureBlob) {
-          placeholderDocument.document.azureBlob = { url: baseUrl };
-        }
-        placeholderDocument.document.documentPath = fullDocumentPath;
-        await placeholderDocument.document.save();
-        res.status(HTTP_STATUS.PERMANENT_REDIRECT).json(placeholderDocument);
-        return;
+      } catch (error) {
+        // Nothing was uploaded yet, so the placeholder would only be a file-less entry.
+        await this.removeUnstoredDocument(placeholderDocument.document._id);
+        throw error;
       }
-      throw new InternalServerError(
-        'Failed to generate presigned url for direct upload',
-      );
+      return;
     }
 
     // Validate file extension, MIME type, and document name constraints
@@ -209,6 +155,116 @@ export class UploadDocumentService {
       originalName: originalname,
       size,
     }));
+  }
+
+  /** Answers with a signed URL the client uploads to directly; the placeholder records where. */
+  private async startDirectUpload(
+    req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+    res: Response,
+    placeholderDocument: DocumentInfoResponse,
+    originalname: string,
+  ): Promise<void> {
+    logger.debug('Generating presigned url for direct upload');
+    // Extract required fields to construct path matching regular upload structure
+    const orgId = extractOrgId(req);
+    const placeholderDoc = placeholderDocument.document;
+    const documentId = placeholderDoc._id;
+    const documentName = placeholderDoc.documentName;
+    const isVersioned = parseBoolean(placeholderDoc.isVersionedFile);
+
+    const strippedDocPath = placeholderDoc.documentPath
+      ? placeholderDoc.documentPath.replace(/^.*?PipesHub\/?/, '')
+      : undefined;
+    const ext = normalizeExtension(path.extname(originalname));
+    const rootPath = getDocumentRootPath(
+      orgId ?? '',
+      String(documentId),
+      strippedDocPath,
+    );
+    const fullDocumentPath = getFullDocumentPath(orgId ?? '', strippedDocPath);
+    const concatenatedPath = getCurrentFilePath(
+      rootPath,
+      documentName ?? '',
+      ext,
+      isVersioned,
+    );
+
+    let storageURL: string | undefined;
+    try {
+      storageURL = await generatePresignedUrlForDirectUpload(
+        this.storageServiceWrapper,
+        concatenatedPath,
+      );
+    } catch (error) {
+      logger.error('Could not get a direct-upload URL from storage', {
+        documentId: String(documentId),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+    }
+    const baseUrl = storageURL ? getBaseUrl(storageURL) : undefined;
+    if (!storageURL || !baseUrl) {
+      logger.error('Storage returned no direct-upload URL', {
+        documentId: String(documentId),
+      });
+      throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+    }
+    if (process.env.NODE_ENV == 'development') {
+      // Never the URL itself. A presigned URL carries its own authorization,
+      // so anyone who can read the log can perform the upload until it
+      // expires — and dev logs get retained, exported and shared.
+      logger.info('Presigned url generated for direct upload', {
+        documentId,
+      });
+    }
+
+    if (this.storageVendor === StorageVendor.S3) {
+      placeholderDoc.s3 = { url: baseUrl };
+    } else if (this.storageVendor === StorageVendor.AzureBlob) {
+      placeholderDoc.azureBlob = { url: baseUrl };
+    }
+    placeholderDoc.documentPath = fullDocumentPath;
+    placeholderDoc.awaitingDirectUpload = true;
+    await placeholderDoc.save();
+
+    res.setHeader('Location', storageURL);
+    res.setHeader('x-document-id', documentId as string);
+    res.setHeader('x-document-name', documentName as string);
+    res.status(HTTP_STATUS.PERMANENT_REDIRECT).json(placeholderDocument);
+  }
+
+  /**
+   * Drops a document whose file never reached storage. The vendor field is set
+   * only once a file is stored, so a stored document is never removed here.
+   */
+  private async removeUnstoredDocument(
+    documentId: unknown,
+    documentPath?: string,
+  ): Promise<void> {
+    try {
+      if (documentPath !== undefined) {
+        // Keep the document when storage cannot say the path is empty: it may
+        // describe a file that arrived after the request gave up.
+        const stored =
+          await this.storageServiceWrapper.objectExistsAtPath(documentPath);
+        if (stored) {
+          logger.warn(
+            'A failed upload left a file in storage; keeping its document',
+            { documentId: String(documentId) },
+          );
+          return;
+        }
+      }
+      await DocumentModel.deleteOne({
+        _id: documentId,
+        [this.storageVendor]: { $exists: false },
+      });
+    } catch (error) {
+      logger.warn('Could not remove a document whose upload failed', {
+        documentId: String(documentId),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   async handleDocumentUpload(
@@ -355,20 +411,32 @@ export class UploadDocumentService {
       isVersioned,
     );
 
-    const uploadResult =
-      await this.storageServiceWrapper.uploadDocumentToStorageService({
-        buffer,
-        mimeType,
-        documentPath: concatenatedPath,
-        isVersioned,
-      });
-
-    if (uploadResult.statusCode !== HTTP_STATUS.OK || !uploadResult.data) {
-      // Previously fell through without answering, leaving the request hanging.
-      throw new InternalServerError(
-        `Failed to store the document: ${uploadResult.msg ?? 'storage error'}`,
+    let uploadResult: StorageServiceResponse<string>;
+    try {
+      uploadResult = await writeToStorage(
+        this.storageServiceWrapper,
+        {
+          buffer,
+          mimeType,
+          documentPath: concatenatedPath,
+          isVersioned,
+        },
+        { documentId: String(savedDocument._id) },
       );
+    } catch (error) {
+      if (leaseToken === undefined) {
+        // A failed write does not prove the file is absent: a request can time
+        // out after storage kept it. Without an Idempotency-Key no retry can
+        // take this document over, so remove it, but only once storage says
+        // the path is empty.
+        await this.removeUnstoredDocument(
+          savedDocument._id,
+          concatenatedPath,
+        );
+      }
+      throw error;
     }
+    const storedPath = uploadResult.data as string;
     savedDocument.documentPath = fullDocumentPath;
 
     const storageTypeKey = this.storageVendor;
@@ -383,9 +451,9 @@ export class UploadDocumentService {
 
         const storageServiceEndpoint =
           JSON.parse(url).storage.endpoint || this.defaultConfig.endpoint;
-        localPath = uploadResult.data;
+        localPath = storedPath;
         // normalize the url to the local storage
-        const baseUrl = uploadResult.data.replace(
+        const baseUrl = storedPath.replace(
           'file://',
           `${storageServiceEndpoint}/api/v1/document/${savedDocument._id}/download`,
         );
@@ -397,7 +465,7 @@ export class UploadDocumentService {
         };
         savedDocument[storageTypeKey] = storageInfo;
       } else {
-        const storageInfo: StorageInfo = { url: uploadResult.data };
+        const storageInfo: StorageInfo = { url: storedPath };
         savedDocument[storageTypeKey] = storageInfo;
       }
     } else {
@@ -484,41 +552,23 @@ export class UploadDocumentService {
     buffer: Buffer,
     newDocumentFilePath: string,
   ): Promise<StorageServiceResponse<string>> {
-    try {
-      // Get mime type from document extension without the dot
-      const ext = normalizeExtension(document.extension);
-      const mimeType = getMimeType(ext.replace('.', ''));
+    // Get mime type from document extension without the dot
+    const ext = normalizeExtension(document.extension);
+    const mimeType = getMimeType(ext.replace('.', ''));
 
-      if (!mimeType) {
-        throw new BadRequestError('Invalid document extension');
-      }
-
-      const cloneFilePayload: FilePayload = {
-        buffer,
-        mimeType,
-        documentPath: newDocumentFilePath,
-        isVersioned: document.isVersionedFile,
-      };
-
-      const response =
-        await this.storageServiceWrapper.uploadDocumentToStorageService(
-          cloneFilePayload,
-        );
-
-      if (response.statusCode !== HTTP_STATUS.OK) {
-        throw new InternalServerError(
-          `Error in cloning document: ${response.msg}`,
-        );
-      }
-
-      return response;
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new InternalServerError(
-          `Failed to clone document: ${error.message}`,
-        );
-      }
-      throw new InternalServerError('Failed to clone document');
+    if (!mimeType) {
+      throw new BadRequestError('Invalid document extension');
     }
+
+    const cloneFilePayload: FilePayload = {
+      buffer,
+      mimeType,
+      documentPath: newDocumentFilePath,
+      isVersioned: document.isVersionedFile,
+    };
+
+    return writeToStorage(this.storageServiceWrapper, cloneFilePayload, {
+      documentPath: newDocumentFilePath,
+    });
   }
 }

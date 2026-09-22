@@ -179,6 +179,7 @@ class KnowledgeHubNodesResponse(BaseModel):
     """Response model for the Knowledge Hub nodes API"""
     success: bool = Field(..., description="Whether the request was successful")
     error: Optional[str] = Field(None, description="Error message if success is False")
+    errorCode: Optional[int] = Field(None, description="HTTP status the router answers with when success is False; 4xx means `error` was written for the reader")
     id: Optional[str] = Field(None, description="Current parent node ID (null for root)")
     currentNode: Optional[CurrentNode] = Field(None, description="The node being browsed (when parentId is provided)")
     parentNode: Optional[CurrentNode] = Field(None, description="The parent of currentNode (one level up)")

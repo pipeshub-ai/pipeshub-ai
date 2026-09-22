@@ -9,6 +9,8 @@ from typing import List
 import boto3
 from botocore.exceptions import ClientError
 
+from helper.run_folder import require_run_folder
+
 
 def _iter_files(root: Path):
     for path in root.rglob("*"):
@@ -34,10 +36,10 @@ class S3StorageHelper:
             region_name=region,
         )
 
-    def list_objects(self, bucket: str) -> List[str]:
+    def list_objects(self, bucket: str, prefix: str = "") -> List[str]:
         keys: List[str] = []
         paginator = self._client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=bucket):
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             contents = page.get("Contents") or []
             for obj in contents:
                 key = obj.get("Key")
@@ -45,11 +47,11 @@ class S3StorageHelper:
                     keys.append(key)
         return keys
 
-    def upload_directory(self, bucket: str, root: Path) -> int:
+    def upload_directory(self, bucket: str, root: Path, prefix: str = "") -> int:
         root = root.resolve()
         count = 0
         for file_path in _iter_files(root):
-            key = str(file_path.relative_to(root).as_posix())
+            key = prefix + str(file_path.relative_to(root).as_posix())
             self._client.upload_file(str(file_path), bucket, key)
             count += 1
         return count
@@ -82,9 +84,9 @@ class S3StorageHelper:
     def move_object(self, bucket: str, old_key: str, new_key: str) -> None:
         self.rename_object(bucket, old_key, new_key)
 
-    def _clear_objects_versioned(self, bucket: str) -> None:
+    def _clear_objects_versioned(self, bucket: str, prefix: str) -> None:
         paginator = self._client.get_paginator("list_object_versions")
-        for page in paginator.paginate(Bucket=bucket):
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             to_delete = []
             for obj in page.get("Versions", []):
                 to_delete.append({"Key": obj["Key"], "VersionId": obj["VersionId"]})
@@ -96,17 +98,17 @@ class S3StorageHelper:
                 self._client.delete_objects(
                     Bucket=bucket, Delete={"Objects": to_delete}
                 )
-        remaining = self.list_objects(bucket)
+        remaining = self.list_objects(bucket, prefix)
         if remaining:
             self._client.delete_objects(
                 Bucket=bucket,
                 Delete={"Objects": [{"Key": k} for k in remaining]},
             )
 
-    def _clear_objects_current_only(self, bucket: str) -> None:
+    def _clear_objects_current_only(self, bucket: str, prefix: str) -> None:
         """Delete current object versions only (no ListObjectVersions / version deletes)."""
         paginator = self._client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=bucket):
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             contents = page.get("Contents") or []
             if not contents:
                 continue
@@ -115,13 +117,15 @@ class S3StorageHelper:
                 Delete={"Objects": [{"Key": obj["Key"]} for obj in contents]},
             )
 
-    def clear_objects(self, bucket: str) -> None:
+    def clear_objects(self, bucket: str, prefix: str) -> None:
+        """Delete everything under this run's folder, and nothing else."""
+        prefix = require_run_folder(prefix)
         try:
-            self._clear_objects_versioned(bucket)
+            self._clear_objects_versioned(bucket, prefix)
         except ClientError as e:
             err = e.response.get("Error", {}) or {}
             if err.get("Code") != "AccessDenied":
                 raise
             # IAM often grants ListBucket/DeleteObject but not ListBucketVersions; that
             # is enough when the bucket is non-versioned (typical for integration tests).
-            self._clear_objects_current_only(bucket)
+            self._clear_objects_current_only(bucket, prefix)

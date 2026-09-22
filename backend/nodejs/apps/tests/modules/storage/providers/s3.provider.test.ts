@@ -409,6 +409,62 @@ describe('AmazonS3Adapter', () => {
   // -------------------------------------------------------------------------
   // getBufferFromStorageService
   // -------------------------------------------------------------------------
+  describe('objectExists', () => {
+    const url = 'https://my-bucket.s3.us-east-1.amazonaws.com/folder/file.pdf'
+    const headRejecting = (adapter: AmazonS3Adapter, error: unknown) =>
+      sinon.stub((adapter as any).s3, 'headObject').returns({
+        promise: sinon.stub().rejects(error),
+      })
+
+    it('says a stored file is there', async () => {
+      const adapter = createAdapter()
+      sinon.stub((adapter as any).s3, 'headObject').returns({
+        promise: sinon.stub().resolves({ ContentLength: 10 }),
+      })
+      expect(await adapter.objectExists({ s3: { url } } as any)).to.equal(true)
+    })
+
+    it('says a file that was never stored is absent', async () => {
+      const adapter = createAdapter()
+      headRejecting(adapter, Object.assign(new Error('Not Found'), { code: 'NotFound', statusCode: 404 }))
+      expect(await adapter.objectExists({ s3: { url } } as any)).to.equal(false)
+    })
+
+    it('refuses to call a missing bucket "absent"', async () => {
+      const adapter = createAdapter()
+      headRejecting(adapter, Object.assign(new Error('The specified bucket does not exist'), {
+        code: 'NoSuchBucket', statusCode: 404,
+      }))
+      try {
+        await adapter.objectExists({ s3: { url } } as any)
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        expect(error.code).to.equal('NoSuchBucket')
+      }
+    })
+
+    it('refuses to answer for a document with no stored URL', async () => {
+      const adapter = createAdapter()
+      const head = sinon.stub((adapter as any).s3, 'headObject')
+      try {
+        await adapter.objectExists({} as any)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(StorageError)
+      }
+      expect(head.called).to.be.false
+    })
+
+    it('checks a path directly for an upload that has no stored URL yet', async () => {
+      const adapter = createAdapter()
+      const head = sinon.stub((adapter as any).s3, 'headObject').returns({
+        promise: sinon.stub().rejects(Object.assign(new Error('Not Found'), { code: 'NotFound' })),
+      })
+      expect(await adapter.objectExistsAtPath('org/PipesHub/doc/file.pdf')).to.equal(false)
+      expect(head.firstCall.args[0]).to.deep.equal({ Bucket: 'my-bucket', Key: 'org/PipesHub/doc/file.pdf' })
+    })
+  })
+
   describe('getBufferFromStorageService', () => {
     it('should throw StorageNotFoundError when S3 URL not found', async () => {
       const adapter = createAdapter()

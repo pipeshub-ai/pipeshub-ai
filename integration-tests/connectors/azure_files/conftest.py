@@ -11,6 +11,7 @@ import pytest_asyncio
 from connector_lifecycle import constructor, destructor
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol
+from helper.source_credentials import source_unavailable
 
 from connectors.azure_files.azure_files_storage_helper import AzureFilesStorageHelper
 
@@ -19,7 +20,10 @@ from connectors.azure_files.azure_files_storage_helper import AzureFilesStorageH
 def azure_files_storage():
     conn_str = os.getenv("AZURE_FILES_CONNECTION_STRING")
     if not conn_str:
-        pytest.skip("AZURE_FILES_CONNECTION_STRING not set.")
+        source_unavailable(
+            "The Azure Files share this suite syncs from is not configured.",
+            secrets=["AZURE_FILES_CONNECTION_STRING"],
+        )
     return AzureFilesStorageHelper(connection_string=conn_str)
 
 

@@ -729,8 +729,9 @@ class TestHandleRecordUpdates:
         update.is_deleted = True
         update.external_record_id = "ext-1"
         update.is_updated = False
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
         await c._handle_record_updates(update)
-        c.data_entities_processor.on_record_deleted.assert_called_once()
+        c.data_entities_processor.on_record_deleted.assert_called_once_with(record_id="rec-1")
 
     @pytest.mark.asyncio
     async def test_metadata_changed(self):

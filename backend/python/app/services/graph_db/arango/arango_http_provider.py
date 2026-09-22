@@ -31,10 +31,15 @@ from app.config.constants.arangodb import (
     DepartmentNames,
     GraphNames,
     OriginTypes,
+    PermissionModel,
     ProgressStatus,
     RecordTypes,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.exceptions.graph_db_exceptions import (
+    GraphQueryError,
+    PermissionVerificationUnavailableError,
+)
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -125,16 +130,32 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
-from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
+from app.services.graph_db.common.utils import (
+    CONTAINER_INHERIT_MAX_DEPTH,
+    MAX_DIRECT_GRANT_RECORDS,
+    ROOT_SCOPED_CONNECTOR_TYPES,
+    build_connector_stats_response,
+    dedupe_agents_by_id,
+)
 from app.services.graph_db.interface.graph_db_provider import (
+    CONTAINER_SCOPE_FILTER_KEYS,
+    STRICT_SCOPE_FILTER_KEY,
+    AccessibleContainers,
     IGraphDBProvider,
+    _containers_from_row,
     _distinct_connector_types,
+    _unsupported_container_filters,
+    requested_scope_ids,
 )
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_aql,
     build_page_records_for_vector_membership_backfill_aql,
+    can_use_membership_cleanup,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
 
 # Constants for ArangoDB document ID format
 ARANGO_ID_PARTS_COUNT = 2  # ArangoDB document IDs are in format "collection/key"
@@ -250,6 +271,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger = logger
         self.config_service = config_service
         self.http_client: ArangoHTTPClient | None = None
+
 
         # Connector-specific delete permissions
         self.connector_delete_permissions = {
@@ -863,7 +885,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         document_key: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get a document by key - FULLY ASYNC.
@@ -872,13 +895,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
             document_key: Document key (generic 'id')
             collection: Collection name
             transaction: Optional transaction ID
+            raise_on_error: Propagate the failure instead of answering None.
 
         Returns:
             Optional[Dict]: Document data in generic format (with 'id' field) or None
         """
         try:
             doc = await self.http_client.get_document(
-                collection, document_key, txn_id=transaction
+                collection,
+                document_key,
+                txn_id=transaction,
+                # The client answers None for a 404, a 503 and a dead connection
+                # alike, so the flag has to reach it; stopping at this method
+                # leaves the `raise` below unreachable on ArangoDB.
+                raise_on_error=raise_on_error,
             )
             if doc:
                 # Translate from ArangoDB format to generic format
@@ -886,6 +916,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return None
         except Exception as e:
             self.logger.error(f"❌ Failed to get document: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_record_by_id(
@@ -1170,7 +1202,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
         except Exception as e:
             self.logger.error("❌ Error checking record group permissions: %s", str(e))
-            return {"allowed": False, "role": None, "reason": str(e)}
+            # `checkFailed` separates "we could not tell" from "denied": callers
+            # answer the first with a 500, not a 403 carrying this text.
+            return {"allowed": False, "role": None, "checkFailed": True, "reason": str(e)}
 
     # ==================== Connector Registry Operations ====================
 
@@ -1539,6 +1573,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             permission_check = await self._check_record_group_permissions(
                 record_group_id, user_key, org_id
             )
+            if permission_check.get("checkFailed"):
+                return {"success": False, "code": 500, "reason": permission_check.get("reason", "")}
             if not permission_check.get("allowed"):
                 return {
                     "success": False,
@@ -2230,6 +2266,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return result is not None
         except Exception as e:
             self.logger.error(f"❌ Update node failed: {str(e)}")
+            raise
+
+    async def update_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        node: dict,
+        match_field: str,
+        match_value: Any,
+        transaction: str | None = None,
+    ) -> bool:
+        """REPLACE the document only while `match_field` still equals
+        `match_value`. FILTER + REPLACE is one AQL statement so a concurrent
+        overwrite cannot sneak in between the check and the write."""
+        try:
+            arango_node = self._translate_node_to_arango(node)
+            arango_node["_key"] = key
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key == @key AND doc[@field] == @expected
+                REPLACE doc WITH @node IN @@collection
+                RETURN NEW._key
+            """
+            updated = await self.http_client.execute_aql(
+                query,
+                {
+                    "@collection": collection,
+                    "key": key,
+                    "field": match_field,
+                    "expected": match_value,
+                    "node": arango_node,
+                },
+                transaction,
+            )
+            return bool(updated)
+        except Exception as e:
+            self.logger.error("❌ Conditional node update failed: %s", str(e))
             raise
 
     async def batch_update_nodes(
@@ -3623,125 +3696,129 @@ class ArangoHTTPProvider(IGraphDBProvider):
         placeholder flag: is_placeholder=True returns only stubs, False excludes them,
         None ignores the flag.
         Pass after_key for keyset pagination instead of offset.
+
+        An empty list means no record matched; a listing that could not be read
+        raises GraphQueryError.
         """
-        try:
-            self.logger.debug(f"Retrieving records for connector {connector_id} with status filters: {status_filters}, limit: {limit}, offset: {offset}, after_key: {after_key}")
+        self.logger.debug(f"Retrieving records for connector {connector_id} with status filters: {status_filters}, limit: {limit}, offset: {offset}, after_key: {after_key}")
 
-            limit_clause = "LIMIT @offset, @limit" if limit else ""
-            after_key_clause = "FILTER record._key > @after_key" if after_key else ""
-            exclude_clause = (
-                "FILTER record.indexingStatus NOT IN @exclude_statuses"
-                if exclude_statuses
-                else ""
+        limit_clause = "LIMIT @offset, @limit" if limit else ""
+        after_key_clause = "FILTER record._key > @after_key" if after_key else ""
+        exclude_clause = (
+            "FILTER record.indexingStatus NOT IN @exclude_statuses"
+            if exclude_statuses
+            else ""
+        )
+
+        # Group record types by their collection
+        from collections import defaultdict
+        collection_to_types = defaultdict(list)
+        for record_type, collection in RECORD_TYPE_COLLECTION_MAPPING.items():
+            collection_to_types[collection].append(record_type)
+
+        # Build dynamic typeDoc conditions based on mapping
+        type_doc_conditions = []
+        bind_vars = {
+            "org_id": org_id,
+            "connector_id": connector_id,
+            "status_filters": status_filters,
+        }
+
+        record_group_clause = ""
+        if record_group_id:
+            record_group_clause = "AND record.recordGroupId == @record_group_id"
+            bind_vars["record_group_id"] = record_group_id
+
+        # `!= true` (not `== false`) so records predating the field (isPlaceholder absent) are treated as non-placeholders.
+        if is_placeholder is True:
+            placeholder_clause = "AND record.isPlaceholder == true"
+        elif is_placeholder is False:
+            placeholder_clause = "AND record.isPlaceholder != true"
+        else:
+            placeholder_clause = ""
+
+        # Generate conditions for each collection
+        for record_types in collection_to_types.values():
+            # Create condition for checking if record type matches any in this group
+            if len(record_types) == 1:
+                type_check = f"record.recordType == @type_{record_types[0].lower()}"
+                bind_vars[f"type_{record_types[0].lower()}"] = record_types[0]
+            else:
+                # Multiple types map to same collection
+                type_checks = []
+                for rt in record_types:
+                    type_checks.append(f"record.recordType == @type_{rt.lower()}")
+                    bind_vars[f"type_{rt.lower()}"] = rt
+                type_check = " || ".join(type_checks)
+
+            # Add condition for this collection
+            condition = f"""({type_check}) ? (
+                    FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                        FILTER edge._from == record._id
+                        LET doc = DOCUMENT(edge._to)
+                        FILTER doc != null
+                        RETURN doc
+                )[0]"""
+            type_doc_conditions.append(condition)
+
+        # Build the complete typeDoc expression
+        type_doc_expr = " :\n                    ".join(type_doc_conditions)
+        if type_doc_expr:
+            type_doc_expr += " :\n                    null"
+        else:
+            type_doc_expr = "null"
+
+        query = f"""
+        FOR record IN {CollectionNames.RECORDS.value}
+            FILTER record.orgId == @org_id
+                AND record.connectorId == @connector_id
+                AND (@status_filters == null OR LENGTH(@status_filters) == 0 OR record.indexingStatus IN @status_filters)
+                {record_group_clause}
+                {placeholder_clause}
+            {exclude_clause}
+            {after_key_clause}
+
+            LET typeDoc = (
+                {type_doc_expr}
             )
+            FILTER typeDoc != null
 
-            # Group record types by their collection
-            from collections import defaultdict
-            collection_to_types = defaultdict(list)
-            for record_type, collection in RECORD_TYPE_COLLECTION_MAPPING.items():
-                collection_to_types[collection].append(record_type)
+            SORT record._key
+            {limit_clause}
 
-            # Build dynamic typeDoc conditions based on mapping
-            type_doc_conditions = []
-            bind_vars = {
-                "org_id": org_id,
-                "connector_id": connector_id,
-                "status_filters": status_filters,
-            }
+            RETURN {{
+                record: record,
+                typeDoc: typeDoc
+            }}
+        """
 
-            record_group_clause = ""
-            if record_group_id:
-                record_group_clause = "AND record.recordGroupId == @record_group_id"
-                bind_vars["record_group_id"] = record_group_id
+        if limit:
+            bind_vars["limit"] = limit
+            bind_vars["offset"] = offset
+        if after_key:
+            bind_vars["after_key"] = after_key
+        if exclude_statuses:
+            bind_vars["exclude_statuses"] = exclude_statuses
 
-            # `!= true` (not `== false`) so records predating the field (isPlaceholder absent) are treated as non-placeholders.
-            if is_placeholder is True:
-                placeholder_clause = "AND record.isPlaceholder == true"
-            elif is_placeholder is False:
-                placeholder_clause = "AND record.isPlaceholder != true"
-            else:
-                placeholder_clause = ""
-
-            # Generate conditions for each collection
-            for record_types in collection_to_types.values():
-                # Create condition for checking if record type matches any in this group
-                if len(record_types) == 1:
-                    type_check = f"record.recordType == @type_{record_types[0].lower()}"
-                    bind_vars[f"type_{record_types[0].lower()}"] = record_types[0]
-                else:
-                    # Multiple types map to same collection
-                    type_checks = []
-                    for rt in record_types:
-                        type_checks.append(f"record.recordType == @type_{rt.lower()}")
-                        bind_vars[f"type_{rt.lower()}"] = rt
-                    type_check = " || ".join(type_checks)
-
-                # Add condition for this collection
-                condition = f"""({type_check}) ? (
-                        FOR edge IN {CollectionNames.IS_OF_TYPE.value}
-                            FILTER edge._from == record._id
-                            LET doc = DOCUMENT(edge._to)
-                            FILTER doc != null
-                            RETURN doc
-                    )[0]"""
-                type_doc_conditions.append(condition)
-
-            # Build the complete typeDoc expression
-            type_doc_expr = " :\n                    ".join(type_doc_conditions)
-            if type_doc_expr:
-                type_doc_expr += " :\n                    null"
-            else:
-                type_doc_expr = "null"
-
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.orgId == @org_id
-                    AND record.connectorId == @connector_id
-                    AND (@status_filters == null OR LENGTH(@status_filters) == 0 OR record.indexingStatus IN @status_filters)
-                    {record_group_clause}
-                    {placeholder_clause}
-                {exclude_clause}
-                {after_key_clause}
-
-                LET typeDoc = (
-                    {type_doc_expr}
-                )
-                FILTER typeDoc != null
-
-                SORT record._key
-                {limit_clause}
-
-                RETURN {{
-                    record: record,
-                    typeDoc: typeDoc
-                }}
-            """
-
-            if limit:
-                bind_vars["limit"] = limit
-                bind_vars["offset"] = offset
-            if after_key:
-                bind_vars["after_key"] = after_key
-            if exclude_statuses:
-                bind_vars["exclude_statuses"] = exclude_statuses
-
+        try:
             results = await self.http_client.execute_aql(query, bind_vars, transaction)
-
-            # Convert raw DB results to properly typed Record instances
-            typed_records = []
-            for result in results:
-                record = self._create_typed_record_from_arango(
-                    result["record"],
-                    result.get("typeDoc")
-                )
-                typed_records.append(record)
-
-            self.logger.debug(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_id}")
-            return typed_records
-
         except Exception as e:
             self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_id}: {str(e)}")
-            return []
+            raise GraphQueryError(
+                f"Could not list records for connector {connector_id}: {e}"
+            ) from e
+
+        # Convert raw DB results to properly typed Record instances
+        typed_records = []
+        for result in results:
+            record = self._create_typed_record_from_arango(
+                result["record"],
+                result.get("typeDoc")
+            )
+            typed_records.append(record)
+
+        self.logger.debug(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_id}")
+        return typed_records
 
     async def get_app_needing_vector_membership_backfill(
         self,
@@ -4643,7 +4720,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         Get record group by external ID.
 
-        Generic implementation using filters.
+        None means there is no such group; a lookup that could not be read raises
+        GraphQueryError, because callers create a group when they are told None.
         """
         query = f"""
         FOR doc IN {CollectionNames.RECORD_GROUPS.value}
@@ -4662,17 +4740,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 },
                 txn_id=transaction
             )
-
-            if results:
-                # Convert to RecordGroup entity
-                record_group_data = self._translate_node_from_arango(results[0])
-                return RecordGroup.from_arango_base_record_group(record_group_data)
-
-            return None
-
         except Exception as e:
             self.logger.error(f"❌ Get record group by external ID failed: {str(e)}")
-            return None
+            raise GraphQueryError(
+                f"Could not look up record group {external_id}: {e}"
+            ) from e
+
+        if results:
+            # Convert to RecordGroup entity
+            record_group_data = self._translate_node_from_arango(results[0])
+            return RecordGroup.from_arango_base_record_group(record_group_data)
+
+        return None
 
     async def get_record_group_by_id(
         self,
@@ -7841,10 +7920,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
             raise
 
-    async def _collect_connector_entities(self, connector_id: str, transaction: str | None = None) -> dict:
+    async def _collect_connector_entities(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+        *,
+        include_virtual_record_ids: bool = False,
+    ) -> dict:
         """
         Collect all entity IDs for a connector in a single pass.
         Returns record keys, virtual record IDs, and full node IDs for edge deletion.
+
+        ``include_virtual_record_ids`` is off by default: the VRID list is only
+        consumed by the legacy id-shipping cleanup path, and materialising one
+        entry per distinct VRID is wasted memory and payload on a connector with
+        millions of records when nothing will read it.
         """
         result = {
             "record_keys": [],
@@ -7869,11 +7959,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             },
             txn_id=transaction
         )
+        # VRIDs are deduplicated: records sharing content share one, and the
+        # consumer only ever needs the distinct set.
+        seen_virtual_record_ids: set[str] = set()
         for doc in (records_result or []):
             result["record_keys"].append(doc["_key"])
             result["record_ids"].append(f"records/{doc['_key']}")
-            if doc.get("virtualRecordId"):
-                result["virtual_record_ids"].append(doc["virtualRecordId"])
+            if not include_virtual_record_ids:
+                continue
+            virtual_record_id = doc.get("virtualRecordId")
+            if virtual_record_id and virtual_record_id not in seen_virtual_record_ids:
+                seen_virtual_record_ids.add(virtual_record_id)
+                result["virtual_record_ids"].append(virtual_record_id)
 
         # Collect record groups
         query = "FOR rg IN @@collection FILTER rg.connectorId == @connector_id RETURN rg._key"
@@ -8405,8 +8502,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "error": f"Connector instance {connector_id} not found"
                 }
 
+            # Whether the vector cleanup will need an explicit VRID list at all.
+            # Membership-based cleanup finds the points itself, so on that path
+            # the list is never read and collecting it is pure cost — which is
+            # the whole point on a connector with millions of records.
+            needs_virtual_record_ids = not can_use_membership_cleanup(connector)
+
             # Step 2: Collect all entities for this connector
-            collected = await self._collect_connector_entities(connector_id, transaction)
+            collected = await self._collect_connector_entities(
+                connector_id,
+                transaction,
+                include_virtual_record_ids=needs_virtual_record_ids,
+            )
 
             # Step 3: Get all edge collections from graph definition
             edge_collections = await self._get_all_edge_collections()
@@ -8625,6 +8732,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "deleted_edges_count": deleted_edges,
                     "deleted_isoftype_targets_count": deleted_isoftype,
                     "virtual_record_ids": collected["virtual_record_ids"],
+                    # The connector's own record groups went with it. A point
+                    # shared with a live connector survives the purge, so the
+                    # cleanup needs these to strip them from recordGroupIds.
+                    "record_group_ids": collected["record_group_keys"],
+                    "vector_membership_backfilled": bool(
+                        connector.get("vectorMembershipBackfilled", False)
+                    ),
+                    "vector_membership_backfill_exhausted": bool(
+                        connector.get("vectorMembershipBackfillExhausted", False)
+                    ),
                     "connector_id": connector_id,
                     "connector_name": connector.get("type"),
                 }
@@ -8849,6 +8966,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         external ``userId``, so accept both — first try ``userId`` (the normal
         lookup), then fall back to fetching by ``_key`` so deletions from the
         Local FS connector don't 404 on a user/key vs. user/userId mismatch.
+
+        Ownership is established either by a permission edge on the record or by
+        being the creator of the record's connector. A full sync resets records
+        it may not hold a per-record edge for, so requiring the edge alone
+        aborted the whole sync (Neo4j applies no such gate to connector records).
         """
         try:
             self.logger.debug(f"📁 Deleting Local FS record {record_id}")
@@ -8868,7 +8990,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
 
             user_role = await self._check_record_permission(record_id, user.get('_key'), transaction)
-            if user_role != "OWNER":
+            if user_role != "OWNER" and not await self._is_connector_creator(
+                user, record, transaction
+            ):
                 return {
                     "success": False,
                     "code": 403,
@@ -8884,6 +9008,37 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "code": 500,
                 "reason": f"Local FS record deletion failed: {str(e)}"
             }
+
+    async def _is_connector_creator(
+        self,
+        user: dict,
+        record: dict,
+        transaction: str | None = None
+    ) -> bool:
+        """True when this user created the connector the record belongs to.
+
+        Keeps the cross-tenant guard: a batch holding a record id from another
+        tenant still fails, because that record's connector has a different
+        creator.
+        """
+        connector_id = record.get("connectorId")
+        if not connector_id:
+            return False
+        try:
+            app_doc = await self.http_client.get_document(
+                collection=CollectionNames.APPS.value,
+                key=connector_id,
+                txn_id=transaction
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Failed to read connector {connector_id}: {str(e)}")
+            return False
+        if not app_doc:
+            return False
+        created_by = app_doc.get("createdBy")
+        if not created_by:
+            return False
+        return created_by in {user.get("userId"), user.get("_key")}
 
     async def _execute_local_fs_record_deletion(
         self,
@@ -10561,6 +10716,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER kb != null
                     FILTER kb.orgId == @org_id
                     FILTER kb.type == @kb_type
+                    FILTER kb.isHidden != true
                     {additional_filters}
                     RETURN {{
                         kb_id: kb._key,
@@ -10593,6 +10749,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER kb != null
                         FILTER kb.orgId == @org_id
                         FILTER kb.type == @kb_type
+                        FILTER kb.isHidden != true
                         {additional_filters}
                         RETURN {{
                             kb_id: kb._key,
@@ -10667,6 +10824,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER kb != null
                     FILTER kb.orgId == @count_org_id
                     FILTER kb.type == @count_kb_type
+                    FILTER kb.isHidden != true
                     {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
                     RETURN {{
                         kb_id: kb._key,
@@ -10698,6 +10856,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER kb != null
                         FILTER kb.orgId == @count_org_id
                         FILTER kb.type == @count_kb_type
+                        FILTER kb.isHidden != true
                         {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
                         RETURN {{
                             kb_id: kb._key,
@@ -10736,6 +10895,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER kb != null
                     FILTER kb.orgId == @filters_org_id
                     FILTER kb.type == @filters_kb_type
+                    FILTER kb.isHidden != true
                     RETURN {
                         kb_id: kb._key,
                         permission: perm.role,
@@ -10767,6 +10927,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER kb != null
                         FILTER kb.orgId == @filters_org_id
                         FILTER kb.type == @filters_kb_type
+                        FILTER kb.isHidden != true
                         RETURN {
                             kb_id: kb._key,
                             permission: team_info.role,
@@ -11120,7 +11281,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             result = results[0] if results else None
 
             if not result:
-                return {"success": False, "reason": "Knowledge base not found"}
+                return {"success": False, "reason": "Knowledge base not found", "code": 404}
 
             self.logger.debug(
                 f"✅ Retrieved KB children with folders_first pagination: "
@@ -11402,7 +11563,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             result = results[0] if results else None
 
             if not result:
-                return {"success": False, "reason": "Folder not found"}
+                return {"success": False, "reason": "Folder not found", "code": 404}
 
             self.logger.debug(
                 f"✅ Retrieved folder children with folders_first pagination: "
@@ -12454,6 +12615,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 user_operations: user_operations,
                 team_operations: team_operations,
                 users_to_insert: user_operations[* FILTER CURRENT.operation == "insert"],
+                users_to_update: user_operations[* FILTER CURRENT.operation == "update"],
                 teams_to_insert: team_operations[* FILTER CURRENT.operation == "insert"],
             }
             """
@@ -12479,6 +12641,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if not result.get("kb_exists"):
                     return {"success": False, "reason": "Knowledge base not found", "code": 404}
             users_to_insert = result.get("users_to_insert", [])
+            users_to_update = result.get("users_to_update", [])
             teams_to_insert = result.get("teams_to_insert", [])
             insert_docs = [
                 {
@@ -12511,11 +12674,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if insert_docs:
                 await self.batch_create_edges(insert_docs, CollectionNames.PERMISSION.value)
+
+            # Apply role changes for users whose PERMISSION edge already
+            # exists but carries a stale role (e.g. WRITER → READER on a
+            # project-member downgrade).  The detection AQL above already
+            # tagged these as operation == "update" with their perm_key.
+            if users_to_update:
+                perm_keys = [u["perm_key"] for u in users_to_update]
+                update_query = """
+                FOR key IN @perm_keys
+                    UPDATE key WITH { role: @role, updatedAtTimestamp: @timestamp } IN @@permissions_collection
+                """
+                await self.execute_query(
+                    update_query,
+                    bind_vars={
+                        "perm_keys": perm_keys,
+                        "role": role,
+                        "timestamp": timestamp,
+                        "@permissions_collection": CollectionNames.PERMISSION.value,
+                    },
+                )
+
             granted_count = len(users_to_insert) + len(teams_to_insert)
+            updated_count = len(users_to_update)
             return {
                 "success": True,
                 "grantedCount": granted_count,
+                "updatedCount": updated_count,
                 "grantedUsers": [u["user_id"] for u in users_to_insert],
+                "updatedUsers": [u["user_id"] for u in users_to_update],
                 "grantedTeams": [t["team_id"] for t in teams_to_insert],
                 "role": role,
                 "kbId": kb_id,
@@ -12919,7 +13106,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER kbEdge.type == "USER"
                     FILTER kbEdge.role IN @kb_permissions
                     LET kb = DOCUMENT(kbEdge._to)
-                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB"
+                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true
                     RETURN {{ kb_id: kb._key, kb_doc: kb, role: kbEdge.role }}
             )
             LET teamKbAccess = (
@@ -12927,7 +13114,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER teamKbPerm.type == "TEAM"
                     FILTER STARTS_WITH(teamKbPerm._to, "apps/")
                     LET kb = DOCUMENT(teamKbPerm._to)
-                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB"
+                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true
                     LET team_id = SPLIT(teamKbPerm._from, '/')[1]
                     LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN userTeamPerm.role)
                     FILTER user_team_perm != null
@@ -12961,8 +13148,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             count_query = """
             LET user_from = @user_from
             LET org_id = @org_id
-            LET directKbAccess = (FOR kbEdge IN @@permission FILTER kbEdge._from == user_from FILTER kbEdge.type == "USER" FILTER kbEdge.role IN @kb_permissions LET kb = DOCUMENT(kbEdge._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" RETURN { kb_doc: kb })
-            LET teamKbAccess = (FOR teamKbPerm IN @@permission FILTER teamKbPerm.type == "TEAM" FILTER STARTS_WITH(teamKbPerm._to, "apps/") LET kb = DOCUMENT(teamKbPerm._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" LET team_id = SPLIT(teamKbPerm._from, '/')[1] LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN 1) FILTER user_team_perm != null RETURN { kb_doc: kb })
+            LET directKbAccess = (FOR kbEdge IN @@permission FILTER kbEdge._from == user_from FILTER kbEdge.type == "USER" FILTER kbEdge.role IN @kb_permissions LET kb = DOCUMENT(kbEdge._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true RETURN { kb_doc: kb })
+            LET teamKbAccess = (FOR teamKbPerm IN @@permission FILTER teamKbPerm.type == "TEAM" FILTER STARTS_WITH(teamKbPerm._to, "apps/") LET kb = DOCUMENT(teamKbPerm._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true LET team_id = SPLIT(teamKbPerm._from, '/')[1] LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN 1) FILTER user_team_perm != null RETURN { kb_doc: kb })
             LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_doc._key == t.kb_doc._key RETURN 1) == 0 RETURN t))
             LET kbCount = LENGTH(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" RETURN 1)
             LET connectorCount = LENGTH(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" RETURN 1)
@@ -13920,6 +14107,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR app IN apps
                 FILTER app._key IN @user_app_ids
                 FILTER app.type == "KB" OR NOT (app.hideConnector == true)
+                FILTER NOT (app.type == "KB" AND app.isHidden == true)
                 // KB apps have records pointing directly to them via belongsTo;
                 // external connector apps have recordGroups pointing to them.
                 LET has_children = app.type == "KB" ? (LENGTH(
@@ -14495,12 +14683,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
         // ========== KB APP-BASED SEED (paths 8-9) ==========
+        // Hidden collections (a project's linked file KB) must not seed records into
+        // Knowledge Hub search; they stay reachable when named by id.
         LET seed_apps_direct = (
             FOR perm IN permission
                 FILTER perm._from == user_from AND perm.type == "USER"
                 FILTER STARTS_WITH(perm._to, "apps/")
                 LET app = DOCUMENT(perm._to)
-                FILTER app != null AND app.orgId == @org_id AND app.type == "KB"
+                FILTER app != null AND app.orgId == @org_id AND app.type == "KB" AND app.isHidden != true
                 RETURN app
         )
 
@@ -14512,7 +14702,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER appPerm._from == teamPerm._to AND appPerm.type == "TEAM"
                     FILTER STARTS_WITH(appPerm._to, "apps/")
                     LET app = DOCUMENT(appPerm._to)
-                    FILTER app != null AND app.orgId == @org_id AND app.type == "KB"
+                    FILTER app != null AND app.orgId == @org_id AND app.type == "KB" AND app.isHidden != true
                     RETURN app
         )
 
@@ -15280,6 +15470,178 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return set()
 
+    async def filter_accessible_virtual_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        user_id: str,
+        org_id: str,
+        *,
+        trusted_app_ids: frozenset[str] | None = None,
+        trusted_group_ids: frozenset[str] | None = None,
+        scope_connector_ids: frozenset[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, str]:
+        """Which of ``virtual_record_ids`` the user may read, and which record to cite.
+
+        Same ``{virtualRecordId: recordId}`` shape as
+        ``get_accessible_virtual_record_ids``, so a caller that swaps one for the
+        other keeps every downstream mapping intact. The difference is direction:
+        that method enumerates the corpus up front, this one adjudicates a
+        already-retrieved handful.
+
+        Not ``filter_nodes_with_permission_role``: that takes record ids rather
+        than VRIDs so it cannot pick one record per VRID — the cross-connector
+        disambiguation the old intersection did for free — and its contract
+        omits the app-reachability gate. Missing it
+        over-shares a record whose connector the user has since lost.
+
+        One round trip: the user lookup, the reachable-app set and the
+        adjudication are one AQL, because this sits in the search hot path.
+        """
+        if not self.http_client:
+            raise PermissionVerificationUnavailableError("graph client not connected")
+        if not virtual_record_ids or not user_id:
+            return {}
+        if scope_connector_ids is not None and not scope_connector_ids:
+            return {}
+
+        record_permission_role_aql = self._get_permission_role_aql("record", "record", "u")
+
+        query = f"""
+            LET u = FIRST(
+                FOR usr IN {CollectionNames.USERS.value}
+                    FILTER usr.userId == @user_id
+                    LIMIT 1
+                    RETURN usr
+            )
+            FILTER u != null
+            LET user_from = CONCAT("{CollectionNames.USERS.value}/", u._key)
+
+            // Both halves of "reachable": ownership/instance membership
+            // (userAppRelation) and sharing (permission). Omitting the second
+            // would deny a record whose connector the user reaches only by a
+            // share — this gate can only ever narrow, so a gap here is a
+            // wrongly-denied result.
+            LET reachable_apps = UNION_DISTINCT(
+                (FOR app IN OUTBOUND user_from {CollectionNames.USER_APP_RELATION.value}
+                    RETURN app._key),
+                (FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == user_from AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
+                        RETURN app._key),
+                (FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == user_from AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.APPS.value}/")
+                    RETURN PARSE_IDENTIFIER(perm._to).key),
+                (FOR teamPerm IN {CollectionNames.PERMISSION.value}
+                    FILTER teamPerm._from == user_from AND teamPerm.type == "USER"
+                    FILTER STARTS_WITH(teamPerm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR appPerm IN {CollectionNames.PERMISSION.value}
+                        FILTER appPerm._from == teamPerm._to AND appPerm.type == "TEAM"
+                        FILTER STARTS_WITH(appPerm._to, "{CollectionNames.APPS.value}/")
+                        RETURN PARSE_IDENTIFIER(appPerm._to).key)
+            )
+
+            FOR vid IN @virtual_record_ids
+                LET candidates = (
+                    FOR record IN {CollectionNames.RECORDS.value}
+                        FILTER record.virtualRecordId == vid
+                           AND record.orgId == @org_id
+                           AND record.isDeleted != true
+                           AND record.indexingStatus == @completed
+                           AND (record.origin != @connector_origin
+                                OR record.connectorId IN reachable_apps)
+                           // Scope is re-checked per record, not trusted from
+                           // the search: membership arrays are unioned per VRID,
+                           // so content shared with an out-of-scope app matches
+                           // too. Applied before the trusted/adjudicated split.
+                           AND (@scope_ids == null OR record.connectorId IN @scope_ids)
+                        RETURN record
+                )
+                // Membership of a container the user wholly owns is itself the
+                // proof, so these skip the 10-path role resolution. Keyed on
+                // inheritPermissions, not belongsTo: group membership is always
+                // written while inheritance is conditional, so a record with
+                // inherit_permissions=false sits in a trusted group without
+                // inheriting from it and must still be adjudicated.
+                LET trusted = FIRST(
+                    FOR record IN candidates
+                        FILTER record.connectorId IN @trusted_app_ids
+                            OR LENGTH(
+                                FOR anc IN 1..@inherit_max_depth
+                                    OUTBOUND record._id inheritPermissions
+                                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", anc)
+                                    FILTER anc._key IN @trusted_group_ids
+                                    LIMIT 1
+                                    RETURN 1
+                            ) > 0
+                        SORT record._key
+                        LIMIT 1
+                        RETURN record._key
+                )
+                // Gate the subquery's INPUT, not its result: AQL splices a
+                // subquery into the pipeline and runs it before the ternary
+                // chooses a branch, so `trusted != null ? ... : FIRST(...)`
+                // alone would still pay for the role resolution every time.
+                LET granted = trusted != null ? trusted : FIRST(
+                    FOR record IN candidates
+                        FILTER trusted == null
+                        {record_permission_role_aql}
+                        LET r_norm = IS_ARRAY(permission_role)
+                            ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                            : permission_role
+                        FILTER (r_norm != null AND r_norm != "")
+                        SORT record._key
+                        LIMIT 1
+                        RETURN record._key
+                )
+                FILTER granted != null
+                RETURN {{
+                    vid: vid,
+                    rid: granted,
+                    via: trusted != null ? "trusted" : "adjudicated"
+                }}
+        """
+        try:
+            rows = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "user_id": user_id,
+                    "org_id": org_id,
+                    "virtual_record_ids": list(virtual_record_ids),
+                    "completed": ProgressStatus.COMPLETED.value,
+                    "connector_origin": OriginTypes.CONNECTOR.value,
+                    "trusted_app_ids": sorted(frozenset(trusted_app_ids or ())),
+                    "trusted_group_ids": sorted(frozenset(trusted_group_ids or ())),
+                    "inherit_max_depth": CONTAINER_INHERIT_MAX_DEPTH,
+                    "scope_ids": (
+                        sorted(scope_connector_ids)
+                        if scope_connector_ids is not None
+                        else None
+                    ),
+                },
+                txn_id=transaction,
+            )
+        except Exception as exc:
+            # Raised, not {}: an empty map is also what total denial looks like,
+            # and the caller answers the two differently (503 vs no results).
+            self.logger.error(
+                "filter_accessible_virtual_record_ids: AQL failed for %d vrids — %s",
+                len(virtual_record_ids),
+                exc,
+            )
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        if not isinstance(rows, list):
+            raise PermissionVerificationUnavailableError(
+                f"unexpected AQL result type {type(rows).__name__}"
+            )
+        return {
+            str(row["vid"]): str(row["rid"])
+            for row in rows
+            if isinstance(row, dict) and row.get("vid") and row.get("rid")
+        }
+
     async def get_record_parent_adjacency(
         self,
         record_ids: list[str],
@@ -15423,10 +15785,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_key: str,
         transaction: str | None = None
     ) -> list[str]:
-        """Get list of app IDs the user has access to: direct User->App and via User->Team->App."""
+        """Get list of app IDs the user has access to: direct User->App and via User->Team->App.
+
+        Only feeds Knowledge Hub browse/search (see `knowledge_hub_service.py`),
+        so hidden KBs (e.g. a project's linked file collection) are excluded
+        here rather than threading an extra flag through every caller.
+        """
         try:
             apps = await self.get_user_apps(user_key, transaction)
-            return [a.get("_key") or a.get("id") for a in apps if a and (a.get("_key") or a.get("id"))]
+            return [
+                a.get("_key") or a.get("id")
+                for a in apps
+                if a and (a.get("_key") or a.get("id")) and not a.get("isHidden")
+            ]
         except Exception as e:
             self.logger.error("❌ Failed to get user app ids: %s", str(e))
             return []
@@ -15442,6 +15813,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         instance-membership (USER_APP_RELATION) access. Any role counts —
         role enforcement for a specific KB happens elsewhere
         (get_user_kb_permission); this only decides visibility.
+
+        Only feeds Knowledge Hub browse/search (see `knowledge_hub_service.py`),
+        so hidden KBs (e.g. a project's linked file collection) are excluded
+        here rather than threading an extra flag through every caller.
         """
         try:
             query = f"""
@@ -15452,7 +15827,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER perm._from == user_from AND perm.type == "USER"
                     FILTER STARTS_WITH(perm._to, "{CollectionNames.APPS.value}/")
                     LET app = DOCUMENT(perm._to)
-                    FILTER app != null AND app.orgId == @org_id
+                    FILTER app != null AND app.orgId == @org_id AND app.isHidden != true
                     RETURN app._key
             )
 
@@ -15470,7 +15845,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER perm.type == "TEAM"
                         FILTER STARTS_WITH(perm._to, "{CollectionNames.APPS.value}/")
                         LET app = DOCUMENT(perm._to)
-                        FILTER app != null AND app.orgId == @org_id
+                        FILTER app != null AND app.orgId == @org_id AND app.isHidden != true
                         RETURN app._key
             )
 
@@ -18958,7 +19333,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Dict mapping virtualRecordId -> recordId for accessible KB records
         """
         try:
-            kb_filter_clause = "FILTER kb._key IN @kb_ids" if kb_ids else ""
+            # With no explicit kb_ids (the "all accessible KBs" scenario),
+            # hidden KBs (e.g. a project's linked file collection) are
+            # excluded so they never surface in unscoped search. An explicit
+            # kb_ids list — how a project chat reaches its own hidden KB —
+            # is honoured as-is.
+            kb_filter_clause = (
+                "FILTER kb._key IN @kb_ids"
+                if kb_ids
+                else "FILTER kb.isHidden != true"
+            )
             metadata_filter_lines = []
             if metadata_filters:
                 if metadata_filters.get("departments"):
@@ -19142,6 +19526,306 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.warning("Could not resolve accessible connector types: %s", e)
             return []
 
+    async def get_accessible_containers(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
+    ) -> AccessibleContainers:
+        """Containers this user may search. See the interface for the contract.
+
+        The seed paths and their ``(parent app is KB) OR connectorId IN
+        reachable`` gate mirror ``_build_knowledge_hub_permission_expansion_aql``
+        — same grants, same graph — with two deliberate differences: no scope
+        filters (those are browse-path concerns) and **no ``hideChildren``
+        skip**. That flag hides children in the knowledge-base tree UI; honouring
+        it here would delete search results the user is entitled to.
+
+        ``@scope_ids`` narrows every result set and never the traversal:
+        ``user_accessible_apps``, ``root_scoped_apps`` and the seed groups stay
+        whole, so scoping can only remove containers. The seeds are walked
+        unscoped because inheritance can cross apps — a group of an in-scope app
+        that inherits from a grant on another app is still in scope. Each scope
+        check is its own ``FILTER``.
+        """
+        unsupported = _unsupported_container_filters(filters, time_range)
+        if unsupported:
+            return AccessibleContainers(fallback_reason=unsupported)
+        scope = requested_scope_ids(filters)
+        scope_set = frozenset(scope) if scope is not None else None
+        if scope_set is not None and not scope_set:
+            return AccessibleContainers(scope_connector_ids=scope_set)
+        # A project-scoped chat that selected nothing reaches nothing — the
+        # record-id path says the same (`get_accessible_virtual_record_ids`).
+        if scope_set is None and bool((filters or {}).get(STRICT_SCOPE_FILTER_KEY)):
+            return AccessibleContainers(scope_connector_ids=None)
+        if not user_id or not self.http_client:
+            return AccessibleContainers(fallback_reason="no_user_or_client")
+        query = f"""
+            LET u = FIRST(
+                FOR usr IN {CollectionNames.USERS.value}
+                    FILTER usr.userId == @user_id
+                    LIMIT 1
+                    RETURN usr
+            )
+            FILTER u != null
+            LET user_from = CONCAT("{CollectionNames.USERS.value}/", u._key)
+
+            // Every way a user reaches an app: ownership/instance membership
+            // (userAppRelation, direct and via team) and sharing (permission,
+            // direct and via team). Both halves are needed — a Collection
+            // shared with a user has a permission edge and no userAppRelation,
+            // and leaving it out here would exempt it from the backfill gate
+            // below while still admitting it as a container.
+            LET reachable_app_docs = UNION_DISTINCT(
+                (FOR app IN OUTBOUND user_from {CollectionNames.USER_APP_RELATION.value}
+                    RETURN app),
+                (FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == user_from AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
+                        RETURN app),
+                (FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == user_from AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.APPS.value}/")
+                    LET app = DOCUMENT(perm._to)
+                    FILTER app != null
+                    RETURN app),
+                (FOR teamPerm IN {CollectionNames.PERMISSION.value}
+                    FILTER teamPerm._from == user_from AND teamPerm.type == "USER"
+                    FILTER STARTS_WITH(teamPerm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR appPerm IN {CollectionNames.PERMISSION.value}
+                        FILTER appPerm._from == teamPerm._to AND appPerm.type == "TEAM"
+                        FILTER STARTS_WITH(appPerm._to, "{CollectionNames.APPS.value}/")
+                        LET app = DOCUMENT(appPerm._to)
+                        FILTER app != null
+                        RETURN app)
+            )
+            LET user_accessible_apps = (FOR a IN reachable_app_docs RETURN a._key)
+
+            LET kb_app_ids = (
+                FOR a IN reachable_app_docs
+                    FILTER a.type == @kb_type AND a.orgId == @org_id
+                    FILTER @scope_ids == null OR a._key IN @scope_ids
+                    // A scoped request can only reach a hidden Collection by
+                    // naming it, which the FILTER above already required.
+                    // Unscoped, a project's linked Collection stays out of
+                    // search — the rule the record-id path applies.
+                    FILTER a.isHidden != true OR @scope_ids != null
+                    RETURN a._key
+            )
+
+            LET app_level_ids = (
+                FOR a IN reachable_app_docs
+                    FILTER a.permissionModel == @app_level AND a.orgId == @org_id
+                    FILTER @scope_ids == null OR a._key IN @scope_ids
+                    FILTER a.isHidden != true OR @scope_ids != null
+                    RETURN a._key
+            )
+
+            // Scoped like the rest: an un-backfilled app the request excludes
+            // cannot hide anything from it.
+            LET unsafe_app_ids = (
+                FOR a IN reachable_app_docs
+                    FILTER a.vectorMembershipBackfilled != true
+                        OR a.vectorMembershipBackfillExhausted == true
+                    FILTER @scope_ids == null OR a._key IN @scope_ids
+                    RETURN a._key
+            )
+
+            LET root_scoped_apps = (
+                FOR a IN reachable_app_docs
+                    FILTER UPPER(a.type) IN @root_scoped_types
+                    RETURN a._key
+            )
+
+            LET path1_seed_rgs = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == user_from AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                    LET rg = DOCUMENT(perm._to)
+                    LET rg_app = DOCUMENT(CONCAT("{CollectionNames.APPS.value}/", rg.connectorId))
+                    FILTER rg != null AND rg.orgId == @org_id
+                    FILTER (rg_app != null AND rg_app.type == @kb_type)
+                        OR rg.connectorId IN user_accessible_apps
+                    RETURN rg
+            )
+            LET path2_seed_rgs = (
+                FOR grp, userEdge IN 1..1 ANY user_from {CollectionNames.PERMISSION.value}
+                    FILTER userEdge.type == "USER"
+                    FILTER IS_SAME_COLLECTION("{CollectionNames.GROUPS.value}", grp)
+                        OR IS_SAME_COLLECTION("{CollectionNames.ROLES.value}", grp)
+                    FOR rg, grpEdge IN 1..1 ANY grp._id {CollectionNames.PERMISSION.value}
+                        FILTER grpEdge.type == "GROUP" OR grpEdge.type == "ROLE"
+                        FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg)
+                        LET rg_app = DOCUMENT(CONCAT("{CollectionNames.APPS.value}/", rg.connectorId))
+                        FILTER rg.orgId == @org_id
+                        FILTER (rg_app != null AND rg_app.type == @kb_type)
+                            OR rg.connectorId IN user_accessible_apps
+                        RETURN rg
+            )
+            LET path3_seed_rgs = (
+                FOR org, belongsEdge IN 1..1 ANY user_from {CollectionNames.BELONGS_TO.value}
+                    FILTER belongsEdge.entityType == "ORGANIZATION"
+                    FOR rg, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER orgPerm.type == "ORG"
+                        FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg)
+                        LET rg_app = DOCUMENT(CONCAT("{CollectionNames.APPS.value}/", rg.connectorId))
+                        FILTER rg.orgId == @org_id
+                        FILTER (rg_app != null AND rg_app.type == @kb_type)
+                            OR rg.connectorId IN user_accessible_apps
+                        RETURN rg
+            )
+            LET path4_seed_rgs = (
+                FOR teamPerm IN {CollectionNames.PERMISSION.value}
+                    FILTER teamPerm._from == user_from AND teamPerm.type == "USER"
+                    FILTER STARTS_WITH(teamPerm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR rgPerm IN {CollectionNames.PERMISSION.value}
+                        FILTER rgPerm._from == teamPerm._to AND rgPerm.type == "TEAM"
+                        FILTER STARTS_WITH(rgPerm._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                        LET rg = DOCUMENT(rgPerm._to)
+                        FILTER rg != null AND rg.orgId == @org_id
+                        FILTER rg.connectorName == @kb_type
+                            OR rg.connectorId IN user_accessible_apps
+                        RETURN rg
+            )
+            LET seed_rgs = UNION_DISTINCT(
+                path1_seed_rgs, path2_seed_rgs, path3_seed_rgs, path4_seed_rgs
+            )
+
+            LET root_group_ids = (
+                FOR rg IN seed_rgs
+                    FILTER rg.connectorId IN root_scoped_apps
+                    FILTER @scope_ids == null OR rg.connectorId IN @scope_ids
+                    RETURN rg._key
+            )
+
+            // Root-scoped connectors match on the record's root instead, so
+            // enumerating their descendants would only inflate the filter.
+            LET inherited_rgs = (
+                FOR seed IN seed_rgs
+                    FOR node IN 1..@inherit_max_depth
+                        INBOUND seed._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                        PRUNE node.orgId != @org_id
+                        OPTIONS {{ bfs: true, uniqueVertices: "global" }}
+                        FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", node)
+                        FILTER node.orgId == @org_id
+                        FILTER node.connectorId NOT IN root_scoped_apps
+                        // FILTER, not PRUNE: an out-of-scope group must not stop
+                        // the walk, matching the Cypher twin.
+                        FILTER @scope_ids == null OR node.connectorId IN @scope_ids
+                        RETURN node
+            )
+            LET all_rgs = UNION_DISTINCT(
+                (FOR rg IN seed_rgs
+                    FILTER @scope_ids == null OR rg.connectorId IN @scope_ids
+                    RETURN rg),
+                inherited_rgs
+            )
+            LET all_rg_keys = (FOR rg IN all_rgs RETURN rg._key)
+
+            LET direct_records = UNION_DISTINCT(
+                (FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == user_from AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.RECORDS.value}/")
+                    LET rec = DOCUMENT(perm._to)
+                    FILTER rec != null AND rec.orgId == @org_id
+                    FILTER @scope_ids == null OR rec.connectorId IN @scope_ids
+                    RETURN rec),
+                (FOR grp, userEdge IN 1..1 ANY user_from {CollectionNames.PERMISSION.value}
+                    FILTER userEdge.type == "USER"
+                    FILTER IS_SAME_COLLECTION("{CollectionNames.GROUPS.value}", grp)
+                        OR IS_SAME_COLLECTION("{CollectionNames.ROLES.value}", grp)
+                    FOR rec, grpEdge IN 1..1 ANY grp._id {CollectionNames.PERMISSION.value}
+                        FILTER grpEdge.type == "GROUP" OR grpEdge.type == "ROLE"
+                        FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", rec)
+                        FILTER rec.orgId == @org_id
+                        FILTER @scope_ids == null OR rec.connectorId IN @scope_ids
+                        RETURN rec),
+                (FOR org, belongsEdge IN 1..1 ANY user_from {CollectionNames.BELONGS_TO.value}
+                    FILTER belongsEdge.entityType == "ORGANIZATION"
+                    FOR rec, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER orgPerm.type == "ORG"
+                        FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", rec)
+                        FILTER rec.orgId == @org_id
+                        FILTER @scope_ids == null OR rec.connectorId IN @scope_ids
+                        RETURN rec)
+            )
+
+            LET covered_app_ids = UNION_DISTINCT(app_level_ids, kb_app_ids)
+            LET residual_direct = (
+                FOR rec IN direct_records
+                    FILTER rec.virtualRecordId != null
+                    // Same predicates the adjudicator applies. A deleted or
+                    // mid-indexing record would otherwise burn against the
+                    // direct-grant budget and could tip a tenant into an
+                    // unnecessary fallback.
+                    FILTER rec.isDeleted != true
+                    FILTER rec.indexingStatus == @completed
+                    FILTER rec.connectorId NOT IN covered_app_ids
+                    // The verifier's reachability gate, applied early: a grant
+                    // that outlived the user's access to its connector would
+                    // enter the filter only to be denied.
+                    FILTER rec.origin != @connector_origin
+                        OR rec.connectorId IN user_accessible_apps
+                    LET rec_group_keys = (
+                        FOR e IN {CollectionNames.BELONGS_TO.value}
+                            FILTER e._from == rec._id
+                            FILTER STARTS_WITH(e._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                            RETURN PARSE_IDENTIFIER(e._to).key
+                    )
+                    FILTER LENGTH(INTERSECTION(rec_group_keys, all_rg_keys)) == 0
+                    LIMIT @direct_probe_limit
+                    RETURN {{ vid: rec.virtualRecordId, rid: rec._key }}
+            )
+
+            RETURN {{
+                appIds: covered_app_ids,
+                // Only what declared APP_LEVEL. kb_app_ids is admitted on type
+                // alone so records carrying no recordGroupIds still have a term to
+                // match on; a KB is trusted only once it declares APP_LEVEL.
+                trustedApps: app_level_ids,
+                trusted: (FOR rg IN all_rgs
+                            FILTER rg.permissionModel == @group_level
+                            RETURN rg._key),
+                verify: (FOR rg IN all_rgs
+                            FILTER rg.permissionModel != @group_level
+                            RETURN rg._key),
+                rootGroups: root_group_ids,
+                direct: residual_direct,
+                unsafeApps: unsafe_app_ids
+            }}
+        """
+        try:
+            rows = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "user_id": user_id,
+                    "org_id": org_id,
+                    "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                    "app_level": PermissionModel.APP_LEVEL.value,
+                    "group_level": PermissionModel.RECORD_GROUP_LEVEL.value,
+                    "root_scoped_types": sorted(ROOT_SCOPED_CONNECTOR_TYPES),
+                    "completed": ProgressStatus.COMPLETED.value,
+                    "connector_origin": OriginTypes.CONNECTOR.value,
+                    "inherit_max_depth": CONTAINER_INHERIT_MAX_DEPTH,
+                    # +1 so overflow is detectable without a second query.
+                    "direct_probe_limit": MAX_DIRECT_GRANT_RECORDS + 1,
+                    # Always bound: Arango rejects a query that declares a bind
+                    # variable it is not sent.
+                    "scope_ids": sorted(scope_set) if scope_set is not None else None,
+                },
+            )
+            row = rows[0] if rows else None
+        except Exception as exc:
+            self.logger.error("get_accessible_containers: AQL failed — %s", exc)
+            return AccessibleContainers(fallback_reason="query_failed")
+
+        return _containers_from_row(
+            row, logger=self.logger, scope_connector_ids=scope_set
+        )
+
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
@@ -19188,19 +19872,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.warning(f"User {user_id} has no accessible apps")
 
             filters = filters or {}
-            kb_ids = filters.get("kb")
-            connector_ids_filter = filters.get("apps")
+            # `apps` and `kb` are one scope: a Collection id is honoured under
+            # either key, and so is a connector id.
+            scope = requested_scope_ids(filters)
+            # Threaded through from ChatQuery.strictScope by the caller — a
+            # project-scoped chat sets this so an empty effective scope stays
+            # empty ("search everything the user can access" must never
+            # apply), instead of quietly widening back out.
+            strict_scope = bool(filters.get(STRICT_SCOPE_FILTER_KEY))
 
             # Extract metadata filters (everything except kb and apps)
             metadata_filters = {
                 k: v for k, v in filters.items()
-                if k not in ["kb", "apps"] and v
+                if k not in CONTAINER_SCOPE_FILTER_KEYS
+                and k != STRICT_SCOPE_FILTER_KEY and v
             }
 
             tasks = []
 
             # Fetch app types once to distinguish KB apps (type == "KB") from connector apps
             kb_app_ids: set[str] = set()
+            kb_types_known = True
             if user_apps_ids:
                 type_query = """
                 FOR app IN @@apps
@@ -19218,77 +19910,58 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     )
                     kb_app_ids = set(kb_app_keys or [])
                 except Exception as e:
+                    kb_types_known = False
                     self.logger.warning(f"⚠️ Failed to fetch KB app types for filtering, treating all apps as connectors: {e}")
 
-            # Reclassify: move KB app IDs that arrived in the apps filter
-            # to the kb filter. MCP and some clients send all source IDs
-            # (connectors + KB) in a single `apps` array; the backend must
-            # route them to the correct query path.
-            if connector_ids_filter and kb_app_ids:
-                kb_in_apps = [
-                    cid for cid in connector_ids_filter
-                    if cid in kb_app_ids and cid in user_apps_ids
-                ]
-                if kb_in_apps:
-                    self.logger.debug(
-                        f"Reclassifying {len(kb_in_apps)} KB app ID(s) from apps to kb filter: {kb_in_apps}"
-                    )
-                    connector_ids_filter = [cid for cid in connector_ids_filter if cid not in kb_app_ids]
-                    kb_ids = list(dict.fromkeys((kb_ids or []) + kb_in_apps))
+            connector_app_ids = [cid for cid in user_apps_ids if cid not in kb_app_ids]
 
-            has_kb_filter = bool(kb_ids)
-            has_app_filter = bool(connector_ids_filter)
+            if strict_scope and scope is None:
+                self.logger.info(
+                    "🔒 Strict scope with an empty effective apps/kb selection — "
+                    "returning no accessible records instead of the implicit "
+                    "'search everything'"
+                )
+                return {}
 
-            if has_app_filter and has_kb_filter:
-                connectors_to_query = [
-                    cid for cid in user_apps_ids
-                    if cid in connector_ids_filter and cid not in kb_app_ids
-                ]
-                for connector_id in connectors_to_query:
-                    tasks.append(
-                        self._get_virtual_ids_for_connector(
-                            user_id, org_id, connector_id, metadata_filters, time_range=time_range
-                        )
-                    )
-                tasks.append(
-                    self._get_kb_virtual_ids(
-                        user_id, org_id, kb_ids, metadata_filters, time_range=time_range
-                    )
+            def connector_task(connector_id: str) -> "Awaitable[dict[str, str]]":
+                return self._get_virtual_ids_for_connector(
+                    user_id, org_id, connector_id, metadata_filters, time_range=time_range
                 )
 
-            elif not has_app_filter and has_kb_filter:
-                tasks.append(
-                    self._get_kb_virtual_ids(
-                        user_id, org_id, kb_ids, metadata_filters, time_range=time_range
-                    )
+            def kb_task(kb_filter: list[str] | None) -> "Awaitable[dict[str, str]]":
+                return self._get_kb_virtual_ids(
+                    user_id, org_id, kb_filter, metadata_filters, time_range=time_range
                 )
 
-            elif not has_app_filter and not has_kb_filter:
-                for connector_id in user_apps_ids:
-                    if connector_id in kb_app_ids:
-                        continue
-                    tasks.append(
-                        self._get_virtual_ids_for_connector(
-                            user_id, org_id, connector_id, metadata_filters, time_range=time_range
-                        )
-                    )
-                tasks.append(
-                    self._get_kb_virtual_ids(
-                        user_id, org_id, None, metadata_filters, time_range=time_range
-                    )
-                )
-
-            else:  # has_app_filter and not has_kb_filter
-                connectors_to_query = [
-                    cid for cid in user_apps_ids
-                    if cid in connector_ids_filter and cid not in kb_app_ids
+            if scope is None:
+                tasks.extend(connector_task(cid) for cid in connector_app_ids)
+                tasks.append(kb_task(None))
+            else:
+                # Scope order, so a virtualRecordId shared by two scoped apps
+                # resolves to the one named first.
+                connector_set = set(connector_app_ids)
+                connectors_to_query = [cid for cid in scope if cid in connector_set]
+                tasks.extend(connector_task(cid) for cid in connectors_to_query)
+                # Every other id may be a Collection; the KB query matches only
+                # KB apps the user holds a permission on. When app types could
+                # not be read, a KB may have been queried as a connector above,
+                # so it is offered to the KB query as well.
+                # An id that arrived under `kb` is always offered to the KB
+                # query, even when it looks like one of the user's connectors:
+                # the caller named it as a Collection, and only that query can
+                # confirm it (app types can be missing or unreadable).
+                kb_key_ids = {
+                    v for v in (filters.get("kb") or [])
+                    if isinstance(v, str) and v
+                }
+                remaining = [
+                    cid for cid in scope
+                    if cid not in connector_set
+                    or cid in kb_key_ids
+                    or not kb_types_known
                 ]
-                for connector_id in connectors_to_query:
-                    tasks.append(
-                        self._get_virtual_ids_for_connector(
-                            user_id, org_id, connector_id, metadata_filters, time_range=time_range
-                        )
-                    )
+                if remaining:
+                    tasks.append(kb_task(remaining))
 
             if not tasks:
                 self.logger.warning(f"No queries to execute for user {user_id} with filters {filters}")
@@ -20310,7 +20983,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         category: skill.category,
                         subcategory: skill.subcategory,
                         version: skill.version,
-                        status: skill.status
+                        status: skill.status,
+                        deprecatedReason: skill.deprecatedReason,
+                        replacedBy: skill.replacedBy
                     }}
             )
 
@@ -20889,7 +21564,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Add only schema-allowed fields
             # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount", "webSearch", "defaultReasoningEffort"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount", "sendUserContext", "webSearch", "defaultReasoningEffort"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]

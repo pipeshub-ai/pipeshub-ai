@@ -4,8 +4,10 @@
 
 - session-scoped ``github_rest`` (skips when the PAT is missing)
 - module-scoped ``github_connector``: discovers fixture shapes read-only against the
-  primary + public repos, registers a PipesHub connector scoped to exactly those two,
-  waits for one sync, snapshots baselines, then tears the connector down.
+  primary + public repos, registers a PipesHub connector scoped to the primary repo
+  alone (an instance syncs exactly one repository), waits for one sync, snapshots
+  baselines, then tears the connector down. The public repo is synced by its own
+  dedicated connector in TC-GH-PERM-002.
 
 Setup **never writes to the primary or public repos**. Its only writes are to the
 mutation repo, and only to reap artifacts leaked by runs that no longer exist. The
@@ -28,8 +30,11 @@ from typing import Any, AsyncGenerator
 import pytest
 import pytest_asyncio
 
+from helper.source_credentials import source_unavailable
+
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
+from helper.second_user import second_user  # type: ignore[import-not-found]  # noqa: F401 - fixture
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 from connectors.github_teams.constants import (  # type: ignore[import-not-found]
@@ -84,10 +89,10 @@ def _require_env() -> dict[str, str]:
     }
     missing = [k for k, v in values.items() if not v]
     if missing:
-        pytest.skip(
-            f"GitHub Teams credentials/config not set (missing: {', '.join(sorted(missing))}). "
-            f"Required: {ENV_TOKEN}, {ENV_ORG}, {ENV_PRIMARY_REPO}, {ENV_PUBLIC_REPO}, "
-            f"{ENV_MUTATION_REPO}."
+        source_unavailable(
+            "The GitHub organisation this suite syncs from is not configured "
+            f"(missing: {', '.join(sorted(missing))}).",
+            secrets=[ENV_TOKEN, ENV_ORG, ENV_PRIMARY_REPO, ENV_PUBLIC_REPO, ENV_MUTATION_REPO],
         )
     return values
 
@@ -114,7 +119,7 @@ async def github_connector(
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
 ) -> AsyncGenerator[dict[str, Any], None]:
-    """Module-scoped read-only connector over the primary + public repos.
+    """Module-scoped read-only connector over the primary repo.
 
     Yields a state dict of repo metadata, discovered fixture shapes, and the
     connector id. Discovery is read-only: nothing in the primary or public repo is
@@ -232,13 +237,11 @@ async def github_connector(
         pipeshub_client,
         token=token,
         name=connector_name,
-        filters=sync_filters(
-            repo_ids=list_filter("in", [primary["full_name"], public["full_name"]]),
-        ),
+        # One repository per instance: the enable toggle refuses anything else.
+        filters=sync_filters(repo_ids=list_filter("in", [primary["full_name"]])),
     )
     state["connector_id"] = connector_id
-    logger.info("SETUP: connector %s scoped to %s + %s",
-                connector_id, primary["full_name"], public["full_name"])
+    logger.info("SETUP: connector %s scoped to %s", connector_id, primary["full_name"])
 
     try:
         pipeshub_client.toggle_sync(connector_id, enable=True)

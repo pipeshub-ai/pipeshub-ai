@@ -550,7 +550,7 @@ async def test_upload_validation_helpers():
         await upload_chat_attachments(rr, gp, AsyncMock())
 
 
-    assert "positive" in str(ex.value.detail).lower()
+    assert "is empty" in str(ex.value.detail)
 
 
 
@@ -598,7 +598,7 @@ async def test_upload_validation_helpers():
         await upload_chat_attachments(rr, gp, AsyncMock())
 
 
-    assert "Invalid base64" in str(ex.value.detail)
+    assert "Couldn't read n.png" in str(ex.value.detail)
 
 
 
@@ -1089,7 +1089,7 @@ async def test_upload_pdf_regular_and_scan_cap():
 
 
 
-                        assert "Scanned attachment page cap" in str(exc.value.detail)
+                        assert "too many scanned pages" in str(exc.value.detail)
 
 
 

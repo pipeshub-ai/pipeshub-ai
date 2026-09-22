@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from typing import List
 
 from app.services.vector_db.models import (
@@ -18,6 +19,12 @@ from app.services.vector_db.models import (
 DIM = 8  # small fixed dimension for tests
 
 
+def point_id(name: str) -> str:
+    """A stable UUID for a readable test name: Qdrant accepts only UUIDs or
+    integers as point ids, and the other backends take any string."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"pipeshub-vector-it/{name}"))
+
+
 def make_dense(values: List[float]) -> List[float]:
     """Pad/trim a float list to DIM."""
     vec = list(values)
@@ -30,7 +37,7 @@ def sample_points(org_id: str = "org-test") -> List[VectorPoint]:
     """Return 3 sample VectorPoints spanning lexical and semantic axes."""
     return [
         VectorPoint(
-            id="doc-python",
+            id=point_id("doc-python"),
             dense_vector=make_dense([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             payload={
                 "page_content": "Python is a high-level programming language",
@@ -38,7 +45,7 @@ def sample_points(org_id: str = "org-test") -> List[VectorPoint]:
             },
         ),
         VectorPoint(
-            id="doc-java",
+            id=point_id("doc-java"),
             dense_vector=make_dense([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             payload={
                 "page_content": "Java is a statically typed programming language",
@@ -46,7 +53,7 @@ def sample_points(org_id: str = "org-test") -> List[VectorPoint]:
             },
         ),
         VectorPoint(
-            id="doc-cooking",
+            id=point_id("doc-cooking"),
             dense_vector=make_dense([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             payload={
                 "page_content": "Cooking pasta requires boiling water",

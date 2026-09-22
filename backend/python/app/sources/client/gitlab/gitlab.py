@@ -1,8 +1,11 @@
+import ipaddress
 import logging
 import os
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import gitlab
+import requests
 from gitlab import Gitlab
 from pydantic import BaseModel, Field  # type: ignore
 
@@ -62,6 +65,87 @@ class GitLabResponse(BaseModel):
         return self.model_dump()
 
 
+def _is_loopback_host(host: str) -> bool:
+    """True for a host that cannot be observed from the network."""
+    # Only the one name every resolver pins to loopback; others could be remapped.
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+# Server-wide opt-in for self-managed GitLab reached over plain http on a
+# network the operator trusts. Off by default.
+ALLOW_INSECURE_HTTP_ENV = "PIPESHUB_GITLAB_ALLOW_INSECURE_HTTP"
+
+
+def _insecure_http_allowed() -> bool:
+    return os.getenv(ALLOW_INSECURE_HTTP_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _require_secure_url(url: str, logger: logging.Logger | None = None) -> None:
+    """Refuse to hand an access token to a plaintext instance.
+
+    python-gitlab sends the token (personal access token or OAuth) as a header on
+    every request, so an ``http://`` instance URL exposes it to anything on the
+    path. Loopback, where there is no network to observe, is allowed without TLS;
+    any other plain-http host only when the operator has opted in.
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and _is_loopback_host(host):
+        return
+    if parsed.scheme == "http" and _insecure_http_allowed():
+        (logger or logging.getLogger(__name__)).warning(
+            "Sending the GitLab access token over plain http because %s is set",
+            ALLOW_INSECURE_HTTP_ENV,
+        )
+        return
+    raise ValueError(
+        f"Refusing to send the GitLab access token to host {host!r} over "
+        f"{parsed.scheme or 'an unknown scheme'}: the instance URL must use https. "
+        "http is allowed only for a loopback host, or on a trusted private network "
+        f"when the server sets {ALLOW_INSECURE_HTTP_ENV}=true."
+    )
+
+
+class _TokenSafeSession(requests.Session):
+    """Keeps the GitLab token on its own server across redirects.
+
+    requests strips ``Authorization`` when a redirect leaves the host (or drops
+    from https to http), but keeps custom headers, so python-gitlab's
+    ``PRIVATE-TOKEN`` would follow a redirect anywhere. It is stripped under the
+    same rule.
+    """
+
+    def rebuild_auth(self, prepared_request: requests.PreparedRequest, response: requests.Response) -> None:
+        if self.should_strip_auth(response.request.url, prepared_request.url):
+            prepared_request.headers.pop("PRIVATE-TOKEN", None)
+        super().rebuild_auth(prepared_request, response)
+
+
+def _secure_session(logger: logging.Logger | None = None) -> requests.Session:
+    """A session that never carries the GitLab token off its server or onto plain http.
+
+    python-gitlab follows redirects on GET and HEAD. Each redirect target must
+    pass the same rule as the instance URL before it is requested, and a
+    redirect to another server loses the token (see ``_TokenSafeSession``).
+    """
+
+    def refuse_insecure_redirect(response: requests.Response, *args: object, **kwargs: object) -> requests.Response:
+        if response.is_redirect:
+            _require_secure_url(urljoin(response.url, response.headers.get("location", "")), logger)
+        return response
+
+    session = _TokenSafeSession()
+    session.hooks["response"].append(refuse_insecure_redirect)
+    return session
+
+
 class GitLabClientViaToken:
     def __init__(
         self,
@@ -94,6 +178,7 @@ class GitLabClientViaToken:
         self._sdk: Gitlab | None = None
 
     def create_client(self) -> Gitlab:
+        _require_secure_url(self.url, self._logger)
         kwargs: dict[str, Any] = {"url": self.url}
 
         # Use private_token for PAT-based auth, oauth_token for OAuth flows
@@ -118,6 +203,7 @@ class GitLabClientViaToken:
         # existing config surface but ignore them at construction time.
 
         kwargs["per_page"] = _GITLAB_PER_PAGE
+        kwargs["session"] = _secure_session(self._logger)
         self._sdk = gitlab.Gitlab(**kwargs)
         self._install_retry_after_cap(self._sdk)
         return self._sdk
@@ -279,11 +365,9 @@ class GitLabClient(IClient):
         auth_config = config.get("auth", {})
         if not auth_config:
             raise ValueError("Auth configuration missing for GitLab connector")
-        credentials_config = config.get("credentials", {})
-        if not credentials_config:
-            raise ValueError(
-                "Credentials configuration not found in Gitlab connector configuration"
-            )
+        # Credentials are written by the OAuth flow. A token-only (API_TOKEN)
+        # connector has none, so they are required only for OAUTH below.
+        credentials_config = config.get("credentials") or {}
         auth_type = auth_config.get(
             "authType", "OAUTH"
         )  # "OAUTH" or "API_TOKEN"; default is OAUTH
@@ -326,6 +410,10 @@ class GitLabClient(IClient):
             )
             client.create_client()
         elif auth_type == "OAUTH":
+            if not credentials_config:
+                raise ValueError(
+                    "Credentials configuration not found in Gitlab connector configuration"
+                )
             access_token = credentials_config.get("access_token", "")
             if not access_token:
                 raise ValueError("Access token required for OAuth auth type")

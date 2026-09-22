@@ -130,6 +130,8 @@ export interface IMessagePart {
   content?: string;
   toolCallId?: string;
   toolName?: string;
+  /** Human-readable past-tense label for this tool call, computed server-side (see `Tool.display_name`); falls back to a generic humanized `toolName` on the frontend when absent (e.g. chats persisted before this field existed). */
+  displayName?: string;
   args?: string;
   /** Human-readable summary of `args`, computed server-side (see PipesHubToolSummarizer). */
   argsSummary?: string;
@@ -298,6 +300,12 @@ export interface IChatSession {
   compactedSummary?: string;
   compactedAtTurnIndex?: number;
   compactedAtTimestamp?: number;
+
+  // ---- Project linking (optional on both chat and agent sessions) ----
+  /** Reference to `projects` collection — see modules/projects/types/project.interfaces.ts. */
+  projectId?: Types.ObjectId;
+  /** Per-conversation override of the project's default chat-sharing visibility. */
+  projectVisibility?: 'private' | 'project';
 }
 
 export interface IChatSessionDocument extends Document, IChatSession {
@@ -333,7 +341,11 @@ export interface AIServiceResponse<T> {
   msg?: string;
 }
 
-export type AnswerMatchType = 'Exact Match' | 'Partial Match' | 'No Match';
+export type AnswerMatchType =
+  | 'Exact Match'
+  | 'Partial Match'
+  | 'No Match'
+  | 'Error';
 
 export interface IAIResponse {
   answer: string;
@@ -360,6 +372,8 @@ export interface IAIResponse {
   reasoning?: IReasoningTurn[];
   /** Ordered agent-activity transcript (`agui` protocol only) — see IMessagePart. */
   parts?: IMessagePart[];
+  /** Set by Python `classify_error` on a graceful failure answer (`auth_error`, …). */
+  errorCode?: string;
 }
 
 export interface IAIModel {

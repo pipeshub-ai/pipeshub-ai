@@ -103,6 +103,7 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
             option_source_type=OptionSourceType.DYNAMIC,
             default_operator=MultiselectOperator.IN.value
         ))
+        .add_filter_field(CommonFields.folder_paths_filter("bucket"))
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))

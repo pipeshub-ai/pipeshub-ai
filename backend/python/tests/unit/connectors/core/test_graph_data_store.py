@@ -156,6 +156,17 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_records_by_status.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_get_records_by_status_propagates_a_failed_listing(self, tx_store, mock_graph_provider) -> None:
+        """An empty list means no match; a failure must stay a failure."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        mock_graph_provider.get_records_by_status = AsyncMock(
+            side_effect=GraphQueryError("db down")
+        )
+        with pytest.raises(GraphQueryError):
+            await tx_store.get_records_by_status("org1", "conn1", ["active"])
+
+    @pytest.mark.asyncio
     async def test_batch_upsert_records(self, tx_store, mock_graph_provider) -> None:
         await tx_store.batch_upsert_records([])
         mock_graph_provider.batch_upsert_records.assert_awaited_once_with([], transaction="txn-123")

@@ -20,6 +20,8 @@ import {
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
+import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
+import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
@@ -70,6 +72,8 @@ import {
 import { NotificationService } from './modules/notification/service/notification.service';
 import { DesktopProxySocketGateway } from './modules/desktop_proxy/socket/desktop-proxy.gateway';
 import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop-proxy.container';
+import { createDesktopProxyRouter } from './modules/desktop_proxy/routes/desktop-proxy.routes';
+import { registerDesktopPresence } from './libs/services/desktop-presence.provider';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
@@ -82,6 +86,7 @@ import { createTeamsRouter } from './modules/user_management/routes/teams.routes
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
+import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
 import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import {
@@ -95,6 +100,8 @@ import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
+import { ProjectsContainer } from './modules/projects/container/project.container';
+import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 // Side-effect import: registers edition-specific Redis providers for this process.
 import './redisProviders';
@@ -124,6 +131,7 @@ export class Application {
   private mailServiceContainer!: Container;
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
+  private outboxDispatcher: OutboxDispatcher | null = null;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
@@ -131,6 +139,7 @@ export class Application {
   private skillsContainer!: Container;
   private oauthAppsContainer!: Container;
   private mcpServersContainer!: Container;
+  private projectsContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
 
@@ -229,7 +238,7 @@ export class Application {
           appConfig,
         );
       this.desktopProxyContainer =
-        await DesktopProxyContainer.initialize(appConfig, () => this.port);
+        await DesktopProxyContainer.initialize(appConfig);
 
       this.oauthProviderContainer = await OAuthProviderContainer.initialize(
         configurationManagerConfig,
@@ -250,6 +259,10 @@ export class Application {
       );
       this.mcpServersContainer = await McpServersContainer.initialize(
         configurationManagerConfig,
+      );
+      this.projectsContainer = await ProjectsContainer.initialize(
+        configurationManagerConfig,
+        appConfig,
       );
 
       await this.addOAuthServicesToAuthMiddleware();
@@ -277,11 +290,22 @@ export class Application {
       );
       startOrgMetricsRefresh(this.logger);
 
+      // Domain events are written to the outbox by whoever makes the change;
+      // this is what actually delivers them. Without it running, events queue
+      // durably and nothing reaches the permission graph, so it starts with
+      // the application rather than on first use.
+      this.outboxDispatcher = new OutboxDispatcher(
+        this.entityManagerContainer.get<IMessageProducer>('MessageProducer'),
+        this.logger,
+      );
+      this.outboxDispatcher.start();
+
       this.notificationContainer
         .get<NotificationService>(NotificationService)
         .initialize(this.server);
       this.desktopProxySocketGateway =
         this.desktopProxyContainer.get(DesktopProxySocketGateway);
+      registerDesktopPresence(this.desktopProxySocketGateway);
       this.desktopProxySocketGateway.initialize(this.server);
 
       this.bootstrapNotificationBrokerConsumer();
@@ -533,6 +557,12 @@ export class Application {
       createStorageRouter(this.storageServiceContainer),
     );
 
+    // desktop relay routes (connector service -> user's desktop app)
+    this.app.use(
+      '/api/v1/desktop',
+      createDesktopProxyRouter(this.desktopProxyContainer),
+    );
+
     // enterprise search conversational routes
     this.app.use(
       '/api/v1/conversations',
@@ -615,6 +645,12 @@ export class Application {
       createMcpServersRouter(this.mcpServersContainer)
     );
 
+    // Projects — workspaces grouping chat/agent conversations, instructions, files, and scope
+    this.app.use(
+      '/api/v1/projects',
+      createProjectsRouter(this.projectsContainer),
+    );
+
     this.app.use(
       '/api/v1/mail',
       createMailServiceRouter(this.mailServiceContainer),
@@ -636,6 +672,12 @@ export class Application {
     this.app.use(
       '/api/v1/oauth-clients',
       createOAuthClientsRouter(this.oauthProviderContainer),
+    );
+
+    // Service accounts (machine identities, admin-managed)
+    this.app.use(
+      '/api/v1/service-accounts',
+      createServiceAccountsRouter(this.entityManagerContainer),
     );
 
     this.app.use(
@@ -721,6 +763,7 @@ export class Application {
       try {
         this.desktopProxySocketGateway?.shutdown();
         this.desktopProxySocketGateway = null;
+        registerDesktopPresence(null);
         this.notificationContainer
           .get<NotificationService>(NotificationService)
           .shutdown();
@@ -728,6 +771,13 @@ export class Application {
         this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
       }
+      // Stopped before the containers go, because it holds the message
+      // producer one of them owns.
+      // Awaited: a pass in flight is publishing through a producer the
+      // containers below are about to disconnect.
+      await this.outboxDispatcher?.stop();
+      this.outboxDispatcher = null;
+
       await NotificationContainer.dispose();
       await StorageContainer.dispose();
       await UserManagerContainer.dispose();

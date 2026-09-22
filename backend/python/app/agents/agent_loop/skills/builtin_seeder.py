@@ -29,8 +29,18 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from app.agent_loop_lib.modules.providers.skills.base import Skill, SkillFilter, SkillSource
-from app.agent_loop_lib.modules.providers.skills.loader import load_skills_from_dir, render_skill_md
+from app.agent_loop_lib.modules.providers.skills.base import (
+    Skill,
+    SkillConflictError,
+    SkillFilter,
+    SkillMetadata,
+    SkillSource,
+)
+from app.agent_loop_lib.modules.providers.skills.loader import (
+    load_skills_from_dir,
+    read_resources,
+    render_skill_md,
+)
 from app.agent_loop_lib.modules.providers.skills.validator import SkillValidator
 
 if TYPE_CHECKING:
@@ -63,6 +73,12 @@ class BuiltinSkillSeeder:
             # not a third-party skill `load_skills_from_dir` is right to be
             # lenient about.
             validator.validate_skill(skill, expected_name=skill.metadata.name)
+        self._resources = {
+            skill.metadata.name: (
+                read_resources(skill.root_dir, skill.resources) if skill.root_dir else {}
+            )
+            for skill in self._packs
+        }
 
     @property
     def pack_versions(self) -> dict[str, str]:
@@ -93,31 +109,49 @@ class BuiltinSkillSeeder:
             if current is None:
                 await self._create(store, skill)
             elif current.pack_version != skill.metadata.pack_version:
-                await self._maybe_upgrade(store, skill, current.pack_version)
+                await self._maybe_upgrade(store, skill, current)
             # else: already at the current pack version — nothing to do.
+
+    def _pack_resources(self, skill: Skill) -> dict[str, str]:
+        """Pack file contents loaded once in `__init__` — `sync` must not
+        re-read the tree on the event loop."""
+        return dict(self._resources.get(skill.metadata.name, {}))
 
     async def _create(self, store: "GraphSkillStore", skill: Skill) -> None:
         try:
             await store.create_skill(
                 skill.metadata.name, render_skill_md(skill),
                 skill.metadata.category, skill.metadata.subcategory,
+                resources=self._pack_resources(skill),
             )
             logger.info("builtin_seeder: seeded %r (pack v%s)", skill.metadata.name, skill.metadata.pack_version)
         except Exception:
             logger.exception("builtin_seeder: failed to seed builtin skill %r", skill.metadata.name)
 
-    async def _maybe_upgrade(self, store: "GraphSkillStore", skill: Skill, current_pack_version: str | None) -> None:
+    async def _maybe_upgrade(self, store: "GraphSkillStore", skill: Skill, current: SkillMetadata) -> None:
         if not await self._is_unmodified(store, skill.metadata.name):
             logger.info(
                 "builtin_seeder: %r has org edits (pack v%s -> v%s available) — skipping auto-upgrade",
-                skill.metadata.name, current_pack_version, skill.metadata.pack_version,
+                skill.metadata.name, current.pack_version, skill.metadata.pack_version,
             )
             return
         try:
-            await store.update_skill(skill.metadata.name, render_skill_md(skill))
+            expected = int(current.updated_at) if current.updated_at is not None else None
+            await store.update_skill(
+                skill.metadata.name,
+                render_skill_md(skill),
+                resources=self._pack_resources(skill),
+                expected_updated_at=expected,
+                status=current.status,
+            )
             logger.info(
                 "builtin_seeder: upgraded %r from pack v%s to v%s",
-                skill.metadata.name, current_pack_version, skill.metadata.pack_version,
+                skill.metadata.name, current.pack_version, skill.metadata.pack_version,
+            )
+        except SkillConflictError:
+            logger.info(
+                "builtin_seeder: %r changed during upgrade (pack v%s -> v%s) — skipping",
+                skill.metadata.name, current.pack_version, skill.metadata.pack_version,
             )
         except Exception:
             logger.exception("builtin_seeder: failed to upgrade builtin skill %r", skill.metadata.name)

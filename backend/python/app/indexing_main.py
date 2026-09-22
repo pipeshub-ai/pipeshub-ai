@@ -50,6 +50,12 @@ from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import (
+    CONNECTOR_OFF,
+    CONNECTOR_REMOVED,
+    RECOVERY_REQUEUED,
+    RECOVERY_RETRY,
+)
 
 _T = TypeVar("_T")
 
@@ -256,7 +262,7 @@ async def recover_in_progress_records(
                                     "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "extractionStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "processingStartedAt": None,
-                                    "reason": "Connector no longer exists",
+                                    "reason": CONNECTOR_REMOVED,
                                 },
                             )
                             results["skipped"] += 1
@@ -274,7 +280,7 @@ async def recover_in_progress_records(
                                     "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "extractionStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "processingStartedAt": None,
-                                    "reason": "Connector is inactive",
+                                    "reason": CONNECTOR_OFF,
                                 },
                             )
                             results["skipped"] += 1
@@ -313,7 +319,7 @@ async def recover_in_progress_records(
                         "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
                         "processingStartedAt": None,
-                        "reason": "Recovered after restart; re-queued for indexing",
+                        "reason": RECOVERY_REQUEUED,
                     }
 
                     async def publish_recovery_event() -> None:
@@ -366,10 +372,7 @@ async def recover_in_progress_records(
                                         ProgressStatus.NOT_STARTED.value,
                                     ),
                                     "processingStartedAt": 0,
-                                    "reason": (
-                                        "Stale-record recovery publish failed; "
-                                        "will retry"
-                                    ),
+                                    "reason": RECOVERY_RETRY,
                                 },
                             )
                         except Exception as restore_exc:
@@ -754,7 +757,7 @@ async def _sweep_queued_records_for_inactive_connectors(
                         {
                             "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                             "processingStartedAt": None,
-                            "reason": "Connector is inactive",
+                            "reason": CONNECTOR_OFF,
                         },
                     )
                     swept += 1

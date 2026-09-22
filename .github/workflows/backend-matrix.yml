@@ -1,0 +1,209 @@
+name: backend-matrix
+
+# Each pluggable backend (broker, vector store, graph store, KV store) run
+# against a real server, one job per backend, so a red job names the backend
+# that broke. These suites skip themselves when their service is missing, which
+# is why the unit-test job can collect them without running them; here any skip
+# fails the job instead. A real-service test must not skip for any other
+# reason either: one that could not set up its scenario has tested nothing.
+#
+# GitHub-hosted runners and no secrets, so pull requests from forks run it too.
+#
+# The graph jobs find their tests rather than listing them. A real-graph test
+# is any file under tests/integration that reads NEO4J_IT_URI or ARANGO_IT_URL
+# (the env below) and gives its backend parameter the id "neo4j" or "arango";
+# each job runs that backend's cases from every such file. New real-graph tests
+# that follow the convention run here without editing this workflow.
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/python/app/services/messaging/**'
+      - 'backend/python/app/services/vector_db/**'
+      - 'backend/python/app/services/graph_db/**'
+      - 'backend/python/app/services/redis/**'
+      - 'backend/python/app/config/**'
+      - 'backend/python/app/connectors/core/base/data_processor/**'
+      - 'backend/python/app/connectors/core/base/data_store/**'
+      - 'backend/python/app/modules/transformers/**'
+      - 'backend/python/app/indexing_main.py'
+      - 'backend/python/tests/integration/messaging/**'
+      - 'backend/python/tests/integration/vector_db/**'
+      - 'backend/python/tests/integration/kv/**'
+      # Top-level files: where real-graph tests live.
+      - 'backend/python/tests/integration/*.py'
+      - 'backend/python/pyproject.toml'
+      - 'deployment/docker-compose/docker-compose.integration.messaging.yml'
+      - 'deployment/docker-compose/docker-compose.integration.vector-db.yml'
+      - 'deployment/docker-compose/docker-compose.integration.graph-db.yml'
+      - 'deployment/docker-compose/docker-compose.integration.kv.yml'
+      - '.github/workflows/backend-matrix.yml'
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-matrix-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: ${{ matrix.suite }} · ${{ matrix.backend }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: messaging
+            backend: kafka
+            compose: docker-compose.integration.messaging.yml
+            services: kafka-messaging-it
+            tests: tests/integration/messaging
+            select: kafka
+          - suite: messaging
+            backend: redis-streams
+            compose: docker-compose.integration.messaging.yml
+            services: redis-messaging-it
+            tests: tests/integration/messaging
+            select: redis
+          - suite: vector
+            backend: qdrant
+            compose: docker-compose.integration.vector-db.yml
+            services: qdrant-vector-it
+            tests: tests/integration/vector_db tests/integration/test_multimodal_indexing.py
+            select: qdrant
+          - suite: vector
+            backend: opensearch
+            compose: docker-compose.integration.vector-db.yml
+            services: opensearch-vector-it
+            tests: tests/integration/vector_db tests/integration/test_multimodal_indexing.py
+            select: opensearch
+          - suite: vector
+            backend: redis
+            compose: docker-compose.integration.vector-db.yml
+            services: redis-vector-it
+            tests: tests/integration/vector_db tests/integration/test_multimodal_indexing.py
+            select: redis
+          # Redis too: the stranded-record sweep publishes onto a real stream.
+          - suite: graph
+            backend: neo4j
+            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml
+            services: neo4j-graph-it redis-messaging-it
+            discover: NEO4J_IT_URI|ARANGO_IT_URL
+            select: neo4j
+          - suite: graph
+            backend: arangodb
+            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml
+            services: arango-graph-it redis-messaging-it
+            discover: NEO4J_IT_URI|ARANGO_IT_URL
+            select: arango
+          - suite: kv
+            backend: etcd
+            compose: docker-compose.integration.kv.yml
+            services: etcd-kv-it
+            tests: tests/integration/kv
+            select: etcd
+
+    env:
+      COMPOSE: ${{ matrix.compose }}
+      SERVICES: ${{ matrix.services }}
+      TESTS: ${{ matrix.tests }}
+      DISCOVER: ${{ matrix.discover }}
+      SELECT: ${{ matrix.select }}
+      REPORT: ${{ github.workspace }}/backend-matrix-results.xml
+      # What the real-service tests read; these match their defaults and the
+      # ports in the integration compose files.
+      NEO4J_IT_URI: bolt://localhost:17687
+      NEO4J_IT_PASSWORD: ensure-it-pass
+      ARANGO_IT_URL: http://localhost:18529
+      ARANGO_IT_PASSWORD: ensure-it-pass
+      REDIS_IT_HOST: localhost
+      REDIS_IT_PORT: '6389'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        working-directory: backend/python
+        run: |
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      - name: Start ${{ matrix.backend }}
+        working-directory: deployment/docker-compose
+        run: |
+          files=()
+          for f in $COMPOSE; do files+=(-f "$f"); done
+          # shellcheck disable=SC2086
+          docker compose "${files[@]}" up -d --wait --wait-timeout 300 $SERVICES
+
+      - name: Run ${{ matrix.suite }} tests on ${{ matrix.backend }}
+        working-directory: backend/python
+        run: |
+          if [ -n "$DISCOVER" ]; then
+            TESTS=$(grep -rlE --include='*.py' "$DISCOVER" tests/integration | sort | tr '\n' ' ')
+            echo "Discovered: $TESTS"
+          fi
+          # shellcheck disable=SC2086
+          pytest $TESTS -m integration -k "$SELECT" -v -rs --timeout=300 --junitxml="$REPORT"
+
+      - name: Fail if anything skipped
+        run: |
+          python - <<'EOF'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(os.environ["REPORT"]).getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests = int(suite.get("tests", 0))
+          skipped = int(suite.get("skipped", 0))
+          if tests == 0 or skipped:
+              print(
+                  f"::error::{tests} collected, {skipped} skipped. Each skip "
+                  "is a test that did not run against the backend: the "
+                  "service was unreachable, or the test could not set up "
+                  "what it checks. The reasons are in the test step above."
+              )
+              sys.exit(1)
+          print(f"{tests} tests ran against a real backend, none skipped.")
+          EOF
+
+      - name: Dump service logs
+        if: failure()
+        working-directory: deployment/docker-compose
+        run: |
+          files=()
+          for f in $COMPOSE; do files+=(-f "$f"); done
+          docker compose "${files[@]}" logs --no-color --timestamps
+
+      - name: Tear down
+        if: always()
+        working-directory: deployment/docker-compose
+        run: |
+          files=()
+          for f in $COMPOSE; do files+=(-f "$f"); done
+          docker compose "${files[@]}" down -v

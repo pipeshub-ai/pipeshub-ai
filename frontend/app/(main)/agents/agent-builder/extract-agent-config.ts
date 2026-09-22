@@ -382,6 +382,9 @@ export function extractAgentConfigFromFlow(
     defaultReasoningEffort: agentCoreNode
       ? ((coreCfg.defaultReasoningEffort as AgentFormPayload['defaultReasoningEffort']) ?? null)
       : (currentAgent?.defaultReasoningEffort ?? null),
+    sendUserContext: agentCoreNode
+      ? (coreCfg.sendUserContext as boolean | undefined) !== false
+      : currentAgent?.sendUserContext !== false,
     toolsets,
     knowledge,
     skills,

@@ -12,7 +12,7 @@ test.describe('Route Access', () => {
   ];
 
   for (const route of authenticatedRoutes) {
-    test(`authenticated: ${route} loads successfully`, async ({ page }) => {
+    test(`authenticated: ${route} loads successfully @smoke`, async ({ page }) => {
       await page.goto(route);
       // Should NOT redirect to login
       await page.waitForTimeout(3_000);
@@ -24,7 +24,7 @@ test.describe('Route Access', () => {
 test.describe('Unauthenticated Route Redirect', () => {
   test.use({ storageState: { cookies: [], origins: [] } });
 
-  test('unauthenticated access to /chat redirects to /login', async ({ page }) => {
+  test('unauthenticated access to /chat redirects to /login @smoke', async ({ page }) => {
     await page.goto('/chat/');
     await page.waitForURL('**/login/**', { timeout: 10_000 });
     await expect(page).toHaveURL(/\/login/);

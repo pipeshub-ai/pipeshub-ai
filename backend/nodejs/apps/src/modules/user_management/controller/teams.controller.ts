@@ -3,12 +3,8 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
-  ConflictError,
-  ForbiddenError,
   InternalServerError,
   NotFoundError,
-  ServiceUnavailableError,
-  UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
   AICommandOptions,
@@ -26,65 +22,8 @@ import type {
   TeamsListResponse,
 } from '../types/user_management.types';
 
-const AI_SERVICE_UNAVAILABLE_MESSAGE =
-  'AI Service is currently unavailable. Please check your network connection or try again later.';
 
-/**
- * Handle backend errors from AI service responses
- * Extracts error messages from response data and creates appropriate HTTP errors
- */
-const handleBackendError = (error: any, operation: string): Error => {
-  if (error) {
-    if (
-      (error?.cause && error.cause.code === 'ECONNREFUSED') ||
-      (typeof error?.message === 'string' &&
-        error.message.includes('fetch failed'))
-    ) {
-      return new ServiceUnavailableError(
-        AI_SERVICE_UNAVAILABLE_MESSAGE,
-        error,
-      );
-    }
-
-    const { statusCode, data, message } = error;
-    const errorDetail =
-      data?.detail ||
-      data?.reason ||
-      data?.message ||
-      message ||
-      'Unknown error';
-
-    if (errorDetail === 'ECONNREFUSED') {
-      return new ServiceUnavailableError(
-        AI_SERVICE_UNAVAILABLE_MESSAGE,
-        error,
-      );
-    }
-
-    switch (statusCode) {
-      case 400:
-        return new BadRequestError(errorDetail);
-      case 401:
-        return new UnauthorizedError(errorDetail);
-      case 403:
-        return new ForbiddenError(errorDetail);
-      case 404:
-        return new NotFoundError(errorDetail);
-      case 409:
-        return new ConflictError(errorDetail);
-      case 500:
-        return new InternalServerError(errorDetail);
-      default:
-        return new InternalServerError(`Backend error: ${errorDetail}`);
-    }
-  }
-
-  if (error.request) {
-    return new InternalServerError('Backend service unavailable');
-  }
-
-  return new InternalServerError(`${operation} failed: ${error.message}`);
-};
+import { handleBackendError } from '../../../libs/errors/backend-error';
 
 /**
  * Handle AI service response

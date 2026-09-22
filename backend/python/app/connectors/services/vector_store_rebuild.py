@@ -17,6 +17,7 @@ from app.connectors.core.sync.task_manager import (
     sync_task_manager,
 )
 from app.connectors.services.kafka_service import KafkaService
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import Topic
 from app.services.vector_db.rebuild_state import (
@@ -211,15 +212,24 @@ async def assert_no_indexing_in_flight(
         raise VectorStoreRebuildConflictError(
             "Connector sync is running "
             f"({', '.join(sorted(running_syncs)[:5])}). "
-            "Wait for it to finish before rebuilding the vector store."
+            "Wait for it to finish, then rebuild the search index again."
         )
 
-    busy = await find_busy_connectors(graph_provider, apps)
+    try:
+        busy = await find_busy_connectors(graph_provider, apps)
+    except GraphQueryError as exc:
+        # Fail closed: an unreadable listing is not evidence that nothing is
+        # running, and a rebuild started on that assumption wipes points a live
+        # indexing run just wrote.
+        raise VectorStoreRebuildConflictError(
+            "We could not check whether indexing is still running, so the "
+            "vector store was not rebuilt. Please try again in a few minutes."
+        ) from exc
     if busy:
         raise VectorStoreRebuildConflictError(
             "Records are still queued or being indexed for "
             f"{len(busy)} connector(s) ({', '.join(busy[:5])}). "
-            "Wait for indexing to drain before rebuilding the vector store."
+            "Wait for indexing to finish, then rebuild the search index again."
         )
 
 
@@ -251,7 +261,7 @@ async def acquire_rebuild_lock(config_service: Any) -> tuple[RebuildJobLock, Red
     if not await lock.try_acquire():
         await redis.aclose()
         raise VectorStoreRebuildBusyError(
-            "A vector-store cleanup or reindex job is already running"
+            "A search index cleanup or reindex is already running. Wait for it to finish, then try again."
         )
     return lock, redis
 

@@ -14,6 +14,7 @@ import { Logger } from '../../../../src/libs/services/logger.service';
 import { UserAccountController } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { JitProvisioningService } from '../../../../src/modules/auth/services/jit-provisioning.service';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 
 describe('createSamlRouter', () => {
@@ -529,13 +530,13 @@ describe('SAML Routes - handler coverage', () => {
     }
 
     mockIamService = {
-      getUserByEmail: sinon.stub().resolves({ data: { _id: 'u1', hasLoggedIn: false } }),
+      getUserByEmail: sinon.stub().resolves({ data: { _id: '507f1f77bcf86cd799439012', hasLoggedIn: false } }),
       updateUser: sinon.stub().resolves(),
     }
 
     mockJitProvisioningService = {
       extractSamlUserDetails: sinon.stub().returns({ fullName: 'Test User' }),
-      provisionUser: sinon.stub().resolves({ _id: 'u1', hasLoggedIn: false }),
+      provisionUser: sinon.stub().resolves({ _id: '507f1f77bcf86cd799439012', hasLoggedIn: false }),
     }
 
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
@@ -560,6 +561,16 @@ describe('SAML Routes - handler coverage', () => {
       orgId: '507f1f77bcf86cd799439011',
       isDeleted: false,
       authSteps: [{ allowedMethods: [{ type: 'samlSso' }] }],
+    } as any)
+
+    // generateAuthToken reads kind and isDisabled straight from the database
+    // before issuing a session, so a signing-in user has to exist there.
+    sinon.stub(Users, 'findOne').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({ kind: 'human', isDisabled: false }),
+        }),
+      }),
     } as any)
 
     router = createSamlRouter(container)
@@ -652,7 +663,7 @@ describe('SAML Routes - handler coverage', () => {
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {
@@ -676,7 +687,7 @@ describe('SAML Routes - handler coverage', () => {
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {
@@ -764,7 +775,7 @@ describe('SAML Routes - handler coverage', () => {
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {
@@ -800,7 +811,7 @@ describe('SAML Routes - handler coverage', () => {
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: false },
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: false },
       })
 
       const req = {
@@ -914,7 +925,7 @@ describe('SAML Routes - handler coverage', () => {
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'different@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
+        data: { _id: '507f1f77bcf86cd799439012', email: 'different@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {
@@ -948,7 +959,7 @@ describe('SAML Routes - handler coverage', () => {
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {
@@ -986,7 +997,7 @@ describe('SAML Routes - handler coverage', () => {
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
       })
 
       const req = {

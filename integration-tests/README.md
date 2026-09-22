@@ -258,6 +258,12 @@ pytest -m mcp -v                                     # compare with the golden
 pytest response-validation/mcp --update-mcp-golden   # rewrite the golden from the live server
 ```
 
+**Storage backends** (`storage/`): drives upload, download, versioning, rollback and metadata through the running product, against each configured backend. These repoint the whole deployment's storage while they run, so they never join a plain `pytest` or `-m integration` session — ask for them by name:
+
+```bash
+pytest -m storage -v
+```
+
 **Other options:**
 
 ```bash
@@ -265,6 +271,32 @@ pytest -m integration -v -k "test_full_lifecycle"   # single test
 pytest -m integration -v --tb=long                 # longer tracebacks
 pytest -m "integration and not slow" -v             # exclude slow
 ```
+
+**How CI splits this suite.** The nightly run does not run the whole suite in one
+job: `.github/workflows/integration-tests.yml` divides the connector suites across
+three shards (`CONN_SHARD_1` … `CONN_SHARD_3`), and a fourth `core` shard runs
+everything those three do not name, plus the browser tests. Each shard brings up
+its own stack and runs both graph databases, so a shard's wall clock is roughly
+the sum of its two legs.
+
+Adding a connector means adding its marker to one of those shard lines. Connector
+tests are also marked `integration`, so a marker in none of them is not skipped —
+it falls into `core`, which makes that shard longer and undoes the balance. A
+`CONN_SHARD_N` with no matching `connectors-N` job in the matrix is the case that
+does skip tests: `core` excludes them and no job selects them. After adding or
+growing a suite:
+
+```bash
+python3 scripts/shard_balance.py --check
+```
+
+It lists each shard's measured minutes and fails when a connector is unassigned,
+is in two shards, when a shard names something that is not a single connector's
+marker, when a shard list and the job matrix disagree, or when one shard drifts
+well past the others. The measurements
+live in `scripts/shard_durations.json`; refresh them from a recent nightly's
+`reports-both-<shard>` artifacts (`*-results.xml`) when they look stale. The same
+check runs in CI through `python3 -m unittest discover -s scripts`.
 
 After each run, an **HTML** report is written to `integration-tests/reports/` with a graph-DB-tagged, timestamped filename, e.g. `INTEGRATION_TEST_REPORT_neo4j_2025-03-09_14-30-45.html`. Open it when debugging: verdict summary, pass/fail/skip counts, **parsed root cause** per failure, **cascade hints** when a later ordered test fails because shared state was never set (e.g. `KeyError: connector_id`), **full tracebacks**, optional captured stdout/stderr, and tables of all results by suite with durations. Keep multiple runs to compare over time.
 

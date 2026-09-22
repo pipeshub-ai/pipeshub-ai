@@ -185,6 +185,30 @@ class ConversationsClient(APIClient):
             **options,
         )
 
+    def set_project(
+        self,
+        conversation_id: str,
+        project_id: str | None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Link/unlink a conversation to a project (PUT /{id}/project)."""
+        return self.put(
+            f"/{conversation_id}/project", json={"projectId": project_id}, **kwargs
+        )
+
+    def set_project_visibility(
+        self,
+        conversation_id: str,
+        visibility: str,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Override a conversation's project visibility (PATCH /{id}/project-visibility)."""
+        return self.patch(
+            f"/{conversation_id}/project-visibility",
+            json={"visibility": visibility},
+            **kwargs,
+        )
+
     def _list_get(self, path: str, **kwargs: Any) -> requests.Response:
         options, params = _request_options(kwargs)
         if params:
@@ -376,6 +400,34 @@ class AgentConversationsClient(APIClient):
         """Delete an uploaded attachment by record id."""
         return self.delete(
             f"/{agent_key}/conversations/attachments/{record_id}",
+            **kwargs,
+        )
+
+    def set_project(
+        self,
+        agent_key: str,
+        conversation_id: str,
+        project_id: str | None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Link/unlink an agent conversation to a project (PUT .../project)."""
+        return self.put(
+            f"/{agent_key}/conversations/{conversation_id}/project",
+            json={"projectId": project_id},
+            **kwargs,
+        )
+
+    def set_project_visibility(
+        self,
+        agent_key: str,
+        conversation_id: str,
+        visibility: str,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Override an agent conversation's project visibility (PATCH .../project-visibility)."""
+        return self.patch(
+            f"/{agent_key}/conversations/{conversation_id}/project-visibility",
+            json={"visibility": visibility},
             **kwargs,
         )
 

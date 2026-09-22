@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
 
@@ -223,12 +224,29 @@ class TestGetRecordsByStatus:
         bind = _get_bind_vars(typed_provider.http_client.execute_aql)
         assert bind["exclude_statuses"] == ["FAILED"]
 
-    async def test_exception_returns_empty_list(self, typed_provider):
+    async def test_query_failure_raises_instead_of_empty_list(self, typed_provider):
         typed_provider.http_client.execute_aql.side_effect = Exception("boom")
-        result = await typed_provider.get_records_by_status(
-            org_id="org1", connector_id="conn1", status_filters=["COMPLETED"],
-        )
-        assert result == []
+        with pytest.raises(GraphQueryError):
+            await typed_provider.get_records_by_status(
+                org_id="org1", connector_id="conn1", status_filters=["COMPLETED"],
+            )
+
+    async def test_a_broken_row_is_not_reported_as_an_unreadable_listing(self, typed_provider):
+        """A bug converting a row is a bug, not a database that could not be read."""
+        typed_provider.http_client.execute_aql.side_effect = None
+        typed_provider.http_client.execute_aql.return_value = [{"typeDoc": {}}]
+
+        with pytest.raises(KeyError):
+            await typed_provider.get_records_by_status(
+                org_id="org1", connector_id="conn1", status_filters=["COMPLETED"],
+            )
+
+    async def test_record_group_lookup_raises_on_query_failure(self, typed_provider):
+        """Callers create a record group when they are told None."""
+        typed_provider.http_client.execute_aql.side_effect = Exception("connection refused")
+
+        with pytest.raises(GraphQueryError):
+            await typed_provider.get_record_group_by_external_id("conn1", "bucket-a")
 
     async def test_multiple_records(self, typed_provider):
         recs = [
@@ -618,12 +636,12 @@ class TestGetRecordGroupByExternalId:
         )
         assert result is None
 
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_lookup_raises_rather_than_answering_none(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
-        result = await connected_provider.get_record_group_by_external_id(
-            connector_id="conn1", external_id="ext-rg1",
-        )
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_record_group_by_external_id(
+                connector_id="conn1", external_id="ext-rg1",
+            )
 
 
 # ===================================================================
@@ -2802,6 +2820,83 @@ class TestDeleteOutlookRecord:
 # ===================================================================
 
 class TestDeleteLocalFsRecord:
+    async def test_a_full_sync_reset_deletes_without_a_per_record_edge(self, connected_provider):
+        """The connector's own sync resets records it holds no permission edge for.
+
+        Requiring the edge aborted the whole sync on ArangoDB while Neo4j, which
+        applies no such gate to connector records, completed it.
+        """
+        connected_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        connected_provider.http_client.get_document = AsyncMock(
+            side_effect=[
+                {"_key": "ukey", "userId": "mongo-user-1"},
+                {"_key": "conn1", "createdBy": "mongo-user-1"},
+            ]
+        )
+        connected_provider._check_record_permission = AsyncMock(return_value=None)
+        connected_provider._execute_local_fs_record_deletion = AsyncMock(
+            return_value={"success": True}
+        )
+
+        result = await connected_provider.delete_local_fs_record(
+            record_id="r1", user_id="ukey",
+            record=_arango_record(connector_id="conn1"), transaction=None,
+        )
+
+        assert result["success"] is True
+        connected_provider._execute_local_fs_record_deletion.assert_awaited_once()
+
+    async def test_a_permission_edge_still_grants_the_delete(self, connected_provider):
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "ukey", "userId": "mongo-user-1"}
+        )
+        connected_provider._check_record_permission = AsyncMock(return_value="OWNER")
+        connected_provider._is_connector_creator = AsyncMock(return_value=False)
+        connected_provider._execute_local_fs_record_deletion = AsyncMock(
+            return_value={"success": True}
+        )
+
+        result = await connected_provider.delete_local_fs_record(
+            record_id="r1", user_id="mongo-user-1",
+            record=_arango_record(connector_id="conn1"), transaction=None,
+        )
+
+        assert result["success"] is True
+
+    async def test_someone_elses_connector_is_still_refused(self, connected_provider):
+        """The cross-tenant guard survives: another tenant's creator is not ours."""
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "ukey", "userId": "mongo-user-1"}
+        )
+        connected_provider.http_client.get_document = AsyncMock(
+            return_value={"_key": "conn1", "createdBy": "someone-else"}
+        )
+        connected_provider._check_record_permission = AsyncMock(return_value=None)
+        connected_provider._execute_local_fs_record_deletion = AsyncMock()
+
+        result = await connected_provider.delete_local_fs_record(
+            record_id="r1", user_id="mongo-user-1",
+            record=_arango_record(connector_id="conn1"), transaction=None,
+        )
+
+        assert result["success"] is False
+        assert result["code"] == 403
+        connected_provider._execute_local_fs_record_deletion.assert_not_awaited()
+
+    async def test_a_record_without_a_connector_is_refused(self, connected_provider):
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "ukey", "userId": "mongo-user-1"}
+        )
+        connected_provider._check_record_permission = AsyncMock(return_value=None)
+        record = _arango_record(connector_id="conn1")
+        record.pop("connectorId")
+
+        result = await connected_provider.delete_local_fs_record(
+            record_id="r1", user_id="mongo-user-1", record=record, transaction=None,
+        )
+
+        assert result["code"] == 403
+
     async def test_user_not_found(self, connected_provider):
         connected_provider.get_user_by_user_id = AsyncMock(return_value=None)
         connected_provider.http_client.get_document = AsyncMock(return_value=None)
@@ -2835,7 +2930,9 @@ class TestCollectConnectorEntities:
             ["role1"],
             ["grp1"],
         ]
-        result = await connected_provider._collect_connector_entities("c1")
+        result = await connected_provider._collect_connector_entities(
+            "c1", include_virtual_record_ids=True
+        )
         assert result["record_keys"] == ["r1", "r2"]
         assert result["record_ids"] == ["records/r1", "records/r2"]
         assert result["virtual_record_ids"] == ["vr1"]
@@ -2848,6 +2945,43 @@ class TestCollectConnectorEntities:
         assert "recordGroups/rg2" in result["all_node_ids"]
         assert "roles/role1" in result["all_node_ids"]
         assert "groups/grp1" in result["all_node_ids"]
+
+    async def test_virtual_record_ids_are_not_collected_by_default(
+        self, connected_provider
+    ):
+        """Only the legacy id-shipping cleanup reads that list. Collecting it
+        for a membership-based purge is one entry per distinct VRID of pure
+        cost on a connector with millions of records."""
+        connected_provider.http_client.execute_aql.side_effect = [
+            [{"_key": "r1", "virtualRecordId": "vr1"}],
+            [],
+            [],
+            [],
+        ]
+        result = await connected_provider._collect_connector_entities("c1")
+        assert result["virtual_record_ids"] == []
+        assert result["record_keys"] == ["r1"]
+
+    async def test_collected_virtual_record_ids_are_deduplicated(
+        self, connected_provider
+    ):
+        """Records sharing content share a VRID; the consumer needs the set."""
+        connected_provider.http_client.execute_aql.side_effect = [
+            [
+                {"_key": "r1", "virtualRecordId": "vr-shared"},
+                {"_key": "r2", "virtualRecordId": "vr-shared"},
+                {"_key": "r3", "virtualRecordId": "vr-other"},
+                {"_key": "r4"},
+            ],
+            [],
+            [],
+            [],
+        ]
+        result = await connected_provider._collect_connector_entities(
+            "c1", include_virtual_record_ids=True
+        )
+        assert result["virtual_record_ids"] == ["vr-shared", "vr-other"]
+        assert len(result["record_keys"]) == 4
         assert "apps/c1" in result["all_node_ids"]
 
     async def test_empty_results(self, connected_provider):

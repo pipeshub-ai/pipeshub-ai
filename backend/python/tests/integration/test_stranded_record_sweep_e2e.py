@@ -17,9 +17,9 @@ are declared there: an undeclared field is rejected and nothing is recovered.
 
 Needs Docker services, and skips cleanly when they are not reachable:
 
-  docker compose -f deployment/docker-compose/docker-compose.integration.messaging.yml up -d redis
-  docker run -d --name neo4j-it -p 17687:7687 -e NEO4J_AUTH=neo4j/ensure-it-pass neo4j:5.26.0
-  docker run -d --name arango-it -p 18529:8529 -e ARANGO_ROOT_PASSWORD=ensure-it-pass arangodb:3.12
+  docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
+    -f deployment/docker-compose/docker-compose.integration.messaging.yml \
+    up -d --wait neo4j-graph-it arango-graph-it redis-messaging-it
   cd backend/python && pytest tests/integration/test_stranded_record_sweep_e2e.py -m integration
 
 Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD,

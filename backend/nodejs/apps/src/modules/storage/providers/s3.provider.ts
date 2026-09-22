@@ -199,6 +199,57 @@ class AmazonS3Adapter implements StorageServiceInterface {
     }
   }
 
+  async objectExistsAtPath(documentPath: string): Promise<boolean> {
+    try {
+      await this.s3
+        .headObject({ Bucket: this.bucketName, Key: documentPath })
+        .promise();
+      return true;
+    } catch (error) {
+      const { code } = error as { code?: string };
+      if (code === 'NotFound' || code === 'NoSuchKey') {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async deleteObject(document: Document): Promise<void> {
+    if (!document.s3?.url) {
+      throw new StorageNotFoundError('Document S3 URL not found');
+    }
+    await this.s3
+      .deleteObject({
+        Bucket: this.bucketName,
+        Key: this.extractKeyFromUrl(document.s3.url),
+      })
+      .promise();
+  }
+
+  async objectExists(document: Document): Promise<boolean> {
+    if (!document.s3?.url) {
+      // No stored URL means nothing can be checked, which is not the same as absent.
+      throw new StorageNotFoundError('Document S3 URL not found');
+    }
+    try {
+      await this.s3
+        .headObject({
+          Bucket: this.bucketName,
+          Key: this.extractKeyFromUrl(document.s3.url),
+        })
+        .promise();
+      return true;
+    } catch (error) {
+      // Only an object-level miss means absent; NoSuchBucket is also a 404 and
+      // says the configuration is wrong, not that the file never arrived.
+      const { code } = error as { code?: string };
+      if (code === 'NotFound' || code === 'NoSuchKey') {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   /**
    * Retrieves the buffer content of a document from S3.
    * @param document - Metadata of the document to retrieve.

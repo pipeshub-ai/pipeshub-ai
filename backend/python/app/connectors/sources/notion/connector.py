@@ -21,6 +21,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -1572,6 +1573,7 @@ class NotionConnector(BaseConnector):
                     connector_name=self.connector_name,
                     connector_id=self.connector_id,
                     group_type=RecordGroupType.NOTION_WORKSPACE,
+                    permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                     created_at=get_epoch_timestamp_in_ms(),
                     updated_at=get_epoch_timestamp_in_ms(),
                 )
@@ -3651,6 +3653,7 @@ class NotionConnector(BaseConnector):
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.NOTION_WORKSPACE,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 created_at=get_epoch_timestamp_in_ms(),
                 updated_at=get_epoch_timestamp_in_ms(),
             )
