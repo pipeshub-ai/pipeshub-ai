@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from logging import Logger
 from pathlib import Path
@@ -95,6 +96,40 @@ _TYPE_LABEL = {
     "COMMENT": "Review comment",
 }
 _MARKDOWN = "text/markdown"
+# How long a sync waits for the sign-in personas to appear in the graph.
+_MEMBERS_WAIT_SECONDS = 60.0
+_MEMBERS_POLL_SECONDS = 1.0
+
+
+async def _wait_for_members(
+    emails: list[str],
+    lookup: Callable[[str], Awaitable[object | None]],
+    logger: Logger,
+    timeout: float = _MEMBERS_WAIT_SECONDS,
+    poll: float = _MEMBERS_POLL_SECONDS,
+) -> None:
+    """Wait until every address in *emails* has an account in the graph.
+
+    Accounts are created through the outbox, a second or two behind the API
+    call, while enabling a connector reaches the sync straight away. Group
+    membership silently skips a member the graph does not have yet, so a sync
+    that starts first would leave the personas out of every group with no
+    retry. Raising instead fails the sync, which is retried.
+    """
+    missing = list(emails)
+    deadline = asyncio.get_running_loop().time() + timeout
+    while missing:
+        missing = [email for email in missing if await lookup(email) is None]
+        if not missing:
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            raise RuntimeError(
+                "Demo sync stopped: these accounts are not in the graph yet, so "
+                f"their group membership would be skipped: {', '.join(sorted(missing))}. "
+                "Sync the connector again once the accounts exist."
+            )
+        logger.info("Demo connector waiting for %d account(s) to be created", len(missing))
+        await asyncio.sleep(poll)
 
 
 def _revision_of(body: str) -> str:
@@ -308,6 +343,16 @@ class DemoConnector(BaseConnector):
         if installer is not None:
             app_users["installer"] = installer
         await self.data_entities_processor.on_new_app_users(list(app_users.values()))
+
+        # The personas who can sign in need real accounts before step 2, which
+        # skips a member the graph has not caught up with. Fixture people
+        # without `login` are authors only and never have one.
+        sign_in_emails = [p["email"] for p in fx["people"] if p.get("login")]
+        if installer is not None and installer.email:
+            sign_in_emails.append(installer.email)
+        await _wait_for_members(
+            sign_in_emails, self.data_entities_processor.get_user_by_email, self.logger
+        )
 
         # 2. Groups and their members — the only mechanism permissions use here.
         groups: dict[str, AppUserGroup] = {}
