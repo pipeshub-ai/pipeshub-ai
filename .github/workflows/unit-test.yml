@@ -157,9 +157,15 @@ jobs:
       # delay the guard exists to remove, so it runs here too.
       - name: Run the graph-entity schema guard
         run: |
-          uv pip install --system pyyaml pytest-order
+          uv pip install --system pyyaml
+          # `-c` and `--noconftest` because the file sits inside integration-tests,
+          # whose pytest.ini asks for pytest-order and whose conftest expects a
+          # running stack. Neither is here, and without these the step dies on
+          # `unrecognized arguments: --order-scope=module` before the guard runs
+          # -- leaving it exactly as unenforced on a pull request as it was.
           PYTHONPATH=backend/python:integration-tests \
-            pytest integration-tests/unit/test_graph_entity_schemas.py -v
+            pytest integration-tests/unit/test_graph_entity_schemas.py \
+              --noconftest -c backend/python/pytest.ini -v
 
       # The only automated check on agent behaviour: six golden properties the
       # prompt and loop must hold (tool choice, no placeholder write params, a

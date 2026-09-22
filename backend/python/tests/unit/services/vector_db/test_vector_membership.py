@@ -780,6 +780,156 @@ class TestMembershipConcurrency:
         assert result == "rewritten"
 
 
+class TestVridWriteLocks:
+    """The re-read and the write are one critical section per VRID.
+
+    The connector purge computes a point's new membership from what it reads,
+    so anything that escapes this block is a lost update.
+    """
+
+    @pytest.mark.asyncio
+    async def test_locks_are_taken_in_sorted_order(self):
+        """Two batches overlapping in opposite order would otherwise each hold
+        the lock the other wants."""
+        import app.services.vector_db.membership as m
+
+        recorded = []
+        original = m._vrid_lock
+
+        def _recording(virtual_record_id):
+            recorded.append(virtual_record_id)
+            return original(virtual_record_id)
+
+        m._vrid_lock = _recording
+        try:
+            async with m.vrid_write_locks(["vr-c", "vr-a", "vr-b"]):
+                pass
+        finally:
+            m._vrid_lock = original
+
+        assert recorded == ["vr-a", "vr-b", "vr-c"], recorded
+
+    @pytest.mark.asyncio
+    async def test_overlapping_batches_in_opposite_order_both_finish(self):
+        """The smoke test for the property above: sorted acquisition means one
+        batch always wins outright instead of the two wedging each other."""
+        import asyncio
+
+        from app.services.vector_db.membership import vrid_write_locks
+
+        async def _batch(ids):
+            async with vrid_write_locks(ids):
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(
+            asyncio.gather(_batch(["vr-a", "vr-b"]), _batch(["vr-b", "vr-a"])),
+            timeout=5,
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_read_happens_before_the_lock(self):
+        """The whole point of the fix. While another writer holds one of the
+        batch's VRIDs, the batch must not have looked at anything yet."""
+        import asyncio
+
+        from app.services.vector_db.membership import _vrid_lock, vrid_write_locks
+
+        held = _vrid_lock("vr-b")  # strong ref: the registry is weak-valued
+        await held.acquire()
+        entered = {"yes": False}
+
+        async def _batch():
+            async with vrid_write_locks(["vr-a", "vr-b"]):
+                entered["yes"] = True
+
+        task = asyncio.create_task(_batch())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert entered["yes"] is False, "entered the block while vr-b was held"
+
+        held.release()
+        await asyncio.wait_for(task, timeout=5)
+        assert entered["yes"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_write_half_does_not_take_the_lock_again(self):
+        """It is called from inside the block, and asyncio.Lock is not
+        reentrant — a locking write half would wedge every batch."""
+        import asyncio
+
+        from app.services.vector_db.membership import (
+            vrid_write_locks,
+            write_membership_batch_locked,
+        )
+
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=MagicMock())
+
+        async with vrid_write_locks(["vr-a"]):
+            await asyncio.wait_for(
+                write_membership_batch_locked(
+                    vdb, "records", ["vr-a"], ["conn-2"], None, None
+                ),
+                timeout=5,
+            )
+
+        vdb.set_payload.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_locks_are_released_when_the_body_raises(self):
+        """A disconnect mid-read must not strand every VRID in the batch."""
+        from app.services.vector_db.membership import _vrid_lock, vrid_write_locks
+
+        with pytest.raises(ConnectionError):
+            async with vrid_write_locks(["vr-a", "vr-b"]):
+                raise ConnectionError("vector db gone")
+
+        still_held = [v for v in ("vr-a", "vr-b") if _vrid_lock(v).locked()]
+        assert still_held == [], still_held
+
+    @pytest.mark.asyncio
+    async def test_locks_are_released_when_cancelled(self):
+        import asyncio
+
+        from app.services.vector_db.membership import _vrid_lock, vrid_write_locks
+
+        started = asyncio.Event()
+
+        async def _hold():
+            async with vrid_write_locks(["vr-cancel"]):
+                started.set()
+                await asyncio.sleep(3600)
+
+        task = asyncio.create_task(_hold())
+        await started.wait()
+        assert _vrid_lock("vr-cancel").locked()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not _vrid_lock("vr-cancel").locked()
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_during_the_read_releases_every_lock(self):
+        """The timeout covers the whole block, not just acquisition, so it can
+        fire while the caller is mid-read — with every lock still held."""
+        import asyncio
+
+        import app.services.vector_db.membership as m
+
+        original = m.MEMBERSHIP_LOCK_TIMEOUT_SECONDS
+        m.MEMBERSHIP_LOCK_TIMEOUT_SECONDS = 0.05
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                async with m.vrid_write_locks(["vr-t1", "vr-t2"]):
+                    await asyncio.sleep(1)
+        finally:
+            m.MEMBERSHIP_LOCK_TIMEOUT_SECONDS = original
+
+        still_held = [v for v in ("vr-t1", "vr-t2") if m._vrid_lock(v).locked()]
+        assert still_held == [], still_held
+
+
 class TestMembershipLockRelease:
     """The lock must never survive the operation that took it."""
 

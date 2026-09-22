@@ -7,7 +7,7 @@ create-again-is-noop) behave identically regardless of which vector DB
 backs it — the whole point of going through the registry/strategy
 abstraction instead of a provider-specific client.
 
-Requires: docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml up -d
+Requires: docker compose -f tests/integration/compose/vector-db.yml up -d
 Run: pytest tests/integration/vector_db/test_collection_registry_contract.py -m integration --timeout=120
 """
 
@@ -23,6 +23,9 @@ from app.services.vector_db.strategy import RecordContext
 from tests.integration.vector_db.conftest import make_collection
 from tests.integration.vector_db.helpers import DIM, make_dense, sample_points, wait_for
 
+# loop_scope matches the module-scoped provider fixtures in conftest.
+# Without it each test gets its own loop and the shared client raises
+# "Event loop is closed" on first use.
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 

@@ -37,9 +37,18 @@ from __future__ import annotations
 
 import asyncio
 import weakref
+from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
+from typing import (
+    Any,
+    AsyncIterator,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    runtime_checkable,
+)
 
 from app.config.constants.arangodb import CollectionNames
 from app.services.graph_db.common.utils import ROOT_SCOPED_CONNECTOR_TYPES
@@ -70,11 +79,15 @@ class CollectionLocator(Protocol):
         """
         ...
 
-    async def all_collections(self, *, fresh: bool = False) -> Sequence[str]:
+    async def all_collections(
+        self, *, fresh: bool = False, strict: bool = False
+    ) -> Sequence[str]:
         """Every managed collection.
 
         ``fresh=True`` asks for an uncached view; delete paths use it, because
         acting on a stale enumeration leaves points in collections it missed.
+        ``strict=True`` makes a failed enumeration raise rather than come back
+        empty, so a delete can tell "nothing managed" from "could not tell".
 
         The only correct target when a VRID has no graph record left to
         resolve from — which is exactly when deleting everywhere is safe: a
@@ -146,6 +159,11 @@ _vrid_locks: "weakref.WeakValueDictionary[tuple[int, str], asyncio.Lock]" = (
 MEMBERSHIP_RESOLVE_CONCURRENCY = 32
 
 MEMBERSHIP_LOCK_TIMEOUT_SECONDS = 120
+
+# Ceiling on VRIDs rewritten by a single batched membership write. Bounds how
+# many locks one writer holds at once, and keeps the id list in the filter well
+# inside any provider's query-size limits.
+MEMBERSHIP_WRITE_BATCH_SIZE = 200
 
 # Deleting points is irreversible, and "no records remain" can be a stale read on
 # a cluster whose followers lag the commit that published this event. One
@@ -228,7 +246,7 @@ def _record_group_id_from_record(record: Any) -> Optional[str]:
     )
 
 
-def _record_group_id_from_edge(edge: dict) -> Optional[str]:
+def record_group_id_from_edge(edge: dict) -> Optional[str]:
     """Group id for a ``belongsTo`` edge, or None if it points somewhere else.
 
     Collections (connector type "KB") deliberately yield None. Their records
@@ -269,6 +287,26 @@ def _root_record_group_id_from_record(record: Any) -> Optional[str]:
     return getattr(record, "root_record_group_id", None) or getattr(
         record, "rootRecordGroupId", None
     )
+
+
+def _record_group_id_from_edge(edge: dict) -> Optional[str]:
+    """Group id for a ``belongsTo`` edge, or None if it points somewhere else.
+
+    Collections (connector type "KB") deliberately yield None. Their records
+    carry no ``recordGroupId`` and their ``belongsTo`` edge targets
+    ``apps/<kbId>`` rather than a record group, because a Collection has no
+    container below itself — the Collection *is* the container, and its id is
+    already in ``connectorIds``.
+
+    So an all-Collection VRID ends up with an empty ``recordGroupIds``, and that
+    is the intended state, not a backfill that missed it. Anything filtering by
+    container has to read ``connectorIds`` for Collections. Do not widen this to
+    accept ``apps/`` targets without changing that contract first.
+    """
+    to_id = edge.get("_to") or ""
+    if isinstance(to_id, str) and to_id.startswith(_RECORD_GROUPS_PREFIX):
+        return to_id[len(_RECORD_GROUPS_PREFIX):]
+    return None
 
 
 async def _derive_group_root(
@@ -452,7 +490,7 @@ async def resolve_virtual_record_state(
             for edge in edges:
                 if isinstance(edge, dict):
                     _add_unique(
-                        record_group_ids, seen_groups, _record_group_id_from_edge(edge)
+                        record_group_ids, seen_groups, record_group_id_from_edge(edge)
                     )
 
     if not connector_ids and current_record is not None:
@@ -484,6 +522,90 @@ async def resolve_virtual_record_state(
         # here" on a destructive path, so both count as incomplete.
         complete=len(resolved) == len(record_keys),
     )
+
+
+@asynccontextmanager
+async def vrid_write_locks(
+    virtual_record_ids: Sequence[str],
+) -> AsyncIterator[list[str]]:
+    """Hold every one of these VRIDs' write locks across the whole block.
+
+    Yields the deduplicated ids actually locked.
+
+    Recompute-then-write is only atomic if the *read* is inside the lock too.
+    This exists so a caller can re-read, recompute and write as one critical
+    section; :func:`write_membership_batch_locked` is only the write half, and a
+    caller that computed from a snapshot taken before entering has closed
+    nothing.
+
+    Sorted, for the reason AB/BA deadlocks exist: two overlapping batches taking
+    {A,B} and {B,A} in arrival order wedge each other until the timeout expires.
+
+    The timeout covers the whole block rather than acquisition alone: a caller
+    that hangs mid-read would otherwise hold every lock in the batch until its
+    own network timeout, and each of those VRIDs' per-record writes queues
+    behind it.
+
+    Not reentrant. :func:`sync_vector_membership` and
+    :func:`rewrite_or_delete_virtual_record` both take a VRID's lock, so calling
+    either from inside this block deadlocks until the timeout expires — resolve
+    orphans after it.
+    """
+    ordered = sorted({v for v in virtual_record_ids if v})
+    async with asyncio.timeout(MEMBERSHIP_LOCK_TIMEOUT_SECONDS):
+        async with AsyncExitStack() as stack:
+            for virtual_record_id in ordered:
+                await stack.enter_async_context(_vrid_lock(virtual_record_id))
+            yield ordered
+
+
+async def write_membership_batch_locked(
+    vector_db,
+    collection_name: str,
+    virtual_record_ids: Sequence[str],
+    remaining_connector_ids: Sequence[str],
+    remaining_record_group_ids: Optional[Sequence[str]],
+    logger,
+) -> None:
+    """Write one membership pair onto every point of many VRIDs, in one call.
+
+    The caller must already hold each VRID's lock via :func:`vrid_write_locks`,
+    and must have read the values being written inside that same block. This
+    half does not lock: it cannot, because the read it has to protect happened
+    before it was called.
+
+    Connector deletion strips the same ids from every shared VRID, so the VRIDs
+    whose arrays reduce to the same value can be rewritten together. One call
+    per *distinct resulting pair* instead of one per VRID is the difference
+    between a round trip per deduplicated record and a handful for the pass.
+
+    ``remaining_record_group_ids`` is ``None`` when the caller has nothing to
+    say about groups, which leaves that field untouched rather than blanking it.
+    """
+    ordered = sorted({v for v in virtual_record_ids if v})
+    if not ordered or vector_db is None or not collection_name:
+        return
+
+    payload: dict[str, Any] = {CONNECTOR_IDS_FIELD: list(remaining_connector_ids)}
+    if remaining_record_group_ids is not None:
+        payload[RECORD_GROUP_IDS_FIELD] = list(remaining_record_group_ids)
+
+    filt = await vector_db.filter_collection(must={"virtualRecordId": ordered})
+    # refresh: the connector purge re-reads the matched set after each write to
+    # decide when it is done, so a rewritten point must stop matching
+    # immediately. Per-record membership writes do not pass it.
+    await vector_db.set_payload(collection_name, payload, filt, refresh=True)
+
+    if logger is not None:
+        logger.debug(
+            "Rewrote membership for %d virtual record(s) in %s "
+            "(%d connectorIds, %s recordGroupIds)",
+            len(ordered),
+            collection_name,
+            len(remaining_connector_ids),
+            "unchanged" if remaining_record_group_ids is None
+            else len(remaining_record_group_ids),
+        )
 
 
 async def sync_vector_membership(
