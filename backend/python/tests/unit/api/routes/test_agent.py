@@ -69,6 +69,21 @@ class TestChatQueryModel:
         q = ChatQuery(query="q", attachments=att)
         assert q.attachments == att
 
+    def test_project_instructions_defaults_to_none(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="q")
+        assert q.projectInstructions is None
+
+    def test_project_instructions_accepts_value(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="q", projectInstructions="Cite the Q3 report.")
+        assert q.projectInstructions == "Cite the Q3 report."
+
+    def test_project_instructions_rejects_over_max_length(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        with pytest.raises(ValidationError):
+            ChatQuery(query="q", projectInstructions="x" * 8001)
+
 
 class TestMergeEndUserServiceAccountUserInfo:
     def _creator_like(self) -> dict:
@@ -1375,6 +1390,22 @@ class TestGetUserContextExtended:
         request.query_params = {"sendUserInfo": False}
         ctx = _get_user_context(request)
         assert ctx["userId"] == "u1"
+
+
+class TestApplyUserContextGate:
+    def test_disabled_sets_send_user_info_false(self) -> None:
+        from app.api.routes.agent import _apply_user_context_gate
+
+        info = {"userId": "u1", "sendUserInfo": True}
+        _apply_user_context_gate(info, enabled=False)
+        assert info["sendUserInfo"] is False
+
+    def test_enabled_leaves_existing_value(self) -> None:
+        from app.api.routes.agent import _apply_user_context_gate
+
+        info = {"userId": "u1", "sendUserInfo": True}
+        _apply_user_context_gate(info, enabled=True)
+        assert info["sendUserInfo"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -3507,7 +3538,7 @@ class TestChatStream:
             body = await _drain(await chat_stream(request, "a1"))
 
         assert "RUN_ERROR" in body or "event: error" in body
-        assert "Failed to initialize LLM service" in body
+        assert "An admin can add one in Workspace" in body
 
 
 # ===========================================================================

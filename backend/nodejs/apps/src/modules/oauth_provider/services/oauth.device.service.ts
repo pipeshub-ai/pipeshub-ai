@@ -226,8 +226,7 @@ export class OAuthDeviceService {
     const userId = claimed.userId.toString()
     const orgId = claimed.orgId.toString()
 
-    let fullName: string | undefined
-    let accountType: string | undefined
+    // The user approved earlier; they or their org may have been deleted since.
     const user = await Users.findOne({
       _id: claimed.userId,
       orgId: claimed.orgId,
@@ -236,9 +235,6 @@ export class OAuthDeviceService {
       .select('fullName')
       .lean()
       .exec()
-    if (user) {
-      fullName = user.fullName
-    }
     const org = await Org.findOne({
       _id: claimed.orgId,
       isDeleted: false,
@@ -246,9 +242,14 @@ export class OAuthDeviceService {
       .select('accountType')
       .lean()
       .exec()
-    if (org) {
-      accountType = (org as { accountType?: string }).accountType
+    if (!user || !org) {
+      throw new DeviceGrantError(
+        'access_denied',
+        'the account that approved this login no longer exists',
+      )
     }
+    const fullName: string | undefined = user.fullName
+    const accountType = (org as { accountType?: string }).accountType
 
     const tokens = await this.oauthTokenService.generateTokens(
       app,

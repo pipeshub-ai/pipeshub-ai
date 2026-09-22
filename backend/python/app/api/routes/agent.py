@@ -5,6 +5,7 @@ Handles agent instances, templates, chat, and permissions using graph-based arch
 
 import asyncio
 import json
+import logging
 import os
 import uuid
 from collections.abc import AsyncGenerator
@@ -13,13 +14,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
-from app.utils.stage_timer import StageTimer
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
@@ -30,7 +31,10 @@ from app.api.routes.chatbot import (
     load_system_prompts,
 )
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.ai_models import REASONING_EFFORT_VALUES, validate_reasoning_effort
+from app.config.constants.ai_models import (
+    REASONING_EFFORT_VALUES,
+    validate_reasoning_effort,
+)
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
@@ -54,7 +58,14 @@ from app.telemetry.identity import domain_from_email
 from app.utils.attachment_utils import (
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
+from app.utils.llm import LLM_MISSING_FOR_CHAT
+from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import action_failed
+
+# ``services['logger']`` is bound inside each request, so a handler that failed
+# before that needs a module logger with a name it cannot shadow.
+_log = logging.getLogger(__name__)
 
 # `RouteDecision`/`_build_agent_capability_context`/`_build_prior_routing_messages`/
 # `BlobStorage`/`resolve_attachments` moved to `app.modules.agents.qna.router`
@@ -129,6 +140,11 @@ class ChatQuery(BaseModel):
     timezone: str | None = None
     currentTime: str | None = None
     conversationId: str | None = None
+    # Author-set instructions from the Project this conversation is linked
+    # to (Node `ProjectService.buildContext`). Additive — rendered as its
+    # own prompt section, never merged into the agent's system_prompt/
+    # instructions, so a real Agent Builder agent's identity is untouched.
+    projectInstructions: str | None = Field(default=None, max_length=8000)
     # End-user display name when JWT userId is synthetic (e.g. Slack) — see
     # _merge_end_user_into_service_account_user_info.
     callerDisplayName: str | None = None
@@ -152,6 +168,10 @@ class ChatQuery(BaseModel):
     # later `POST /chat/cancel {runId}` (`chatbot.py` — one endpoint for
     # both assistant and agent runs) can target it.
     runId: str | None = None
+    # Set by Node for a project-scoped chat (see `applyProjectScope`,
+    # project-context.ts). Threaded into `filters["strictScope"]` below —
+    # see `ChatQuery.strictScope` in chatbot.py for the full rationale.
+    strictScope: bool = False
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
@@ -207,7 +227,7 @@ class LLMInitializationError(AgentError):
     """LLM initialization failed"""
     def __init__(self) -> None:
         super().__init__(
-            detail="Failed to initialize LLM service. LLM configuration is missing.",
+            detail=LLM_MISSING_FOR_CHAT,
             status_code=500
         )
 
@@ -266,6 +286,12 @@ def _get_user_context(request: Request) -> dict[str, Any]:
         "isServiceAccount": bool(user.get("isServiceAccount", False)),
         "sendUserInfo": request.query_params.get("sendUserInfo", True),
     }
+
+
+def _apply_user_context_gate(user_info: dict[str, Any], *, enabled: bool) -> None:
+    """When disabled, omit name/email/org from the agent system prompt."""
+    if not enabled:
+        user_info["sendUserInfo"] = False
 
 
 
@@ -871,7 +897,7 @@ async def _create_toolset_edges(
             return created_toolsets, [{"name": "all", "error": "Failed to create toolset nodes"}]
     except Exception as e:
         logger.error(f"Failed to batch create toolset nodes: {e}")
-        return created_toolsets, [{"name": "all", "error": str(e)}]
+        return created_toolsets, [{"name": "all", "error": action_failed("add these tools to the agent")}]
 
     # Prepare agent -> toolset edges
     agent_toolset_edges = [
@@ -1101,7 +1127,7 @@ async def _create_mcp_server_edges(
             return created_mcp_servers, [{"name": "all", "error": "Failed to create MCP server nodes"}]
     except Exception as e:
         logger.error(f"Failed to batch create MCP server nodes: {e}")
-        return created_mcp_servers, [{"name": "all", "error": str(e)}]
+        return created_mcp_servers, [{"name": "all", "error": action_failed("add these MCP servers to the agent")}]
 
     # Prepare agent -> mcpServer edges
     agent_mcp_server_edges = [
@@ -1359,6 +1385,13 @@ async def _create_skill_edges(
         if skill_doc.get("source") != "builtin" and skill_doc.get("createdBy") != user_key:
             logger.warning(f"Skipping skill '{name}' not owned by user {user_key} for agent {agent_key}")
             continue
+        if (skill_doc.get("status") or "active") != "active":
+            # Mirrors the picker (`GET /skills?status=active`, see
+            # `SkillsApi.listAssignableSkills`) — closes the gap where a
+            # direct API call could still newly assign a disabled or
+            # deprecated skill the UI never offers.
+            logger.warning(f"Skipping non-active skill '{name}' for agent {agent_key}")
+            continue
         edges.append({
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
             "_to": f"{skills_collection}/{skill_key}",
@@ -1563,7 +1596,7 @@ async def get_agent_templates(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error getting templates: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("load agent templates")) from e
 
 
 @router.get("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -1591,7 +1624,7 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
         raise
     except Exception as e:
         services["logger"].error(f"Error getting template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("load this template")) from e
 
 
 @router.post("/template/{template_id}/clone", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1616,7 +1649,7 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
         raise
     except Exception as e:
         services["logger"].error(f"Error cloning template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("copy this template")) from e
 
 
 @router.delete("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1640,7 +1673,7 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
         raise
     except Exception as e:
         services["logger"].error(f"Error deleting template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("delete this template")) from e
 
 
 @router.put("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1665,7 +1698,7 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
         raise
     except Exception as e:
         services["logger"].error(f"Error updating template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("save this template")) from e
 
 
 # ============================================================================
@@ -1731,6 +1764,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "defaultReasoningEffort": default_reasoning_effort,
             "isActive": True,
             "isServiceAccount": is_service_account,
+            "sendUserContext": bool(body.get("sendUserContext", True)),
             "createdBy": user_key,
             "updatedBy": None,
             "createdAtTimestamp": time,
@@ -2017,7 +2051,7 @@ async def create_agent(request: Request) -> JSONResponse:
             logger.error(f"Failed to create agent {agent_key}: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to create agent: {str(e)}"
+                detail=action_failed("create this agent")
             ) from e
 
         # Build response
@@ -2051,7 +2085,7 @@ async def create_agent(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         logger.error(f"Error creating agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("create this agent")) from e
 
 @router.get(
     "/{agent_id}/internal/service-account",
@@ -2109,7 +2143,8 @@ async def get_agent_internal(request: Request, agent_id: str) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _log.error("get_agent_internal failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=400, detail=action_failed("load this agent")) from e
 
 
 @router.get("/web-search-usage/{provider}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -2138,7 +2173,8 @@ async def get_web_search_provider_usage(request: Request, provider: str) -> JSON
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _log.error("get_web_search_provider_usage failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=400, detail=action_failed("check where this web search provider is used")) from e
 
 
 @router.get("/model-usage/{model_key}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -2167,11 +2203,12 @@ async def get_model_usage(request: Request, model_key: str) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
+        _log.error("get_model_usage failed: %s", e, exc_info=True)
         # Server-side failure (graph DB outage, etc.) — return 500 so callers
         # treat this as a transient backend error and fail-closed on deletion.
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Internal server error while checking model usage: {str(e)}",
+            detail=action_failed("check where this model is used"),
         ) from e
 
 
@@ -2222,7 +2259,7 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error getting agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("load this agent")) from e
 
 
 @router.get("/", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -2324,7 +2361,7 @@ async def get_agents(
         raise
     except Exception as e:
         services["logger"].error(f"Error getting agents: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("load your agents")) from e
 
 
 @router.put("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -2572,7 +2609,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.error(f"Failed to delete toolset nodes and edges for agent {agent_id}: {e}", exc_info=True)
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Failed to delete toolset nodes and edges: {str(e)}"
+                    detail=action_failed("save this agent")
                 ) from e
 
             # Create new toolset nodes, tool nodes, and edges only if there are toolsets to create
@@ -2594,7 +2631,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     )
                     raise HTTPException(
                         status_code=500,
-                        detail=f"Failed to create toolset edges: {str(e)}"
+                        detail=action_failed("save this agent")
                     ) from e
             else:
                 logger.info(f"All toolsets removed for agent {agent_id}")
@@ -2728,7 +2765,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.error(f"Failed to delete MCP server nodes and edges for agent {agent_id}: {e}", exc_info=True)
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Failed to delete MCP server nodes and edges: {str(e)}"
+                    detail=action_failed("save this agent")
                 ) from e
 
             # Create new MCP server nodes, tool nodes, and edges only if there are servers to attach.
@@ -2771,7 +2808,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     )
                     raise HTTPException(
                         status_code=500,
-                        detail=f"Failed to create MCP server edges: {str(e)}"
+                        detail=action_failed("save this agent")
                     ) from e
             else:
                 logger.info(f"All MCP servers detached for agent {agent_id}")
@@ -2864,7 +2901,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.error(f"Failed to delete knowledge nodes and edges for agent {agent_id}: {e}", exc_info=True)
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Failed to delete knowledge nodes and edges: {str(e)}"
+                    detail=action_failed("save this agent")
                 ) from e
 
             # Create new knowledge nodes and edges only if there are knowledge sources to create
@@ -2881,7 +2918,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     )
                     raise HTTPException(
                         status_code=500,
-                        detail=f"Failed to create knowledge edges: {str(e)}"
+                        detail=action_failed("save this agent")
                     ) from e
             else:
                 logger.info(f"All knowledge sources removed for agent {agent_id}")
@@ -2923,7 +2960,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                         logger.error(f"Failed to abort transaction: {abort_error}")
                 logger.error(f"Failed to update skill assignments for agent {agent_id}: {e}", exc_info=True)
                 raise HTTPException(
-                    status_code=500, detail=f"Failed to update skill assignments: {str(e)}",
+                    status_code=500, detail=action_failed("save this agent"),
                 ) from e
 
         return JSONResponse(
@@ -2934,7 +2971,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         logger.error(f"Error updating agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("save this agent")) from e
 
 @router.delete("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -3055,7 +3092,7 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
                 services["logger"].warning(f"⚠️ Failed to rollback transaction {txn_id}: {rb_err}")
         if services is not None:
             services["logger"].error(f"Error deleting agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=action_failed("delete this agent")) from e
 
 
 # ============================================================================
@@ -3224,19 +3261,23 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         if agent_id == "agentIdPlaceholder":
             # Lazy: `app.api.routes.toolsets` imports back into this module.
             from app.agents.mcp.service import is_mcp_enabled
-            from app.services.featureflag.platform_settings import is_actions_enabled
+            from app.services.featureflag.platform_settings import (
+                is_actions_enabled,
+                is_user_context_enabled,
+            )
 
             toolset_registry = getattr(request.app.state, "toolset_registry", None)
-            # One wave: org lookup, the user document, and both platform flags
+            # One wave: org lookup, the user document, and platform flags
             # are mutually independent. The flags are resolved here and threaded
             # through because they are deliberately uncached live reads (see
             # `is_actions_enabled`) that `get_assistant_agent` and the toolset/
             # MCP blocks below each used to read again.
-            org_info, actions_enabled, mcp_enabled, user_doc = await asyncio.gather(
+            org_info, actions_enabled, mcp_enabled, user_doc, user_context_enabled = await asyncio.gather(
                 _get_org_info(user_context, graph_provider, logger),
                 is_actions_enabled(config_service),
                 is_mcp_enabled(config_service),
                 _get_user_document(user_context["userId"], graph_provider, logger),
+                is_user_context_enabled(config_service),
             )
             # Built inside the stream below: this is the expensive half of the
             # request (toolset + MCP + knowledge fan-out) and nothing above it
@@ -3244,6 +3285,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             agent = None
             prefetched_toolset_auth: dict[str, dict[str, Any]] = {}
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
+            _apply_user_context_gate(enriched_user_info, enabled=user_context_enabled)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
             is_service_account = False
 
@@ -3274,6 +3316,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
                 if not perm:
                     raise AgentNotFoundError(agent_id)
+
+            _apply_user_context_gate(
+                enriched_user_info,
+                enabled=bool(agent.get("sendUserContext", True)),
+            )
 
         async def _run() -> AsyncGenerator[str, None]:
             """Everything below the authorization checks. Runs after the
@@ -3347,7 +3394,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # loads an external toolset when it appears in `context.agent_toolsets`)
                 # loads none of them, regardless of what's attached.
                 if actions_enabled is None:
-                    from app.services.featureflag.platform_settings import is_actions_enabled
+                    from app.services.featureflag.platform_settings import (
+                        is_actions_enabled,
+                    )
 
                     actions_enabled = await is_actions_enabled(config_service)
                 agent_toolsets = agent.get("toolsets", []) if actions_enabled else []
@@ -3382,7 +3431,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     mcp_enabled = await is_mcp_enabled(config_service)
                 agent_mcp_servers = agent.get("mcpServers", []) if mcp_enabled else []
                 if chat_query.tools is not None:
-                    from app.agents.mcp.service import match_enabled_tools_for_mcp_server
+                    from app.agents.mcp.service import (
+                        match_enabled_tools_for_mcp_server,
+                    )
 
                     enabled_tools_set = set(chat_query.tools)
                     filtered_mcp_servers = []
@@ -3557,7 +3608,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 named_mcp_servers = [m for m in agent_mcp_servers if m.get("instanceId")]
                 if named_mcp_servers:
-                    import asyncio as _asyncio  # noqa: F401 — may not have run yet if named_toolsets was empty above
+                    import asyncio as _asyncio
 
                     from app.agents.mcp import service as mcp_service
                     from app.edition_config import get_mcp_instance_resolved
@@ -3686,6 +3737,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 if not filters.get("kb") and agent_id != "agentIdPlaceholder":
                     filters["kb"] = [NO_KB_SELECTED_FILTER]
 
+                # A project-scoped chat sets this so an empty effective
+                # apps/kb selection stays empty at retrieval time instead of
+                # `get_accessible_virtual_record_ids` falling back to
+                # "search everything the user can access".
+                if chat_query.strictScope:
+                    filters["strictScope"] = True
+
                 agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
 
                 logger.info(f"Filters: {filters}")
@@ -3754,6 +3812,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "systemPrompt": agent.get("systemPrompt"),
                     "instructions": agent.get("instructions"),
                     "custom_instructions": custom_instructions,
+                    "projectInstructions": chat_query.projectInstructions,
                     "timezone": chat_query.timezone,
                     "currentTime": chat_query.currentTime,
                     "toolsets": agent_toolsets,
@@ -3815,7 +3874,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     yield _evt
             except Exception as exc:
                 logger.error(f"Error in chat_stream body: {exc}", exc_info=True)
-                yield _stream_error_frame(protocol, str(exc))
+                error_code, user_message = classify_exception(exc)
+                yield _stream_error_frame(protocol, user_message, error_code)
 
         return StreamingResponse(
             _run(),
@@ -3830,7 +3890,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         raise
     except Exception as e:
         logger.error(f"Error in chat_stream: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _, user_message = classify_exception(e)
+        raise HTTPException(status_code=400, detail=user_message) from e
 
 def _stream_error_frame(protocol: str, message: str, code: str = "stream_error") -> str:
     """Terminal SSE error frame, in whichever protocol the client asked for.
@@ -3881,8 +3942,8 @@ async def get_assistant_agent(
         chat handler can skip re-reading the identical etcd paths.
     """
     from app.agents.mcp.service import get_authenticated_mcp_servers, is_mcp_enabled
-    from app.edition_config import resolve_mcp_instances_with_inheritance
     from app.api.routes.toolsets import get_authenticated_toolsets, is_actions_enabled
+    from app.edition_config import resolve_mcp_instances_with_inheritance
 
     toolset_auth_by_instance: dict[str, dict[str, Any]] = {}
 

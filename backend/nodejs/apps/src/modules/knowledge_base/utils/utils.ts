@@ -4,7 +4,10 @@ import { Logger } from '../../../libs/services/logger.service';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import axios from 'axios';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import { endpoint } from '../../storage/constants/constants';
+import {
+  endpoint,
+  STORAGE_WRITE_FAILED_MESSAGE,
+} from '../../storage/constants/constants';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { RecordRelationService } from '../services/kb.relation.service';
@@ -132,15 +135,48 @@ export const createPlaceholderDocument = async (
     );
 
     // Direct upload successful, no redirect needed
+    const created = response.data as
+      | { _id?: string; documentName?: string }
+      | undefined;
+    if (!created?._id) {
+      // Nothing to attach a record to, so the file is not saved as far as the
+      // person uploading is concerned.
+      logger.error('Storage saved the file but returned no document id');
+      throw new Error(STORAGE_WRITE_FAILED_MESSAGE);
+    }
     return {
-      documentId: response.data?._id,
-      documentName: response.data?.documentName,
+      documentId: created._id,
+      documentName: created.documentName ?? documentName,
     };
-  } catch (error: any) {
-    if (error.response?.status === HTTP_STATUS.PERMANENT_REDIRECT) {
-      const redirectUrl = error.response.headers.location;
-      const documentId = error.response.headers['x-document-id'];
-      const rawDocName = error.response.headers['x-document-name'] ?? '';
+  } catch (error: unknown) {
+    // Storage answers a large file with a redirect to a signed URL, which axios
+    // raises as an error.
+    const redirect = axios.isAxiosError(error) ? error.response : undefined;
+    if (redirect?.status === HTTP_STATUS.PERMANENT_REDIRECT) {
+      const headers = redirect.headers as Record<string, unknown>;
+      const redirectUrl: unknown = headers.location;
+      const documentId: unknown = headers['x-document-id'];
+      // Without both of these there is nowhere to send the file and nothing to
+      // clean up afterwards, so treat the answer as a failed upload.
+      if (
+        typeof redirectUrl !== 'string' ||
+        redirectUrl.trim() === '' ||
+        typeof documentId !== 'string' ||
+        documentId.trim() === ''
+      ) {
+        logger.error(
+          'Storage asked for a direct upload but did not say where',
+          {
+            hasLocation:
+              typeof redirectUrl === 'string' && redirectUrl.trim() !== '',
+            hasDocumentId:
+              typeof documentId === 'string' && documentId.trim() !== '',
+          },
+        );
+        throw new Error(STORAGE_WRITE_FAILED_MESSAGE);
+      }
+      const docNameHeader = headers['x-document-name'];
+      const rawDocName = typeof docNameHeader === 'string' ? docNameHeader : '';
       let documentName: string;
       try {
         documentName = decodeURIComponent(rawDocName);
@@ -164,18 +200,47 @@ export const createPlaceholderDocument = async (
         documentId,
         documentName,
         redirectUrl,
-        upload: () =>
-          uploadFileToSignedUrl(
-            file.buffer,
-            file.mimetype,
-            redirectUrl,
-            documentId,
-            documentName,
-          ),
+        upload: async () => {
+          try {
+            await uploadFileToSignedUrl(
+              file.buffer,
+              file.mimetype,
+              redirectUrl,
+              documentId,
+              documentName,
+            );
+          } catch {
+            // Storage removes the placeholder only if it confirms the file never arrived.
+            await axiosInstance
+              .post(
+                `${storageUrl}/api/v1/document/internal/${documentId}/abortDirectUpload`,
+                {},
+                { headers: { Authorization: `Bearer ${storageToken}` } },
+              )
+              .catch((cleanupError: unknown) => {
+                logger.warn(
+                  'Could not remove the placeholder of a failed upload',
+                  {
+                    documentId: String(documentId),
+                    error:
+                      cleanupError instanceof Error
+                        ? cleanupError.message
+                        : String(cleanupError),
+                  },
+                );
+              });
+            // uploadFileToSignedUrl logged the storage vendor's own response.
+            throw new Error(STORAGE_WRITE_FAILED_MESSAGE);
+          }
+        },
       };
     } else {
       logger.error('Error creating placeholder document', {
-        error: error.response?.data || error.message,
+        error: axios.isAxiosError(error)
+          ? ((error.response?.data as unknown) ?? error.message)
+          : error instanceof Error
+            ? error.message
+            : String(error),
       });
       throw error;
     }

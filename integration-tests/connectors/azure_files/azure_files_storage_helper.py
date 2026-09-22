@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, List
 
-from azure.core.exceptions import ResourceExistsError  # type: ignore[import-not-found]
+from azure.core.exceptions import (  # type: ignore[import-not-found]
+    HttpResponseError,
+    ResourceExistsError,
+    ResourceNotFoundError,
+)
 from azure.storage.fileshare import (  # type: ignore[import-not-found]
     ShareDirectoryClient,
     ShareServiceClient,
@@ -17,6 +21,8 @@ def _iter_files(root: Path):
         if path.is_file():
             yield path
 
+
+from helper.run_folder import require_run_folder
 
 class AzureFilesStorageHelper:
     """Wrapper around azure-storage-file-share for test usage."""
@@ -42,8 +48,16 @@ class AzureFilesStorageHelper:
             else:
                 yield path
 
-    def list_objects(self, share: str) -> List[str]:
-        return list(self._iter_files_in_share(share))
+    def list_objects(self, share: str, prefix: str = "") -> List[str]:
+        folder = prefix.rstrip("/")
+        try:
+            return list(self._iter_files_in_share(share, folder))
+        except ResourceNotFoundError:
+            if not folder:
+                raise
+            # A missing share is the same 404 as a missing folder: raise if it is the share.
+            self._service.get_share_client(share).get_share_properties()
+            return []  # this run's folder has not been created yet
 
     def _ensure_azure_files_directory(self, share_client: object, dir_name: str) -> object:
         if not dir_name:
@@ -59,12 +73,12 @@ class AzureFilesStorageHelper:
                 pass
         return share_client.get_directory_client(dir_name)
 
-    def upload_directory(self, share: str, root: Path) -> int:
+    def upload_directory(self, share: str, root: Path, prefix: str = "") -> int:
         root = root.resolve()
         share_client = self._service.get_share_client(share)
         count = 0
         for file_path in _iter_files(root):
-            rel_path = file_path.relative_to(root).as_posix()
+            rel_path = prefix + file_path.relative_to(root).as_posix()
             dir_name, _, file_name = rel_path.rpartition("/")
 
             if dir_name:
@@ -137,14 +151,20 @@ class AzureFilesStorageHelper:
         dest_path = new_path.strip("/")
         src_file_client.rename_file(dest_path, overwrite=True)
 
-    def clear_objects(self, share: str) -> None:
+    def clear_objects(self, share: str, prefix: str) -> None:
+        """Delete this run's folder and everything in it, and nothing else."""
+        folder = require_run_folder(prefix).rstrip("/")
         share_client = self._service.get_share_client(share)
-        for path in list(self._iter_files_in_share(share)):
+        directories = {folder}
+        for path in self.list_objects(share, prefix):
             dir_name, _, file_name = path.rpartition("/")
-            directory_client = (
-                share_client.get_directory_client(dir_name)
-                if dir_name
-                else share_client.get_directory_client("")
-            )
-            file_client = directory_client.get_file_client(file_name)
-            file_client.delete_file()
+            parts = dir_name.split("/")
+            directories.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
+            share_client.get_directory_client(dir_name).get_file_client(file_name).delete_file()
+        # Deepest first: a directory can only be deleted once it is empty.
+        for directory in sorted(directories, key=lambda d: d.count("/"), reverse=True):
+            if directory == folder or directory.startswith(folder + "/"):
+                try:
+                    share_client.get_directory_client(directory).delete_directory()
+                except HttpResponseError:
+                    pass  # already gone, or not empty; a leftover empty folder is harmless

@@ -1,5 +1,8 @@
 import {
+  BlobSASPermissions,
   BlobServiceClient,
+  BlockBlobClient,
+  ContainerClient,
   StorageSharedKeyCredential,
 } from '@azure/storage-blob';
 import { injectable } from 'inversify';
@@ -28,6 +31,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
   private blobServiceClient: BlobServiceClient;
   private containerClient: any;
   private readonly containerName!: string;
+  private containerReady!: Promise<void>;
   private readonly logger = Logger.getInstance({
     service: 'AzureBlobStorageAdapter',
   });
@@ -86,8 +90,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       this.containerClient =
         this.blobServiceClient.getContainerClient(containerName);
 
-      // Ensure container exists
-      this.ensureContainerExists();
+      this.containerReady = this.startContainerCheck();
 
       this.logger.info('Azure Blob Storage adapter initialized', {
         account: accountName,
@@ -104,6 +107,30 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
             error instanceof Error ? error.message : 'Unknown error',
         },
       );
+    }
+  }
+
+  /**
+   * Starts the container check without letting a failure become an unhandled
+   * rejection; the failure surfaces from the next storage operation instead.
+   */
+  private startContainerCheck(): Promise<void> {
+    const check = this.ensureContainerExists();
+    check.catch(() => undefined);
+    return check;
+  }
+
+  /**
+   * Waits for the container to exist before touching a blob, so the first
+   * upload cannot race its creation. A failed check is retried once here, so
+   * a brief outage at start-up does not break the adapter for good.
+   */
+  private async waitForContainer(): Promise<void> {
+    try {
+      await this.containerReady;
+    } catch {
+      this.containerReady = this.startContainerCheck();
+      await this.containerReady;
     }
   }
 
@@ -142,6 +169,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     documentInPayload: FilePayload,
   ): Promise<StorageServiceResponse<string>> {
     try {
+      await this.waitForContainer();
       this.validateFilePayload(documentInPayload);
 
       const blobClient = this.containerClient.getBlockBlobClient(
@@ -192,6 +220,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     document: Document,
   ): Promise<StorageServiceResponse<string>> {
     try {
+      await this.waitForContainer();
       if (!document.azureBlob?.url) {
         throw new StorageNotFoundError('Azure Blob Storage URL not found');
       }
@@ -231,6 +260,35 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     }
   }
 
+  async objectExistsAtPath(documentPath: string): Promise<boolean> {
+    await this.waitForContainer();
+    return this.blobAt(documentPath).exists();
+  }
+
+  /** The client for one blob, typed, since the container client is not. */
+  private blobAt(blobPath: string): BlockBlobClient {
+    return (this.containerClient as ContainerClient).getBlockBlobClient(
+      blobPath,
+    );
+  }
+
+  async deleteObject(document: Document): Promise<void> {
+    if (!document.azureBlob?.url) {
+      throw new StorageNotFoundError('Azure Blob Storage URL not found');
+    }
+    await this.waitForContainer();
+    await this.blobAt(this.getBlobPath(document.azureBlob.url)).deleteIfExists();
+  }
+
+  async objectExists(document: Document): Promise<boolean> {
+    if (!document.azureBlob?.url) {
+      // No stored URL means nothing can be checked, which is not the same as absent.
+      throw new StorageNotFoundError('Azure Blob Storage URL not found');
+    }
+    await this.waitForContainer();
+    return this.blobAt(this.getBlobPath(document.azureBlob.url)).exists();
+  }
+
   /**
    * Retrieve document content
    * @param document Document metadata
@@ -244,6 +302,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     version?: number,
   ): Promise<StorageServiceResponse<Buffer>> {
     try {
+      await this.waitForContainer();
       const blobUrl =
         version === undefined
           ? document.azureBlob?.url
@@ -297,6 +356,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     expirationTimeInSeconds: number = 3600,
   ): Promise<StorageServiceResponse<string>> {
     try {
+      await this.waitForContainer();
       const blobUrl =
         version === undefined
           ? document.azureBlob?.url
@@ -317,7 +377,9 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
 
       // Generate SAS token
       const sasUrl = await blobClient.generateSasUrl({
-        permissions: { read: true },
+        // The SDK parses permissions from their string form, so a plain
+        // object literal is rejected ("Invalid permission: [").
+        permissions: BlobSASPermissions.from({ read: true }),
         expiresOn: new Date(Date.now() + expirationTimeInSeconds * 1000),
         ...(fullName && {
           contentDisposition: `attachment; filename*=UTF-8''${filenameStar}`,
@@ -411,10 +473,11 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     documentPath: string,
   ): Promise<StorageServiceResponse<{ url: string }>> {
     try {
+      await this.waitForContainer();
       const blobClient = this.containerClient.getBlockBlobClient(documentPath);
 
       const sasUrl = await blobClient.generateSasUrl({
-        permissions: { write: true },
+        permissions: BlobSASPermissions.from({ write: true }),
         expiresOn: new Date(Date.now() + 3600000), // 1 hour
       });
 
@@ -461,12 +524,31 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     });
   }
 
+  /**
+   * The blob name inside a URL this adapter produced. The URL path is
+   * percent-encoded and the SDK encodes blob names again, so the name is
+   * decoded here: otherwise "Quarterly report.pdf" is looked up as
+   * "Quarterly%20report.pdf" and never found. Handles both the
+   * `https://<account>.blob.<suffix>/<container>/<name>` form and the
+   * path-style `<endpoint>/<account>/<container>/<name>` form used by
+   * emulators and custom endpoints.
+   */
   private getBlobPath(url: string): string {
     try {
-      const urlObj = new URL(url);
-      const path = urlObj.pathname;
-      // Remove container name from path and leading slash
-      return path.replace(`/${this.containerName}/`, '');
+      const segments = new URL(url).pathname.split('/').slice(1);
+      let start: number;
+      if (segments[0] === this.containerName) {
+        start = 1;
+      } else if (segments[1] === this.containerName) {
+        start = 2;
+      } else {
+        throw new Error(`URL is not in container '${this.containerName}'`);
+      }
+      const name = segments.slice(start).map(decodeURIComponent).join('/');
+      if (!name) {
+        throw new Error('URL has no blob name');
+      }
+      return name;
     } catch (error) {
       throw new StorageValidationError(
         'Invalid Azure Blob Storage URL format',

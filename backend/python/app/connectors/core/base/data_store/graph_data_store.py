@@ -165,7 +165,11 @@ class GraphTransactionStore(TransactionStore):
         after_key: Optional[str] = None,
         exclude_statuses: Optional[list[str]] = None,
     ) -> list[Record]:
-        """Get records by status. Returns properly typed Record instances."""
+        """Get records by status. Returns properly typed Record instances.
+
+        An empty list means no record matched. A listing that could not be read
+        raises GraphQueryError - callers must not read that as "nothing found".
+        """
         return await self.graph_provider.get_records_by_status(
             org_id,
             connector_id,

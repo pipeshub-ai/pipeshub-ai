@@ -6,6 +6,19 @@ import { Org } from '../schema/org.schema';
  * Data-access helpers for org-admin role checks.
  * Keeps Mongoose queries out of the service layer.
  */
+/**
+ * These queries answer "who administers this organisation", and both callers
+ * mean people by it: one notifies administrators, the other refuses to demote
+ * the last one. A service account cannot hold the admin role — the schema
+ * refuses it — but a row written straight to the database could, and counting
+ * it would let the last person who can sign in be demoted, leaving an
+ * organisation administered only by something nobody can log in as.
+ *
+ * `$ne` rather than a match on 'human', because records created before `kind`
+ * existed have no value there at all.
+ */
+const NOT_A_SERVICE_ACCOUNT = { kind: { $ne: 'service' } } as const;
+
 export const UserAdminRepository = {
   async findActiveUserRole(
     userId: string,
@@ -27,6 +40,7 @@ export const UserAdminRepository = {
       orgId,
       role: 'admin',
       isDeleted: { $ne: true },
+      ...NOT_A_SERVICE_ACCOUNT,
     })
       .select('_id')
       .lean();
@@ -40,6 +54,7 @@ export const UserAdminRepository = {
       orgId,
       role: 'admin',
       isDeleted: { $ne: true },
+      ...NOT_A_SERVICE_ACCOUNT,
     });
     return session ? query.session(session) : query;
   },

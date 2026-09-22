@@ -156,6 +156,20 @@ tags:
   # User Management
   - name: Users
     description: User management operations
+  - name: Service Accounts
+    description: |
+      Machine identities that automation authenticates as, so a script reads with
+      its own permissions rather than borrowing a person's.
+
+      A service account is an ordinary user record with `kind: "service"`. It
+      appears in the permission graph the same way people do, so "what can this
+      account see" is answered by the same code that answers it for a colleague.
+      It can never sign in, and it is always a member, never an administrator.
+
+      Every route is admin-only, and for OAuth tokens and personal access tokens
+      the scopes below are enforced as well — creating a service account grants
+      access to the organisation's documents, so a narrowly scoped credential
+      cannot do it merely because its owner is an admin.
   - name: Teams
     description: Team management operations
   - name: Organizations
@@ -168,6 +182,13 @@ tags:
   # Storage
   - name: Document Management
     description: Document CRUD and retrieval operations
+  - name: Internal Storage
+    description: |
+      Service-to-service storage endpoints. Each mirrors a public `/document`
+      route but is authenticated with the storage scoped token rather than a
+      signed-in user's session, so these are **not** callable by API clients or
+      the browser. They are listed here so the surface is discoverable and the
+      pairing with the public routes is visible.
   - name: Knowledge Base
     description: Knowledge base management operations
   - name: Knowledge Hub
@@ -186,6 +207,16 @@ tags:
   # Enterprise Search
   - name: Conversations
     description: AI-powered conversational chat management with citations and follow-up questions
+  - name: Projects
+    description: |
+      Workspaces that group related assistant and agent conversations under a
+      shared name, custom instructions, a knowledge scope, and reference
+      files. Projects can be shared with teammates; project membership only
+      grants read access to conversations explicitly marked
+      `projectVisibility: project` — a member never gets access to another
+      member's private chats. See `Conversations` for the two fields
+      (`projectId`, `projectVisibility`) that link a conversation to a
+      project.
   - name: Semantic Search
     description: Enterprise semantic search across all indexed knowledge with relevance scoring
   - name: Agents
@@ -194,6 +225,11 @@ tags:
     description: Reusable templates for creating AI agents with predefined configurations
   - name: Agent Conversations
     description: Conversations with custom AI agents including streaming and feedback
+  - name: Skills
+    description: |
+      Beta: Skills (SKILL.md packages) that agents load on demand — CRUD, versioning,
+      resources, import (npm/URL/upload), and learning-loop candidate review. Gated by
+      the ENABLE_SKILLS platform feature flag; disabled orgs get 403 on every route.
   - name: Conversational Speech
     description: |
       Server-backed Speech-to-Text (STT) and Text-to-Speech (TTS) for the chat UI.
@@ -313,6 +349,14 @@ tags:
       - `custom`: Use cron expression for complex schedules
       - `once`: Run once at a specific future time
 components:
+  parameters:
+    InternalDocumentId:
+      name: documentId
+      in: path
+      required: true
+      description: The document's id.
+      schema:
+        type: string
   securitySchemes:
     bearerAuth:
       type: http
@@ -372,6 +416,9 @@ components:
             conversation:read: Read conversations
             conversation:write: Create and manage conversations
             conversation:chat: Send messages in conversations
+            project:read: Read projects and their conversations
+            project:write: Create and manage projects
+            project:delete: Delete projects
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
@@ -412,6 +459,9 @@ components:
             conversation:read: Read conversations
             conversation:write: Create and manage conversations
             conversation:chat: Send messages in conversations
+            project:read: Read projects and their conversations
+            project:write: Create and manage projects
+            project:delete: Delete projects
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
@@ -928,16 +978,52 @@ components:
           type: string
         lastName:
           type: string
+        middleName:
+          type: string
+        mobile:
+          type: string
+          description: Mobile number (10-15 digits with optional +)
+          pattern: '^$|^\+?[0-9]{10,15}$'
         designation:
           type: string
+        kind:
+          type: string
+          enum: [human, service]
+          description: |
+            Whether this account is a person who signs in (`human`) or a
+            machine identity that automation authenticates as (`service`).
+            Absent on records written before service accounts existed, which
+            are all human.
+        description:
+          type: string
+          description: Free text explaining what a service account is for. Unused for people.
+        isDisabled:
+          type: boolean
+          default: false
+          description: |
+            The account is suspended: its tokens stop working and no session
+            can be issued, but the record, its group memberships and its
+            permission-graph node survive so it can be switched back on.
         role:
           type: string
           enum: [admin, member]
           description: Organization role stored on the user document (`admin` or `member`)
+        address:
+          $ref: '#/components/schemas/Address'
+        dataCollectionConsent:
+          type: boolean
+          description: Whether user has consented to data collection
         hasLoggedIn:
           type: boolean
         isDeleted:
           type: boolean
+        deletedBy:
+          type: string
+          description: ID of user who deleted this user
+        profilePicture:
+          type: string
+          nullable: true
+          description: Base64-encoded data URI of the user's display picture
         slug:
           type: string
         createdAt:
@@ -1061,6 +1147,11 @@ components:
             - code
             - message
           properties:
+            requestId:
+              type: string
+              description: |
+                Identifier for this request, echoed so a bug report can quote it.
+                Absent when the request never reached the middleware that assigns one.
             code:
               type: string
               description: |
@@ -2344,6 +2435,24 @@ components:
         designation:
           type: string
           description: Job title/designation
+        kind:
+          type: string
+          enum: [human, service]
+          description: |
+            Whether this account is a person who signs in (`human`) or a
+            machine identity that automation authenticates as (`service`).
+            Absent on records written before service accounts existed, which
+            are all human.
+        description:
+          type: string
+          description: Free text explaining what a service account is for. Unused for people.
+        isDisabled:
+          type: boolean
+          default: false
+          description: |
+            The account is suspended: its tokens stop working and no session
+            can be issued, but the record, its group memberships and its
+            permission-graph node survive so it can be switched back on.
         role:
           type: string
           enum: [admin, member]
@@ -2427,6 +2536,24 @@ components:
         designation:
           type: string
           description: Job title/designation
+        kind:
+          type: string
+          enum: [human, service]
+          description: |
+            Whether this account is a person who signs in (`human`) or a
+            machine identity that automation authenticates as (`service`).
+            Absent on records written before service accounts existed, which
+            are all human.
+        description:
+          type: string
+          description: Free text explaining what a service account is for. Unused for people.
+        isDisabled:
+          type: boolean
+          default: false
+          description: |
+            The account is suspended: its tokens stop working and no session
+            can be issued, but the record, its group memberships and its
+            permission-graph node survive so it can be switched back on.
         role:
           type: string
           enum: [admin, member]
@@ -2835,6 +2962,100 @@ components:
           example: "Team fetched successfully"
         team:
           $ref: '#/components/schemas/TeamDetail'
+
+    ServiceAccount:
+      type: object
+      additionalProperties: false
+      description: A machine identity in this organisation.
+      required:
+        - id
+        - slug
+        - fullName
+        - email
+        - isDisabled
+      properties:
+        id:
+          type: string
+          description: Mongo id of the underlying user record
+          example: "507f1f77bcf86cd799439012"
+        slug:
+          type: string
+          description: Short name, unique within the organisation
+          example: "nightly-sync"
+        fullName:
+          type: string
+          description: Display name, shown wherever a user is shown
+          example: "Nightly sync"
+        email:
+          type: string
+          description: |
+            Reserved address under `service.pipeshub.internal`, derived from the
+            slug. Not a mailbox: the domain is reserved by RFC 8375 and never
+            resolves. It exists because the user record requires an address and
+            the permission-graph sync looks users up by it.
+          example: "svc-nightly-sync-507f1f77bcf86cd799439011@service.pipeshub.internal"
+        description:
+          type: string
+          description: What this account is for
+        isDisabled:
+          type: boolean
+          description: |
+            When true, tokens already issued stop working as well as new
+            sign-ins being refused. The record, its group memberships and its
+            permission-graph node all survive, so it can be switched back on.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ServiceAccountCreateRequest:
+      type: object
+      additionalProperties: false
+      description: Request body for `POST /service-accounts`. Validated by `createServiceAccountSchema` (Zod).
+      required:
+        - slug
+        - fullName
+      properties:
+        slug:
+          type: string
+          minLength: 3
+          maxLength: 48
+          pattern: '^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$'
+          description: |
+            Letters, digits and single hyphens, not starting or ending with
+            one. Becomes the local part of the account's address, which is
+            lowercase — mixed case is accepted here and lowercased rather than
+            refused, which is why the pattern allows it.
+          example: "nightly-sync"
+        fullName:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: "Nightly sync"
+        description:
+          type: string
+          maxLength: 500
+          example: "Reads the handbook for the release digest"
+
+    ServiceAccountUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Request body for `PATCH /service-accounts/{id}`. At least one field is
+        required; an empty body is refused rather than silently doing nothing.
+      minProperties: 1
+      properties:
+        fullName:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        isDisabled:
+          type: boolean
 
     TeamCreateRequest:
       type: object
@@ -4019,6 +4240,14 @@ components:
             recordGroupId:
               type: string
               nullable: true
+            rootRecordGroupId:
+              type: string
+              nullable: true
+              description: |
+                Internal identifier of the top-most record group in this record's
+                chain. A group with no parent is its own root, so this is null
+                only for records written before the field existed, or by
+                connectors that do not set it.
             connectorId:
               type: string
             connectorName:
@@ -5887,6 +6116,25 @@ components:
           description: |
             Uploaded chat attachments to associate with this conversation turn (see
             `POST /conversations/attachments/upload`).
+        projectId:
+          type: string
+          format: objectId
+          description: |
+            Link the new conversation to a project the caller has at least
+            viewer access to. When the project's instructions, knowledge
+            scope, or files are set and this request didn't supply its own
+            `filters`/`attachments`, they are merged in as a fallback (the
+            request always wins). Ignored on follow-up turns — only
+            meaningful when creating a conversation.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          description: |
+            Only meaningful together with `projectId`. Overrides the
+            project's default sharing behavior for this one conversation:
+            `private` keeps it visible to the owner only; `project` exposes
+            it to every project member. Defaults from the project's
+            `chatSharing` setting when omitted.
         modelKey:
           type: string
           description: |
@@ -6048,6 +6296,20 @@ components:
           description: |
             Uploaded attachments to ground this turn. Each entry references a
             record id returned from the agent attachment upload endpoint.
+        projectId:
+          type: string
+          format: objectId
+          description: |
+            Link the new agent conversation to a project the caller has at
+            least viewer access to. Same fallback/merge semantics as
+            `POST /conversations/create`. Ignored on follow-up turns — the
+            session row is the source of truth once the conversation exists.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          description: |
+            Only meaningful together with `projectId`. Overrides the
+            project's default sharing behavior for this one conversation.
         chatMode:
           type: string
           enum:
@@ -7287,6 +7549,43 @@ components:
             Computed per request. The requester's effective access level:
             their entry in `sharedWith`, or `read` by default.
           readOnly: true
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: |
+            The project this conversation is linked to, if any. Set via
+            `PUT /conversations/{conversationId}/project` or at creation
+            time; absent on conversations that were never linked.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `private` (default)
+            keeps the conversation visible to its owner only; `project`
+            exposes it to every member of the linked project. See
+            `PATCH /conversations/{conversationId}/project-visibility`.
+        sharedBy:
+          $ref: '#/components/schemas/ConversationSharedBy'
+
+    ConversationSharedBy:
+      type: object
+      additionalProperties: false
+      description: |
+        Present on conversations the caller received via share. Identifies the
+        conversation initiator (the only user who can share a chat).
+      required:
+        - userId
+        - name
+      properties:
+        userId:
+          type: string
+          format: objectId
+        name:
+          type: string
+          description: Display name, falling back to email or the user id
+
 
     ConversationListItem:
       type: object
@@ -7395,6 +7694,328 @@ components:
           type: string
           enum: [read, write]
           readOnly: true
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: |
+            The project this conversation is linked to, if any. Set via
+            `PUT /conversations/{conversationId}/project` or at creation
+            time; absent on conversations that were never linked.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `private` (default)
+            keeps the conversation visible to its owner only; `project`
+            exposes it to every member of the linked project. See
+            `PATCH /conversations/{conversationId}/project-visibility`.
+        sharedBy:
+          $ref: '#/components/schemas/ConversationSharedBy'
+
+    # ==================== PROJECT SCHEMAS ====================
+
+    ProjectKnowledgeScope:
+      type: object
+      additionalProperties: false
+      description: |
+        Retrieval scope (app connector / knowledge-base ids) inherited by
+        every conversation in the project when the request itself carries no
+        `filters`. Same id shapes as `Filters`.
+      properties:
+        apps:
+          type: array
+          items:
+            type: string
+          description: Connector instance ids scoping this project's default retrieval.
+        kb:
+          type: array
+          items:
+            type: string
+          description: Knowledge-base app ids scoping this project's default retrieval.
+
+    ProjectAppliedFilters:
+      type: object
+      additionalProperties: false
+      description: Display-friendly mirror of `knowledgeScope`, for rendering scope chips without a round trip.
+      properties:
+        apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+        kb:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+
+    ProjectMember:
+      type: object
+      additionalProperties: false
+      required:
+        - principalType
+        - principalId
+        - role
+        - addedBy
+        - addedAt
+      properties:
+        principalType:
+          type: string
+          enum: [user, team]
+          description: Whether `principalId` names a user or a team. Both grant the same `role`, mirroring Collection sharing.
+        principalId:
+          type: string
+          format: objectId
+          description: User or team id of the member. The project owner is implicit and never appears in this list.
+        role:
+          type: string
+          enum: [viewer, editor]
+          description: |
+            `viewer` can read the project and its `project`-visible
+            conversations. `editor` can additionally update project
+            metadata, instructions, scope, tools, and files. Only the owner
+            can manage members or change `visibility`/`chatSharing`.
+        addedBy:
+          type: string
+          format: objectId
+        addedAt:
+          type: string
+          format: date-time
+
+    Project:
+      type: object
+      description: |
+        A workspace that groups related assistant and agent conversations
+        under a shared name, instructions, knowledge scope, tool
+        selection, and its own hidden Collection of uploaded files. See
+        the `Projects` tag description for the sharing model.
+      properties:
+        _id:
+          type: string
+          format: objectId
+        orgId:
+          type: string
+          format: objectId
+        userId:
+          type: string
+          format: objectId
+          description: Owner. Ownership never transfers.
+        name:
+          type: string
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 1000
+        icon:
+          type: string
+        color:
+          type: string
+        instructions:
+          type: string
+          maxLength: 8000
+          description: |
+            Injected into every conversation in this project as a dedicated,
+            author-attributed `project_instructions` prompt section — additive,
+            never overrides agent identity or system prompts.
+        knowledgeScope:
+          $ref: '#/components/schemas/ProjectKnowledgeScope'
+        appliedFilters:
+          $ref: '#/components/schemas/ProjectAppliedFilters'
+        tools:
+          type: array
+          items:
+            type: string
+          description: |
+            Tool fullNames (toolset + MCP tools, same format as the
+            composer's `agentStreamTools`) this project's agent-mode chats
+            may use. Empty means no tools beyond the project's own files.
+        linkedKnowledgeBaseId:
+          type: string
+          nullable: true
+          readOnly: true
+          description: |
+            Id of the hidden Collection holding this project's uploaded
+            files, created lazily on first upload via
+            `POST /projects/{projectId}/knowledge-base`. `null` until then.
+        visibility:
+          type: string
+          enum: [private, org]
+          default: private
+          description: |
+            `org` makes the project (and, per `chatSharing`, its
+            `project`-visible conversations) readable by every member of the
+            organization, without adding them to `members[]`. Also grants
+            the organization's synthetic all-members team `READER` access
+            on the linked hidden Collection.
+        chatSharing:
+          type: string
+          enum: [private, members]
+          default: private
+          description: |
+            Owner-controlled default for new conversations created in this
+            project. `private` keeps new chats visible to their own owner
+            only; `members` exposes them to every project member
+            (`projectVisibility: project`). A conversation's own
+            `projectVisibility` can override this default per-chat.
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectMember'
+        isPinned:
+          type: boolean
+          default: false
+          description: Owner-scoped pin state in V1 (not per-viewer).
+        isArchived:
+          type: boolean
+          default: false
+        archivedBy:
+          type: string
+          format: objectId
+          nullable: true
+        isDeleted:
+          type: boolean
+          default: false
+        deletedBy:
+          type: string
+          format: objectId
+          nullable: true
+        lastActivityAt:
+          type: integer
+          format: int64
+          description: Epoch milliseconds, bumped whenever a linked conversation streams a turn.
+        metadata:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ProjectListItem:
+      allOf:
+        - $ref: '#/components/schemas/Project'
+        - type: object
+          description: Project summary returned by `GET /projects`, enriched with request-computed fields.
+          properties:
+            role:
+              type: string
+              enum: [owner, editor, viewer]
+              readOnly: true
+              description: |
+                Caller's effective role on this project (owner, explicit
+                member role, or `viewer` via `visibility: org`).
+            conversationCount:
+              type: integer
+              minimum: 0
+              readOnly: true
+              description: Count of non-deleted conversations (chat + agent) linked to this project.
+
+    CreateProjectRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 1000
+        icon:
+          type: string
+          maxLength: 100
+        color:
+          type: string
+          maxLength: 50
+        instructions:
+          type: string
+          maxLength: 8000
+        knowledgeScope:
+          $ref: '#/components/schemas/ProjectKnowledgeScope'
+        appliedFilters:
+          $ref: '#/components/schemas/ProjectAppliedFilters'
+        tools:
+          type: array
+          items:
+            type: string
+          maxItems: 200
+
+    UpdateProjectRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        All fields optional; only supplied fields are updated.
+        `visibility`/`chatSharing` are owner-only — an editor who is not
+        the owner gets `403` if they include either field. Flattened (not
+        `allOf: [CreateProjectRequest, ...]`) since `CreateProjectRequest`
+        itself is `additionalProperties: false` — composing two closed
+        schemas would reject `visibility`/`chatSharing` on every real update.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 1000
+        icon:
+          type: string
+          maxLength: 100
+        color:
+          type: string
+          maxLength: 50
+        instructions:
+          type: string
+          maxLength: 8000
+        knowledgeScope:
+          $ref: '#/components/schemas/ProjectKnowledgeScope'
+        appliedFilters:
+          $ref: '#/components/schemas/ProjectAppliedFilters'
+        tools:
+          type: array
+          items:
+            type: string
+          maxItems: 200
+        visibility:
+          type: string
+          enum: [private, org]
+        chatSharing:
+          type: string
+          enum: [private, members]
+
+    ProjectMembersUpsertRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - members
+      properties:
+        members:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - principalId
+              - role
+            properties:
+              principalId:
+                type: string
+                format: objectId
+                description: |
+                  User id to add or update. Must exist in this org's IAM
+                  service (validated the same way as
+                  `POST /conversations/{conversationId}/share`).
+              role:
+                type: string
+                enum: [viewer, editor]
+          description: |
+            Upserted by `principalId`: existing members get their `role`
+            updated, new ids are added. The project owner is silently
+            skipped if included (ownership is implicit).
 
     ShareRequest:
       type: object
@@ -9008,7 +9629,7 @@ components:
         status:
           type: string
           nullable: true
-          description: Lifecycle state of the skill — `active` or `deprecated`.
+          description: Lifecycle state of the skill — `active`, `deprecated`, or `disabled`. `candidate` is a learning-loop record state, not an assignable skill, and is not returned here.
 
     Agent:
       type: object
@@ -9146,6 +9767,12 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        sendUserContext:
+          type: boolean
+          description: |
+            When true (default), the agent's system prompt includes the current
+            user's name, email, and organization. When false, the agent relies
+            on tools, actions, and knowledge sources without that profile data.
         tags:
           type: array
           items:
@@ -9325,6 +9952,9 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        sendUserContext:
+          type: boolean
+          description: When false, this agent omits user name/email/org from its system prompt.
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the organization.
@@ -9705,6 +10335,13 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        sendUserContext:
+          type: boolean
+          default: true
+          description: |
+            When true (default), include the current user's name, email, and
+            organization in this agent's system prompt. When false, omit that
+            profile data.
 
     AgentCreateWarning:
       type: object
@@ -9883,6 +10520,9 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        sendUserContext:
+          type: boolean
+          description: When false, this agent omits user name/email/org from its system prompt.
         isActive:
           type: boolean
         isServiceAccount:
@@ -10025,6 +10665,12 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        sendUserContext:
+          type: boolean
+          description: |
+            When true (default), include the current user's name, email, and
+            organization in this agent's system prompt. When false, omit that
+            profile data.
 
     AgentUpdateResponse:
       type: object
@@ -10197,6 +10843,18 @@ components:
         updatedAt:
           type: string
           format: date-time
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: The project this agent conversation is linked to, if any.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `project` exposes the
+            conversation to every member of the linked project.
 
     AgentConversationListItem:
       type: object
@@ -10312,6 +10970,18 @@ components:
           description: |
             Computed per request from `sharedWith`; defaults to `read` when no
             explicit share grant is attached to the serialized row.
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: The project this agent conversation is linked to, if any.
+        projectVisibility:
+          type: string
+          enum: [private, project]
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `project` exposes the
+            conversation to every member of the linked project.
 
     AgentConversationListResponse:
       type: object
@@ -11570,6 +12240,22 @@ components:
         isActive:
           type: boolean
           description: Whether connector is enabled for syncing/agent
+        desktopOnline:
+          type: boolean
+          description: |
+            Whether the owner device (`ownerDeviceId`) is currently connected.
+            Local FS only; omitted otherwise, and while the connector has no owner.
+        ownerDeviceId:
+          type: string
+          description: |
+            Local FS only. The desktop device that owns this connector, set when
+            sync is first enabled from the desktop app.
+        ownerDeviceName:
+          type: string
+          description: |
+            Local FS only. Display name of the desktop device that owns this
+            connector, set when sync is first enabled from the desktop app.
+          example: "WIN-LAPTOP"
         isConfigured:
           type: boolean
           description: Whether all required configuration is complete
@@ -11880,82 +12566,54 @@ components:
           type: string
           enum: [sync, agent]
           description: "Toggle type: 'sync' for data synchronization, 'agent' for AI agent integration"
+        deviceId:
+          type: string
+          description: |
+            Sent by the desktop app. Required when enabling sync on a Local FS
+            connector with no owner yet; must match `ownerDeviceId` afterwards.
+        deviceName:
+          type: string
+          description: |
+            Sent by the desktop app with `deviceId`. Stored as `ownerDeviceName`
+            when the device claims the connector.
 
-    LocalFsFileEvent:
+    LocalFsDesktopRefusal:
       type: object
-      description: Single filesystem change event for Local FS replay
+      description: |
+        409 body returned when a Local FS connector cannot sync because of its
+        owner device.
       required:
-        - type
-        - path
-        - timestamp
-        - isDirectory
+        - success
+        - code
+        - message
+        - details
       properties:
-        type:
-          type: string
-          description: Event type (e.g. CREATED, MODIFIED, DELETED, RENAMED, MOVED)
-        path:
-          type: string
-          description: Path relative to the configured sync root
-        oldPath:
-          type: string
-          nullable: true
-          description: Previous path for rename or move events
-        timestamp:
-          type: integer
-          format: int64
-          description: Event time in epoch milliseconds
-        size:
-          type: integer
-          format: int64
-          nullable: true
-        contentField:
-          type: string
-          nullable: true
-          description: Multipart form field name containing file bytes for uploaded desktop sync events
-        sha256:
-          type: string
-          nullable: true
-          description: SHA-256 digest of the uploaded file bytes
-        mimeType:
-          type: string
-          nullable: true
-          description: MIME type of the uploaded file bytes
-        isDirectory:
+        success:
           type: boolean
-          description: Must be false when sent from the CLI (directories are expanded client-side)
-
-    LocalFsFileEventBatchRequest:
-      type: object
-      description: Batch of Local FS file events (also accepts a bare JSON array of events, which the server wraps)
-      required:
-        - batchId
-        - events
-        - timestamp
-      properties:
-        batchId:
+          example: false
+        code:
           type: string
-        events:
-          type: array
-          items:
-            $ref: '#/components/schemas/LocalFsFileEvent'
-        timestamp:
-          type: integer
-          format: int64
-          description: Batch timestamp in epoch milliseconds
-        resetBeforeApply:
-          type: boolean
-          description: When true, clear existing Local FS records before applying this batch
-
-    LocalFsFileEventStats:
-      type: object
-      description: Counts returned after applying a Local FS file event batch
-      properties:
-        processed:
-          type: integer
-          description: Files upserted or updated from the batch
-        deleted:
-          type: integer
-          description: Deletions or path removals applied
+          enum: [DESKTOP_OFFLINE, DESKTOP_UNCLAIMED, DESKTOP_OWNED_BY_OTHER_DEVICE]
+        message:
+          type: string
+          example: "No desktop is connected for connector conn_abc123. Open the Pipeshub desktop app on the machine that owns this folder."
+        details:
+          type: object
+          required:
+            - code
+            - connectorId
+            - retryable
+          properties:
+            code:
+              type: string
+              enum: [DESKTOP_OFFLINE, DESKTOP_UNCLAIMED, DESKTOP_OWNED_BY_OTHER_DEVICE]
+            connectorId:
+              type: string
+            retryable:
+              type: boolean
+            ownerDeviceName:
+              type: string
+              description: Name of the owner device, when the connector has one.
 
     FilterOptions:
       type: object
@@ -12178,8 +12836,15 @@ components:
             Key-value map of feature flags to enable/disable platform features.
             Available flags:
             - ENABLE_BETA_CONNECTORS: Allow usage of beta connector integrations that may be unstable
+            - ENABLE_MCP: Allow agents to use MCP servers and show MCP server management in the UI
+            - ENABLE_ACTIONS: Allow agents to use toolset actions and show Actions management in the UI
+            - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
+            - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
+            - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
           example:
             ENABLE_BETA_CONNECTORS: false
+            ENABLE_SKILLS: true
+            ENABLE_USER_CONTEXT: true
         updatedAt:
           type: string
           format: date-time
@@ -12858,7 +13523,10 @@ components:
       properties:
         key:
           type: string
-          description: Unique feature flag key
+          description: |
+            Unique feature flag key. Current keys: ENABLE_BETA_CONNECTORS,
+            ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_SKILLS,
+            ENABLE_USER_CONTEXT.
           example: "ENABLE_BETA_CONNECTORS"
         label:
           type: string
@@ -12870,6 +13538,313 @@ components:
         defaultEnabled:
           type: boolean
           description: Default enabled state
+
+    # -------------------- Skills Schemas --------------------
+    SkillMetadata:
+      type: object
+      description: |
+        Skill metadata (SKILL.md YAML frontmatter, agentskills.io-compatible, plus
+        PipesHub lifecycle fields nested under `metadata["agent-loop"]` on the wire
+        format — flattened here for the REST response). Returned by list/search/
+        create/update/deprecate/rollback; `GET /skills/{name}` returns this shape
+        plus `body`/`resources` (see Skill).
+      properties:
+        name:
+          type: string
+          description: Unique skill identifier (kebab-case, matches `^[a-z0-9]+(-[a-z0-9]+)*$`, max 64 chars).
+          example: "deploy-runbook"
+        description:
+          type: string
+          description: One-line summary shown in skill_search/skills_list (max 1024 chars).
+        version:
+          type: string
+          example: "1.0.0"
+        category:
+          type: string
+          nullable: true
+        subcategory:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, deprecated, candidate, disabled]
+        source:
+          type: string
+          enum: [builtin, manual, imported, learned]
+          description: "`builtin` skills are seeded by `BuiltinSkillSeeder` and read-only for end users."
+        license:
+          type: string
+          nullable: true
+        compatibility:
+          type: string
+          nullable: true
+        allowedTools:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: Optional allowlist from the `allowed-tools` frontmatter key (metadata only today — not yet enforced at the tool registry).
+        related:
+          type: array
+          items:
+            type: string
+        requires:
+          type: array
+          items:
+            type: string
+          description: Other skill names this skill's body depends on — staged transitively alongside it into the coding sandbox.
+        concepts:
+          type: array
+          items:
+            type: string
+        deprecatedReason:
+          type: string
+          nullable: true
+        replacedBy:
+          type: string
+          nullable: true
+        createdAt:
+          oneOf:
+            - type: string
+              nullable: true
+            - type: integer
+        updatedAt:
+          oneOf:
+            - type: string
+              nullable: true
+            - type: integer
+        packName:
+          type: string
+          nullable: true
+          description: Builtin pack name this skill was seeded from, if `source == builtin`.
+        packVersion:
+          type: string
+          nullable: true
+
+    Skill:
+      description: Full skill — metadata plus editable body and bundled resource listing.
+      allOf:
+        - $ref: '#/components/schemas/SkillMetadata'
+        - type: object
+          properties:
+            body:
+              type: string
+              description: Markdown body (everything after the YAML frontmatter) — Tiptap-edited in the UI.
+            resources:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: string
+              description: Bundled resource paths grouped by first path segment (e.g. `scripts`, `references`, `assets`, or `files` for root-level files).
+
+    SkillWriteRequest:
+      type: object
+      description: |
+        Structured create/update payload. The backend renders this into a full,
+        spec-compliant SKILL.md string server-side — clients never hand-assemble
+        YAML frontmatter.
+      required: [description, body]
+      properties:
+        name:
+          type: string
+          description: Required on create; ignored on update (the `{name}` path param is authoritative).
+        description:
+          type: string
+          minLength: 1
+        body:
+          type: string
+          minLength: 1
+        category:
+          type: string
+          nullable: true
+        subcategory:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        license:
+          type: string
+          nullable: true
+        compatibility:
+          type: string
+          nullable: true
+        allowed_tools:
+          type: array
+          nullable: true
+          items:
+            type: string
+        related:
+          type: array
+          items:
+            type: string
+        requires:
+          type: array
+          items:
+            type: string
+        concepts:
+          type: array
+          items:
+            type: string
+
+    SkillDeprecateRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+        replaced_by:
+          type: string
+          nullable: true
+
+    SkillRollbackRequest:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: string
+          minLength: 1
+
+    SkillPatchBodyRequest:
+      type: object
+      description: Exact-match string replacement against the skill's current body — fails 400 if `old_string` isn't found exactly once.
+      required: [old_string, new_string]
+      properties:
+        old_string:
+          type: string
+        new_string:
+          type: string
+
+    SkillResourceWriteRequest:
+      type: object
+      required: [path, content]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          description: Path relative to the skill's own root (e.g. `scripts/run.py`). Traversal (`..`), absolute paths, and `SKILL.md` are rejected with 400.
+        content:
+          type: string
+          description: Text content only — binary resources are not yet supported (deferred to a blob-storage follow-up).
+
+    SkillNpmImportRequest:
+      type: object
+      required: [command_or_name]
+      properties:
+        command_or_name:
+          type: string
+          minLength: 1
+          example: "npm install @anthropic/skill-pdf"
+
+    SkillUrlImportRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          minLength: 1
+          example: "https://example.com/my-skill.zip"
+
+    SkillFinalizeImportRequest:
+      type: object
+      description: Persists exactly what a prior `preview_*` call returned — the client round-trips `content`/`resources` verbatim.
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          description: Full SKILL.md text (with YAML frontmatter) as returned by the preview step.
+        resources:
+          type: object
+          additionalProperties:
+            type: string
+        category:
+          type: string
+          nullable: true
+        subcategory:
+          type: string
+          nullable: true
+        name:
+          type: string
+          nullable: true
+          description: Optional kebab-case name to persist as. Rewrites SKILL.md frontmatter `name` so an import can avoid a reserved builtin.
+
+    SkillImportPreview:
+      type: object
+      description: Stateless preview of an npm/URL/upload import source — nothing is persisted until `POST /skills/import/finalize`.
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        content:
+          type: string
+          description: Full SKILL.md text extracted from the archive/package.
+        resources:
+          type: object
+          additionalProperties:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        skippedBinaryResources:
+          type: array
+          items:
+            type: string
+          description: Resource paths that were skipped because they are binary (text-only resources are supported today).
+        sourceLabel:
+          type: string
+          example: "npm:@anthropic/skill-pdf"
+
+    SkillVersionSummary:
+      type: object
+      properties:
+        version:
+          type: string
+        updatedBy:
+          type: string
+          nullable: true
+        createdAt:
+          oneOf:
+            - type: string
+              nullable: true
+            - type: integer
+        summary:
+          type: string
+          nullable: true
+
+    SkillUsageReference:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+
+    SkillUsage:
+      type: object
+      description: Referential-integrity snapshot used to gate `DELETE /skills/{name}`.
+      properties:
+        usedByAgents:
+          type: array
+          items:
+            $ref: '#/components/schemas/SkillUsageReference'
+          description: Agents this skill is currently assigned to via Agent Builder.
+        requiredBySkills:
+          type: array
+          items:
+            type: string
+          description: Other skill names whose frontmatter declares `requires` on this one — these can NEVER be force-deleted, only deprecated.
 
     # Custom System Prompt Schema
     CustomSystemPrompt:
@@ -19125,6 +20100,172 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== TEAMS ENDPOINTS ====================
+  /service-accounts:
+    get:
+      tags:
+        - Service Accounts
+      summary: List service accounts
+      description: |
+        Every service account in the caller's organisation, newest first.
+
+        The organisation comes from the caller's own token, never from the
+        request, so an administrator of one organisation cannot reach another's.
+      operationId: listServiceAccounts
+      security:
+        - bearerAuth: []
+        - oauth2: [user:read]
+      responses:
+        '200':
+          description: Service accounts in this organisation
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceAccount'
+        '400':
+          description: Admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+    post:
+      tags:
+        - Service Accounts
+      summary: Create a service account
+      description: |
+        Creates a machine identity and publishes the same `userAdded` event
+        that creating a person publishes, so the permission graph builds its
+        node, its edge to the organisation, its knowledge base and its
+        membership of the organisation's "All" team.
+
+        The account is always a member and never an administrator, whoever
+        creates it. It cannot sign in.
+
+        Reusing the name of a previously deleted service account restores that
+        record rather than failing: the address is uniquely indexed and the
+        graph node is keyed by it, so a second record would leave the name
+        permanently unusable. Every field is reset from this request, and the
+        account comes back enabled.
+      operationId: createServiceAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [user:invite]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountCreateRequest'
+      responses:
+        '201':
+          description: Service account created, or a deleted one of the same name restored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccount'
+        '400':
+          description: Invalid name, or admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '409':
+          description: A service account of that name already exists
+
+  /service-accounts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F]{24}$'
+        description: Mongo id of the service account
+    get:
+      tags:
+        - Service Accounts
+      summary: Get a service account
+      description: |
+        `kind` is part of the lookup rather than checked afterwards, so a
+        colleague's user id passed here returns 404 rather than their record.
+      operationId: getServiceAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [user:read]
+      responses:
+        '200':
+          description: The service account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccount'
+        '400':
+          description: Admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '404':
+          description: No such service account in this organisation
+    patch:
+      tags:
+        - Service Accounts
+      summary: Rename, describe, disable or re-enable a service account
+      description: |
+        Disabling stops tokens that have already been issued, not only the next
+        sign-in. Renaming is passed on to the permission graph, which keeps its
+        own copy of the display name; disabling is not, because the graph does
+        not need it.
+      operationId: updateServiceAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [user:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountUpdateRequest'
+      responses:
+        '200':
+          description: The updated service account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccount'
+        '400':
+          description: Empty body, invalid field, or admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '404':
+          description: No such service account in this organisation
+    delete:
+      tags:
+        - Service Accounts
+      summary: Delete a service account
+      description: |
+        Marks the record deleted, removes it from every group and tells the
+        permission graph, which marks its node inactive. The name can be used
+        again, which restores this record rather than creating a second one.
+      operationId: deleteServiceAccount
+      security:
+        - bearerAuth: []
+        - oauth2: [user:delete]
+      responses:
+        '204':
+          description: Deleted
+        '400':
+          description: Admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '404':
+          description: No such service account in this organisation
+
   /teams:
     post:
       tags:
@@ -21704,6 +22845,341 @@ paths:
   #       '404':
   #         description: Document not found
   #
+  # --- Internal storage routes -------------------------------------------
+  # Service-to-service only: each mirrors a public /document route but is
+  # authenticated with the storage scoped token instead of a user's session.
+  /document/internal/upload:
+    post:
+      tags:
+        - Internal Storage
+      summary: Upload a file (service-to-service)
+      description: |
+        Store one file and create its document record. Mirrors `POST /document/upload`,
+        but authenticated with the storage scoped token rather than a signed-in user.
+      operationId: internalUploadDocument
+      security:
+        - scopedToken: []
+      requestBody:
+        description: The file to store.
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The file to store. One file per request.
+      responses:
+        '200':
+          description: The file was stored and its document record created.
+        '400':
+          description: The request was missing the file, or the file was rejected.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: The file could not be saved. Safe to retry.
+  /document/internal/placeholder:
+    post:
+      tags:
+        - Internal Storage
+      summary: Create a document record with no file yet (service-to-service)
+      description: |
+        Create the document record that a direct upload will later fill.
+        Mirrors `POST /document/placeholder`.
+      operationId: internalCreatePlaceholderDocument
+      security:
+        - scopedToken: []
+      requestBody:
+        description: Where the file will live and what to call it.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - documentName
+                - documentPath
+                - extension
+              properties:
+                documentName:
+                  type: string
+                alternateDocumentName:
+                  type: string
+                documentPath:
+                  type: string
+                extension:
+                  type: string
+                permissions:
+                  type: string
+                metaData: {}
+                isVersionedFile:
+                  type: boolean
+                customMetadata:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - key
+                      - value
+                    properties:
+                      key:
+                        type: string
+                      value: {}
+      responses:
+        '200':
+          description: The document record was created.
+        '400':
+          description: The request body was incomplete.
+        '401':
+          description: The storage scoped token was missing or invalid.
+  /document/internal/{documentId}:
+    get:
+      tags:
+        - Internal Storage
+      summary: Read a document record (service-to-service)
+      description: Mirrors `GET /document/{documentId}`.
+      operationId: internalGetDocumentById
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      responses:
+        '200':
+          description: The document record.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
+  /document/internal/{documentId}/:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Delete a document record (service-to-service)
+      description: |
+        Mark the document deleted. Mirrors `DELETE /document/{documentId}/`.
+        The stored file itself is handled by the caller.
+      operationId: internalDeleteDocumentById
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      responses:
+        '200':
+          description: The document was marked deleted.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
+  /document/internal/{documentId}/download:
+    get:
+      tags:
+        - Internal Storage
+      summary: Download a document (service-to-service)
+      description: |
+        Returns a time-limited link for S3 or Azure, or the file itself for local
+        storage. Mirrors `GET /document/{documentId}/download`.
+      operationId: internalDownloadDocument
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+        - name: version
+          in: query
+          required: false
+          description: A past version to download. Defaults to the current one.
+          schema:
+            type: integer
+            minimum: 0
+        - name: expirationTimeInSeconds
+          in: query
+          required: false
+          description: How long the download link stays valid.
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: A download link, or the file itself for local storage.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document, or no such version.
+  /document/internal/{documentId}/buffer:
+    get:
+      tags:
+        - Internal Storage
+      summary: Read a document's bytes (service-to-service)
+      description: Mirrors `GET /document/{documentId}/buffer`.
+      operationId: internalGetDocumentBuffer
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+        - name: version
+          in: query
+          required: false
+          description: A past version to read. Defaults to the current one.
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        '200':
+          description: The document's bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document, or no such version.
+    put:
+      tags:
+        - Internal Storage
+      summary: Replace a document's bytes (service-to-service)
+      description: Mirrors `PUT /document/{documentId}/buffer`.
+      operationId: internalUpdateDocumentBuffer
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      requestBody:
+        description: The bytes that replace the document's current contents.
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: The document's bytes were replaced.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
+        '503':
+          description: The file could not be saved. Safe to retry.
+  /document/internal/{documentId}/uploadNextVersion:
+    post:
+      tags:
+        - Internal Storage
+      summary: Add a new version of a document (service-to-service)
+      description: Mirrors `POST /document/{documentId}/uploadNextVersion`.
+      operationId: internalUploadNextVersion
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      requestBody:
+        description: The new version's bytes, and optional notes for this and the previous version.
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                currentVersionNote:
+                  type: string
+                nextVersionNote:
+                  type: string
+      responses:
+        '200':
+          description: The new version was stored.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
+        '503':
+          description: The file could not be saved. Safe to retry.
+  /document/internal/{documentId}/rollBack:
+    post:
+      tags:
+        - Internal Storage
+      summary: Roll a document back to an earlier version (service-to-service)
+      description: Mirrors `POST /document/{documentId}/rollBack`.
+      operationId: internalRollBackToPreviousVersion
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      requestBody:
+        description: The version to return to, and why.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - note
+              properties:
+                note:
+                  type: string
+                  description: Why the document was rolled back.
+                version:
+                  type: integer
+                  minimum: 0
+                  description: The version to return to.
+      responses:
+        '200':
+          description: The document was rolled back.
+        '400':
+          description: The note was missing, or the version was not a whole number.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document, or no such version.
+  /document/internal/{documentId}/directUpload:
+    post:
+      tags:
+        - Internal Storage
+      summary: Get a link to upload straight to storage (service-to-service)
+      description: |
+        Returns a time-limited link the caller uses to send the file directly to
+        S3 or Azure. Mirrors `POST /document/{documentId}/directUpload`.
+      operationId: internalDirectUpload
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      responses:
+        '200':
+          description: A time-limited upload link.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
+        '503':
+          description: The upload link could not be issued. Safe to retry.
+  /document/internal/{documentId}/isModified:
+    get:
+      tags:
+        - Internal Storage
+      summary: Has this document changed? (service-to-service)
+      description: Mirrors `GET /document/{documentId}/isModified`.
+      operationId: internalIsDocumentModified
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      responses:
+        '200':
+          description: Whether the document has changed since it was stored.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
   /knowledgeBase:
     post:
       tags:
@@ -25199,6 +26675,17 @@ paths:
             `true`/`false`, or `1`/`0`.
           schema:
             type: string
+        - name: projectId
+          in: query
+          required: false
+          description: |
+            Restrict results to a single project. Pass a project's `id` to
+            list conversations linked to that project (visible to the
+            caller — owner, member, or org-visible project with
+            `projectVisibility: project`), or the literal string
+            `unassigned` to list conversations with no `projectId`.
+          schema:
+            type: string
       responses:
         '200':
           description: List of conversations for the requested source
@@ -26418,6 +27905,8 @@ paths:
                           accessLevel:
                             type: string
                             enum: [read, write]
+                      sharedBy:
+                        $ref: '#/components/schemas/ConversationSharedBy'
                   filters:
                     type: object
                     additionalProperties: false
@@ -27719,6 +29208,816 @@ paths:
         '500':
           description: Persistence layer failed to update the conversation document.
 
+  /conversations/{conversationId}/project:
+    put:
+      tags:
+        - Conversations
+        - Projects
+      summary: Link or unlink a conversation to a project
+      description: |
+        Set (`projectId: <id>`) or clear (`projectId: null`) the project this
+        conversation belongs to. Initiator-only.
+
+        **Access:**
+
+        The caller must be the conversation's initiator. Linking to a
+        non-null `projectId` also requires at least viewer access to that
+        project (`404` if not visible to the caller — never `403`, to avoid
+        leaking project existence across an org boundary).
+
+        **Visibility on link:**
+
+        When linking, `projectVisibility` defaults from the project's
+        `chatSharing` setting (`members` → `project`, otherwise `private`)
+        unless the conversation was already `project`-visible, in which case
+        that is preserved. Use
+        `PATCH /conversations/{conversationId}/project-visibility` to
+        override it explicitly. Unlinking (`projectId: null`) always clears
+        both `projectId` and `projectVisibility`.
+      operationId: setConversationProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Unique conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - projectId
+              properties:
+                projectId:
+                  type: string
+                  format: objectId
+                  nullable: true
+                  description: Target project id, or `null` to unlink.
+      responses:
+        '200':
+          description: Conversation's project link updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - conversationId
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectId:
+                    type: string
+                    format: objectId
+                    nullable: true
+                  projectVisibility:
+                    type: string
+                    enum: [private, project]
+                    nullable: true
+        '400':
+          description: "`projectId` missing or not a valid ObjectId/`null`."
+        '401':
+          description: Unauthorized
+        '404':
+          description: |
+            Conversation not found or caller is not the initiator, or the
+            target project does not exist or is not visible to the caller.
+
+  /conversations/{conversationId}/project-visibility:
+    patch:
+      tags:
+        - Conversations
+        - Projects
+      summary: Override a conversation's project visibility
+      description: |
+        Explicitly set whether a project-linked conversation is visible to
+        other members of that project (`project`) or only to its owner
+        (`private`). Initiator-only. Requires the conversation to already be
+        linked to a project via
+        `PUT /conversations/{conversationId}/project`.
+      operationId: setConversationProjectVisibility
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Unique conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - visibility
+              properties:
+                visibility:
+                  type: string
+                  enum: [private, project]
+      responses:
+        '200':
+          description: Conversation's project visibility updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - conversationId
+                  - projectVisibility
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectVisibility:
+                    type: string
+                    enum: [private, project]
+        '400':
+          description: |
+            `visibility` missing/invalid, or the conversation is not linked
+            to a project.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found or caller is not the initiator.
+
+  # -------------------- Projects --------------------
+  /projects:
+    post:
+      tags:
+        - Projects
+      summary: Create a project
+      description: |
+        Create a new project workspace owned by the caller.
+      operationId: createProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Project created
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - project
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '400':
+          description: "`name` missing, empty after trimming, or exceeds length limits."
+        '401':
+          description: Unauthorized
+    get:
+      tags:
+        - Projects
+      summary: List projects
+      description: |
+        Paginated, non-deleted projects visible to the caller, sorted pinned
+        first then by `lastActivityAt` descending.
+      operationId: listProjects
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:read]
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          description: Case-insensitive match on project name.
+          schema:
+            type: string
+            maxLength: 200
+        - name: scope
+          in: query
+          description: |
+            `mine` — owned only. `shared` — projects the caller is a member
+            of. `all` — owned, member, and `visibility: org` projects.
+            Defaults to `mine`.
+          schema:
+            type: string
+            enum: [mine, shared, all]
+            default: mine
+        - name: includeArchived
+          in: query
+          description: Include archived projects alongside active projects.
+          schema:
+            type: string
+            enum: ['true', 'false']
+            default: 'false'
+        - name: isArchived
+          in: query
+          description: |
+            Filter by exact archive status. When provided, this takes
+            precedence over `includeArchived`.
+          schema:
+            type: string
+            enum: ['true', 'false']
+      responses:
+        '200':
+          description: Paginated project list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - projects
+                  - pagination
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectListItem'
+                  pagination:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+        '401':
+          description: Unauthorized
+
+  /projects/{projectId}:
+    get:
+      tags:
+        - Projects
+      summary: Get a project
+      description: |
+        Requires at least viewer access. Cross-org ids and ids the caller
+        cannot see both return `404` — never `403` — to avoid leaking
+        project existence across an org boundary.
+      operationId: getProjectById
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:read]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project detail
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - project
+                properties:
+                  project:
+                    allOf:
+                      - $ref: '#/components/schemas/Project'
+                      - type: object
+                        properties:
+                          role:
+                            type: string
+                            enum: [owner, editor, viewer]
+                            readOnly: true
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+    patch:
+      tags:
+        - Projects
+      summary: Update a project
+      description: |
+        Requires editor access. `visibility` and `chatSharing` are
+        owner-only fields — including either as a non-owner editor
+        returns `403`.
+      operationId: updateProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+      responses:
+        '200':
+          description: Project updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - project
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '400':
+          description: "`name` provided but empty after trimming, or a field exceeds its length limit."
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access, or has editor (not owner) access and the request includes `visibility` or `chatSharing`.
+        '404':
+          description: Project not found or not visible to the caller.
+    delete:
+      tags:
+        - Projects
+      summary: Delete a project
+      description: |
+        Owner-only soft delete. Unlinks every `chatSessions` row pointing at
+        this project (clearing `projectId`/`projectVisibility`) before
+        marking the project deleted, so no conversation is left pointing at
+        a deleted project; wrapped in a transaction when the deployment's
+        replica set supports it. Idempotent — deleting an already-deleted
+        project returns `200` without re-running the unlink step.
+      operationId: deleteProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:delete]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project deleted (or already deleted)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller has access but is not the owner.
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/archive:
+    post:
+      tags:
+        - Projects
+      summary: Archive a project
+      description: |
+        Requires editor access. Archived projects are hidden from the
+        default sidebar but their conversations remain reachable directly.
+      operationId: archiveProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project archived
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access; this action needs editor.
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/unarchive:
+    post:
+      tags:
+        - Projects
+      summary: Unarchive a project
+      operationId: unarchiveProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project unarchived
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access; this action needs editor.
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/pin:
+    post:
+      tags:
+        - Projects
+      summary: Pin a project
+      description: |
+        Requires viewer access. Pin state is owner-scoped on the document in
+        V1 — pinning affects the project for every viewer, not just the
+        caller (per-user pins are deferred).
+      operationId: pinProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project pinned
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access; this action needs editor.
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/unpin:
+    post:
+      tags:
+        - Projects
+      summary: Unpin a project
+      operationId: unpinProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project unpinned
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access; this action needs editor.
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/conversations:
+    get:
+      tags:
+        - Projects
+        - Conversations
+      summary: List a project's conversations
+      description: |
+        Requires viewer access to the project. Returns both chat and agent
+        sessions (`chatSessions`, discriminated by `sessionType`/`agentKey`)
+        that the caller may see: rows they own, plus rows with
+        `projectVisibility: project`. Access to the project is asserted
+        first, so a private conversation belonging to a *different* project
+        member never leaks through this endpoint.
+      operationId: getProjectConversations
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:read]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Paginated conversations linked to the project
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - conversations
+                  - pagination
+                properties:
+                  conversations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConversationListItem'
+                  pagination:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/knowledge-base:
+    post:
+      tags:
+        - Projects
+      summary: Ensure (create-if-absent) the project's hidden file Collection
+      description: |
+        Requires editor access. Lazily creates the project's own hidden
+        Knowledge Base (`isHidden: true` in Python `POST /api/v1/kb`) the
+        first time a caller needs to upload a file, and returns its id
+        either way. Race-safe: concurrent callers converge on one KB —
+        the losing request's KB is deleted. The hidden KB is excluded from
+        the Collections sidebar, Knowledge Hub, and unscoped search, but is
+        always included in this project's own chat scope
+        (`filters.kb`) and file uploads go through the normal
+        `POST /knowledgeBase/{kbId}/upload` SSE pipeline afterward.
+      operationId: ensureProjectKnowledgeBase
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: The project's linked Collection id (existing or newly created)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - kbId
+                properties:
+                  kbId:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access; this action needs editor.
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/members:
+    get:
+      tags:
+        - Projects
+      summary: List project members
+      description: Requires viewer access.
+      operationId: listProjectMembers
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:read]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Project member list (excludes the implicit owner)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectMember'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+    put:
+      tags:
+        - Projects
+      summary: Add or update project members
+      description: |
+        Owner-only. Each `principalId` is validated against this org's IAM
+        service the same way as
+        `POST /conversations/{conversationId}/share` — a `principalId` with
+        no matching user returns `400`. Upserts by `principalId`; the owner
+        is silently skipped if included.
+      operationId: upsertProjectMembers
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectMembersUpsertRequest'
+      responses:
+        '200':
+          description: Updated member list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectMember'
+        '400':
+          description: A `principalId` does not exist in this org's IAM service.
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller has access but is not the owner.
+        '404':
+          description: Project not found or not visible to the caller.
+
+  /projects/{projectId}/members/{memberUserId}:
+    delete:
+      tags:
+        - Projects
+      summary: Remove a project member
+      description: Owner-only.
+      operationId: removeProjectMember
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [project:write]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: memberUserId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: principalType
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [user, team]
+            default: user
+          description: |
+            Whether `memberUserId` identifies a user or a team.
+            Defaults to `user` when omitted.
+      responses:
+        '200':
+          description: Updated member list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectMember'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller has access but is not the owner.
+        '404':
+          description: Project not found or not visible to the caller.
+
   # -------------------- Conversational Speech --------------------
   /chat/transcribe:
     post:
@@ -28127,6 +30426,11 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         description: |
@@ -28158,6 +30462,11 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         description: |
@@ -28188,6 +30497,11 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         description: |
@@ -28223,6 +30537,11 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         description: |
@@ -28382,6 +30701,11 @@ paths:
                       - code
                       - message
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         enum:
@@ -28411,6 +30735,11 @@ paths:
                       - code
                       - message
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         enum:
@@ -28440,6 +30769,11 @@ paths:
                       - code
                       - message
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         enum:
@@ -28471,6 +30805,11 @@ paths:
                       - code
                       - message
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         enum:
@@ -28506,6 +30845,11 @@ paths:
                       - code
                       - message
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         enum:
@@ -30030,6 +32374,149 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /agents/{agentKey}/conversations/{conversationId}/project:
+    put:
+      tags:
+        - Agents
+        - Projects
+      summary: Link or unlink an agent conversation to a project
+      description: |
+        Agent-conversation equivalent of
+        `PUT /conversations/{conversationId}/project`. Set
+        (`projectId: <id>`) or clear (`projectId: null`) the project this
+        agent conversation belongs to. Initiator-only; linking requires at
+        least viewer access to the target project.
+      operationId: setAgentConversationProject
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - projectId
+              properties:
+                projectId:
+                  type: string
+                  format: objectId
+                  nullable: true
+                  description: Target project id, or `null` to unlink.
+      responses:
+        '200':
+          description: Agent conversation's project link updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - conversationId
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectId:
+                    type: string
+                    format: objectId
+                    nullable: true
+                  projectVisibility:
+                    type: string
+                    enum: [private, project]
+                    nullable: true
+        '400':
+          description: "`projectId` missing or not a valid ObjectId/`null`."
+        '401':
+          description: Unauthorized
+        '404':
+          description: |
+            Agent conversation not found or caller is not the initiator, or
+            the target project does not exist or is not visible to the caller.
+
+  /agents/{agentKey}/conversations/{conversationId}/project-visibility:
+    patch:
+      tags:
+        - Agents
+        - Projects
+      summary: Override an agent conversation's project visibility
+      description: |
+        Agent-conversation equivalent of
+        `PATCH /conversations/{conversationId}/project-visibility`.
+        Initiator-only; requires the conversation to already be linked to a
+        project.
+      operationId: setAgentConversationProjectVisibility
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - visibility
+              properties:
+                visibility:
+                  type: string
+                  enum: [private, project]
+      responses:
+        '200':
+          description: Agent conversation's project visibility updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - conversationId
+                  - projectVisibility
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectVisibility:
+                    type: string
+                    enum: [private, project]
+        '400':
+          description: |
+            `visibility` missing/invalid, or the conversation is not linked
+            to a project.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent conversation not found or caller is not the initiator.
+
   /agents/{agentKey}/conversations/{conversationId}:
     delete:
       tags:
@@ -30278,6 +32765,15 @@ paths:
           schema:
             type: string
             enum: ['true', 'false']
+        - name: projectId
+          in: query
+          required: false
+          description: |
+            Restrict results to a single project. Pass a project's `id`, or
+            the literal string `unassigned` to list agent conversations with
+            no `projectId`.
+          schema:
+            type: string
       responses:
         '200':
           description: Conversation list
@@ -30483,6 +32979,8 @@ paths:
         <li><b>isConfigured:</b> All required settings are complete</li>
         <li><b>isAuthenticated:</b> OAuth flow complete or credentials valid</li>
         <li><b>isActive:</b> Connector is enabled for sync/agent</li>
+        <li><b>desktopOnline:</b> Owner device's desktop app connected (Local FS only)</li>
+        <li><b>ownerDeviceId / ownerDeviceName:</b> Desktop device that owns the connector, set on first enable (Local FS only)</li>
         </ul>
       operationId: listConnectorInstances
       security:
@@ -31459,7 +33957,18 @@ paths:
         '401':
           description: Unauthorized
         '409':
-          description: Conflict — the connector instance is disabled or locked.
+          description: |
+            Conflict. Possible reasons:<br>
+            <ul>
+            <li>The connector instance is disabled or locked</li>
+            <li><code>DESKTOP_OFFLINE</code> - Local FS: the owner device's desktop app is not connected</li>
+            <li><code>DESKTOP_UNCLAIMED</code> - Local FS: no device owns the connector yet</li>
+            </ul>
+            Local FS refusals carry <code>details.code</code> and use the body below.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalFsDesktopRefusal'
 
   /connectors/{connectorId}/name:
     put:
@@ -31713,6 +34222,7 @@ paths:
         <li>Connector must be configured (<code>isConfigured: true</code>)</li>
         <li>For OAuth connectors: Must be authenticated (<code>isAuthenticated: true</code>)</li>
         <li>For agent: Connector must support agent (<code>supportsAgent: true</code>)</li>
+        <li>Local FS: must be enabled from the owner device via the desktop app, which sends <code>deviceId</code> and <code>deviceName</code>. The first enable claims that device as owner.</li>
         </ul>
         <b>Permissions:</b><br>
         <ul>
@@ -31765,139 +34275,18 @@ paths:
           description: Permission denied
         '404':
           description: Connector not found
-
-  /connectors/{connectorId}/file-events:
-    post:
-      tags:
-        - Connector Control
-      summary: Submit Local FS file events
-      description: |
-        Replays a batch of filesystem change events for a **Local FS** connector instance.
-        Used by the local CLI to apply incremental changes without a full directory rescan.
-        Only Local FS connector instances accept this endpoint; other connector types receive 400.
-      operationId: submitConnectorFileEvents
-      security:
-        - bearerAuth: []
-        - oauth2: [connector:sync]
-      parameters:
-        - name: connectorId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: |
-          JSON body: either a `LocalFsFileEventBatchRequest` object, or a bare JSON array of
-          `LocalFsFileEvent` objects (the server wraps arrays with a generated batch id).
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LocalFsFileEventBatchRequest'
-      responses:
-        '200':
-          description: File event batch applied
+        '409':
+          description: |
+            Local FS sync cannot be enabled. <code>details.code</code> is one of:<br>
+            <ul>
+            <li><code>DESKTOP_OFFLINE</code> - the owner device's desktop app is not connected</li>
+            <li><code>DESKTOP_UNCLAIMED</code> - the connector has no owner yet and no <code>deviceId</code> was sent</li>
+            <li><code>DESKTOP_OWNED_BY_OTHER_DEVICE</code> - <code>deviceId</code> differs from <code>ownerDeviceId</code>; <code>details.ownerDeviceName</code> names the owner</li>
+            </ul>
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - success
-                  - connectorId
-                  - batchId
-                  - stats
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  connectorId:
-                    type: string
-                  batchId:
-                    type: string
-                  stats:
-                    $ref: '#/components/schemas/LocalFsFileEventStats'
-        '400':
-          description: Not a Local FS connector, or invalid path or event payload
-        '401':
-          description: Unauthorized
-        '403':
-          description: Permission denied
-        '404':
-          description: Connector not found
-        '422':
-          description: Invalid or missing request body
-
-  /connectors/{connectorId}/file-events/upload:
-    post:
-      tags:
-        - Connector Control
-      summary: Submit Local FS file events with file bytes
-      description: |
-        Replays a batch of Local FS desktop sync events and uploads file bytes for created,
-        modified, renamed, or moved files. This supports deployed connector backends that
-        cannot read the desktop filesystem path directly.
-      operationId: submitConnectorFileEventUploads
-      security:
-        - bearerAuth: []
-        - oauth2: [connector:sync]
-      parameters:
-        - name: connectorId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required:
-                - manifest
-              properties:
-                manifest:
-                  type: string
-                  description: |
-                    JSON `LocalFsFileEventBatchRequest`. Upsert events include `contentField`,
-                    `sha256`, `mimeType`, `size`, and timestamps. Delete events do not need files.
-                file_0:
-                  type: string
-                  format: binary
-                  description: File bytes referenced by an event `contentField`; additional file_N fields are allowed.
-      responses:
-        '200':
-          description: Uploaded file event batch applied
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                  - success
-                  - connectorId
-                  - batchId
-                  - stats
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  connectorId:
-                    type: string
-                  batchId:
-                    type: string
-                  stats:
-                    $ref: '#/components/schemas/LocalFsFileEventStats'
-        '400':
-          description: Not a Local FS connector, invalid path, or digest mismatch
-        '401':
-          description: Unauthorized
-        '403':
-          description: Permission denied
-        '404':
-          description: Connector not found
-        '413':
-          description: Batch or file upload too large
-        '422':
-          description: Invalid manifest or missing file part
+                $ref: '#/components/schemas/LocalFsDesktopRefusal'
 
   # -------------------- Connector OAuth --------------------
   /connectors/{connectorId}/oauth/authorize:
@@ -33774,6 +36163,898 @@ paths:
           description: OAuth config not found
         '409':
           description: OAuth config is in use by one or more toolset instances
+
+  # -------------------- Skills --------------------
+  /skills:
+    get:
+      tags:
+        - Skills
+      summary: List skills
+      description: |
+        List skills visible to the caller (their own custom skills plus org-wide
+        builtins). Also seeds the org's builtin skill catalog on first call if it
+        hasn't been seeded yet, so a fresh org sees builtins in the UI before its
+        first chat.
+      operationId: listSkills
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: subcategory
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, deprecated, candidate, disabled]
+        - name: source
+          in: query
+          schema:
+            type: string
+            enum: [builtin, manual, imported, learned]
+        - name: tag
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+          description: Free-text search across name/description/tags.
+      responses:
+        '200':
+          description: Skills retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skills:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization (ENABLE_SKILLS is off)
+
+    post:
+      tags:
+        - Skills
+      summary: Create a custom skill
+      description: |
+        Creates a new custom skill from structured form fields. Rejects (409) a
+        name that collides with a builtin pack name (e.g. `pdf`), so a custom
+        skill can never shadow a real builtin before it's seeded.
+      operationId: createSkill
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/SkillWriteRequest'
+                - type: object
+                  required: [name]
+      responses:
+        '201':
+          description: Skill created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '400':
+          description: Invalid payload, or the rendered SKILL.md failed validation
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '409':
+          description: A skill with this name already exists, or the name is reserved for a builtin pack
+
+  /skills/categories:
+    get:
+      tags:
+        - Skills
+      summary: Get skill categories and tags
+      operationId: getSkillCategories
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Categories and tags retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories:
+                    type: array
+                    items:
+                      type: string
+                  tags:
+                    type: array
+                    items:
+                      type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/search:
+    get:
+      tags:
+        - Skills
+      summary: Search skills
+      description: Semantic + keyword search over the skill catalog, ranked by relevance.
+      operationId: searchSkills
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+            default: ""
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        skill:
+                          $ref: '#/components/schemas/SkillMetadata'
+                        relevance:
+                          type: number
+                        matchReason:
+                          type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/candidates/pending:
+    get:
+      tags:
+        - Skills
+      summary: List pending learning-loop skill candidates
+      description: Skill candidates surfaced by the learning loop, awaiting admin/owner review before promotion into the catalog.
+      operationId: getPendingSkillCandidates
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Pending candidates retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  candidates:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/candidates/{candidateId}/approve:
+    post:
+      tags:
+        - Skills
+      summary: Approve a skill candidate
+      description: Promotes a learning-loop candidate into a real, active skill.
+      operationId: approveSkillCandidate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: candidateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Candidate approved and promoted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Candidate not found
+
+  /skills/candidates/{candidateId}/reject:
+    post:
+      tags:
+        - Skills
+      summary: Reject a skill candidate
+      operationId: rejectSkillCandidate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: candidateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Candidate rejected
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/import/npm/preview:
+    post:
+      tags:
+        - Skills
+      summary: Preview an npm-sourced skill import
+      description: |
+        Stateless preview — resolves and downloads the npm package but persists
+        nothing. Follow with `POST /skills/import/finalize` using the returned
+        `content`/`resources` to actually create the skill.
+      operationId: previewNpmSkillImport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillNpmImportRequest'
+      responses:
+        '200':
+          description: Preview generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillImportPreview'
+        '400':
+          description: Invalid npm command/name, or the package could not be parsed as a skill
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/import/url/preview:
+    post:
+      tags:
+        - Skills
+      summary: Preview a URL-sourced skill import
+      description: |
+        Downloads via an SSRF-safe fetcher with size limits and zip-slip
+        protection. Stateless — nothing is persisted until finalize.
+      operationId: previewUrlSkillImport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillUrlImportRequest'
+      responses:
+        '200':
+          description: Preview generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillImportPreview'
+        '400':
+          description: Invalid URL, or the archive could not be parsed as a skill
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/import/upload/preview:
+    post:
+      tags:
+        - Skills
+      summary: Preview an uploaded skill archive
+      description: |
+        Accepts a zip archive up to 25MB (mirrors the npm/URL archive size
+        ceiling). Stateless — nothing is persisted until finalize.
+      operationId: previewUploadSkillImport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Preview generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillImportPreview'
+        '400':
+          description: No file uploaded, or the archive could not be parsed as a skill
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/import/finalize:
+    post:
+      tags:
+        - Skills
+      summary: Finalize a previewed skill import
+      description: |
+        Persists a preview from any of the three sources (npm/URL/upload) —
+        the preview step already normalized all three into the same
+        `content`/`resources` shape. Rejects (409) a name reserved for a
+        builtin pack.
+      operationId: finalizeSkillImport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillFinalizeImportRequest'
+      responses:
+        '201':
+          description: Skill created from the imported content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '400':
+          description: Imported SKILL.md is missing a name, or failed validation
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '409':
+          description: A skill with this name already exists, or the name is reserved for a builtin pack
+
+  /skills/{name}:
+    get:
+      tags:
+        - Skills
+      summary: Get a skill
+      description: Returns the full skill — metadata, editable body, and bundled resource listing.
+      operationId: getSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Skill retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Skill'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+
+    put:
+      tags:
+        - Skills
+      summary: Update a skill
+      description: Full update of a skill's content and metadata from structured form fields. Builtin skills can only be edited by the seeding identity — a non-owner attempt surfaces as 404/409.
+      operationId: updateSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillWriteRequest'
+      responses:
+        '200':
+          description: Skill updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '400':
+          description: Invalid payload, or the rendered SKILL.md failed validation
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+        '409':
+          description: Update conflicts with the skill's current state
+
+    delete:
+      tags:
+        - Skills
+      summary: Delete a skill (safe delete)
+      description: |
+        Refuses to delete a skill that's in use (409, with structured
+        `usedByAgents`/`requiredBySkills` — see `SkillUsage`) unless
+        `detach=true`. A skill another skill `requires` can NEVER be
+        force-deleted — deprecate it instead so dependents still resolve.
+        `detach=true` unassigns the skill from any agents (removing the
+        `agentHasSkill` edges) before deleting; call `GET /skills/{name}/usage`
+        first to show the user which agents will be affected.
+      operationId: deleteSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: detach
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Skill deleted
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+        '409':
+          description: Skill is in use — response body is a SkillUsage-shaped object plus a message
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SkillUsage'
+                  - type: object
+                    properties:
+                      message:
+                        type: string
+
+  /skills/{name}/export:
+    get:
+      tags:
+        - Skills
+      summary: Export a skill as SKILL.md
+      description: Returns the rendered SKILL.md as a downloadable text/markdown file.
+      operationId: exportSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SKILL.md content
+          content:
+            text/markdown:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+
+  /skills/{name}/body:
+    patch:
+      tags:
+        - Skills
+      summary: Patch a skill's body with an exact string replacement
+      description: Fails 400 if `old_string` doesn't exist, or exists more than once, in the current body.
+      operationId: patchSkillBody
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillPatchBodyRequest'
+      responses:
+        '200':
+          description: Body patched
+        '400':
+          description: "old_string not found exactly once, or the skill doesn't exist"
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/{name}/deprecate:
+    post:
+      tags:
+        - Skills
+      summary: Deprecate a skill
+      description: Marks a skill deprecated (optionally pointing to a replacement) without deleting it — dependents that `requires` it keep resolving.
+      operationId: deprecateSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillDeprecateRequest'
+      responses:
+        '200':
+          description: Skill deprecated
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+
+  /skills/{name}/disable:
+    post:
+      tags:
+        - Skills
+      summary: Disable a skill
+      description: |
+        Reversible mute: the skill stays in the library but is hidden from
+        every agent-facing catalog/search surface and can no longer be
+        loaded or newly assigned. Unlike deprecate, this is not a lifecycle
+        judgment (no reason, no replacement) and is undone with `POST
+        /skills/{name}/enable`.
+
+        Custom skills: only the creator can disable (a non-owner gets 404,
+        matching GET). Builtin skills: only an organization admin; members
+        get 403. Content edits of builtins remain 403.
+      operationId: disableSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Skill disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization, or a non-admin tried to disable a builtin skill
+        '404':
+          description: Skill not found
+        '409':
+          description: Skill is not currently active (e.g. already disabled, or deprecated)
+
+  /skills/{name}/enable:
+    post:
+      tags:
+        - Skills
+      summary: Re-enable a disabled skill
+      description: |
+        Reverses `POST /skills/{name}/disable` — restores catalog/search
+        visibility and loadability. Only valid from `disabled`; does not
+        undeprecate a deprecated skill. Same authorization as disable:
+        creator for custom skills, organization admin for builtins.
+      operationId: enableSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Skill enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization, or a non-admin tried to enable a builtin skill
+        '404':
+          description: Skill not found
+        '409':
+          description: Skill is not currently disabled (e.g. already active, or deprecated)
+
+  /skills/{name}/usage:
+    get:
+      tags:
+        - Skills
+      summary: Get a skill's usage
+      description: Referential-integrity snapshot (agents it's assigned to, skills that require it) — call before a safe delete to show the user what will be affected.
+      operationId: getSkillUsage
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Usage retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillUsage'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+
+  /skills/{name}/versions:
+    get:
+      tags:
+        - Skills
+      summary: List a skill's version history
+      operationId: listSkillVersions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Versions retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SkillVersionSummary'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+
+  /skills/{name}/versions/{version}:
+    get:
+      tags:
+        - Skills
+      summary: Get a specific skill version
+      operationId: getSkillVersion
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Version retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Skill'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill or version not found
+
+  /skills/{name}/rollback:
+    post:
+      tags:
+        - Skills
+      summary: Roll back a skill to a prior version
+      operationId: rollbackSkill
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillRollbackRequest'
+      responses:
+        '200':
+          description: Skill rolled back
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill or version not found
+
+  /skills/{name}/resource:
+    get:
+      tags:
+        - Skills
+      summary: Get a bundled resource
+      description: Returns the raw text content of a bundled resource file (e.g. `scripts/run.py`).
+      operationId: getSkillResource
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Path relative to the skill's own root.
+      responses:
+        '200':
+          description: Resource content
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill or resource not found
+
+    put:
+      tags:
+        - Skills
+      summary: Write a bundled resource
+      description: |
+        Creates or overwrites a text resource file under the skill's directory.
+        Rejects (400) path traversal, absolute paths, `SKILL.md`, and payloads
+        that exceed the per-file/per-skill byte budget. Binary resources are
+        not yet supported (deferred to a blob-storage follow-up).
+      operationId: writeSkillResource
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillResourceWriteRequest'
+      responses:
+        '200':
+          description: Resource written
+        '400':
+          description: Invalid path, or resource exceeds the byte budget
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill not found
+
+    delete:
+      tags:
+        - Skills
+      summary: Remove a bundled resource
+      operationId: removeSkillResource
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Resource removed
+        '401':
+          description: Unauthorized
+        '403':
+          description: Skills are disabled for this organization
+        '404':
+          description: Skill or resource not found
 
   # -------------------- OAuth Configuration (Admin) --------------------
   /oauth/registry:
@@ -35890,6 +39171,11 @@ paths:
 
         **Available Feature Flags:**
         - ENABLE_BETA_CONNECTORS: Enable beta connector integrations (default: false)
+        - ENABLE_MCP: Enable MCP servers (default: false)
+        - ENABLE_ACTIONS: Enable toolset actions (default: true)
+        - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
+        - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
+        - ENABLE_USER_CONTEXT: Include user name, email, and organization in default assistant / Universal Agent system prompts (default: true)
       operationId: setPlatformSettings
       security:
         - bearerAuth: []
@@ -35976,7 +39262,10 @@ paths:
       tags:
         - Platform Settings
       summary: Get available feature flags
-      description: List all available feature flags with their descriptions and default values.
+      description: |
+        List all user-toggleable feature flags with their descriptions and default values,
+        for the Labs admin UI. Admin-only — hidden flags (internal/legacy) are seeded with
+        their defaults but never returned here.
       operationId: getAvailableFeatureFlags
       security:
         - bearerAuth: []
@@ -35993,6 +39282,45 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/FeatureFlag'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+
+  /configurationManager/platform/feature-flags/effective:
+    get:
+      tags:
+        - Platform Settings
+      summary: Get effective feature flag values
+      description: |
+        Resolved boolean value of every platform feature flag (stored overrides merged
+        over `PLATFORM_FEATURE_FLAGS` defaults). Unlike `.../available`, this is callable
+        by every authenticated user, not just admins: flag values carry no secrets, and
+        non-admin UI (chat, agent builder, personal Skills/MCP/Actions pages) needs them
+        to decide whether to render flag-gated features.
+      operationId: getEffectivePlatformFeatureFlags
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Effective feature flag values retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  featureFlags:
+                    type: object
+                    additionalProperties:
+                      type: boolean
+                    description: Key-value map of every known feature flag to its resolved boolean value.
+                    example:
+                      ENABLE_BETA_CONNECTORS: false
+                      ENABLE_MCP: false
+                      ENABLE_ACTIONS: true
+                      ENABLE_VECTOR_STORE_REBUILD: false
+                      ENABLE_SKILLS: true
+                      ENABLE_USER_CONTEXT: true
         '401':
           description: Unauthorized
 

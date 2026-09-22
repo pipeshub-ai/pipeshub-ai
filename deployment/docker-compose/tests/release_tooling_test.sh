@@ -19,6 +19,8 @@
 #     when there is no history, and refusal when target == current.
 #   - rollback --dry-run leaves .env untouched.
 #   - upgrade_seed response parsing across the shapes the KB list API may return.
+#   - published_hub_smoke and upgrade_smoke input checks for the deploy type and
+#     graph database a run asks for.
 #
 # Run: bash deployment/docker-compose/tests/release_tooling_test.sh
 # ==============================================================================
@@ -342,6 +344,24 @@ PY
 )"; cov_rc=$?
 check "--check reports connectors missing from the baseline" "$cov_check" "no integration test"
 if [[ $cov_rc -ne 0 ]]; then pass "--check exits non-zero on a new gap"; else fail "--check exits non-zero on a new gap"; fi
+
+echo
+echo "== install variants: deploy type and graph database choices =="
+# docker is the stub from the rollback section, so these stop at input checks.
+SMOKE="$SCRIPT_DIR/published_hub_smoke.sh"
+if bash -n "$SMOKE" 2>/dev/null; then pass "published_hub_smoke.sh parses"; else fail "published_hub_smoke.sh parses"; fi
+
+out="$(PIPESHUB_DEPLOY_TYPE=medium bash "$SMOKE" 2>&1)"
+check "first-run smoke rejects an unknown deploy type" "$out" "must be slim, full or eval"
+
+out="$(PIPESHUB_DEPLOY_TYPE=eval PIPESHUB_GRAPH_DB=mysql bash "$SMOKE" 2>&1)"
+check "first-run smoke rejects an unknown graph database" "$out" "must be neo4j or arango"
+
+out="$(PIPESHUB_DEPLOY_TYPE=eval PIPESHUB_GRAPH_DB=arango bash "$SMOKE" 2>&1)"
+check "first-run smoke refuses eval with ArangoDB, which eval never runs" "$out" "eval installs always use Neo4j"
+
+out="$(PIPESHUB_GRAPH_DB=mysql PIPESHUB_BASE_VERSION=1 PIPESHUB_TARGET_VERSION=2 bash "$UPGRADE" 2>&1)"
+check "upgrade smoke rejects an unknown graph database" "$out" "must be neo4j or arango"
 
 echo
 P="$(wc -l <"$PASS_FILE" | tr -d ' ')"; F="$(wc -l <"$FAIL_FILE" | tr -d ' ')"

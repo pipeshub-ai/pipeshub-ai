@@ -42,6 +42,7 @@ class AgentContext(BaseModel):
     user_info: dict[str, Any] = Field(default_factory=dict)
     org_info: dict[str, Any] = Field(default_factory=dict)
     is_service_account: bool = False
+    send_user_info: bool = True
 
     # Services (injected, not serializable)
     retrieval_service: Any = None
@@ -114,6 +115,12 @@ class AgentContext(BaseModel):
     # (`agentIdPlaceholder` via `agent.py`). Real Agent Builder agents never
     # populate this field — they use their own `system_prompt`/`instructions`.
     custom_instructions: str | None = None
+    # Author-set instructions from a Project this conversation is linked to
+    # (Node `ProjectService.buildContext` -> `applyProjectContext` ->
+    # `ChatQuery.projectInstructions`). Rendered as its own prompt section
+    # (see `prompt_builder.py`), distinct from `instructions` (agent-specific)
+    # and `custom_instructions` (org-level) — never touches agent identity.
+    project_instructions: str | None = None
     timezone: str | None = None
     current_time: str | None = None
 
@@ -362,6 +369,7 @@ class AgentContext(BaseModel):
             user_info=state.get("user_info") or {},
             org_info=state.get("org_info") or {},
             is_service_account=bool(state.get("is_service_account", False)),
+            send_user_info=state.get("send_user_info", True) is not False,
             retrieval_service=state.get("retrieval_service"),
             graph_provider=state.get("graph_provider"),
             config_service=state.get("config_service"),
@@ -391,6 +399,7 @@ class AgentContext(BaseModel):
             system_prompt=state.get("system_prompt"),
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
+            project_instructions=state.get("project_instructions"),
             timezone=state.get("timezone"),
             current_time=state.get("current_time"),
             conversation_id=state.get("conversation_id"),
@@ -461,6 +470,7 @@ class AgentContext(BaseModel):
             "user_info": self.user_info,
             "org_info": self.org_info,
             "is_service_account": self.is_service_account,
+            "send_user_info": self.send_user_info,
             "conversation_id": self.conversation_id,
             "has_ui_client": self.has_ui_client,
             "agent_toolsets": self.agent_toolsets,
@@ -486,6 +496,7 @@ class AgentContext(BaseModel):
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,
+            "project_instructions": self.project_instructions,
             "timezone": self.timezone,
             "current_time": self.current_time,
             "previous_conversations": self.previous_conversations,

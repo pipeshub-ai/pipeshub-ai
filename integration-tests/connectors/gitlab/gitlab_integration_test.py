@@ -40,9 +40,11 @@ path namespace keeps them apart.
   order 21 TC-GL-CONF-001         — confidential issue: own ACL group, exception grants, group swap
   order 22 TC-INCR-MR-001         — MR update-only: no new record, version += 1
   order 23 TC-INCR-CODE-001       — new/update/rename/move/delete in one commit set
-  order 24 TC-FILTER-001          — group_ids scoping expands subgroups and parents the project
+  order 24 TC-FILTER-001          — a group filter beside the selected repository widens nothing
   order 25 TC-FILTER-002          — Index Code Files off: records exist, AUTO_INDEX_OFF
   order 26 TC-GL-FILTEROPT-001    — the group and project pickers behind the sync filters
+  order 27 TC-GL-ONEREPO-001      — enable refused for an instance holding two repositories
+  order 28 TC-GL-ONEREPO-002      — one repository saved via filters-sync enables and syncs alone
 """
 
 import logging
@@ -117,6 +119,7 @@ from connectors.gitlab.gitlab_test_utils import (  # noqa: E402
     branch_head_sha,
     child_groups_for_level,
     commit_actions,
+    create_gitlab_connector,
     create_issue,
     dedicated_connector,
     dedupe_members,
@@ -130,6 +133,7 @@ from connectors.gitlab.gitlab_test_utils import (  # noqa: E402
     list_notes,
     list_project_members,
     sync_filters,
+    teardown_connector,
     update_issue,
     update_merge_request,
 )
@@ -1933,64 +1937,52 @@ class TestGitLabIncremental:
 class TestGitLabFilters:
 
     @pytest.mark.order(24)
-    async def test_tc_filter_001_group_scope(
+    async def test_tc_filter_001_group_does_not_widen_repository_scope(
         self, gitlab_connector: dict[str, Any],
         pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-FILTER-001: ``group_ids`` expands subgroups and parents the project.
+        """TC-FILTER-001: beside a selected repository, a group filter widens nothing.
 
-        A different resolution path from ``project_ids``: the group is walked with
-        ``include_subgroups``, and the group node the projects hang off is the *listed*
-        path rather than each project's own namespace. Getting this wrong strands
-        projects in the browse view even though every record synced.
+        ``group_ids`` used to expand into every project under the group. An instance now
+        syncs exactly one repository, and the group filter survives only to narrow the
+        repository picker. The regression this catches is the old expansion still
+        running next to the selection: the sibling project in the same group would sync
+        too, quietly breaking the one-repository rule.
         """
-        subgroup = gitlab_connector["subgroup_path"]
-        if not subgroup:
-            pytest.skip("GITLAB_TEST_SUBGROUP not set — group scoping not exercised")
-
+        group = gitlab_connector["group_path"]
         primary = gitlab_connector["primary"]
         mutation = gitlab_connector["mutation"]
-        if not primary["path_with_namespace"].startswith(f"{subgroup}/"):
+        if not primary["path_with_namespace"].startswith(f"{group}/"):
             pytest.skip(
-                f"the primary project is not under {subgroup!r}, so this case cannot "
-                "distinguish subgroup expansion from a plain project filter"
+                f"the primary project is not under {group!r}, so a sibling leaking in "
+                "through the group could not be told apart from a clean result"
             )
 
         async with dedicated_connector(
             pipeshub_client, graph_provider,
             token=gitlab_connector["token"], name=_connector_name("filter-group"),
             instance_url=gitlab_connector["instance_url"],
-            filters=sync_filters(group_ids=list_filter("in", [subgroup])),
+            filters=sync_filters(
+                group_ids=list_filter("in", [group]),
+                project_ids=list_filter("in", [gitlab_connector["mutation_path"]]),
+            ),
             min_records=1,
         ) as connector_id:
-            group_node = await graph_provider.get_record_group_by_external_id(
-                connector_id, subgroup,
-            )
-            assert group_node is not None, (
-                f"no record group for the listed group {subgroup!r}"
-            )
-
-            project_group = await graph_provider.get_record_group_by_external_id(
-                connector_id, str(primary["id"]),
-            )
-            assert project_group is not None, (
-                f"{primary['path_with_namespace']} is under {subgroup} and should have "
-                "synced through subgroup expansion"
-            )
-            assert project_group.parent_external_group_id == subgroup, (
-                f"under a group_ids filter the project hangs off the listed group; got "
-                f"parent {project_group.parent_external_group_id!r}, expected {subgroup!r}"
-            )
-
-            # The mutation project shares the top-level group but not the subgroup.
-            outside = await graph_provider.get_record_group_by_external_id(
+            selected = await graph_provider.get_record_group_by_external_id(
                 connector_id, str(mutation["id"]),
             )
-            assert outside is None, (
-                f"{mutation['path_with_namespace']} is outside {subgroup} but synced "
-                "anyway — the subgroup walk is reaching the parent group"
+            assert selected is not None, (
+                f"{mutation['path_with_namespace']} was the selected repository but "
+                "produced no record group"
             )
-        logger.info("TC-FILTER-001 passed: %s expanded, siblings excluded", subgroup)
+            sibling = await graph_provider.get_record_group_by_external_id(
+                connector_id, str(primary["id"]),
+            )
+            assert sibling is None, (
+                f"{primary['path_with_namespace']} is in {group} but was not selected, "
+                "yet it synced — the group filter is still expanding into projects"
+            )
+        logger.info("TC-FILTER-001 passed: the %s filter did not widen the sync", group)
 
     @pytest.mark.order(25)
     async def test_tc_filter_002_code_files_indexing_off(
@@ -2181,6 +2173,106 @@ class TestGitLabFilters:
         logger.info(
             "TC-GL-FILTEROPT-001 passed: %d group(s) enumerated, project picker "
             "search + group-context verified", len(group_ids),
+        )
+
+    @pytest.mark.order(27)
+    async def test_tc_gl_onerepo_001_enable_refused_for_two_repositories(
+        self, gitlab_connector: dict[str, Any],
+        pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GL-ONEREPO-001: an instance holding two repositories is refused on Enable.
+
+        One repository per instance is enforced at the toggle, the gate every connector
+        passes before it syncs; an instance configured before the rule never went through
+        the save check. It must be refused with a message telling the user to narrow the
+        selection down, and stay disabled.
+        """
+        two = [gitlab_connector["primary_path"], gitlab_connector["mutation_path"]]
+        connector_id = create_gitlab_connector(
+            pipeshub_client, token=gitlab_connector["token"],
+            name=_connector_name("onerepo-refused"),
+            instance_url=gitlab_connector["instance_url"],
+            filters=sync_filters(project_ids=list_filter("in", two)),
+        )
+        try:
+            resp = pipeshub_client.request(
+                "POST", f"/api/v1/connectors/{connector_id}/toggle", json={"type": "sync"},
+            )
+            assert resp.status_code == 400, (
+                "enabling an instance that holds two repositories must be refused; got "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+            assert "Narrow it down to one" in resp.text, (
+                "the refusal must tell the user to narrow the selection to one "
+                f"repository; body: {resp.text[:300]}"
+            )
+            assert not pipeshub_client.get_connector(connector_id).get("isActive"), (
+                "the enable was refused yet the connector is active"
+            )
+        finally:
+            # Log, never raise: a cleanup error must not replace the assertion that failed.
+            try:
+                await teardown_connector(pipeshub_client, graph_provider, connector_id)
+            except Exception as e:
+                logger.error("connector %s cleanup leaked: %s", connector_id, e)
+        logger.info("TC-GL-ONEREPO-001 passed: two repositories refused on enable")
+
+    @pytest.mark.order(28)
+    async def test_tc_gl_onerepo_002_single_repository_saves_enables_and_syncs(
+        self, gitlab_connector: dict[str, Any],
+        pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GL-ONEREPO-002: one repository saved through filters-sync enables and syncs,
+        and nothing else does.
+
+        The happy path through every check the rule added: the save route validates the
+        merged config, the toggle validates the stored one, and ``run_sync`` checks it
+        again before calling GitLab. A regression in any of them either refuses a valid
+        instance or lets a second project in.
+        """
+        primary = gitlab_connector["primary"]
+        mutation = gitlab_connector["mutation"]
+        connector_id = create_gitlab_connector(
+            pipeshub_client, token=gitlab_connector["token"],
+            name=_connector_name("onerepo-sync"),
+            instance_url=gitlab_connector["instance_url"],
+        )
+        try:
+            saved = pipeshub_client.request(
+                "PUT", f"/api/v1/connectors/{connector_id}/config/filters-sync",
+                json={"filters": sync_filters(
+                    project_ids=list_filter("in", [gitlab_connector["mutation_path"]]),
+                )},
+            )
+            assert saved.status_code == 200, (
+                "saving exactly one repository must succeed; got HTTP "
+                f"{saved.status_code}: {saved.text[:300]}"
+            )
+
+            pipeshub_client.toggle_sync(connector_id, enable=True)
+            await wait_for_sync_completion(
+                pipeshub_client, graph_provider, connector_id,
+                min_records=1, timeout=GL_SYNC_WAIT_SEC,
+            )
+            assert await graph_provider.get_record_group_by_external_id(
+                connector_id, str(mutation["id"]),
+            ) is not None, (
+                f"{mutation['path_with_namespace']} was saved and enabled but did not sync"
+            )
+            assert await graph_provider.get_record_group_by_external_id(
+                connector_id, str(primary["id"]),
+            ) is None, (
+                f"{primary['path_with_namespace']} was never selected yet synced; the "
+                "instance must hold exactly one repository"
+            )
+        finally:
+            try:
+                await teardown_connector(pipeshub_client, graph_provider, connector_id)
+            except Exception as e:
+                logger.error("connector %s cleanup leaked: %s", connector_id, e)
+        logger.info(
+            "TC-GL-ONEREPO-002 passed: %s saved, enabled and synced alone",
+            mutation["path_with_namespace"],
         )
 
 # =============================================================================

@@ -17,6 +17,7 @@ import {
 } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
 import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-token-service.provider';
 import * as XLSX from 'xlsx';
+import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 
 /** Query chain stub for OAuthApp.find(...).select().lean().exec() used in softDeleteOAuthAppsForUser */
 function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
@@ -132,6 +133,15 @@ describe('UserController', () => {
     };
 
     next = sinon.stub();
+
+    // deleteUser calls find-then-revoke-then-pull; default both to no-op
+    // so tests that don't care about project cleanup aren't affected.
+    if (!(ProjectService.findProjectsWithLinkedKbForUser as any).restore) {
+      sinon.stub(ProjectService, 'findProjectsWithLinkedKbForUser').resolves([]);
+    }
+    if (!(ProjectService.removeUserFromAllProjects as any).restore) {
+      sinon.stub(ProjectService, 'removeUserFromAllProjects').resolves();
+    }
   });
 
   afterEach(() => {
@@ -2474,7 +2484,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
 
     it('should throw InternalServerError when mail sending fails (password disabled)', async () => {
@@ -2497,7 +2507,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
   });
 
@@ -4296,7 +4306,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
 
     it('should throw when password mail sending fails', async () => {
@@ -4323,7 +4333,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
   });
 

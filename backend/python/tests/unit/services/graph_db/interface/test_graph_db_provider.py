@@ -192,6 +192,7 @@ class TestAbstractMethodInventory:
         "batch_upsert_nodes",
         "delete_nodes",
         "update_node",
+        "update_node_if_match",
         # Edge operations
         "batch_create_edges",
         "batch_create_entity_relations",
@@ -412,6 +413,7 @@ class TestAbstractMethodInventory:
         "validate_folder_for_upload",
         # Record location / permission-aware trails
         "filter_nodes_with_permission_role",
+        "filter_accessible_virtual_record_ids",
         "get_record_parent_adjacency",
     ]
 

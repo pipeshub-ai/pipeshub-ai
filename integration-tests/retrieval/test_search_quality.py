@@ -27,6 +27,16 @@ logger = logging.getLogger("retrieval-quality")
 pytestmark = [pytest.mark.integration, pytest.mark.retrieval]
 
 
+def _search(search_client: Any, corpus: Any, query: str, limit: int) -> Any:
+    """Search the corpus's own knowledge base.
+
+    The org also holds whatever other tests indexed in the same run, so an
+    org-wide query ranks this corpus against documents nobody here chose,
+    and a known right answer stops being known.
+    """
+    return search_client.search(query, limit=limit, filters={"kb": [corpus.kb_id]})
+
+
 def _hits(response: Any) -> list[dict[str, Any]]:
     assert response.status_code == 200, (
         f"Search failed with HTTP {response.status_code}: {response.text[:400]}"
@@ -49,7 +59,7 @@ class TestFindingAnExactTerm:
         it is worth pinning: if it ever fails, retrieval is broken outright
         rather than merely ranking oddly.
         """
-        hits = _hits(search_client.search(UNIQUE_TOKEN, limit=10))
+        hits = _hits(_search(search_client, indexed_corpus, UNIQUE_TOKEN, limit=10))
         assert hits, (
             f"No results at all for {UNIQUE_TOKEN!r}, which appears verbatim in "
             "one indexed document."
@@ -78,7 +88,7 @@ class TestFindingSomethingDescribedDifferently:
         working rather than string matching getting lucky.
         """
         query = "paying someone back for money they spent out of pocket"
-        hits = _hits(search_client.search(query, limit=10))
+        hits = _hits(_search(search_client, indexed_corpus, query, limit=10))
         assert hits, f"No results at all for {query!r}."
 
         ranked = ranked_slugs(hits, indexed_corpus.slug_of)
@@ -99,7 +109,7 @@ class TestFindingSomethingDescribedDifferently:
         as returning it above documents that have nothing to do with the query.
         """
         query = "how long does the transmitter keep reporting the bird's position"
-        hits = _hits(search_client.search(query, limit=10))
+        hits = _hits(_search(search_client, indexed_corpus, query, limit=10))
         ranked = ranked_slugs(hits, indexed_corpus.slug_of)
 
         assert ranked and ranked[0] == "birds", (
@@ -121,7 +131,7 @@ class TestWhatComesBack:
         interface cannot show where an answer came from, and neither can a
         citation.
         """
-        hits = _hits(search_client.search(UNIQUE_TOKEN, limit=5))
+        hits = _hits(_search(search_client, indexed_corpus, UNIQUE_TOKEN, limit=5))
         assert hits, "No results to inspect."
 
         without_content = [h for h in hits if not h.get("content")]

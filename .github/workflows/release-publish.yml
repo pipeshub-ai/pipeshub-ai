@@ -133,7 +133,7 @@ jobs:
   # The gate. These images are on Docker Hub but no published tag points at them
   # yet, so this runs against exactly what a user would install.
   verify:
-    name: Verify ${{ matrix.deploy }} candidate (${{ matrix.arch }})
+    name: Verify ${{ matrix.deploy }} candidate (${{ matrix.arch }}${{ matrix.graph && format(', {0}', matrix.graph) || '' }})
     needs: [resolve, build]
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -159,6 +159,14 @@ jobs:
             suffix: ''
             arch: arm64
             runner: ubuntu-24.04-arm
+          # Customers can install on ArangoDB instead of Neo4j. Every other row
+          # takes the installer's default (Neo4j), so without this one a release
+          # that cannot start or upgrade on ArangoDB would still be promoted.
+          - deploy: slim
+            suffix: '-slim'
+            arch: amd64
+            graph: arango
+            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -192,6 +200,7 @@ jobs:
       - name: First-run smoke against the candidate image
         env:
           PIPESHUB_DEPLOY_TYPE: ${{ matrix.deploy }}
+          PIPESHUB_GRAPH_DB: ${{ matrix.graph }}
           PIPESHUB_VERSION: ${{ needs.resolve.outputs.candidate }}${{ matrix.suffix }}
           PUBLISHED_HUB_SMOKE_DIAG: ${{ runner.temp }}/diag
         run: bash deployment/docker-compose/tests/published_hub_smoke.sh
@@ -200,6 +209,7 @@ jobs:
         env:
           PIPESHUB_TARGET_VERSION: ${{ needs.resolve.outputs.candidate }}${{ matrix.suffix }}
           PIPESHUB_DEPLOY_TYPE: ${{ matrix.deploy }}
+          PIPESHUB_GRAPH_DB: ${{ matrix.graph }}
           PIPESHUB_UPGRADE_DIAG: ${{ runner.temp }}/diag
         run: bash deployment/docker-compose/tests/upgrade_smoke.sh
 
@@ -207,7 +217,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: release-verify-${{ matrix.deploy }}-${{ matrix.arch }}
+          name: release-verify-${{ matrix.deploy }}-${{ matrix.arch }}${{ matrix.graph && format('-{0}', matrix.graph) || '' }}
           path: ${{ runner.temp }}/diag
           if-no-files-found: ignore
 

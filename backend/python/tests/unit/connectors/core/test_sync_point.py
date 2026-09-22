@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.connectors.core.base.sync_point.sync_point import (
+    FailedItems,
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
@@ -409,3 +410,27 @@ class TestDeleteSyncPoint:
         tx_store.delete_sync_point.assert_awaited_once()
         assert result["status"] == "deleted"
         assert "key" in result
+
+
+class TestFailedItems:
+    def test_nothing_failed_saves_the_newest_time(self):
+        assert FailedItems().checkpoint(300) == 300
+
+    def test_saves_just_before_the_earliest_failure(self):
+        failed = FailedItems()
+        failed.add(250)
+        failed.add(200)
+        assert failed.checkpoint(300) == 199
+
+    def test_never_moves_past_the_newest_time_seen(self):
+        failed = FailedItems()
+        failed.add(500)
+        assert failed.checkpoint(300) == 300
+
+    def test_a_failure_without_a_cutoff_time_is_counted_but_does_not_hold_it(self):
+        failed = FailedItems()
+        failed.add(None)
+        assert failed.checkpoint(300) == 300
+        failed.add(200)
+        assert failed.checkpoint(300) == 199
+        assert failed.count == 2

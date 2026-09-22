@@ -165,6 +165,54 @@ class TestLayering:
         assert "## Custom Instructions" in result
         assert "Always respond in Spanish." in result
 
+    def test_project_instructions_included_when_set(self) -> None:
+        """Author-set Project instructions (Node `ProjectService.
+        buildContext`) render as their own section, distinct from both
+        `## Agent Instructions` and `## Custom Instructions`."""
+        context = make_context(project_instructions="Cite the Q3 report for every financial claim.")
+        result = _build(context)
+        assert "## Project Instructions" in result
+        assert "Cite the Q3 report for every financial claim." in result
+
+    def test_no_project_instructions_section_when_unset(self) -> None:
+        context = make_context()
+        result = _build(context)
+        assert "## Project Instructions" not in result
+
+    def test_no_project_instructions_section_when_blank(self) -> None:
+        context = make_context(project_instructions="   ")
+        result = _build(context)
+        assert "## Project Instructions" not in result
+
+    def test_project_instructions_never_overrides_agent_identity(self) -> None:
+        """A custom Agent Builder agent's `system_prompt`/`instructions` stay
+        untouched even when its conversation is linked to a project."""
+        context = make_context(
+            system_prompt="You are Aria, a witty legal assistant.",
+            instructions="Escalate anything about pricing.",
+            project_instructions="Prefer the Q3 report.",
+        )
+        result = _build(context)
+        assert "You are Aria, a witty legal assistant." in result
+        assert "## Agent Instructions" in result
+        assert "Escalate anything about pricing." in result
+        assert "## Project Instructions" in result
+        assert "Prefer the Q3 report." in result
+
+    def test_project_instructions_and_custom_instructions_coexist(self) -> None:
+        context = make_context(
+            project_instructions="Prefer the Q3 report.",
+            custom_instructions="Always respond in Spanish.",
+        )
+        result = _build(context)
+        assert "## Project Instructions" in result
+        assert "Prefer the Q3 report." in result
+        assert "## Custom Instructions" in result
+        assert "Always respond in Spanish." in result
+        # Project Instructions must render before Custom Instructions (see
+        # `section_order.py`).
+        assert result.index("## Project Instructions") < result.index("## Custom Instructions")
+
     def test_goal_constraints_rendered_as_request_context(self) -> None:
         context = make_context()
         goal = Goal(description="hi", constraints=["Reuse the previous search results."])
@@ -518,6 +566,17 @@ class TestIdentityAndOperatingRules:
         section_with = with_tool.split("## Operating Rules", 1)[1].split("\n## ", 1)[0]
         section_without = without_tool.split("## Operating Rules", 1)[1].split("\n## ", 1)[0]
         assert section_with == section_without
+
+    def test_org_scope_rule_present_when_user_context_enabled(self) -> None:
+        context = make_context(send_user_info=True)
+        result = _build(context)
+        assert "Organization scope" in result
+        assert "Current User Information" in result
+
+    def test_org_scope_rule_absent_when_user_context_disabled(self) -> None:
+        context = make_context(send_user_info=False)
+        result = _build(context)
+        assert "Organization scope" not in result
 
 
 class TestToolReferenceSection:

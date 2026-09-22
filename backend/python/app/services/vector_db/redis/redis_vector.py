@@ -120,7 +120,12 @@ def _is_unknown_index_error(exc: Exception) -> bool:
     creating the collection.
     """
     message = str(exc).lower()
-    return "unknown index name" in message or "no such index" in message
+    return (
+        "unknown index name" in message
+        or "no such index" in message
+        # Redis 8.8 and later, which the floating redis:8 tag now serves.
+        or "search_index_not_found" in message
+    )
 
 
 class RedisVectorService(IVectorDBService):
@@ -381,6 +386,7 @@ class RedisVectorService(IVectorDBService):
             "metadata_virtualRecordId", "TAG",
             "connectorIds", "TAG",
             "recordGroupIds", "TAG",
+            "rootRecordGroupIds", "TAG",
         ]
         await self.client.execute_command(*cmd)  # type: ignore
         logger.info(

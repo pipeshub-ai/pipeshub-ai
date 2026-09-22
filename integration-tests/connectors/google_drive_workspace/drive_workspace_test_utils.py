@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from google.oauth2 import service_account  # type: ignore[import-not-found]
 from googleapiclient.discovery import build  # type: ignore[import-not-found]
+from googleapiclient.errors import HttpError  # type: ignore[import-not-found]
 from pymongo import MongoClient  # type: ignore[import-not-found]
 
 from app.config.constants.arangodb import MimeTypes  # type: ignore[import-not-found]
@@ -30,6 +31,16 @@ FULL_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 ENV_SA_JSON = "GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON"
 ENV_ADMIN_EMAIL = "GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL"
 ENV_TEST_USER = "GOOGLE_DRIVE_WORKSPACE_TEST_USER_EMAIL"
+# A second Workspace member in the same domain, to share files with.
+ENV_SECOND_USER = "GOOGLE_DRIVE_WORKSPACE_SECOND_USER_EMAIL"
+
+# A freshly created Shared Drive lags its create call twice over: in the member
+# drives.list the connector discovers drives through, and in the drive-wide
+# files.list index it enumerates their contents from. Both have exceeded 60s in
+# CI, so this matches the suite's sync budget instead of undercutting it.
+PROPAGATION_TIMEOUT_SEC = float(
+    os.getenv("GOOGLE_DRIVE_WORKSPACE_PROPAGATION_TIMEOUT", "300")
+)
 
 
 def require_drive_workspace_env() -> tuple[str, str, str]:
@@ -217,7 +228,7 @@ async def wait_until_shared_drives_listed(
     drive: GoogleDriveDataSource,
     drive_ids: list[str],
     *,
-    timeout: float = 60.0,
+    timeout: float = PROPAGATION_TIMEOUT_SEC,
     interval: float = 2.0,
 ) -> None:
     """Poll member ``drives.list`` until every id is visible.
@@ -251,6 +262,145 @@ async def wait_until_shared_drives_listed(
         description=f"Shared Drives visible in drives.list: {sorted(wanted)}",
     )
     logger.info("Shared Drives visible in drives.list: %s", sorted(wanted))
+
+
+async def list_shared_drive_file_ids(
+    drive: GoogleDriveDataSource,
+    drive_id: str,
+) -> set[str]:
+    """Return every file id a drive-wide ``files.list`` reports for ``drive_id``.
+
+    Mirrors the connector's Shared Drive enumeration (``corpora=drive``, no ``q``)
+    on purpose: that call reads the drive's search index, which lags well behind
+    both ``files.get`` and ``'<parent>' in parents`` queries on new items.
+    """
+    found: set[str] = set()
+    page_token: Optional[str] = None
+    while True:
+        resp = await drive.files_list(
+            driveId=drive_id,
+            corpora="drive",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            pageSize=1000,
+            pageToken=page_token,
+            fields="nextPageToken, files(id)",
+        )
+        for entry in resp.get("files") or []:
+            file_id = entry.get("id")
+            if file_id:
+                found.add(str(file_id))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return found
+
+
+async def wait_until_shared_drive_files_listed(
+    drive: GoogleDriveDataSource,
+    drive_id: str,
+    file_ids: list[str],
+    *,
+    timeout: float = PROPAGATION_TIMEOUT_SEC,
+    interval: float = 5.0,
+) -> None:
+    """Poll the drive-wide ``files.list`` until every id is visible.
+
+    A sync started before this settles enumerates an empty (or partial) drive,
+    saves its start page token anyway and reports success with no records. The
+    missing items never arrive after that: the incremental path only carries
+    changes made *after* that token, so a fixture can only poll the graph until
+    it times out.
+    """
+    from helper.graph_provider_utils import async_poll_until  # type: ignore[import-not-found]
+
+    wanted = {str(f) for f in file_ids if f}
+    if not wanted:
+        return
+
+    async def _all_visible() -> set[str] | None:
+        found = await list_shared_drive_file_ids(drive, drive_id)
+        missing = wanted - found
+        if missing:
+            logger.info(
+                "Waiting for items in drive-wide files.list for %s; missing=%s (listed=%d)",
+                drive_id,
+                sorted(missing),
+                len(found),
+            )
+            return None
+        return found & wanted
+
+    await async_poll_until(
+        _all_visible,
+        timeout=timeout,
+        interval=interval,
+        description=f"items visible in files.list for Shared Drive {drive_id}: {sorted(wanted)}",
+    )
+    logger.info("Items visible in files.list for Shared Drive %s: %s", drive_id, sorted(wanted))
+
+
+async def _user_corpus_ids_present(
+    drive: GoogleDriveDataSource,
+    wanted: set[str],
+) -> set[str]:
+    """Ids from ``wanted`` visible in the user-corpus listing; stops once all are found."""
+    found: set[str] = set()
+    page_token: Optional[str] = None
+    while True:
+        resp = await drive.files_list(
+            pageSize=1000,
+            pageToken=page_token,
+            fields="nextPageToken, files(id)",
+        )
+        for entry in resp.get("files") or []:
+            file_id = entry.get("id")
+            if file_id and str(file_id) in wanted:
+                found.add(str(file_id))
+        if found == wanted:
+            return found
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            return found
+
+
+async def wait_until_drive_files_listed(
+    drive: GoogleDriveDataSource,
+    file_ids: list[str],
+    *,
+    timeout: float = PROPAGATION_TIMEOUT_SEC,
+    interval: float = 5.0,
+) -> None:
+    """Poll the user-corpus ``files.list`` until every id is visible.
+
+    Both Drive connectors walk My Drive through this listing — the workspace one
+    unfiltered, the personal one with ``trashed=false``, which cannot hide a file the
+    fixtures just created. It reads the search index, so a sync started before that
+    settles never sees the fixture tree, and the graph poll after it can only time out.
+    """
+    from helper.graph_provider_utils import async_poll_until  # type: ignore[import-not-found]
+
+    wanted = {str(f) for f in file_ids if f}
+    if not wanted:
+        return
+
+    async def _all_visible() -> set[str] | None:
+        found = await _user_corpus_ids_present(drive, wanted)
+        missing = wanted - found
+        if missing:
+            logger.info(
+                "Waiting for items in user-corpus files.list; missing=%s", sorted(missing)
+            )
+            return None
+        return found
+
+    await async_poll_until(
+        _all_visible,
+        timeout=timeout,
+        interval=interval,
+        description=f"items visible in user files.list: {sorted(wanted)}",
+    )
+    logger.info("Items visible in user files.list: %s", sorted(wanted))
 
 
 async def delete_shared_drive(
@@ -351,8 +501,15 @@ async def create_shared_drive_folder_filter_fixtures(
               child.txt
           out_of_scope/
             sibling.txt
+          {root-seed}/
+            root-child.txt
         Drive B/
           ignored.txt
+
+    The root-seed pair is asserted on by tc_sd_ff_004, which builds its own connector
+    minutes later. It is created here, with the rest of the tree, because a drive-wide
+    files.list can omit an item created seconds earlier and a first sync reads nothing
+    else — see ``wait_until_shared_drive_files_listed``.
     """
     seed_id = await create_drive_folder(drive, "seed", parent_id=drive_a_id)
     nested_id = await create_drive_folder(drive, "nested", parent_id=seed_id)
@@ -372,6 +529,16 @@ async def create_shared_drive_folder_filter_fixtures(
         parent_id=drive_b_id,
         content="drive B ignored by drive_ids\n",
     )
+    root_folder_name = f"root-seed-{uuid.uuid4().hex[:6]}"
+    root_folder_id = await create_drive_folder(
+        drive, root_folder_name, parent_id=drive_a_id
+    )
+    root_file_id = await create_drive_text_file(
+        drive,
+        "root-child.txt",
+        parent_id=root_folder_id,
+        content="shared drive root seed it\n",
+    )
 
     fixtures = {
         "drive_a_id": drive_a_id,
@@ -388,8 +555,136 @@ async def create_shared_drive_folder_filter_fixtures(
         "oos_file_name": "sibling.txt",
         "drive_b_ignored_file_id": ignored_id,
         "drive_b_ignored_file_name": "ignored.txt",
+        "root_folder_id": root_folder_id,
+        "root_folder_name": root_folder_name,
+        "root_file_id": root_file_id,
+        "root_file_name": "root-child.txt",
     }
     logger.info("Created Shared Drive folder-filter fixtures: %s", fixtures)
+    return fixtures
+
+
+def _create_permission(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    body: dict[str, Any],
+    **params: Any,
+) -> str:
+    """permissions.create with a body (the typed wrapper takes none); return its id."""
+    created = drive.client.permissions().create(  # type: ignore[attr-defined]
+        fileId=file_id,
+        body=body,
+        supportsAllDrives=True,
+        fields="id",
+        **params,
+    ).execute()
+    permission_id = created.get("id")
+    if not permission_id:
+        raise RuntimeError(f"permissions.create returned no id for {file_id}: {created}")
+    return str(permission_id)
+
+
+def share_drive_item_with_user(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    email: str,
+    role: str = "reader",
+) -> str:
+    """Share with one person, without the notification email; return the permission id."""
+    permission_id = _create_permission(
+        drive,
+        file_id,
+        {"type": "user", "role": role, "emailAddress": email},
+        sendNotificationEmail=False,
+    )
+    logger.info("Shared Drive item %s with %s as %s", file_id, email, role)
+    return permission_id
+
+
+def share_drive_item_with_domain(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    domain: str,
+    role: str = "reader",
+) -> str:
+    """Share with everyone in ``domain``; return the permission id."""
+    permission_id = _create_permission(
+        drive,
+        file_id,
+        {"type": "domain", "role": role, "domain": domain},
+    )
+    logger.info("Shared Drive item %s with domain %s as %s", file_id, domain, role)
+    return permission_id
+
+
+async def unshare_drive_item(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    permission_id: str,
+) -> None:
+    await drive.permissions_delete(
+        fileId=file_id, permissionId=permission_id, supportsAllDrives=True
+    )
+    logger.info("Removed permission %s from Drive item %s", permission_id, file_id)
+
+
+async def create_permission_fixtures(
+    drive: GoogleDriveDataSource,
+    second_user_email: str,
+    domain: str,
+) -> dict[str, str]:
+    """One file per way of sharing, all owned by the impersonated user.
+
+    Layout::
+
+        {root}/
+          private.txt          owner only
+          shared-reader.txt    + second user as reader
+          revoke.txt           + second user as reader (a test takes it away)
+          domain.txt           + everyone in the domain as reader
+
+    ``domain_share_error`` is set instead of ``domain_permission_id`` when the
+    Workspace sharing policy refuses domain-wide shares, so only that case skips.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    root_name = f"pipeshub-it-drive-perm-{suffix}"
+    root_id = await create_drive_folder(drive, root_name)
+
+    # The caller only learns root_id from the return value, so a failure part-way
+    # through must clean up here or the tree is left in Drive.
+    try:
+        fixtures: dict[str, str] = {"root_folder_id": root_id, "root_folder_name": root_name}
+        for key, name in (
+            ("private", "private.txt"),
+            ("shared", "shared-reader.txt"),
+            ("revoke", "revoke.txt"),
+            ("domain", "domain.txt"),
+        ):
+            fixtures[f"{key}_file_id"] = await create_drive_text_file(
+                drive, name, parent_id=root_id, content=f"pipeshub drive permission it: {name}\n"
+            )
+            fixtures[f"{key}_file_name"] = name
+
+        fixtures["shared_permission_id"] = share_drive_item_with_user(
+            drive, fixtures["shared_file_id"], second_user_email
+        )
+        fixtures["revoke_permission_id"] = share_drive_item_with_user(
+            drive, fixtures["revoke_file_id"], second_user_email
+        )
+        try:
+            fixtures["domain_permission_id"] = share_drive_item_with_domain(
+                drive, fixtures["domain_file_id"], domain
+            )
+        except HttpError as e:
+            if e.resp.status != 403:
+                raise
+            fixtures["domain_share_error"] = f"HTTP {e.resp.status}: {e}"
+            logger.warning("Domain-wide share refused for %s: %s", domain, e)
+    except BaseException:
+        await delete_drive_folder(drive, root_id)
+        raise
+
+    logger.info("Created Drive permission fixtures: %s", fixtures)
     return fixtures
 
 

@@ -136,6 +136,7 @@ from helper.clients.conversations_client import (  # noqa: E402
 from helper.clients.kb_client import KBClient  # noqa: E402
 from helper.clients.oauth_client import OAuthAppsClient, OAuthProviderClient  # noqa: E402
 from helper.clients.org_client import OrgClient  # noqa: E402
+from helper.clients.projects_client import ProjectsClient  # noqa: E402
 from helper.clients.search_client import SearchClient  # noqa: E402
 from helper.clients.teams_client import TeamsClient  # noqa: E402
 from helper.clients.user_groups_client import UserGroupsClient  # noqa: E402
@@ -382,6 +383,11 @@ def agent_conversations_client(
 @pytest.fixture(scope="session")
 def search_client(pipeshub_client: PipeshubClient) -> SearchClient:
     return SearchClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def projects_client(pipeshub_client: PipeshubClient) -> ProjectsClient:
+    return ProjectsClient(pipeshub_client)
 
 
 @pytest.fixture(scope="session")

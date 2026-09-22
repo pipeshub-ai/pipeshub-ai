@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
 import pytest
 
@@ -28,7 +29,11 @@ from app.services.messaging.redis_streams.indexing_consumer import (
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
 from app.services.resource_governor.models import ParseTier
-from tests.integration.messaging.conftest import DRAIN_TIMEOUT_SECONDS
+from tests.integration.messaging.conftest import (
+    DRAIN_TIMEOUT_SECONDS,
+    held_handler,
+    stop_mid_flight,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -333,28 +338,17 @@ class TestCrashRecoveryOnARealBroker:
         group = f"it-crash-{unique_suffix}"
         seen: list[str] = []
 
+        gate = threading.Event()
+        parked: list[str] = []
         consumer = IndexingRedisStreamsConsumer(
             logging.getLogger("it-consumer"),
             _stream_config(host, port, base_stream, _LANES, group),
             fair_scheduler_config=_fair(),
         )
-        await consumer.start(_handler([], seen))
-        try:
-            deadline = asyncio.get_running_loop().time() + DRAIN_TIMEOUT_SECONDS
-            while len(seen) < total // 3:
-                if asyncio.get_running_loop().time() > deadline:
-                    raise AssertionError("consumer never made progress")
-                await asyncio.sleep(0.05)
-            first_run = len(seen)
-        finally:
-            await consumer.stop()
+        await consumer.start(held_handler(seen, total // 3, gate, parked))
+        await stop_mid_flight(consumer, gate, parked)
 
-        assert first_run > 0, "the first run never made progress"
-        if len(seen) >= total:
-            pytest.skip(
-                "the broker drained the whole backlog before shutdown, so "
-                "there is no partial state left to recover from"
-            )
+        assert len(set(seen)) < total, "the first run was meant to stop partway"
 
         consumer = IndexingRedisStreamsConsumer(
             logging.getLogger("it-consumer"),

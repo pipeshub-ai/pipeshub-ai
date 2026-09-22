@@ -26,6 +26,13 @@ from app.agents.agent_loop.error_classification import classify_error
         ("connection timeout while calling provider", "timeout"),
         ("something totally unexpected happened", "unknown"),
         (
+            "Error code: 429 - {'error': {'message': 'You exceeded your current quota, "
+            "please check your plan and billing details.', 'type': 'insufficient_quota'}}",
+            "quota_exceeded",
+        ),
+        ("Your credit balance is too low to access the Anthropic API", "quota_exceeded"),
+        ("APIConnectionError: Connection error.", "server_error"),
+        (
             # Real Azure OpenAI prompt-shield rejection body (400 with
             # code=content_filter / ResponsibleAIPolicyViolation).
             "LangChain transport error (stream): Error code: 400 - {'error': "
@@ -114,8 +121,8 @@ def test_invalid_request_without_extractable_message_uses_canned_text() -> None:
     error_code, message = classify_error("Error code: 400 - malformed payload")
     assert error_code == "invalid_request"
     assert message == (
-        "The AI service rejected this request. Please check the model configuration "
-        "and try again."
+        "The AI model rejected this request. Ask a workspace admin to check the "
+        "model settings in Workspace → AI Models."
     )
 
 
@@ -171,8 +178,8 @@ def test_request_too_large_without_extractable_message_uses_canned_text() -> Non
     error_code, message = classify_error(raw)
     assert error_code == "request_too_large"
     assert message == (
-        "The request exceeds the model's token limit. Please shorten your message "
-        "or start a new conversation to reduce context size."
+        "This conversation is too long for the selected model. Shorten your "
+        "message or start a new conversation."
     )
 
 
@@ -191,3 +198,44 @@ def test_provider_account_metadata_is_redacted_from_surfaced_messages() -> None:
     assert "platform.openai.com" not in user_message
     assert "https://" not in user_message
     assert "The model gpt-4o does not exist" in user_message
+
+
+def test_rate_limit_with_a_billing_link_is_still_a_rate_limit() -> None:
+    """Groq's per-minute limits link to its billing page; that is not an empty balance."""
+    raw = (
+        "Error code: 429 - {'error': {'message': 'Rate limit reached for model `llama` on "
+        "tokens per minute. Upgrade to Dev Tier today at https://console.groq.com/settings/billing'}}"
+    )
+    assert classify_error(raw)[0] == "rate_limit"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Error code: 429 - rate limit exceeded",
+        "401 Unauthorized: invalid api key",
+        "Error code: 503 - Service Unavailable",
+        "Request timed out after 30s",
+        "something totally unexpected happened",
+        "Error code: 429 - {'error': {'type': 'insufficient_quota'}}",
+    ],
+)
+def test_user_messages_speak_plainly_and_say_what_to_do(raw: str) -> None:
+    _, message = classify_error(raw)
+    assert "AI service" not in message
+    assert "Error code" not in message
+    assert any(step in message for step in ("try again", "Try again", "admin", "Wait"))
+
+
+def test_classify_exception_keeps_a_missing_model_message() -> None:
+    from app.agents.agent_loop.error_classification import classify_exception
+    from app.utils.llm import LLMNotConfiguredError
+
+    exc = LLMNotConfiguredError()
+    assert classify_exception(exc) == ("llm_not_configured", str(exc))
+
+
+def test_classify_exception_classifies_other_exceptions_by_text() -> None:
+    from app.agents.agent_loop.error_classification import classify_exception
+
+    assert classify_exception(RuntimeError("Error code: 429 - rate limit"))[0] == "rate_limit"

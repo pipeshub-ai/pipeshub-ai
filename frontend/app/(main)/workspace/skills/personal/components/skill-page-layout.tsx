@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Grid, Heading, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { WorkspaceHeaderIconButton } from '../../../components';
 import type { SkillMetadata } from '../types';
 import { SkillCard } from './skill-card';
@@ -22,6 +23,7 @@ interface SkillPageLayoutProps {
   onOpenCandidates: () => void;
   onRefresh: () => void;
   onManage: (name: string) => void;
+  onToggleAvailability?: (skill: SkillMetadata, nextEnabled: boolean) => void;
 }
 
 // ========================================
@@ -37,6 +39,7 @@ export function SkillPageLayout({
   onOpenCandidates,
   onRefresh,
   onManage,
+  onToggleAvailability,
 }: SkillPageLayoutProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
@@ -70,9 +73,12 @@ export function SkillPageLayout({
       {/* ── Header ── */}
       <Flex justify="between" align="start" gap="2" style={{ width: '100%' }}>
         <Flex direction="column" gap="2" style={{ flex: 1 }}>
-          <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            {t('workspace.skills.title')}
-          </Heading>
+          <Flex align="center" gap="2">
+            <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {t('workspace.skills.title')}
+            </Heading>
+            <BetaBadge />
+          </Flex>
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.skills.subtitle')}
           </Text>
@@ -119,7 +125,12 @@ export function SkillPageLayout({
       ) : (
         <Grid columns={{ initial: '2', md: '3', lg: '4' }} gap="4" style={{ width: '100%' }}>
           {filtered.map((skill) => (
-            <SkillCard key={skill.name} skill={skill} onManage={() => onManage(skill.name)} />
+            <SkillCard
+              key={skill.name}
+              skill={skill}
+              onManage={() => onManage(skill.name)}
+              onToggleAvailability={onToggleAvailability}
+            />
           ))}
         </Grid>
       )}

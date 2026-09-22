@@ -50,6 +50,10 @@ async def _connect_or_skip(svc, label: str, host: str, port: int) -> None:
         pytest.skip(f"{label} not available at {host}:{port} — {health.message}")
 
 
+# The service fixtures are module-scoped and their clients bind to the loop
+# they were created on, so every test module that uses them must run on
+# ``pytest.mark.asyncio(loop_scope="module")``.
+
 # ---------------------------------------------------------------------------
 # Redis provider fixture
 # ---------------------------------------------------------------------------

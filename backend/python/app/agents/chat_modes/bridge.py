@@ -40,7 +40,7 @@ from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.error_classification import classify_error
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks import CitationCollector, ensure_fetch_full_record_available
 from app.agents.agent_loop.respond import AnswerFinalizer
@@ -422,7 +422,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             chat_state["available_connectors"] = available_connectors
     except Exception as exc:
         log.error("run_chat_stream: failed to build initial state: %s", exc, exc_info=True)
-        error_code, user_message = classify_error(str(exc))
+        error_code, user_message = classify_exception(exc)
         if cancellation_registry is not None:
             await cancellation_registry.unregister(run_id)
         yield _pre_stream_error_frame(protocol, user_message, error_code)
@@ -603,7 +603,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 )
         except Exception as exc:
             log.error("run_chat_stream: run failed: %s", exc, exc_info=True)
-            error_code, user_message = classify_error(str(exc))
+            error_code, user_message = classify_exception(exc)
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:

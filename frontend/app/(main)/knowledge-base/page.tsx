@@ -102,7 +102,7 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
-import { ErrorType, isProcessedError } from '@/lib/api/api-error';
+import { ErrorType, getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
 import { useUserPermission } from '@/config';
 
 function KnowledgeBasePageContent() {
@@ -1660,7 +1660,7 @@ function KnowledgeBasePageContent() {
       for (const entry of oversized) {
         failUpload(
           entry.storeId,
-          `File exceeds the ${maxFileSizeMB} MB size limit`,
+          `This file is larger than the ${maxFileSizeMB} MB limit. Make it smaller or split it, then upload it again.`,
           [FileRejectionReason.EXCEEDS_SIZE_LIMIT],
         );
       }
@@ -1980,17 +1980,14 @@ function KnowledgeBasePageContent() {
     });
   }, [canManageSelectedKbSharing, handleAccessRevoked, shareAdapter]);
 
-  const getPreviewErrorMessage = useCallback((err: unknown): string => {
-    if (err instanceof Error && err.message) return err.message;
-
-    const maybeMessage = (err as { message?: unknown })?.message;
-    if (typeof maybeMessage === 'string' && maybeMessage.trim()) return maybeMessage;
-
-    const maybeStatusText = (err as { statusText?: unknown })?.statusText;
-    if (typeof maybeStatusText === 'string' && maybeStatusText.trim()) return maybeStatusText;
-
-    return 'Failed to load file';
-  }, []);
+  const getPreviewErrorMessage = useCallback(
+    (err: unknown): string =>
+      getUserFacingErrorMessage(
+        err,
+        "We couldn't open a preview of this file. Try downloading it instead, or try again in a moment.",
+      ),
+    [],
+  );
 
   // Handle file preview
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
@@ -2378,11 +2375,10 @@ function KnowledgeBasePageContent() {
 
         await refreshData();
       } catch (error: unknown) {
-        let errorMessage = 'Failed to start reindexing';
-
-        if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
-          errorMessage = error.message;
-        }
+        const errorMessage = getUserFacingErrorMessage(
+          error,
+          "We couldn't start reindexing. Please try again in a moment.",
+        );
 
         toast.update(toastId, {
           variant: 'error',

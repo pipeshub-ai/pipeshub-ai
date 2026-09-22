@@ -95,6 +95,14 @@ class ConnectorRegistryAuthMetadataKeys:
     OAUTH_CONFIGS = "oauthConfigs"
 
 
+class ConnectorErrorCodes:
+    """Stable codes shared with Node and the web client."""
+
+    DESKTOP_OFFLINE = "DESKTOP_OFFLINE"
+    DESKTOP_UNCLAIMED = "DESKTOP_UNCLAIMED"
+    DESKTOP_OWNED_BY_OTHER_DEVICE = "DESKTOP_OWNED_BY_OTHER_DEVICE"
+
+
 class ConnectorStateKeys:
     """Keys for connector state/status fields (typically in connector documents)."""
     IS_CONFIGURED = "isConfigured"
@@ -107,10 +115,13 @@ class ConnectorStateKeys:
     VECTOR_MEMBERSHIP_BACKFILL_ATTEMPTS = "vectorMembershipBackfillAttempts"
     VECTOR_MEMBERSHIP_BACKFILL_VRIDS = "vectorMembershipBackfillVrids"
     VECTOR_MEMBERSHIP_BACKFILL_EXHAUSTED = "vectorMembershipBackfillExhausted"
+    ROOT_MEMBERSHIP_REQUESTED = "rootMembershipRequested"
     UPDATED_AT_TIMESTAMP = "updatedAtTimestamp"
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"
     CREATED_BY = "createdBy"
+    OWNER_DEVICE_ID = "ownerDeviceId"
+    OWNER_DEVICE_NAME = "ownerDeviceName"
 
 
 CONNECTOR_EMAIL_IDENTITY_INFO = (

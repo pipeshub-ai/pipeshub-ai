@@ -25,6 +25,9 @@ from pathlib import Path
 import pytest
 
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 
 SOURCES_DIR = Path(__file__).resolve().parents[3] / "app" / "connectors" / "sources"
@@ -159,6 +162,59 @@ def test_create_connector_accepts_the_parameters_the_factory_passes(key: str) ->
         f"{cls.__name__}.create_connector does not name {missing}. The factory "
         f"passes them by keyword, so they would land in **kwargs and the body "
         f"would raise NameError when it used them.\n"
+        f"  base: {base}\n  impl: {impl}"
+    )
+
+
+def _placeholder_overrides() -> list[type]:
+    found: list[type] = []
+    stack = list(DataSourceEntitiesProcessor.__subclasses__())
+    seen: set[type] = set()
+    while stack:
+        cls = stack.pop()
+        if cls in seen:
+            continue
+        seen.add(cls)
+        stack.extend(cls.__subclasses__())
+        if "_create_placeholder_parent_record" in cls.__dict__:
+            found.append(cls)
+    return sorted(found, key=lambda c: c.__name__)
+
+
+PLACEHOLDER_OVERRIDES = _placeholder_overrides()
+
+
+def test_placeholder_overrides_exist() -> None:
+    assert PLACEHOLDER_OVERRIDES, (
+        "no DataSourceEntitiesProcessor subclass overrides "
+        "_create_placeholder_parent_record; this test would pass vacuously"
+    )
+
+
+@pytest.mark.parametrize(
+    "processor_cls", PLACEHOLDER_OVERRIDES, ids=lambda c: c.__name__
+)
+def test_placeholder_override_names_base_parameters(processor_cls: type) -> None:
+    """Overrides name every parameter the base placeholder method declares.
+
+    `_handle_parent_record` passes them by keyword. Swallowing extras in
+    `**kwargs` still accepts a new argument and hides the next drift until
+    nested-folder sync TypeErrors at runtime.
+    """
+    base = inspect.signature(DataSourceEntitiesProcessor._create_placeholder_parent_record)
+    impl = inspect.signature(processor_cls._create_placeholder_parent_record)
+    required = [
+        name
+        for name, p in base.parameters.items()
+        if name != "self"
+        and p.kind is not inspect.Parameter.VAR_KEYWORD
+        and p.kind is not inspect.Parameter.VAR_POSITIONAL
+    ]
+    missing = [name for name in required if name not in impl.parameters]
+    assert not missing, (
+        f"{processor_cls.__name__}._create_placeholder_parent_record does not "
+        f"name {missing}. _handle_parent_record passes them by keyword, so a "
+        f"shorter override TypeErrors and nested-folder sync rolls back.\n"
         f"  base: {base}\n  impl: {impl}"
     )
 

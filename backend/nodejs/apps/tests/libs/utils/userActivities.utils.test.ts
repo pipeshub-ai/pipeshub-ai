@@ -53,16 +53,36 @@ describe('userActivities.utils', () => {
       expect(Object.keys(userActivitiesType)).to.have.length(10)
     })
 
-    it('should include ACCOUNT_BLOCKED in session-invalidating activities', () => {
-      expect(SESSION_INVALIDATING_ACTIVITIES).to.include(
-        userActivitiesType.ACCOUNT_BLOCKED,
-      )
-    })
-
     it('should have unique values for all activity types', () => {
       const values = Object.values(userActivitiesType)
       const uniqueValues = new Set(values)
       expect(uniqueValues.size).to.equal(values.length)
+    })
+  })
+
+  describe('SESSION_INVALIDATING_ACTIVITIES', () => {
+    it('lists every activity that must end a session', () => {
+      expect([...SESSION_INVALIDATING_ACTIVITIES]).to.have.members([
+        userActivitiesType.LOGOUT,
+        userActivitiesType.PASSWORD_CHANGED,
+        userActivitiesType.ROLE_CHANGED,
+        userActivitiesType.ACCOUNT_BLOCKED,
+      ])
+    })
+
+    it('leaves activities that must not end a session out', () => {
+      const kept = [
+        userActivitiesType.LOGIN,
+        userActivitiesType.LOGIN_ATTEMPT,
+        userActivitiesType.OTP_GENERATE,
+        userActivitiesType.REFRESH_TOKEN,
+        userActivitiesType.WRONG_OTP,
+        userActivitiesType.WRONG_PASSWORD,
+      ]
+      const invalidating: readonly string[] = SESSION_INVALIDATING_ACTIVITIES
+      kept.forEach((activity) => {
+        expect(invalidating).to.not.include(activity)
+      })
     })
   })
 })

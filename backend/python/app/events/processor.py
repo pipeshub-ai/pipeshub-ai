@@ -47,9 +47,10 @@ from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
 from app.utils.table_enrichment import enhance_tables_with_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
 
 
-SCANNED_PDF_NO_OCR_MESSAGE = "Scanned document, add Multimodal"
+SCANNED_PDF_NO_OCR_MESSAGE = SCANNED_DOCUMENT_NEEDS_OCR
 
 
 def convert_record_dict_to_record(record_dict: dict) -> Record:

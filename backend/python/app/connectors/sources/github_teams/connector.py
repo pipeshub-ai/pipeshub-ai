@@ -149,10 +149,11 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.REPO_IDS.value,
-            display_name="Repositories",
-            description="Limit sync to specific repositories (full_name, e.g. my-org/my-repo)",
-            filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
+            display_name="Repository",
+            description="Select the repository to sync.",
+            filter_type=FilterType.SELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
+            required=True,
         ))
         .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,

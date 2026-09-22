@@ -19,6 +19,7 @@ import {
   setPlatformSettings,
   getPlatformSettings,
   getAvailablePlatformFeatureFlags,
+  getEffectivePlatformFeatureFlags,
   getAzureAdAuthConfig,
   setAzureAdAuthConfig,
   getMicrosoftAuthConfig,
@@ -640,6 +641,101 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0]).to.have.property('flags')
+    })
+
+    it('should include ENABLE_SKILLS, defaulting to enabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const skillsFlag = flags.find((f: any) => f.key === 'ENABLE_SKILLS')
+      expect(skillsFlag).to.exist
+      expect(skillsFlag.defaultEnabled).to.equal(true)
+    })
+
+    it('should include ENABLE_USER_CONTEXT, defaulting to enabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const userContextFlag = flags.find((f: any) => f.key === 'ENABLE_USER_CONTEXT')
+      expect(userContextFlag).to.exist
+      expect(userContextFlag.defaultEnabled).to.equal(true)
+    })
+
+    it('should not include hidden flags (e.g. ENABLE_BETA_CONNECTORS)', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      expect(flags.find((f: any) => f.key === 'ENABLE_BETA_CONNECTORS')).to.be.undefined
+    })
+  })
+
+  describe('getEffectivePlatformFeatureFlags', () => {
+    it('should default ENABLE_SKILLS to true when the store has no entry', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getEffectivePlatformFeatureFlags(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].featureFlags.ENABLE_SKILLS).to.equal(true)
+    })
+
+    it('should default ENABLE_USER_CONTEXT to true when the store has no entry', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getEffectivePlatformFeatureFlags(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].featureFlags.ENABLE_USER_CONTEXT).to.equal(true)
+    })
+
+    it('should let a stored false win over the default', async () => {
+      mockEncService.decrypt.returns(
+        JSON.stringify({ featureFlags: { ENABLE_SKILLS: false } }),
+      )
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves('encrypted:data') })
+      const handler = getEffectivePlatformFeatureFlags(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.json.firstCall.args[0].featureFlags.ENABLE_SKILLS).to.equal(false)
+    })
+
+    it('should call next on error', async () => {
+      const kvs = createMockKeyValueStore({ get: sinon.stub().rejects(new Error('store failed')) })
+      const handler = getEffectivePlatformFeatureFlags(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
     })
   })
 

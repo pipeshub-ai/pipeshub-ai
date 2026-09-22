@@ -383,8 +383,23 @@ class TestHandleRecordUpdates:
             metadata_changed=False, content_changed=False, permissions_changed=False,
             external_record_id="ext-1",
         )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_awaited_once()
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(connector.connector_id, "ext-1")
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
+
+    @pytest.mark.asyncio
+    async def test_deleted_record_never_indexed(self, connector):
+        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
+        update = RecordUpdate(
+            record=None, is_new=False, is_updated=False, is_deleted=True,
+            metadata_changed=False, content_changed=False, permissions_changed=False,
+            external_record_id="ext-404",
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.on_record_deleted = AsyncMock()
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
     async def test_new_record(self, connector):
         from app.connectors.sources.dropbox_individual.connector import RecordUpdate
@@ -431,6 +446,7 @@ class TestHandleRecordUpdates:
 
     async def test_exception_swallowed(self, connector):
         from app.connectors.sources.dropbox_individual.connector import RecordUpdate
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         connector.data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("err"))
         update = RecordUpdate(
             record=None, is_new=False, is_updated=False, is_deleted=True,
@@ -438,6 +454,7 @@ class TestHandleRecordUpdates:
             external_record_id="ext-1",
         )
         await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ---------------------------------------------------------------------------

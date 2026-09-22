@@ -594,10 +594,15 @@ def setup_test_indexing_models(client: PipeshubClient) -> SeededIndexingModels:
     test-local variables — these helpers only POST/DELETE via the Configuration
     Manager API.
     """
-    return SeededIndexingModels(
-        llm=setup_test_llm_model(client),
-        embedding=setup_test_embedding_model(client),
-    )
+    llm = setup_test_llm_model(client)
+    try:
+        embedding = setup_test_embedding_model(client)
+    except Exception:
+        # The LLM is already in the org's config at this point; leaving it there
+        # would change what every later test and benchmark runs against.
+        teardown_test_llm_model(client, llm)
+        raise
+    return SeededIndexingModels(llm=llm, embedding=embedding)
 
 
 def teardown_test_indexing_models(

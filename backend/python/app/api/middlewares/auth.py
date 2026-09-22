@@ -278,7 +278,8 @@ async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str
         # Without Node's answer a revoked token looks exactly like a valid one.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not verify the access token; try again shortly",
+            detail="We couldn't confirm your sign-in just now. Please try again in a few seconds.",
+            headers={"Retry-After": "5"},
         )
     return caller.role
 
@@ -289,14 +290,20 @@ class AuthPolicy:
 
     kind: Literal["scopes", "service", "deny_service"]
     service_scopes: frozenset[str] = frozenset()
+    oauth_scopes: frozenset[str] = frozenset()
 
 
 def _tag_auth_policy(
     dependency: Callable[..., Any],
     kind: Literal["scopes", "service", "deny_service"],
     service_scopes: Iterable[ScopeLike] = (),
+    oauth_scopes: Iterable[ScopeLike] = (),
 ) -> Callable[..., Any]:
-    policy = AuthPolicy(kind, frozenset(scope_value(scope) for scope in service_scopes))
+    policy = AuthPolicy(
+        kind,
+        frozenset(scope_value(scope) for scope in service_scopes),
+        frozenset(scope_value(scope) for scope in oauth_scopes),
+    )
     setattr(dependency, AUTH_POLICY_ATTR, policy)
     return dependency
 
@@ -348,7 +355,7 @@ def require_scopes(
                 detail=f"Insufficient scope. Required: {' or '.join(required_scopes)}",
             )
 
-    return _tag_auth_policy(_check_scopes, "scopes", admitted_service_scopes)
+    return _tag_auth_policy(_check_scopes, "scopes", admitted_service_scopes, required_scopes)
 
 
 def require_service_token(*scopes: ScopeLike) -> Callable[..., Coroutine[Any, Any, Mapping[str, Any]]]:

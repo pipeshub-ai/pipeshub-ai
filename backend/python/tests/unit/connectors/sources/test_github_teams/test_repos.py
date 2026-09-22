@@ -938,6 +938,33 @@ class TestPruneDeletedPaths:
 
         assert by_path == {"src/a.py": "rec-a", "src": "rec-src"}
 
+    async def test_unreadable_inventory_skips_the_prune(self) -> None:
+        """An empty or partial inventory makes pruning blind.
+
+        Every walked path would look stale, so the valve would either delete the
+        whole repo's records or (at zero records) quietly do nothing and report a
+        clean sync. The listing failure must stop the prune instead.
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        c.tx_store.get_record_group_by_external_id = AsyncMock(
+            return_value=SimpleNamespace(id="rg-1")
+        )
+        c.tx_store.get_records_by_status = AsyncMock(
+            side_effect=GraphQueryError("db down")
+        )
+
+        await sync._prune_deleted_paths(repo, {"a.py"})
+
+        c.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+        assert any(
+            "Could not list code records for pruning" in str(call)
+            for call in sync.logger.error.call_args_list
+        )
+
     async def test_stale_folders_are_pruned_deepest_first(self) -> None:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)

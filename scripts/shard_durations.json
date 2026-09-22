@@ -1,0 +1,37 @@
+{
+  "_source": "Nightly Integration Tests run 35461793558 (2026-09-19), reports-both-<shard> artifacts, *-results.xml.",
+  "_units": "Minutes of pytest time per connector marker, summed across both graph legs. Both legs run in one job, so a shard's wall clock is roughly this total plus ~10 min of stack build.",
+  "_core_minutes": 52.0,
+  "_core_note": "The `core` shard is not marker-split: it runs everything the connector shards do not name, plus the browser tests. Measured at ~52 min of work (34 min pytest across both legs, the rest Playwright) in the same run. Shown for reference; only the connector shards can be rebalanced by moving markers.",
+  "_caveats": {
+    "local_fs": "Arango leg inflated by a 240s timeout in test_tc_lfs_filter_001_excluded_extension_is_dropped (57s on Neo4j). Real figure is nearer 19 min.",
+    "azure_files": "Understated: all four tests errored at setup in this run. Expect it to grow once the nested-folder sync fix lands.",
+    "sharepoint": "Skipped in CI (no credentials), so it costs nothing today.",
+    "zammad": "Estimated, not measured: this suite is new. Sized from bookstack (12.1 min, 5 tests) plus Zammad's slower stack start and its wait for the search index."
+  },
+  "minutes": {
+    "notion": 84.1,
+    "google_drive_workspace": 36.1,
+    "google_drive_individual": 26.2,
+    "github_teams": 24.0,
+    "gitlab": 23.9,
+    "web": 23.1,
+    "local_fs": 22.0,
+    "rss": 20.4,
+    "mariadb": 19.6,
+    "jira": 19.4,
+    "nextcloud": 18.2,
+    "linear": 14.7,
+    "bookstack": 12.1,
+    "minio": 9.0,
+    "postgres": 9.0,
+    "gcs": 8.1,
+    "azure_blob": 8.0,
+    "s3": 7.8,
+    "confluence": 7.5,
+    "azure_files": 6.4,
+    "github": 3.0,
+    "sharepoint": 0.0,
+    "zammad": 16.0
+  }
+}

@@ -102,14 +102,65 @@ class TestPreviewUpload:
         assert preview.skipped_binary_resources == ["assets/logo.png"]
         assert any("binary" in w for w in preview.warnings)
 
-    def test_ignores_files_outside_resource_kinds(self) -> None:
+    def test_root_level_file_outside_scripts_references_assets_is_kept(self) -> None:
+        """agentskills.io allows "any additional files or directories" — a
+        root-level reference file (e.g. Anthropic's `pdf` skill ships
+        `forms.md`/`reference.md` beside SKILL.md) must not be silently
+        dropped just because it isn't under scripts/references/assets."""
         data = _make_zip({
             "SKILL.md": _VALID_SKILL_MD.encode(),
-            "README.md": b"not a resource kind",
+            "forms.md": b"# extra reference doc",
+            "ooxml/schema.xsd": b"<xsd/>",
         })
         importer = SkillPackageImporter()
         preview = importer.preview_upload("archive.zip", data)
-        assert preview.resources == {}
+        assert preview.resources["forms.md"] == "# extra reference doc"
+        assert preview.resources["ooxml/schema.xsd"] == "<xsd/>"
+
+    def test_ignores_dotfiles_pycache_and_git_directories(self) -> None:
+        data = _make_zip({
+            "SKILL.md": _VALID_SKILL_MD.encode(),
+            ".gitignore": b"*.pyc",
+            ".git/config": b"[core]",
+            "scripts/__pycache__/run.cpython-312.pyc": b"\x00binary",
+            "scripts/run.py": b"print('hi')",
+        })
+        importer = SkillPackageImporter()
+        preview = importer.preview_upload("archive.zip", data)
+        assert preview.resources == {"scripts/run.py": "print('hi')"}
+
+    def test_resource_path_over_the_length_limit_is_skipped_not_fatal(self) -> None:
+        """`validate_resource_path` rejects an over-length path; the
+        importer's collection loop treats that the same as a binary
+        file — skip and log, never fail the whole preview over one bad
+        entry from a third-party archive."""
+        too_long = "assets/" + ("a" * 300) + ".txt"
+        data = _make_zip({
+            "SKILL.md": _VALID_SKILL_MD.encode(),
+            too_long: b"content",
+            "assets/ok.txt": b"kept",
+        })
+        importer = SkillPackageImporter()
+        preview = importer.preview_upload("archive.zip", data)
+        assert preview.resources == {"assets/ok.txt": "kept"}
+
+    def test_resources_exceeding_the_total_byte_budget_raise(self) -> None:
+        # Each file stays under the per-file cap; the SUM crosses the
+        # per-skill cap — proves the total check fires independently of
+        # the per-file check.
+        chunk = ("x" * (900 * 1024)).encode()
+        data = _make_zip({
+            "SKILL.md": _VALID_SKILL_MD.encode(),
+            "assets/a.bin": chunk,
+            "assets/b.bin": chunk,
+            "assets/c.bin": chunk,
+            "assets/d.bin": chunk,
+            "assets/e.bin": chunk,
+            "assets/f.bin": chunk,
+        })
+        importer = SkillPackageImporter()
+        with pytest.raises(PackageImportError, match="per-skill limit"):
+            importer.preview_upload("archive.zip", data)
 
     def test_missing_skill_md_raises(self) -> None:
         data = _make_zip({"README.md": b"no skill here"})
@@ -352,6 +403,36 @@ class TestPreviewUrl:
         assert "hunter2" not in logged
 
 
+class TestNormalizeGitHubUrl:
+    def test_github_repo_url_becomes_api_tarball(self) -> None:
+        result = SkillPackageImporter._normalize_url("https://github.com/netresearch/jira-skill")
+        assert result == "https://codeload.github.com/netresearch/jira-skill/tar.gz/HEAD"
+
+    def test_github_repo_url_with_trailing_slash(self) -> None:
+        result = SkillPackageImporter._normalize_url("https://github.com/acme/my-skill/")
+        assert result == "https://codeload.github.com/acme/my-skill/tar.gz/HEAD"
+
+    def test_github_repo_url_with_dot_git(self) -> None:
+        result = SkillPackageImporter._normalize_url("https://github.com/acme/my-skill.git")
+        assert result == "https://codeload.github.com/acme/my-skill/tar.gz/HEAD"
+
+    def test_non_github_url_unchanged(self) -> None:
+        url = "https://example.com/my-skill.tar.gz"
+        assert SkillPackageImporter._normalize_url(url) == url
+
+    def test_github_subpath_url_unchanged(self) -> None:
+        url = "https://github.com/acme/repo/archive/refs/heads/main.tar.gz"
+        assert SkillPackageImporter._normalize_url(url) == url
+
+    async def test_github_url_downloads_from_api(self) -> None:
+        api_url = "https://codeload.github.com/acme/my-skill/tar.gz/HEAD"
+        data = _make_tar({"SKILL.md": _VALID_SKILL_MD.encode()})
+        fetcher = _FakeFetcher({api_url: _response(data)})
+        preview = await SkillPackageImporter(fetcher).preview_url("https://github.com/acme/my-skill")
+        assert preview.name == "pdf-extractor"
+        assert preview.source_label == "url:https://github.com/acme/my-skill"
+
+
 class TestArchiveFormatComesFromTheBytes:
     async def test_zip_named_url_that_serves_a_tarball(self) -> None:
         url = "https://example.com/skill.zip"
@@ -380,3 +461,127 @@ class TestArchiveFormatComesFromTheBytes:
     def test_neither_zip_nor_tar(self) -> None:
         with pytest.raises(PackageImportError, match="Not a valid zip or tar/tgz archive"):
             SkillPackageImporter().preview_upload("skill.tar.gz", b"\x1f\x8bnot really gzip")
+
+
+def _skill_md(name: str) -> bytes:
+    return (
+        f"---\nname: {name}\ndescription: Extracts tables from PDF files\n---\n\n"
+        f"# {name}\n\nUse this skill when the user asks.\n"
+    ).encode()
+
+
+class TestSkillFilter:
+    def test_multiple_skills_require_a_filter(self) -> None:
+        files = {
+            "skills/pptx/SKILL.md": _skill_md("pptx"),
+            "skills/xlsx/SKILL.md": _skill_md("xlsx"),
+        }
+        with pytest.raises(PackageImportError, match="multiple skills"):
+            package_importer._files_to_preview(files, source_label="t")
+
+    def test_filter_selects_one_skill_and_its_resources(self) -> None:
+        files = {
+            "skills/pptx/SKILL.md": _skill_md("pptx"),
+            "skills/xlsx/SKILL.md": _skill_md("xlsx"),
+            "skills/pptx/scripts/x.py": b"print(1)",
+            "skills/xlsx/scripts/y.py": b"print(2)",
+        }
+        preview = package_importer._files_to_preview(
+            files, source_label="t", skill_filter="pptx",
+        )
+        assert preview.name == "pptx"
+        assert preview.resources == {"scripts/x.py": "print(1)"}
+
+    def test_unknown_filter_lists_available_skills(self) -> None:
+        files = {"skills/pptx/SKILL.md": _skill_md("pptx")}
+        with pytest.raises(PackageImportError, match="Available skills"):
+            package_importer._files_to_preview(files, source_label="t", skill_filter="docx")
+
+    def test_root_skill_md_wins_over_nested_plugin_copy(self) -> None:
+        files = {
+            "SKILL.md": _skill_md("frontend-slides"),
+            "plugins/frontend-slides/SKILL.md": _skill_md("frontend-slides"),
+            "STYLE_PRESETS.md": b"# presets",
+        }
+        preview = package_importer._files_to_preview(files, source_label="t")
+        assert preview.name == "frontend-slides"
+        assert preview.resources["STYLE_PRESETS.md"] == "# presets"
+
+
+class TestGitHubSubdirectoryAndCatalog:
+    async def test_github_tree_url_fetches_subdirectory(self) -> None:
+        listing = json.dumps([
+            {
+                "type": "file",
+                "path": "skills/pptx/SKILL.md",
+                "download_url": "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md",
+            },
+            {
+                "type": "file",
+                "path": "skills/pptx/scripts/x.py",
+                "download_url": "https://raw.githubusercontent.com/a/s/main/skills/pptx/scripts/x.py",
+            },
+        ]).encode()
+        fetcher = _FakeFetcher({
+            "https://api.github.com/repos/anthropics/skills/contents/skills/pptx?ref=main": _response(listing),
+            "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md": _response(_skill_md("pptx")),
+            "https://raw.githubusercontent.com/a/s/main/skills/pptx/scripts/x.py": _response(b"print(1)"),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_url(
+            "https://github.com/anthropics/skills/tree/main/skills/pptx"
+        )
+        assert preview.name == "pptx"
+        assert preview.resources["scripts/x.py"] == "print(1)"
+
+    async def test_skill_filter_fetches_skills_subdir(self) -> None:
+        listing = json.dumps([
+            {
+                "type": "file",
+                "path": "skills/pptx/SKILL.md",
+                "download_url": "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md",
+            },
+        ]).encode()
+        fetcher = _FakeFetcher({
+            "https://api.github.com/repos/anthropics/skills/contents/skills/pptx": _response(listing),
+            "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md": _response(_skill_md("pptx")),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_url(
+            "https://github.com/anthropics/skills", skill_filter="pptx",
+        )
+        assert preview.name == "pptx"
+
+    async def test_github_contents_403_falls_back_to_filtered_tarball(self) -> None:
+        tarball = _make_tar({
+            "repo/skills/pptx/SKILL.md": _skill_md("pptx"),
+            "repo/skills/xlsx/SKILL.md": _skill_md("xlsx"),
+        })
+        fetcher = _FakeFetcher({
+            "https://api.github.com/repos/anthropics/skills/contents/skills/pptx": _response(status=403),
+            "https://api.github.com/repos/anthropics/skills/contents/pptx": _response(status=403),
+            "https://codeload.github.com/anthropics/skills/tar.gz/HEAD": _response(tarball),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_url(
+            "https://github.com/anthropics/skills", skill_filter="pptx",
+        )
+        assert preview.name == "pptx"
+
+    async def test_catalog_slug_follows_github_source(self) -> None:
+        catalog = json.dumps({
+            "urls": {
+                "repository": "https://github.com/zarazhangrui/frontend-slides/blob/main/SKILL.md",
+            },
+            "recommended_command": "npx skills add zarazhangrui/frontend-slides",
+        }).encode()
+        tarball = _make_tar({"SKILL.md": _skill_md("frontend-slides")})
+        fetcher = _FakeFetcher({
+            "https://www.openagentskill.com/api/skills/zarazhangrui-frontend-slides/install": _response(catalog),
+            "https://codeload.github.com/zarazhangrui/frontend-slides/tar.gz/HEAD": _response(tarball),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_catalog_slug(
+            "zarazhangrui-frontend-slides"
+        )
+        assert preview.name == "frontend-slides"
+
+    def test_github_tarball_url_includes_ref(self) -> None:
+        result = SkillPackageImporter._normalize_url("https://github.com/acme/my-skill#v1.2.3")
+        assert result == "https://codeload.github.com/acme/my-skill/tar.gz/v1.2.3"

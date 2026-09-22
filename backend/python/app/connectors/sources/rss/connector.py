@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     AppGroups,
     Connectors,
     ExtensionTypes,
@@ -74,12 +75,7 @@ class RSSApp(App):
     .with_description("Subscribe to and sync content from RSS and Atom feeds")
     .with_categories(["Web", "Content"])
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])
-    # RECORD_LEVEL (the default) rather than APP_LEVEL: reviewers disagreed on
-    # whether a non-creator can hold a USER_APP_RELATION to a personal instance,
-    # and APP_LEVEL answers with one connector-wide scan that never checks the
-    # per-user ACL. The only cost of being wrong the safe way is losing the cache
-    # shortcut for this connector; the cost of being wrong the other way is one
-    # user reading another's records.
+    .with_permission_model(PermissionModel.APP_LEVEL)
     .configure(
         lambda builder: builder.with_icon(IconPaths.connector_icon(Connectors.RSS.value))
         .with_realtime_support(False)
@@ -378,6 +374,9 @@ class RSSConnector(BaseConnector):
         """Main sync method: parse feeds, crawl articles, and index content."""
         try:
             self.logger.info(f"🚀 Starting RSS sync for {len(self.feed_urls)} feed(s)")
+            # The instance outlives a sync (scheduled syncs reuse it), so a set left
+            # from the last run would skip every entry and no change would be indexed.
+            self.processed_urls.clear()
 
             if self.scope == ConnectorScope.TEAM.value:
                 await self.data_entities_processor.ensure_team_app_edge(

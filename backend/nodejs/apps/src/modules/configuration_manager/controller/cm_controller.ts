@@ -10,12 +10,12 @@ import { configPaths } from '../paths/paths';
 import {
   BadRequestError,
   ConflictError,
-  ForbiddenError,
   InternalServerError,
   NotFoundError,
   ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
+import { handleBackendError } from '../../../libs/errors/backend-error';
 import {
   googleWorkspaceBusinessCredentialsSchema,
   googleWorkspaceIndividualCredentialsSchema,
@@ -100,8 +100,6 @@ type SlackBotStore = {
   configs: SlackBotConfigEntry[];
 };
 
-const AI_SERVICE_UNAVAILABLE_MESSAGE =
-  'AI Service is currently unavailable. Please check your network connection or try again later.';
 
 /** Returns true when the HIDE_SECRET_CONFIG env var is set to "true". */
 function shouldHideSecrets(): boolean {
@@ -140,53 +138,6 @@ const normalizeWebSearchSettings = (
   };
 };
 
-const handleBackendError = (error: any, operation: string): Error => {
-  if (
-    (error?.cause && error.cause.code === 'ECONNREFUSED') ||
-    (typeof error?.message === 'string' &&
-      error.message.includes('fetch failed'))
-  ) {
-    return new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
-  }
-
-  if (error.response) {
-    const { status, data } = error.response;
-    const errorDetail =
-      data?.detail || data?.reason || data?.message || 'Unknown error';
-
-    logger.error(`Backend error during ${operation}`, {
-      status,
-      errorDetail,
-      fullResponse: data,
-    });
-
-    if (errorDetail === 'ECONNREFUSED') {
-      throw new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
-    }
-
-    switch (status) {
-      case 400:
-        return new BadRequestError(errorDetail);
-      case 401:
-        return new UnauthorizedError(errorDetail);
-      case 403:
-        return new ForbiddenError(errorDetail);
-      case 404:
-        return new NotFoundError(errorDetail);
-      case 500:
-        return new InternalServerError(errorDetail);
-      default:
-        return new InternalServerError(`Backend error: ${errorDetail}`);
-    }
-  }
-
-  if (error.request) {
-    logger.error(`No response from backend during ${operation}`);
-    return new InternalServerError('Backend service unavailable');
-  }
-
-  return new InternalServerError(`${operation} failed: ${error.message}`);
-};
 
 const normalizeUrl = (url: unknown): string => {
   if (!url || typeof url !== 'string') return '';
@@ -3230,11 +3181,17 @@ export const addAIModelProvider =
           (errData && (errData.message ?? errData.error?.message)) ??
           `Failed to do health check of ${modelType} configuration, check credentials again`;
 
+        // The reason is written for the admin filling in the dialog ("Incorrect
+        // API key provided"); the raw body behind it is for the log only.
+        logger.error('AI model health check failed', {
+          modelType,
+          statusCode: aiResponseData?.statusCode,
+          details: errData,
+        });
         res.status(aiResponseData?.statusCode ?? 500).json({
           error: {
             status: 'error',
             message: reasonMessage,
-            details: errData,
           },
         });
         return;
@@ -3490,11 +3447,17 @@ export const updateAIModelProvider =
           (errData && (errData.message ?? errData.error?.message)) ??
           `Failed to do health check of ${modelType} configuration, check credentials again`;
 
+        // The reason is written for the admin filling in the dialog ("Incorrect
+        // API key provided"); the raw body behind it is for the log only.
+        logger.error('AI model health check failed', {
+          modelType,
+          statusCode: aiResponseData?.statusCode,
+          details: errData,
+        });
         res.status(aiResponseData?.statusCode ?? 500).json({
           error: {
             status: 'error',
             message: reasonMessage,
-            details: errData,
           },
         });
         return;

@@ -12,6 +12,10 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { inject, injectable } from 'inversify';
 import {
   ConfigurationManagerCommandOptions,
@@ -73,9 +77,12 @@ export class SamlController {
     const response = await getCredentialsCommand.execute();
 
     if (response.statusCode !== 200) {
-      throw new InternalServerError(
-        'Error getting saml credentials',
-        response?.data?.error?.message,
+      this.logger.error('Reading the SAML credentials failed', {
+        statusCode: response.statusCode,
+        upstream: response?.data?.error?.message,
+      });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('set up single sign-on')),
       );
     }
     const credentialsData = response.data;

@@ -19,8 +19,13 @@ import asyncio
 import logging
 import os
 import uuid
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    import threading
+    from collections.abc import AsyncIterator, Callable
 
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_IT_BOOTSTRAP", "localhost:29192")
 REDIS_HOST = os.environ.get("REDIS_IT_HOST", "localhost")
@@ -149,3 +154,61 @@ async def committed_offsets(bootstrap: str, group: str, topic: str) -> dict[int,
         return result
     finally:
         await consumer.stop()
+
+
+def held_handler(
+    seen: list[str], hold_after: int, gate: threading.Event, parked: list[str]
+) -> Callable[..., AsyncIterator]:
+    """Index the first ``hold_after`` records, then park every later one until
+    ``gate`` opens.
+
+    Makes a restart test deterministic: however fast the broker, work is in
+    flight and the rest of the backlog is untouched when the consumer stops.
+    ``gate`` is a threading.Event because handlers run on the consumer's
+    worker-thread loop, not the test's.
+    """
+    from app.services.messaging.config import (
+        IndexingEvent,
+        PipelineEvent,
+        PipelineEventData,
+    )
+    from app.services.resource_governor.models import ParseTier
+
+    async def handle(parsed_message) -> AsyncIterator:
+        yield PipelineEvent(
+            event=IndexingEvent.START_PARSING,
+            data=PipelineEventData(tier=ParseTier.LIGHT),
+        )
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE)
+        record_id = parsed_message.payload["recordId"]
+        if len(seen) >= hold_after:
+            parked.append(record_id)
+            await asyncio.to_thread(gate.wait, DRAIN_TIMEOUT_SECONDS)
+        seen.append(record_id)
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
+
+    return handle
+
+
+async def stop_mid_flight(consumer, gate: threading.Event, parked: list[str]) -> None:
+    """Stop ``consumer`` while handlers are parked on ``gate``.
+
+    The gate opens only once the consume loop has exited, so the parked
+    handlers finish as in-flight work at shutdown and nothing new is taken.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + DRAIN_TIMEOUT_SECONDS
+    stopping = None
+    try:
+        while not parked:
+            if loop.time() > deadline:
+                raise AssertionError("no record was ever in flight")
+            await asyncio.sleep(0.05)
+        stopping = asyncio.create_task(consumer.stop())
+        while not consumer.consume_task.done():
+            if loop.time() > deadline:
+                raise AssertionError("the consume loop never stopped")
+            await asyncio.sleep(0.05)
+    finally:
+        gate.set()
+        await (stopping if stopping is not None else consumer.stop())

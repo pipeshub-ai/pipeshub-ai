@@ -3683,9 +3683,12 @@ class SharePointConnector(BaseConnector):
         """Handle different types of record updates."""
         try:
             if record_update.is_deleted:
-                await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
+                # Graph reports the item's own id; records are deleted by their key.
+                db_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
                 )
+                if db_record:
+                    await self.data_entities_processor.on_record_deleted(record_id=db_record.id)
             elif record_update.is_updated:
 
                 if record_update.metadata_changed:

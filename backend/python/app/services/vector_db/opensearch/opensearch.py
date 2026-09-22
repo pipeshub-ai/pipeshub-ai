@@ -55,6 +55,11 @@ from opensearchpy import helpers as os_helpers
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -415,6 +420,7 @@ class OpenSearchService(IVectorDBService):
                         "point_id": {"type": "keyword"},
                         "connectorIds": {"type": "keyword"},
                         "recordGroupIds": {"type": "keyword"},
+                        "rootRecordGroupIds": {"type": "keyword"},
                         # Keep explicit keyword declarations for the two most-used
                         # filter fields so the mapping is readable without introspection.
                         "metadata": {
@@ -639,8 +645,15 @@ class OpenSearchService(IVectorDBService):
                 payload={
                     "metadata": hit.get("_source", {}).get("metadata", {}),
                     "page_content": hit.get("_source", {}).get("page_content", ""),
-                    "connectorIds": list(hit.get("_source", {}).get("connectorIds") or []),
-                    "recordGroupIds": list(hit.get("_source", {}).get("recordGroupIds") or []),
+                    CONNECTOR_IDS_FIELD: list(
+                        hit.get("_source", {}).get(CONNECTOR_IDS_FIELD) or []
+                    ),
+                    RECORD_GROUP_IDS_FIELD: list(
+                        hit.get("_source", {}).get(RECORD_GROUP_IDS_FIELD) or []
+                    ),
+                    ROOT_RECORD_GROUP_IDS_FIELD: list(
+                        hit.get("_source", {}).get(ROOT_RECORD_GROUP_IDS_FIELD) or []
+                    ),
                 },
             )
             for hit in hits
@@ -894,6 +907,9 @@ class OpenSearchService(IVectorDBService):
             max_num_segments=max_segments,
             request_timeout=600,
         )
+        # Searches keep reading the pre-merge segments until the next refresh,
+        # up to the index's 30s refresh_interval, so publish the merge now.
+        await self.client.indices.refresh(index=collection_name)  # type: ignore
         logger.info(
             f"Force-merged '{collection_name}' to {max_segments} segment(s)"
         )

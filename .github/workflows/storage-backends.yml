@@ -1,0 +1,172 @@
+name: Storage backends
+
+# The storage choices customers install with that no other automated test
+# touches for real:
+#   - file storage on Amazon S3 (checked against MinIO, which speaks the S3 API)
+#     and on Azure Blob Storage (checked against Azurite, Microsoft's emulator);
+#   - MongoDB as a replica set, which Kubernetes (Helm) installs use and which
+#     switches many writes onto transactions (REPLICA_SET_AVAILABLE=true).
+# Everything else runs on local disk and a single MongoDB server.
+#
+# Runs on pull_request, not pull_request_target: the pull request's own code runs
+# here, so the job gets no repository secrets and a read-only token. Nothing it
+# needs is secret; the emulators use throwaway or published development keys.
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/nodejs/apps/src/modules/storage/**'
+      - 'backend/nodejs/apps/src/libs/services/mongo.service.ts'
+      - 'backend/nodejs/apps/src/modules/user_management/services/user-admin.service.ts'
+      - 'backend/nodejs/apps/src/modules/user_management/repositories/**'
+      - 'backend/nodejs/apps/src/modules/user_management/schema/**'
+      - 'backend/nodejs/apps/tests/stores/**'
+      - 'backend/nodejs/apps/package.json'
+      - 'backend/nodejs/apps/package-lock.json'
+      - '.github/workflows/storage-backends.yml'
+  schedule:
+    # Nightly, so SDK or emulator drift shows up without a pull request.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: storage-backends-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  MINIO_IMAGE: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+  AZURITE_IMAGE: mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5
+  MONGO_IMAGE: mongo:8.0.17
+
+jobs:
+  file-storage:
+    name: File storage (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [s3, azure]
+    defaults:
+      run:
+        working-directory: backend/nodejs/apps
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start MinIO
+        if: matrix.backend == 's3'
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=ci-minio -e MINIO_ROOT_PASSWORD=ci-minio-secret \
+            "$MINIO_IMAGE" server /data
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/live && exit 0
+            sleep 2
+          done
+          docker logs minio
+          exit 1
+
+      - name: Start Azurite
+        if: matrix.backend == 'azure'
+        run: |
+          docker run -d --name azurite -p 10000:10000 "$AZURITE_IMAGE" \
+            azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck --loose
+          for _ in $(seq 1 30); do
+            # Any HTTP answer means it is listening; 400 is expected for a bare GET.
+            curl -s -o /dev/null http://localhost:10000/ && exit 0
+            sleep 2
+          done
+          docker logs azurite
+          exit 1
+
+      - name: Run storage adapter tests
+        env:
+          STORAGE_IT_BACKEND: ${{ matrix.backend }}
+          STORAGE_IT_S3_ENDPOINT: http://localhost:9000
+          STORAGE_IT_S3_ACCESS_KEY: ci-minio
+          STORAGE_IT_S3_SECRET_KEY: ci-minio-secret
+          # Azurite's published development account; not a secret.
+          STORAGE_IT_AZURE_CONNECTION_STRING: DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;
+          TS_NODE_PROJECT: tsconfig.test.json
+        run: npx mocha --no-config --require ts-node/register --exit tests/stores/storage-adapters.itest.ts
+
+  mongodb:
+    name: MongoDB (${{ matrix.topology }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - topology: replica-set
+            uri: mongodb://localhost:27017/?replicaSet=rs0
+            rs_available: 'true'
+          - topology: single-server
+            uri: mongodb://localhost:27017
+            rs_available: 'false'
+    defaults:
+      run:
+        working-directory: backend/nodejs/apps
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start MongoDB
+        env:
+          TOPOLOGY: ${{ matrix.topology }}
+        run: |
+          if [ "$TOPOLOGY" = "replica-set" ]; then
+            docker run -d --name mongo -p 27017:27017 "$MONGO_IMAGE" mongod --replSet rs0 --bind_ip_all
+          else
+            docker run -d --name mongo -p 27017:27017 "$MONGO_IMAGE"
+          fi
+          for _ in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break
+            sleep 2
+          done
+          if [ "$TOPOLOGY" = "replica-set" ]; then
+            # The member's advertised host must be reachable from the runner, as with Helm's service name.
+            docker exec mongo mongosh --quiet --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] })'
+            for _ in $(seq 1 30); do
+              [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && exit 0
+              sleep 2
+            done
+            docker logs mongo
+            exit 1
+          fi
+
+      - name: Run MongoDB tests
+        env:
+          MONGO_IT_URI: ${{ matrix.uri }}
+          REPLICA_SET_AVAILABLE: ${{ matrix.rs_available }}
+          TS_NODE_PROJECT: tsconfig.test.json
+        run: npx mocha --no-config --require ts-node/register --exit tests/stores/mongo-transactions.itest.ts

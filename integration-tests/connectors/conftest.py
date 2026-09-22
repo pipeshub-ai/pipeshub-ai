@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from ai_models_setup import SeededAIModel
+from helper.second_user import second_user  # noqa: F401 - fixture
 
 
 @pytest.fixture(scope="session", autouse=True)

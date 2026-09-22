@@ -6,11 +6,11 @@ allowed to see this turn" rather than "which skills did THIS user create").
 
 Only wraps the read/activation surface the prompt builder and the 5 skill
 tools actually walk through (`catalog_snapshot`/`list_skills`/`search`/
-`activate_skill`/`load_resource`) — everything else (create/update/delete/
-versions/health/usage tracking) passes straight through via `__getattr__`
-delegation, since assignment scoping is a "what can this agent see/load"
-concern, not a governance one; an agent that can call `skill_manage` at all
-already has the same write authority it always did.
+`get_skill`/`activate_skill`/`load_resource`) — everything else (create/
+update/delete/versions/health/usage tracking) passes straight through via
+`__getattr__` delegation, since assignment scoping is a "what can this
+agent see/load" concern, not a governance one; an agent that can call
+`skill_manage` at all already has the same write authority it always did.
 
 Assignment semantics (see the plan's Phase 4): an agent with an EMPTY
 `allowed_names` set has no explicit assignment and sees the full upstream
@@ -78,6 +78,13 @@ class ScopedSkillManager:
         return [m for m in matches if self._visible(m.skill.name)][:limit]
 
     # ---- Tier 2/3: activation + resources --------------------------------
+
+    async def get_skill(self, name: str) -> "Skill":
+        from app.agent_loop_lib.core.exceptions import RegistryError
+
+        if not self._visible(name):
+            raise RegistryError(f"Skill {name!r} is not assigned to this agent")
+        return await self._manager.get_skill(name)
 
     async def activate_skill(self, name: str, session_id: str | None = None) -> "Skill":
         from app.agent_loop_lib.core.exceptions import RegistryError

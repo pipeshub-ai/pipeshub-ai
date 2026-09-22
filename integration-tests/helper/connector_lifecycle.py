@@ -89,6 +89,8 @@ def source_unavailable(reason: str) -> None:
         pytest.fail(reason)
     pytest.skip(reason)
 
+from helper.run_folder import RUN_FOLDER_PREFIX, folder_filter, new_run_folder
+
 RESOURCE_NAME = "pipeshub-integration-tests"
 
 # GCS connector tests target this bucket (pre-provisioned; must exist in GCP).
@@ -102,7 +104,8 @@ def ensure_resource_exists(storage: object, resource_name: str) -> None:
     provisioned out of band. This only performs an accessibility check.
     """
     try:
-        objects = storage.list_objects(resource_name)
+        # Listing an unused prefix proves access without listing the whole bucket.
+        objects = storage.list_objects(resource_name, prefix=f"{RUN_FOLDER_PREFIX}access-check/")
         assert isinstance(objects, list)
     except Exception as e:
         raise AssertionError(
@@ -134,22 +137,23 @@ async def constructor(
     )
     connector_name = f"{connector_type.lower().replace(' ', '-')}-lifecycle-test-{uuid.uuid4().hex[:8]}"
 
+    # This run's own folder in the shared bucket; see helper/run_folder.py.
+    folder = new_run_folder()
     state: Dict[str, Any] = {
         "resource_name": resource_name,
         "connector_name": connector_name,
+        "folder": folder,
     }
 
     logger.info("CONSTRUCTOR [%s]: Ensuring %s exists", connector_type, resource_name)
     ensure_resource_exists(storage, resource_name)
-    objects = storage.list_objects(resource_name)
-    assert isinstance(objects, list), f"{storage_name} should be accessible"
 
-    count = storage.upload_directory(resource_name, sample_data_root)
-    logger.info("CONSTRUCTOR [%s]: Uploaded %d files to %s", connector_type, count, resource_name)
+    count = storage.upload_directory(resource_name, sample_data_root, prefix=folder)
+    logger.info("CONSTRUCTOR [%s]: Uploaded %d files to %s/%s", connector_type, count, resource_name, folder)
     assert count > 0, "Expected at least 1 file in sample data"
     state["uploaded_count"] = count
 
-    objects = storage.list_objects(resource_name)
+    objects = storage.list_objects(resource_name, prefix=folder)
     picked_files = [k for k in objects if not k.endswith("/")][:2]
     assert len(picked_files) >= 1, "No file objects after upload"
 
@@ -167,7 +171,7 @@ async def constructor(
         state,
         connector_type=connector_type,
         connector_name=connector_name,
-        connector_config=connector_config,
+        connector_config={**connector_config, "filters": folder_filter(folder)},
         scope=scope,
         auth_type=auth_type,
         expected_records=state["uploaded_count"],
@@ -263,9 +267,13 @@ async def destructor(
     except _CONNECTOR_DELETE_TEARDOWN_ERRORS:
         logger.exception("DESTRUCTOR [%s]: Failed to delete/clean connector %s", connector_type, connector_id)
 
-    logger.info("DESTRUCTOR [%s]: Clearing content in %s", connector_type, resource_name)
+    folder = state.get("folder", "")
+    if not folder:
+        logger.warning("DESTRUCTOR [%s]: No run folder recorded; nothing to clear", connector_type)
+        return
+    logger.info("DESTRUCTOR [%s]: Clearing %s/%s", connector_type, resource_name, folder)
     try:
-        storage.clear_objects(resource_name)
+        storage.clear_objects(resource_name, folder)
         logger.info("DESTRUCTOR [%s]: Content cleared in %s", connector_type, resource_name)
     except STORAGE_CLEAR_ERRORS:
         logger.exception("DESTRUCTOR [%s]: Failed to clear content in %s", connector_type, resource_name)

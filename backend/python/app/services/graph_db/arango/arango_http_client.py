@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Union
 import aiohttp
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.exceptions.graph_db_exceptions import GraphQueryError
 
 # ArangoDB Error Code Constants
 ARANGO_ERROR_DOCUMENT_NOT_FOUND = 1202
@@ -288,7 +289,8 @@ class ArangoHTTPClient:
         self,
         collection: str,
         key: str,
-        txn_id: Optional[str] = None
+        txn_id: Optional[str] = None,
+        raise_on_error: bool = False
     ) -> Optional[Dict]:
         """
         Get a document by key.
@@ -297,6 +299,10 @@ class ArangoHTTPClient:
             collection: Collection name
             key: Document key
             txn_id: Optional transaction ID
+            raise_on_error: Propagate anything that is not a 404 instead of
+                answering None. Only a 404 is an absent document; a 503 from a
+                restarting server, or a connection that never landed, is the
+                server failing to answer and must not read as a deletion.
 
         Returns:
             Optional[Dict]: Document data or None if not found
@@ -315,10 +321,21 @@ class ArangoHTTPClient:
                 else:
                     error = await resp.text()
                     self.logger.error(f"❌ Failed to get document: {error}")
+                    if raise_on_error:
+                        raise GraphQueryError(
+                            f"Could not read {collection}/{key}: "
+                            f"ArangoDB answered {resp.status}"
+                        )
                     return None
 
+        except GraphQueryError:
+            # Raised just above; the generic handler would log it a second time
+            # and, without the flag, swallow the very failure we chose to report.
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error getting document: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def create_document(

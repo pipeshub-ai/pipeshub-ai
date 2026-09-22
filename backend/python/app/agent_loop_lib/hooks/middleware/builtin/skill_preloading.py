@@ -126,26 +126,30 @@ async def _render_preload_section(
             except Exception:
                 logger.exception("skill_preloading: failed to activate %r, falling back to pointer", match.skill.name)
                 if emit_pointers:
-                    pointers.append(f"- {match.skill.name}: {match.skill.description}")
+                    pointers.append(f"- **{match.skill.name}**: {match.skill.description}")
                 continue
-            bodies.append(f"### Skill: {skill.metadata.name}\n{skill.metadata.description}\n\n{skill.body}")
+            bodies.append(
+                f"### {skill.metadata.name}\n\n"
+                f"> {skill.metadata.description}\n\n"
+                f"{skill.body}"
+            )
         elif emit_pointers and match.relevance >= mention_threshold:
-            pointers.append(f"- {match.skill.name}: {match.skill.description}")
+            pointers.append(f"- **{match.skill.name}**: {match.skill.description}")
 
     if not bodies and not pointers:
         return ""
 
-    parts: list[str] = []
+    parts: list[str] = ["## Preloaded Skills"]
     if bodies:
         parts.append(
-            "The following skill(s) look directly relevant to this request and have "
-            "already been loaded in full — follow their instructions, no need to call "
-            "load_skill for them:\n\n" + "\n\n".join(bodies)
+            "The following skill(s) are directly relevant and already loaded in "
+            "full — follow their instructions, no need to call `load_skill`.\n\n"
+            + "\n\n---\n\n".join(bodies)
         )
     if pointers:
         parts.append(
-            "The following skill(s) may also be relevant — call load_skill(name) if "
-            "one turns out to apply:\n" + "\n".join(pointers)
+            "**Also potentially relevant** — call `load_skill(name)` if needed:\n"
+            + "\n".join(pointers)
         )
     return "\n\n".join(parts)
 

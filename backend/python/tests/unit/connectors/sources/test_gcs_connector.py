@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from fastapi import HTTPException
@@ -30,7 +31,7 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
-from app.models.entities import FileRecord, RecordType, User
+from app.models.entities import FileRecord, RecordGroupType, RecordType, User
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +641,39 @@ class TestGCSDataSourceEntitiesProcessor95:
             assert result.is_internal is True
             assert result.hide_weburl is True
             assert "mybucket" in (result.weburl or "")
+
+    def test_forwards_record_group_kwargs_to_base(
+        self, mock_logger_fullcov, mock_data_store_provider_fullcov, mock_config_service_fullcov
+    ):
+        proc = GCSDataSourceEntitiesProcessor(
+            logger=mock_logger_fullcov,
+            data_store_provider=mock_data_store_provider_fullcov,
+            config_service=mock_config_service_fullcov,
+        )
+        proc.org_id = "org-1"
+        child = MagicMock()
+        child.connector_name = "GCS"
+        child.connector_id = "c1"
+        child.org_id = "org-1"
+
+        result = proc._create_placeholder_parent_record(
+            "mybucket/folder",
+            RecordType.FILE,
+            child,
+            record_name="folder",
+            record_group_type=RecordGroupType.BUCKET.value,
+            external_record_group_id="mybucket",
+        )
+        assert isinstance(result, FileRecord)
+        assert result.record_name == "folder"
+        assert result.record_group_type == RecordGroupType.BUCKET.value
+        assert result.external_record_group_id == "mybucket"
+        assert result.is_internal is True
+        assert result.hide_weburl is True
+        parsed = urlparse(result.weburl)
+        assert parsed.scheme == "https"
+        assert parsed.hostname == "console.cloud.google.com"
+        assert result.path == "folder/"
 
     def test_create_placeholder_non_file_type(self, mock_logger_fullcov, mock_data_store_provider_fullcov, mock_config_service_fullcov):
         proc = GCSDataSourceEntitiesProcessor(

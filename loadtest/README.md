@@ -3,9 +3,17 @@
 Measures what the query service actually does under load: **throughput, turn
 latency, CPU, memory and backend call latency**, from one command.
 
-Everything here is diagnostic tooling. Nothing under `backend/` is modified —
-the probes are copied into the running container and removed again by
-`./instrument.sh off`.
+Everything here is diagnostic tooling for a person comparing two builds by
+hand. Nothing under `backend/` is modified — the probes are copied into the
+running container and removed again by `./instrument.sh off`.
+
+For numbers a schedule can watch rather than a person, see
+`integration-tests/perf/`: **Query Performance** runs searches and chat turns
+against the CI stack every week. Its baseline is a placeholder until a trusted
+run is committed, so for now it reports each week's numbers and says there is
+nothing to compare them with yet.
+Reach for this toolkit when that job flags something and you need to know why —
+it is the one that shows where the CPU went and which backend call queued.
 
 ---
 
@@ -254,9 +262,6 @@ elsewhere and use this only to collect:
 | `restart_query.sh` | restart only the query process, leaving the container up |
 | `locustfile_play.py` | optional locust scenario, if you prefer locust's latency percentiles |
 | `queries.txt` | the query set users draw from — **edit this for your corpus** |
-| `PERFORMANCE.md` | measured results: before/after across the worker/user matrix |
-| `PROFILE.md` | where CPU goes, and what to optimise next |
-| `baseline/` | the raw evidence — flame graphs, memory graphs, profiles, matrix data |
 | `aggregate.py` | rolls many runs' `summary.json` into one table + `matrix.csv` |
 | `_common.sh` | sourced by the rest: finds docker (with/without sudo), finds Python, checks the container is up |
 | `instr/` | the probes copied into the container, plus the report aggregators |

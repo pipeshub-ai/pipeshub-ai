@@ -14,7 +14,7 @@ import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
-import { toast } from '@/lib/store/toast-store';
+import { showNoModelToast } from './utils/no-model-toast';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import {
   buildAssistantApiFilters,
@@ -26,6 +26,7 @@ import {
   type ChatCollectionAttachment,
   type ChatKnowledgeFilters,
   type ChatSettings,
+  type ChatSlot,
   type ConversationMessage,
   type PendingAskUserQuestion,
   type StreamChatRequest,
@@ -35,6 +36,7 @@ import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
+import { bareToolFullName } from './tool-groups';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
 const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
@@ -158,6 +160,16 @@ export function resolveAssistantFiltersForChatSubmit(
   return resolveAssistantFiltersFromSlot(slot, settings);
 }
 
+/** The agent a slot talks to: the thread's own, else the one in the URL. */
+function effectiveAgentIdForSlot(slot: ChatSlot): string | undefined {
+  const urlParams =
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const rawUrlAgent = urlParams?.get('agentId');
+  const agentIdFromUrl = rawUrlAgent?.trim() || undefined;
+  const slotAgent = slot.threadAgentId?.trim() || null;
+  return slotAgent ?? agentIdFromUrl ?? undefined;
+}
+
 /**
  * Build the streaming POST body for the given slot (agent vs assistant, filters,
  * tools, model). Used by questionnaire submit and the chat composer bridge.
@@ -177,44 +189,37 @@ export function buildStreamChatRequestForSlot(
     outgoingMessage
   );
 
-  const urlParams =
-    typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
-  const rawUrlAgent = urlParams?.get('agentId');
-  const agentIdFromUrl = rawUrlAgent?.trim() ? rawUrlAgent : undefined;
-  const slotAgent = currentSlot.threadAgentId?.trim() || null;
-  const effectiveAgentId = slotAgent ?? agentIdFromUrl ?? undefined;
+  const effectiveAgentId = effectiveAgentIdForSlot(currentSlot);
 
   const isUniversalAgentMode =
     !effectiveAgentId && currentState.settings.queryMode === 'agent';
+  // Project context is hydrated from the URL/workspace (`useProjectScopeHydration`), the same
+  // way `agentId` is read from the URL above. The server re-applies the allow-list regardless.
+  const projectScope = effectiveAgentId ? null : currentState.projectScope;
 
   const toolsSel = effectiveAgentId
     ? currentState.agentStreamTools
     : isUniversalAgentMode
-      ? currentState.universalAgentStreamTools
+      ? projectScope
+        ? currentState.projectStreamTools
+        : currentState.universalAgentStreamTools
       : null;
 
   const toolCatalog = effectiveAgentId
     ? currentState.agentToolCatalogFullNames
-    : currentState.universalAgentToolCatalogFullNames;
-
-  const stripInstancePrefix = (key: string) => {
-    const colon = key.indexOf(':');
-    return colon >= 0 ? key.slice(colon + 1) : key;
-  };
+    : projectScope
+      ? projectScope.toolCatalogFullNames
+      : currentState.universalAgentToolCatalogFullNames;
 
   const streamTools =
     effectiveAgentId || isUniversalAgentMode
-      ? [...new Set((toolsSel === null ? [...toolCatalog] : [...toolsSel]).map(stripInstancePrefix))]
+      ? [...new Set((toolsSel === null ? [...toolCatalog] : [...toolsSel]).map(bareToolFullName))]
       : [];
 
   const modelCtxKey = ctxKeyFromAgent(effectiveAgentId ?? null);
   const rawModel = getEffectiveModel(modelCtxKey);
   if (!rawModel) {
-    toast.warning('No AI model configured', {
-      description: 'This workspace has no AI model set up. Configure one in Settings.',
-      action: { label: 'AI Models Settings', href: '/workspace/ai-models' },
-      duration: null,
-    });
+    showNoModelToast();
   }
   const effectiveModel = rawModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
   // No explicit user choice → prefer the agent's configured default, then
@@ -233,16 +238,25 @@ export function buildStreamChatRequestForSlot(
   const resolvedAgentKnowledge =
     isAgent && knowledgeScope === null ? knowledgeDefaults : knowledgeScope;
 
-  const resolvedFilters = isAgent
+  const isWebSearch = currentState.settings.queryMode === 'web-search';
+  const resolvedScopedKnowledge = isAgent
+    ? resolvedAgentKnowledge
+    : projectScope && !isWebSearch
+      ? (currentState.projectKnowledgeScope ?? projectScope.knowledgeDefaults)
+      : null;
+
+  const resolvedFilters = resolvedScopedKnowledge
     ? {
-        apps: (resolvedAgentKnowledge?.apps ?? []).filter(
+        apps: resolvedScopedKnowledge.apps.filter(
           (id): id is string => typeof id === 'string' && id.trim().length > 0
         ),
-        kb: (resolvedAgentKnowledge?.kb ?? []).filter(
+        kb: resolvedScopedKnowledge.kb.filter(
           (id): id is string => typeof id === 'string' && id.trim().length > 0
         ),
       }
-    : buildAssistantApiFilters(assistantFilters);
+    : isAgent
+      ? { apps: [], kb: [] }
+      : buildAssistantApiFilters(assistantFilters);
 
   const metaCache = currentState.collectionMetaCache;
   const buildAppliedFilterNodes = (ids: string[]): AppliedFilterNode[] =>
@@ -278,6 +292,11 @@ export function buildStreamChatRequestForSlot(
     filters: resolvedFilters,
     ...(appliedFilters ? { appliedFilters } : {}),
     conversationId: currentSlot.convId || undefined,
+    // Only meaningful for a brand-new conversation — once `convId` exists the
+    // session row is the source of truth and this is ignored server-side.
+    ...(!currentSlot.convId && currentSlot.projectId
+      ? { projectId: currentSlot.projectId }
+      : {}),
     ...(effectiveAgentId
       ? {
           agentId: effectiveAgentId,
@@ -384,6 +403,12 @@ export function loadHistoricalMessages(
           : undefined;
 
       const answerText = extractFinalAnswer(msg.parts, msg.content);
+      // A run stopped before any text arrived is saved as an empty stopped
+      // reply. The live view drops that row (`buildStoppedMessages`); showing
+      // it after a reload would add an empty "Stopped" bubble the user never saw.
+      if (msg.status === 'stopped' && !answerText.trim() && !msg.parts?.length && !capturedPayload) {
+        continue;
+      }
       result.push({
         id: msg._id,
         role: 'assistant' as const,
@@ -500,8 +525,9 @@ export function buildExternalStoreConfig(
       const currentState = useChatStore.getState();
       const currentSlot = currentState.slots[targetSlotId];
       if (!currentSlot) return;
-      // Safety net: ChatInputWrapper blocks user sends while streaming; only programmatic api call `threadRuntime.append` reaches here.
-      if (currentSlot.isStreaming) return;
+      // Stop then send: `stopping` means the user already cancelled this run
+      // and a follow-up is allowed to start before the grace timer settles it.
+      if (currentSlot.isStreaming && !currentSlot.stopping) return;
 
       const msgAttachments = msgAttachmentsEarly;
 
@@ -511,6 +537,15 @@ export function buildExternalStoreConfig(
           ? ATTACHMENT_ONLY_STREAM_QUERY
           : '');
       if (!apiQuery) return;
+
+      // A message sent before the page's model list arrives would go out with no
+      // model and be rejected; wait for the list, as regenerate does.
+      const modelCtxKey = ctxKeyFromAgent(effectiveAgentIdForSlot(currentSlot) ?? null);
+      if (!getEffectiveModel(modelCtxKey)) {
+        await fetchModelsForContext(modelCtxKey).catch((error: unknown) => {
+          console.warn('[runtime] Failed to fetch models before sending:', error);
+        });
+      }
 
       const request = buildStreamChatRequestForSlot(targetSlotId, apiQuery, message);
       if (!request) return;

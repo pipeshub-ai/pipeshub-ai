@@ -103,6 +103,7 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     status: conv.status,
     modelInfo: conv.modelInfo,
     isOwner: conv.isOwner,
+    sharedBy: conv.sharedBy,
   };
 }
 
@@ -317,6 +318,7 @@ export const ChatApi = {
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
         ...(request.agentCapabilities ? { agentCapabilities: request.agentCapabilities } : {}),
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
+        ...(request.projectId ? { projectId: request.projectId } : {}),
       };
     } else {
       endpoint = request.conversationId

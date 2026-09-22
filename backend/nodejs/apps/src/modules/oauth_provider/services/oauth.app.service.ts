@@ -127,7 +127,11 @@ export class OAuthAppService {
 
   /**
    * RFC 7591 Dynamic Client Registration.
-   * Never accepts `client_credentials` — that grant has no user identity.
+   * Never accepts `client_credentials`. The grant carries no identity of
+   * its own, so AuthMiddleware resolves its tokens to the app's
+   * `createdBy` — they act as the person who registered the client, with
+   * that person's documents and role. That is not an identity a client
+   * registered dynamically, without review, should be able to obtain.
    */
   async createDynamicClient(params: {
     orgId: string

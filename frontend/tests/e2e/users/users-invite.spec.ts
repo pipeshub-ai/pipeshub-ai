@@ -1,7 +1,16 @@
-import { test, expect } from '../fixtures/base.fixture';
+import { test, expect } from '../fixtures/api-context.fixture';
+import { ensureSmtpConfigured } from '../helpers/smtp.helper';
+import { deleteUserByEmail } from '../helpers/members.helper';
 
 test.describe('Users Invite', () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, apiContext }) => {
+    // The Invite button stays disabled until SMTP is configured. Relying on
+    // another suite to have configured it made these tests pass or fail
+    // depending on what ran before them.
+    test.skip(
+      !(await ensureSmtpConfigured(apiContext)),
+      'SMTP is not configured and SMTP_HOST / SMTP_PORT are not set',
+    );
     await page.goto('/workspace/users/');
     await page.waitForTimeout(3_000);
   });
@@ -58,41 +67,44 @@ test.describe('Users Invite', () => {
     expect(pillCount).toBeGreaterThanOrEqual(3);
   });
 
-  test('validates invalid email in tag input', async ({ page }) => {
+  test('an invalid email alone cannot be sent', async ({ page }) => {
     const ctaButton = page.locator('button').filter({ hasText: /Invite/ });
     await ctaButton.first().click();
-    await page.waitForTimeout(500);
 
     const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 5_000 });
     const tagInput = dialog.getByRole('textbox').first();
     await tagInput.fill('not-a-valid-email');
     await tagInput.press('Enter');
-    await page.waitForTimeout(300);
 
-    // Invalid tag should still be added but marked as invalid (red styling)
-    // Or an error message should appear
-    const errorText = page.locator('text=/invalid|Invalid/');
-    const hasError = await errorText.first().isVisible().catch(() => false);
-    // Either shows error or creates tag with invalid styling — both are acceptable
-    expect(true).toBeTruthy();
+    await expect(dialog.getByRole('button', { name: 'Send Invite' })).toBeDisabled();
   });
 
-  test('submit invite sends invitations', async ({ page }) => {
-    const ctaButton = page.locator('button').filter({ hasText: /Invite/ });
-    await ctaButton.first().click();
-    await page.waitForTimeout(500);
+  test('submit invite sends invitations and lists the invited user', async ({ page, apiContext }) => {
+    // Unique per run: re-inviting an address that is already pending is a different flow.
+    const email = `e2e-submit-${Date.now()}@e2etest.pipeshub.local`;
 
-    const dialog = page.getByRole('dialog');
-    const tagInput = dialog.getByRole('textbox').first();
-    await tagInput.fill('e2e-submit-test@e2etest.pipeshub.local');
-    await tagInput.press('Enter');
-    await page.waitForTimeout(300);
+    try {
+      const ctaButton = page.locator('button').filter({ hasText: /Invite/ });
+      await ctaButton.first().click();
 
-    // Click "Send Invite"
-    const submitButton = page.locator('button').filter({ hasText: 'Send Invite' });
-    if (await submitButton.first().isVisible()) {
-      await submitButton.first().click();
-      await page.waitForTimeout(2_000);
+      const dialog = page.getByRole('dialog');
+      await expect(dialog).toBeVisible({ timeout: 5_000 });
+      const tagInput = dialog.getByRole('textbox').first();
+      await tagInput.fill(email);
+      await tagInput.press('Enter');
+
+      const submitButton = dialog.getByRole('button', { name: 'Send Invite' });
+      await expect(submitButton).toBeEnabled();
+      await submitButton.click();
+
+      await expect(page.getByText('Invite sent!').first()).toBeVisible({ timeout: 15_000 });
+      await page.reload();
+      await expect(page.getByText(email).first(), 'the invited user should be listed').toBeVisible({
+        timeout: 15_000,
+      });
+    } finally {
+      await deleteUserByEmail(apiContext, email);
     }
   });
 });

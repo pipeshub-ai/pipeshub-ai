@@ -4,9 +4,13 @@ into `PipesHubAgentFactory.create()`. Kept in its own module (rather than
 inlined into `factory.py`) so the already-long factory stays readable and
 this feature's env gate/wiring is one grep away.
 
-Entirely gated by `PIPESHUB_ENABLE_SKILLS` (default ON) — same rollout
-convention as `PIPESHUB_USE_COMPOSED_AGENTS`
-elsewhere in this adapter layer: a deployment-level opt-OUT, not an
+Gated by two layers, both default ON, both must be true: `PIPESHUB_ENABLE_SKILLS`
+(this module's `skills_enabled()`, a deployment-level env kill-switch — same
+rollout convention as `PIPESHUB_USE_COMPOSED_AGENTS` elsewhere in this adapter
+layer) and the `ENABLE_SKILLS` org-level platform feature flag (Labs UI; see
+`app.services.featureflag.platform_settings.is_skills_enabled`, read live per
+request via `context.config_service`). Each is a deployment- or org-level
+opt-OUT, not an
 opt-in, so it stays on unless explicitly disabled (e.g. for a deployment
 whose graph DB hasn't provisioned the `agentSkills*` collections/indexes
 yet — see `app/schema/arango/documents.py`, `node_schema_registry.py`).
@@ -128,7 +132,16 @@ _SKILL_WRITER_SYSTEM_PROMPT = (
 
 
 def skills_enabled() -> bool:
-    """Kill-switch for the whole subsystem."""
+    """Deployment-level kill-switch for the whole subsystem (env var, default
+    ON). This is the outer of two independent gates `factory.py` checks
+    before wiring skills into a request — the inner, org-level gate is the
+    ``ENABLE_SKILLS`` platform feature flag (see
+    ``app.services.featureflag.platform_settings.is_skills_enabled``, also
+    default ON, toggled per-org from Labs). Both must be true for skills to
+    run: this env var lets an operator disable skills fleet-wide (e.g. a
+    deployment whose graph DB hasn't provisioned the `agentSkills*`
+    collections/indexes yet) independently of what any org has set in Labs.
+    """
     return os.getenv("PIPESHUB_ENABLE_SKILLS", "true").strip().lower() == "true"
 
 

@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
+from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
+
 # ---------------------------------------------------------------------------
 # ChatQuery model
 # ---------------------------------------------------------------------------
@@ -95,6 +97,30 @@ class TestChatQueryModel:
         from app.api.routes.chatbot import ChatQuery
         with pytest.raises(ValidationError, match="Invalid reasoningEffort"):
             ChatQuery(query="q", reasoningEffort="extreme")
+
+    def test_project_instructions_defaults_to_none(self):
+        from app.api.routes.chatbot import ChatQuery
+        q = ChatQuery(query="q")
+        assert q.projectInstructions is None
+
+    def test_project_instructions_accepts_value(self):
+        from app.api.routes.chatbot import ChatQuery
+        q = ChatQuery(query="q", projectInstructions="Cite the Q3 report.")
+        assert q.projectInstructions == "Cite the Q3 report."
+
+    def test_project_instructions_rejects_over_max_length(self):
+        """Defense in depth: Node caps `Project.instructions` at 8000 chars
+        (`PROJECT_INSTRUCTIONS_MAX_LENGTH`) before persisting, but a direct
+        API caller could bypass Node — the Python model enforces the same
+        cap independently."""
+        from app.api.routes.chatbot import ChatQuery
+        with pytest.raises(ValidationError):
+            ChatQuery(query="q", projectInstructions="x" * 8001)
+
+    def test_project_instructions_accepts_exactly_max_length(self):
+        from app.api.routes.chatbot import ChatQuery
+        q = ChatQuery(query="q", projectInstructions="x" * 8000)
+        assert len(q.projectInstructions) == 8000
 
 
 
@@ -199,8 +225,38 @@ class TestGetModelConfig:
         from app.api.routes.chatbot import get_model_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={"llm": []})
-        with pytest.raises(ValueError, match="No LLM configurations found"):
+        with pytest.raises(LLMNotConfiguredError):
             await get_model_config(cs, model_key="missing")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ai_models", [{}, None, {"embedding": [{"provider": "openAI"}]}])
+    async def test_no_llm_bucket_raises_the_clear_error(self, ai_models) -> None:
+        """An empty or embeddings-only config used to raise KeyError('llm') here."""
+        from app.api.routes.chatbot import get_model_config
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=ai_models)
+        with pytest.raises(LLMNotConfiguredError) as exc:
+            await get_model_config(cs)
+        assert str(exc.value) == LLM_MISSING_FOR_CHAT
+
+    @pytest.mark.asyncio
+    async def test_no_llm_bucket_after_refresh_raises_the_clear_error(self) -> None:
+        from app.api.routes.chatbot import get_model_config
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(side_effect=[{}, {}])
+        with pytest.raises(LLMNotConfiguredError):
+            await get_model_config(cs, model_key="missing")
+
+    @pytest.mark.asyncio
+    async def test_chat_llm_init_keeps_the_clear_message(self) -> None:
+        """Chat streams this message to the user, so it must not be wrapped as 'Failed to initialize LLM: ...'."""
+        from app.api.routes.chatbot import get_llm_for_chat
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={})
+        with pytest.raises(LLMNotConfiguredError) as exc:
+            await get_llm_for_chat(cs)
+        assert "Failed to initialize" not in str(exc.value)
+        assert "'llm'" not in str(exc.value)
 
     @pytest.mark.asyncio
     async def test_no_default_returns_list(self, llm_configs):
@@ -361,7 +417,7 @@ class TestGetLlmForChat:
     async def test_none_config_raises(self, mock_get_model_config):
         from app.api.routes.chatbot import get_llm_for_chat
         mock_get_model_config.return_value = (None, {})
-        with pytest.raises(ValueError, match="Failed to initialize LLM"):
+        with pytest.raises(LLMNotConfiguredError):
             await get_llm_for_chat(AsyncMock())
 
     @pytest.mark.asyncio
@@ -561,7 +617,7 @@ class TestGetModelConfigAdditional:
         mock_cs = AsyncMock()
         mock_cs.get_config = AsyncMock(return_value={"llm": []})
 
-        with pytest.raises(ValueError, match="No LLM configurations found"):
+        with pytest.raises(LLMNotConfiguredError):
             await get_model_config(mock_cs, model_key=None, model_name=None)
 
     @pytest.mark.asyncio

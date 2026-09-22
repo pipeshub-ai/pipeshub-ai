@@ -35,6 +35,7 @@ from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.events.dedup import DedupDecision, select_duplicate
 from app.services.base_client import ServiceUnavailableError
+from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingEvent,
@@ -54,6 +55,7 @@ from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.libreoffice_convert import convert_with_libreoffice
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import ENRICHMENT_FAILED
 
 
 def _get_pdf_ocr_detection_worker_count() -> int:
@@ -375,7 +377,11 @@ class EventProcessor:
         )
 
         record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
+            record_id,
+            CollectionNames.RECORDS.value,
+            # Otherwise a graph that cannot be read raises "not found after
+            # parsing", which sends whoever reads it looking for a deletion.
+            raise_on_error=True,
         )
         if record_doc is None:
             raise RuntimeError(f"Record {record_id} not found after parsing")
@@ -483,12 +489,13 @@ class EventProcessor:
                     "❌ Enrichment failed for record %s (document remains searchable): %s",
                     record_id,
                     enrich_exc,
+                    exc_info=True,
                 )
                 await self.update_record_fields(
                     record_doc,
                     {
                         "extractionStatus": ProgressStatus.FAILED.value,
-                        "reason": f"Enrichment failed: {enrich_exc}",
+                        "reason": ENRICHMENT_FAILED,
                     },
                 )
 
@@ -888,7 +895,14 @@ class EventProcessor:
                 )
 
             record = await self.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id,
+                CollectionNames.RECORDS.value,
+                # None below drains the message, so it has to mean "deleted" and
+                # nothing else. Without this a graph that is restarting answers
+                # None for every record in flight, each one is drained as though
+                # it had been deleted, and they sit at QUEUED until the stranded
+                # sweep notices an hour later.
+                raise_on_error=True,
             )
 
             if record is None:
@@ -957,6 +971,12 @@ class EventProcessor:
                 dedup_decision = await self._check_duplicate_by_md5(file_content, doc)
                 if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")
+                    await notify_record_indexed(
+                        connector_name=doc.get("connectorName"),
+                        connector_id=doc.get("connectorId"),
+                        external_record_group_id=doc.get("externalGroupId"),
+                        org_id=doc.get("orgId"),
+                    )
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return

@@ -158,6 +158,11 @@ const DocumentSchema = new Schema(
     uploadLeaseExpiresAt: {
       type: Number,
     },
+    // Set when a signed URL is issued for a new document's first file. Only such
+    // a document may be aborted, and only once storage confirms the file is absent.
+    awaitingDirectUpload: {
+      type: Boolean,
+    },
   },
   {
     timestamps: {

@@ -19,6 +19,35 @@ class SyncDataPointType(Enum):
 def generate_record_sync_point_key(record_type: str, entity_name: str, entity_id: str) -> str:
     return f"{record_type}/{entity_name}/{entity_id}"
 
+
+class FailedItems:
+    """Items a listing failed to process, so its checkpoint stays before them.
+
+    An incremental sync lists only items modified after the saved time. Saving
+    the newest time seen would skip a failed item forever; saving just before
+    the earliest failure retries it next run without re-listing everything.
+    """
+
+    def __init__(self) -> None:
+        self.count = 0
+        self._earliest_ms: Optional[int] = None
+
+    def add(self, cutoff_ms: Optional[int]) -> None:
+        """Count a failure. Pass its modified time only if the date cutoff can skip it.
+
+        Folders and items without a time pass the cutoff every run, so they are
+        retried anyway; holding the checkpoint for them would only re-list newer items.
+        """
+        self.count += 1
+        if cutoff_ms is not None and (self._earliest_ms is None or cutoff_ms < self._earliest_ms):
+            self._earliest_ms = cutoff_ms
+
+    def checkpoint(self, max_timestamp: int) -> int:
+        """The time to save as the next run's cutoff."""
+        if self._earliest_ms is None:
+            return max_timestamp
+        return min(max_timestamp, self._earliest_ms - 1)
+
 class SyncPoint(ISyncPoint):
     connector_id: str
     org_id: str

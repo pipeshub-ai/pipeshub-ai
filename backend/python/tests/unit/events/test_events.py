@@ -1509,6 +1509,38 @@ class TestOnEventEarlyReturns:
         ]
 
     @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_not_drained_as_a_deletion(self):
+        """The graph being unreachable must not read as "this record is gone".
+
+        Draining is permanent: the message is acknowledged and the record sits
+        at QUEUED until the stranded sweep republishes it an hour later. During
+        a graph restart every record in flight took that path.
+        """
+        ep, _logger, _, gp = _make_event_processor()
+
+        async def unreachable_graph(*_args, raise_on_error: bool = False, **_kwargs):
+            # What both providers do: swallow and answer None unless asked not to.
+            # A double that raised either way would pass without the fix.
+            if raise_on_error:
+                raise RuntimeError("graph is restarting")
+            return None
+
+        gp.get_document.side_effect = unreachable_graph
+
+        with pytest.raises(RuntimeError):
+            await _drain(ep.on_event(_make_event_payload()))
+
+    @pytest.mark.asyncio
+    async def test_the_record_lookup_asks_for_failures_to_be_raised(self):
+        """`raise_on_error` is what makes the None above mean "deleted"."""
+        ep, _logger, _, gp = _make_event_processor()
+        gp.get_document.return_value = None
+
+        await _drain(ep.on_event(_make_event_payload()))
+
+        assert gp.get_document.await_args.kwargs.get("raise_on_error") is True
+
+    @pytest.mark.asyncio
     async def test_no_buffer_proceeds_with_none_content(self):
         """None buffer proceeds (no early return), duplicate check runs with None content."""
         ep, logger, processor, gp = _make_event_processor()
@@ -1546,6 +1578,41 @@ class TestOnEventDuplicate:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_duplicate_skip_invalidates_accessible_records_cache(self):
+        """When dedup skips indexing, the accessible-records cache must still
+        be invalidated so the newly attached record is searchable immediately.
+
+        Without this, a KB file re-uploaded with identical content (matched by
+        MD5 to an existing record) would be marked COMPLETED but invisible to
+        search until the cache TTL expires.
+        """
+        ep, _, _, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "FILE",
+            "connectorName": "KB",
+            "connectorId": "hidden-kb-1",
+            "orgId": "org-1",
+        }
+
+        with patch.object(
+            ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+            return_value=DedupDecision(virtual_record_id=None, skip_indexing=True),
+        ), patch(
+            "app.events.events.notify_record_indexed", new_callable=AsyncMock,
+        ) as mock_notify:
+            event_data = _make_event_payload(
+                connector_name="KB",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        mock_notify.assert_awaited_once()
+        call_kwargs = mock_notify.call_args[1]
+        assert call_kwargs["connector_name"] == "KB"
+        assert call_kwargs["connector_id"] == "hidden-kb-1"
+        assert call_kwargs["org_id"] == "org-1"
 
     @pytest.mark.asyncio
     async def test_check_duplicate_in_progress_handling(self):

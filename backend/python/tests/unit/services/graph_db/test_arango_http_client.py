@@ -394,6 +394,38 @@ class TestGetDocument:
             result = await client.get_document("col", "doc1")
             assert result is None
 
+    @pytest.mark.asyncio
+    async def test_a_server_that_could_not_answer_raises_when_asked(self, client):
+        """503 is the shape of a restart, and it must not read as a deletion."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = MockResponse(503, text_data="unavailable")
+
+        with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=mock_session):
+            with pytest.raises(GraphQueryError, match="503"):
+                await client.get_document("col", "doc1", raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_a_connection_that_never_landed_raises_when_asked(self, client):
+        mock_session = MagicMock()
+        network = Exception("network")
+        mock_session.get.side_effect = network
+
+        with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=mock_session):
+            with pytest.raises(Exception) as caught:
+                await client.get_document("col", "doc1", raise_on_error=True)
+        assert caught.value is network
+
+    @pytest.mark.asyncio
+    async def test_a_missing_document_is_still_none_when_raising(self, client):
+        """404 is the one status that means the document is genuinely absent."""
+        mock_session = MagicMock()
+        mock_session.get.return_value = MockResponse(404)
+
+        with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=mock_session):
+            assert await client.get_document("col", "missing", raise_on_error=True) is None
+
 
 class TestCreateDocument:
     @pytest.mark.asyncio

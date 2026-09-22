@@ -40,8 +40,11 @@ export function createOAuthClientsRouter(container: Container): Router {
 
   /**
    * POST /oauth-clients
-   * Create a new OAuth app
-   * Admin only, rate limited
+   * Create a new OAuth app.
+   * Not admin-only: any authenticated member of the org may create an
+   * app. Being an admin widens the scopes on offer rather than gating
+   * the route — see getAllowedScopeNamesForRole in OAuthAppService.
+   * Rate limited along with every route on this router.
    */
   router.post(
     '/',

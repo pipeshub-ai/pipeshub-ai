@@ -123,6 +123,23 @@ async def test_a_transport_failure_raises_rather_than_counting_zero() -> None:
         await probe.count_for_virtual_record("v1")
 
 
+@pytest.mark.asyncio
+async def test_counting_reconnects_after_the_vector_database_restarts() -> None:
+    """The session-wide probe's pooled connection dies with a Qdrant restart."""
+    collections = MagicMock(collections=[MagicMock()])
+    collections.collections[0].name = "records"
+    dead = MagicMock(close=AsyncMock())
+    dead.get_collections = AsyncMock(side_effect=Exception("Server disconnected"))
+    fresh = MagicMock(close=AsyncMock())
+    fresh.get_collections = AsyncMock(return_value=collections)
+    fresh.count = AsyncMock(return_value=MagicMock(count=7))
+
+    with patch("helper.vector_store.AsyncQdrantClient", side_effect=[dead, fresh]):
+        probe = VectorStoreProbe(host="localhost")
+        assert await probe.count_for_virtual_record("v1") == 7
+    dead.close.assert_awaited_once()
+
+
 # --------------------------------------------------------------------- #
 # Transport security
 # --------------------------------------------------------------------- #

@@ -15,6 +15,13 @@ The number matters less than the direction. `--check` compares against the
 recorded baseline and fails when a connector is registered without a test, so
 the gap can shrink over time but cannot silently widen. Update the baseline
 deliberately, in a commit, when you add or remove a connector.
+
+What this counts is whether a connector HAS tests, not whether they ran. A
+suite whose credentials are missing skips itself, and a skipped suite still
+counts as covered here. On the nightly a missing credential fails instead of
+skipping (PIPESHUB_REQUIRE_CONNECTOR_SECRETS, see
+integration-tests/helper/source_credentials.py), and the run summary names any
+suite that covered nothing.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ ALIASES = {
     "postgresql": {"postgres"},
     "azureblob": {"azure_blob"},
     "azurefiles": {"azure_files"},
+    "localfs": {"local_fs"},
     "sharepointonline": {"sharepoint"},
     "confluencedatacenter": {"confluence"},
     "confluencedatacenterpersonal": {"confluence"},
@@ -49,6 +57,8 @@ ALIASES = {
     "notionpersonal": {"notion"},
     "dropboxpersonal": {"dropbox"},
     "gitlabpersonal": {"gitlab"},
+    # Not "github": a test directory by that name would shadow the PyGithub package.
+    "github": {"github_personal"},
     "githubteams": {"github", "github_teams"},
     "slackworkspace": {"slack"},
     "outlookpersonal": {"outlook"},
@@ -58,9 +68,39 @@ ALIASES = {
 NOT_A_CONNECTOR = {"kb"}
 
 
+def _imported_from(factory_src: str) -> dict[str, Path]:
+    """Class name -> source file, from the factory's `from app... import` lines."""
+    found: dict[str, Path] = {}
+    imports = re.findall(r"^from (app\.[\w.]+) import \(([^)]*)\)", factory_src, re.M)
+    imports += re.findall(r"^from (app\.[\w.]+) import ([\w, ]+)$", factory_src, re.M)
+    for module, names in imports:
+        path = REPO / "backend/python" / (module.replace(".", "/") + ".py")
+        for name in re.findall(r"\w+", names):
+            found[name] = path
+    return found
+
+
+def _sync_disabled(cls: str, path: Path | None) -> bool:
+    """Whether `cls` is declared with `with_sync_support(False)`: a placeholder with nothing to sync."""
+    if path is None or not path.is_file():
+        return False
+    src = path.read_text(encoding="utf-8")
+    m = re.search(rf"@ConnectorBuilder\((.*?)\n(?:@[^\n]*\n)*class {cls}\b", src, re.S)
+    if not m:
+        return False
+    # The decorator body can span other classes' decorators; keep only the last one.
+    decorator = m.group(1).rsplit("@ConnectorBuilder(", 1)[-1]
+    return re.search(r"with_sync_support\(\s*False\s*\)", decorator) is not None
+
+
 def registered_connectors() -> dict[str, str]:
-    """Registry key -> class name, for the main and beta registries."""
+    """Registry key -> class name, for the main and beta registries.
+
+    Connectors declared without sync support are left out: they are placeholders
+    with nothing an integration test could check.
+    """
     src = FACTORY.read_text(encoding="utf-8")
+    sources = _imported_from(src)
     found: dict[str, str] = {}
     for block in ("_connector_registry", "_beta_connector_definitions"):
         m = re.search(rf"{block}[^=]*=\s*\{{(.*?)\n    \}}", src, re.S)
@@ -68,7 +108,10 @@ def registered_connectors() -> dict[str, str]:
             continue
         for key, cls in re.findall(r"""['"]([a-z0-9_]+)['"]\s*:\s*(\w+)""", m.group(1)):
             found[key] = cls
-    return {k: v for k, v in found.items() if k not in NOT_A_CONNECTOR}
+    return {
+        k: v for k, v in found.items()
+        if k not in NOT_A_CONNECTOR and not _sync_disabled(v, sources.get(v))
+    }
 
 
 def tested_connectors() -> set[str]:
@@ -168,6 +211,8 @@ def check(rep: dict) -> int:
         return 1
 
     print(f"OK: no new uncovered connectors ({rep['covered']}/{rep['total']} covered).")
+    print("Covered means the connector has tests. Whether they ran depends on")
+    print("credentials being present; the run summary names suites that skipped.")
     return 0
 
 

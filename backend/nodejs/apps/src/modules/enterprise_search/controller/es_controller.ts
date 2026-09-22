@@ -30,12 +30,11 @@ import {
   NotFoundError,
   HttpError,
   UnauthorizedError,
-  ForbiddenError,
-  ServiceUnavailableError,
-  BadGatewayError,
-  GatewayTimeoutError,
-  UnprocessableEntityError,
 } from '../../../libs/errors/http.errors';
+import {
+  handleBackendError,
+  SERVICE_UNAVAILABLE_MESSAGE,
+} from '../../../libs/errors/backend-error';
 import {
   AICommandOptions,
   AIServiceCommand,
@@ -58,6 +57,8 @@ import { ChatSessionMessage } from '../schema/chat.session.message.schema';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
   addComputedFields,
+  attachSharedBy,
+  attachSharedByIfRecipient,
   assignAiModelField,
   buildAIResponseMessage,
   buildFiltersMetadata,
@@ -119,8 +120,66 @@ import {
 import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
 import { Org } from '../../user_management/schema/org.schema';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
+import {
+  applyProjectScope,
+  loadProjectForSession,
+  resolveProjectLink,
+  type ResolvedProjectLink,
+} from '../utils/project-context';
+import {
+  CHAT_ERROR_MESSAGES,
+  userFacingChatError,
+  userFacingAIResponseError,
+} from '../utils/chat-error-messages';
+import { ProjectService } from '../../projects/services/project.service';
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
+
+/**
+ * A chat failure whose saved state has to commit before the error reaches
+ * the caller.
+ */
+class CommittedFailure {
+  constructor(readonly error: Error) {}
+}
+
+const throwIfFailed = <T>(result: T | CommittedFailure): T => {
+  if (result instanceof CommittedFailure) throw result.error;
+  return result;
+};
+
+/** `cause` is read through a cast: the compiler's lib target predates it. */
+const causeCode = (error: unknown): string | undefined => {
+  if (error === null || typeof error !== 'object') return undefined;
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause === null || typeof cause !== 'object') return undefined;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+};
+
+/**
+ * The error a failed chat request sends back. Only a deliberate 4xx we raised
+ * keeps its own message; anything else carries the user-facing reason with no
+ * raw error attached, since the error middleware shows messages and metadata.
+ */
+const clientChatError = (error: unknown, failReason: string): Error => {
+  logger.error('Chat request failed', {
+    error: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+  if (causeCode(error) === 'ECONNREFUSED') {
+    return new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
+  }
+  if (error instanceof HttpError) {
+    if (error.statusCode < 500) {
+      return error;
+    }
+    if (error.message === SERVICE_UNAVAILABLE_MESSAGE) {
+      return new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
+    }
+  }
+  return new InternalServerError(failReason);
+};
 
 /** Remove `id` from graph document clones (Neo4j vs Arango shape) before returning search to the client. */
 export function omitId<T>(doc: T): T {
@@ -299,21 +358,19 @@ export const stableObjectIdHexForExternalEmail = (email: string): string =>
     .update(`slack-service-account:${email.toLowerCase().trim()}`)
     .digest('hex')
     .slice(0, 24);
-const AI_SERVICE_UNAVAILABLE_MESSAGE =
-  'AI Service is currently unavailable. Please check your network connection or try again later.';
 
 const failReasonFromCaughtError = (
   conversation: { failReason?: unknown } | null | undefined,
   error: { message?: string; cause?: { code?: string } },
 ): string => {
   if (error.cause?.code === 'ECONNREFUSED') {
-    return `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
+    return CHAT_ERROR_MESSAGES.unavailable;
   }
   const existing = conversation?.failReason;
   if (typeof existing === 'string' && existing.trim()) {
     return existing;
   }
-  return error.message || 'Unknown error occurred';
+  return userFacingChatError(error);
 };
 
 export const hydrateScopedRequestAsUser = async (
@@ -402,97 +459,7 @@ export const hydrateScopedRequestAsUser = async (
   };
 };
 
-  export const handleBackendError = (error: any, operation: string): Error => {
-    const resolveErrorMessage = (err: any): string =>
-      err?.message || err?.msg || 'Unknown error';
-
-    // Network/connection failure handling first
-    if (
-      (error?.cause && error.cause.code === 'ECONNREFUSED') ||
-    (typeof error?.message === 'string' &&
-      error.message.includes('fetch failed'))
-    ) {
-      return new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
-    }
-
-    if (error instanceof HttpError) {
-      return error;
-    }
-
-    if (error.response) {
-      const { status, data } = error.response;
-      const errorDetail =
-        data?.detail || data?.reason || data?.message || error.msg || 'Unknown error';
-  
-      logger.error(`Backend error during ${operation}`, {
-        status,
-        errorDetail,
-        fullResponse: data,
-      });
-  
-      switch (status) {
-        case 400:
-          return new BadRequestError(errorDetail);
-        case 401:
-          return new UnauthorizedError(errorDetail);
-        case 403:
-          return new ForbiddenError(errorDetail);
-        case 404:
-          return new NotFoundError(errorDetail);
-        case 422:
-          return new UnprocessableEntityError(errorDetail);
-        case 500:
-          return new InternalServerError(errorDetail);
-        case 502:
-          return new BadGatewayError(errorDetail);
-        case 503:
-          return new ServiceUnavailableError(errorDetail);
-        case 504:
-          return new GatewayTimeoutError(errorDetail);
-        default:
-          return new InternalServerError(`Backend error: ${errorDetail}`);
-      }
-    }
-  
-    if (error.request) {
-      logger.error(`No response from backend during ${operation}`);
-      return new ServiceUnavailableError('Backend service unavailable');
-    }
-
-    // Handle AIServiceResponse format { statusCode, data, msg } from AIServiceCommand.execute()
-    if (typeof error.statusCode === 'number' && error.statusCode >= 400) {
-      const data = error.data as Record<string, unknown> | undefined;
-      const errorDetail = String(data?.detail || data?.reason || data?.message || error.msg || 'Unknown error');
-      switch (error.statusCode) {
-        case 400:
-          return new BadRequestError(errorDetail);
-        case 401:
-          return new UnauthorizedError(errorDetail);
-        case 403:
-          return new ForbiddenError(errorDetail);
-        case 404:
-          return new NotFoundError(errorDetail);
-        case 422:
-          return new UnprocessableEntityError(errorDetail);
-        case 500:
-          return new InternalServerError(errorDetail);
-        case 502:
-          return new BadGatewayError(errorDetail);
-        case 503:
-          return new ServiceUnavailableError(errorDetail);
-        case 504:
-          return new GatewayTimeoutError(errorDetail);
-        default:
-          return new InternalServerError(`Backend error: ${errorDetail}`);
-      }
-    }
-
-    if (error.detail) {
-      return new BadRequestError(error.detail);
-    }
-
-    return new InternalServerError(`${operation} failed: ${resolveErrorMessage(error)}`);
-  };
+  export { handleBackendError };
   
   // Common helper to start AI streams with consistent error mapping and logging
   export const startAIStream = async (
@@ -643,7 +610,8 @@ export const compressImageIfNeeded = async (
   }
 };
 
-const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
+/** Shared with `projects/controller/project.controller.ts` — project file uploads reuse this same chat-attachment pipeline. */
+export const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
   'image/jpeg',
   'image/jpg',
   'image/png',
@@ -847,6 +815,12 @@ export const streamChat =
         req.body.attachments,
       );
 
+      const projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
       const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
@@ -857,6 +831,12 @@ export const streamChat =
         // Store model and mode information
         modelInfo: modelInfo,
         sessionType: 'chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
       // Start transaction if replica set is available
@@ -906,12 +886,14 @@ export const streamChat =
               value: {
                 conversationId: newConversationId,
                 title: savedConversation.title || undefined,
+                ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
               },
             })
           : `event: connected\ndata: ${JSON.stringify({
               message: 'SSE connection established',
               conversationId: newConversationId,
               title: savedConversation.title || undefined,
+              ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
             })}\n\n`,
       );
       (res as any).flush?.();
@@ -944,6 +926,10 @@ export const streamChat =
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
         assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
+      }
+      applyProjectScope(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
       }
 
       const aiCommandOptions: AICommandOptions = {
@@ -1090,7 +1076,7 @@ export const streamChat =
                 const errorData = JSON.parse(dataLine) as Record<string, unknown>;
                 const errorMessage =
                   (typeof errorData.message === 'string' && errorData.message) ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   void markConversationFailed(
@@ -1153,7 +1139,7 @@ export const streamChat =
                 const errorMessage =
                   (typeof errorData.message === 'string' && errorData.message) ||
                   (typeof errorData.error === 'string' && errorData.error) ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   const meta =
@@ -1183,7 +1169,7 @@ export const streamChat =
                 });
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
-                  const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
+                  const parseFailMsg = CHAT_ERROR_MESSAGES.failed;
                   void markConversationFailed(
                     savedConversation,
                     parseFailMsg,
@@ -1323,7 +1309,7 @@ export const streamChat =
             if (savedConversation) {
               await markConversationFailed(
                 savedConversation,
-                'No complete response received from AI service',
+                CHAT_ERROR_MESSAGES.interrupted,
                 session,
                 'no_response',
               );
@@ -1333,11 +1319,11 @@ export const streamChat =
             res.write(
               isAGUI(protocol)
                 ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                    message: 'No complete response received from AI service',
+                    message: CHAT_ERROR_MESSAGES.interrupted,
                     code: 'no_response',
                   })
                 : `event: error\ndata: ${JSON.stringify({
-                    error: 'No complete response received from AI service',
+                    error: CHAT_ERROR_MESSAGES.interrupted,
                   })}\n\n`,
             );
           }
@@ -1351,7 +1337,7 @@ export const streamChat =
           if (savedConversation) {
             await markConversationFailed(
               savedConversation,
-              `Failed to save conversation: ${dbError.message}`,
+              CHAT_ERROR_MESSAGES.saveFailed,
               session,
               'save_error',
               dbError.stack,
@@ -1362,12 +1348,11 @@ export const streamChat =
           res.write(
             isAGUI(protocol)
               ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                  message: 'Failed to save conversation',
+                  message: CHAT_ERROR_MESSAGES.saveFailed,
                   code: 'save_error',
                 })
               : `event: error\ndata: ${JSON.stringify({
-                  error: 'Failed to save conversation',
-                  details: dbError.message,
+                  error: CHAT_ERROR_MESSAGES.saveFailed,
                 })}\n\n`,
           );
         }
@@ -1387,7 +1372,7 @@ export const streamChat =
           if (savedConversation) {
             await markConversationFailed(
               savedConversation,
-              `Stream error: ${error.message}`,
+              userFacingChatError(error),
               session,
               'stream_error',
               error.stack,
@@ -1403,12 +1388,11 @@ export const streamChat =
 
         const errorEvent = isAGUI(protocol)
           ? frameAGUI(AGUIEventType.RUN_ERROR, {
-              message: error.message || 'Stream error occurred',
+              message: userFacingChatError(error),
               code: 'stream_error',
             })
           : `event: error\ndata: ${JSON.stringify({
-              error: error.message || 'Stream error occurred',
-              details: error.message,
+              error: userFacingChatError(error),
             })}\n\n`;
         res.write(errorEvent);
         res.end();
@@ -1421,7 +1405,7 @@ export const streamChat =
         if (savedConversation) {
           await markConversationFailed(
             savedConversation,
-            error.message || 'Internal server error',
+            userFacingChatError(error),
             session,
             'internal_error',
             error.stack,
@@ -1444,12 +1428,11 @@ export const streamChat =
       });
       const errorEvent = isAGUI(protocol)
         ? frameAGUI(AGUIEventType.RUN_ERROR, {
-            message: error.message || 'Internal server error',
+            message: userFacingChatError(error),
             code: 'internal_error',
           })
         : `event: error\ndata: ${JSON.stringify({
-            error: error.message || 'Internal server error',
-            details: error.message,
+            error: userFacingChatError(error),
           })}\n\n`;
       res.write(errorEvent);
       res.end();
@@ -1567,6 +1550,8 @@ export const createConversation =
       throw new BadRequestError('Query is required');
     }
 
+    let projectLink: ResolvedProjectLink = {};
+
     // Helper function that contains the common conversation operations.
     async function createConversationUtil(
       session?: ClientSession | null,
@@ -1587,6 +1572,12 @@ export const createConversation =
         status: CONVERSATION_STATUS.INPROGRESS,
         modelInfo: modelInfo,
         sessionType: 'chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
       const conversation = new ChatSession(userConversationData);
@@ -1603,23 +1594,29 @@ export const createConversation =
         session,
       );
 
+      const aiPayload: Record<string, unknown> = {
+        query: req.body.query,
+        previousConversations: req.body.previousConversations || [],
+        recordIds: req.body.recordIds || [],
+        filters: req.body.filters || {},
+        attachments: req.body.attachments || [],
+        // New fields for multi-model support
+        modelKey: req.body.modelKey || null,
+        modelName: req.body.modelName || null,
+        modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
+        chatMode: req.body.chatMode || 'quick',
+      };
+      applyProjectScope(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
+      }
+
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/chat`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
-        body: {
-          query: req.body.query,
-          previousConversations: req.body.previousConversations || [],
-          recordIds: req.body.recordIds || [],
-          filters: req.body.filters || {},
-          attachments: req.body.attachments || [],
-          // New fields for multi-model support
-          modelKey: req.body.modelKey || null,
-          modelName: req.body.modelName || null,
-          modelFriendlyName: req.body.modelFriendlyName || null,
-          reasoningEffort: req.body.reasoningEffort || null,
-          chatMode: req.body.chatMode || 'quick',
-        },
+        body: aiPayload,
       };
 
       logger.debug('Sending query to AI service', {
@@ -1634,7 +1631,8 @@ export const createConversation =
           (await aiServiceCommand.execute()) as AIServiceResponse<IAIResponse>;
         if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
           savedConversation.status = CONVERSATION_STATUS.FAILED;
-          savedConversation.failReason = `AI service error: ${aiResponseData?.msg || 'Unknown error'} (Status: ${aiResponseData?.statusCode})`;
+          const failReason = userFacingAIResponseError(aiResponseData);
+          savedConversation.failReason = failReason;
 
           const updatedWithError = session
             ? await savedConversation.save({ session })
@@ -1642,12 +1640,12 @@ export const createConversation =
 
           if (!updatedWithError) {
             throw new InternalServerError(
-              'Failed to update conversation status',
+              CHAT_ERROR_MESSAGES.saveFailed,
             );
           }
 
           throw new InternalServerError(
-            'Failed to get AI response',
+            failReason,
             aiResponseData?.data,
           );
         }
@@ -1717,14 +1715,19 @@ export const createConversation =
           'internal_error',
           error.stack,
         );
-        if (error.cause && error.cause.code === 'ECONNREFUSED') {
-          throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
-        }
-        throw error;
+        // Returned, not thrown: inside a transaction a throw would roll back
+        // the failed state just saved, so replica-set installs lose it.
+        return new CommittedFailure(clientChatError(error, failReason));
       }
     }
 
     try {
+      projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
       logger.debug('Creating new conversation', {
         requestId,
         userId,
@@ -1738,12 +1741,12 @@ export const createConversation =
       if (rsAvailable) {
         // Start a session and run the operations inside a transaction.
         session = await mongoose.startSession();
-        responseData = await session.withTransaction(() =>
-          createConversationUtil(session),
+        responseData = throwIfFailed(
+          await session.withTransaction(() => createConversationUtil(session)),
         );
       } else {
         // Execute without session/transaction.
-        responseData = await createConversationUtil();
+        responseData = throwIfFailed(await createConversationUtil());
       }
 
       logger.debug('Conversation created successfully', {
@@ -1931,21 +1934,34 @@ export const addMessage =
           },
         });
 
+        const aiPayload: Record<string, unknown> = {
+          query: req.body.query,
+          previousConversations: previousConversations,
+          filters: req.body.filters || {},
+          attachments: req.body.attachments || [],
+          // New fields for multi-model support
+          modelKey: req.body.modelKey || null,
+          modelName: req.body.modelName || null,
+          reasoningEffort: req.body.reasoningEffort || null,
+          chatMode: req.body.chatMode || 'quick',
+        };
+        // Project context always comes from the session row, never the
+        // request body — a follow-up turn cannot move itself into a project.
+        const followUpProject = await loadProjectForSession(
+          conversation.orgId.toString(),
+          (conversation.userId as unknown as Types.ObjectId).toString(),
+          conversation.projectId,
+        );
+        applyProjectScope(aiPayload, followUpProject);
+        if (conversation.projectId) {
+          void ProjectService.touchActivity(conversation.projectId.toString());
+        }
+
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/chat`,
           method: HttpMethod.POST,
           headers: req.headers as Record<string, string>,
-          body: {
-            query: req.body.query,
-            previousConversations: previousConversations,
-            filters: req.body.filters || {},
-            attachments: req.body.attachments || [],
-            // New fields for multi-model support
-            modelKey: req.body.modelKey || null,
-            modelName: req.body.modelName || null,
-            reasoningEffort: req.body.reasoningEffort || null,
-            chatMode: req.body.chatMode || 'quick',
-          },
+          body: aiPayload,
         };
         try {
           const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -1957,10 +1973,9 @@ export const addMessage =
             // Update conversation status for AI service connection errors
             conversation.status = CONVERSATION_STATUS.FAILED;
             if (error.cause?.code === 'ECONNREFUSED') {
-              conversation.failReason = `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
+              conversation.failReason = CHAT_ERROR_MESSAGES.unavailable;
             } else {
-              conversation.failReason =
-                error.message || 'Unknown connection error';
+              conversation.failReason = userFacingChatError(error);
             }
 
             const saveErrorStatus = session
@@ -1974,19 +1989,17 @@ export const addMessage =
               });
             }
             if (error.cause && error.cause.code === 'ECONNREFUSED') {
-              throw new InternalServerError(
-                AI_SERVICE_UNAVAILABLE_MESSAGE,
-                error,
-              );
+              throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
             }
             logger.error(' Failed error ', error);
-            throw new InternalServerError('Failed to get AI response', error);
+            throw new InternalServerError(userFacingChatError(error));
           }
 
           if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
             // Update conversation status for API errors
             conversation.status = CONVERSATION_STATUS.FAILED;
-            conversation.failReason = `AI service API error: ${aiResponseData?.msg || 'Unknown error'} (Status: ${aiResponseData?.statusCode})`;
+            const failReason = userFacingAIResponseError(aiResponseData);
+            conversation.failReason = failReason;
 
             const saveApiError = session
               ? await conversation.save({ session })
@@ -2000,7 +2013,7 @@ export const addMessage =
             }
 
             throw new InternalServerError(
-              'Failed to get AI response',
+              failReason,
               aiResponseData?.data,
             );
           }
@@ -2065,31 +2078,28 @@ export const addMessage =
           // TODO: Add support for retry mechanism and generate response from retry
           // and append the response to the correct messageId
 
+          const failReason = failReasonFromCaughtError(conversation, error);
           await markConversationFailed(
             conversation,
-            failReasonFromCaughtError(conversation, error),
+            failReason,
             session,
             'internal_error',
             error.stack,
           );
-          if (error.cause && error.cause.code === 'ECONNREFUSED') {
-            throw new InternalServerError(
-              AI_SERVICE_UNAVAILABLE_MESSAGE,
-              error,
-            );
-          }
-          throw error;
+          // Returned, not thrown: inside a transaction a throw would roll
+          // back the failed state just saved, so replica-set installs lose it.
+          return new CommittedFailure(clientChatError(error, failReason));
         }
       }
 
       let responseData;
       if (rsAvailable) {
         session = await mongoose.startSession();
-        responseData = await session.withTransaction(() =>
-          performAddMessage(session),
+        responseData = throwIfFailed(
+          await session.withTransaction(() => performAddMessage(session)),
         );
       } else {
-        responseData = await performAddMessage();
+        responseData = throwIfFailed(await performAddMessage());
       }
 
       logger.debug('Message added successfully', {
@@ -2303,6 +2313,15 @@ export const addMessageStream =
         assignToolsToPayload(aiPayload, req.body.tools);
         assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
       }
+      const followUpProject = await loadProjectForSession(
+        confirmedConversation.orgId.toString(),
+        (confirmedConversation.userId as unknown as Types.ObjectId).toString(),
+        confirmedConversation.projectId,
+      );
+      applyProjectScope(aiPayload, followUpProject);
+      if (confirmedConversation.projectId) {
+        void ProjectService.touchActivity(confirmedConversation.projectId.toString());
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
@@ -2438,7 +2457,8 @@ export const addMessageStream =
             } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
-                const errorMessage = errorData.message || 'Unknown error occurred';
+                const errorMessage =
+                  errorData.message || CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (existingConversation) {
                   void markConversationFailed(
@@ -2501,7 +2521,7 @@ export const addMessageStream =
                 const errorMessage =
                   errorData.message ||
                   errorData.error ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (existingConversation) {
                   void markConversationFailed(
@@ -2528,7 +2548,7 @@ export const addMessageStream =
                   dataLine,
                 });
                 upstreamAiErrorEventForwarded = true;
-                const errorMessage = `Failed to parse error event: ${parseError.message}`;
+                const errorMessage = CHAT_ERROR_MESSAGES.failed;
                 if (existingConversation) {
                   void markConversationFailed(
                     existingConversation,
@@ -2720,7 +2740,7 @@ export const addMessageStream =
               if (existingConversation) {
                 await markConversationFailed(
                   existingConversation,
-                  error.message || 'Unknown error occurred',
+                  userFacingChatError(error),
                   session,
                   'internal_error',
                   error.stack,
@@ -2729,7 +2749,7 @@ export const addMessageStream =
 
               if (error.cause && error.cause.code === 'ECONNREFUSED') {
                 throw new InternalServerError(
-                  AI_SERVICE_UNAVAILABLE_MESSAGE,
+                  SERVICE_UNAVAILABLE_MESSAGE,
                   error,
                 );
               }
@@ -2740,7 +2760,7 @@ export const addMessageStream =
           if (existingConversation) {
             await markConversationFailed(
               existingConversation,
-              'No complete response received from AI service',
+              CHAT_ERROR_MESSAGES.interrupted,
               session,
               'no_response',
             );
@@ -2750,11 +2770,11 @@ export const addMessageStream =
           res.write(
             isAGUI(protocol)
               ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                  message: 'No complete response received from AI service',
+                  message: CHAT_ERROR_MESSAGES.interrupted,
                   code: 'no_response',
                 })
               : `event: error\ndata: ${JSON.stringify({
-                  error: 'No complete response received from AI service',
+                  error: CHAT_ERROR_MESSAGES.interrupted,
                 })}\n\n`,
           );
         }
@@ -2769,12 +2789,11 @@ export const addMessageStream =
           res.write(
             isAGUI(protocol)
               ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                  message: 'Failed to save AI response',
+                  message: CHAT_ERROR_MESSAGES.saveFailed,
                   code: 'save_error',
                 })
               : `event: error\ndata: ${JSON.stringify({
-                  error: 'Failed to save AI response',
-                  details: dbError.message,
+                  error: CHAT_ERROR_MESSAGES.saveFailed,
                 })}\n\n`,
           );
         }
@@ -2793,7 +2812,7 @@ export const addMessageStream =
           if (existingConversation) {
             await markConversationFailed(
               existingConversation,
-              error.message,
+              userFacingChatError(error),
               session,
               'stream_error',
               error.stack,
@@ -2809,12 +2828,11 @@ export const addMessageStream =
 
         const errorEvent = isAGUI(protocol)
           ? frameAGUI(AGUIEventType.RUN_ERROR, {
-              message: error.message || 'Stream error occurred',
+              message: userFacingChatError(error),
               code: 'stream_error',
             })
           : `event: error\ndata: ${JSON.stringify({
-              error: error.message || 'Stream error occurred',
-              details: error.message,
+              error: userFacingChatError(error),
             })}\n\n`;
         res.write(errorEvent);
         res.end();
@@ -2831,7 +2849,7 @@ export const addMessageStream =
         if (existingConversation) {
           await markConversationFailed(
             existingConversation as IChatSessionDocument,
-            error.message || 'Internal server error',
+            userFacingChatError(error),
             session,
             'internal_error',
             error.stack,
@@ -2851,12 +2869,11 @@ export const addMessageStream =
 
       const errorEvent = isAGUI(protocol)
         ? frameAGUI(AGUIEventType.RUN_ERROR, {
-            message: error.message || 'Internal server error',
+            message: userFacingChatError(error),
             code: 'internal_error',
           })
         : `event: error\ndata: ${JSON.stringify({
-            error: error.message || 'Internal server error',
-            details: error.message,
+            error: userFacingChatError(error),
           })}\n\n`;
       res.write(errorEvent);
       res.end();
@@ -2923,6 +2940,9 @@ export const getAllConversations = async (
         escapedSearch,
       );
     }
+    const accessibleProjectIds = !isOwned
+      ? await ProjectService.getAccessibleProjectIds(orgId, userId)
+      : undefined;
     const filter = {
       ...buildFilter(
         req,
@@ -2932,6 +2952,7 @@ export const getAllConversations = async (
         isOwned,
         !isOwned,
         contentMatchIds,
+        accessibleProjectIds,
       ),
       ...EXCLUDE_AGENT,
     };
@@ -2949,9 +2970,15 @@ export const getAllConversations = async (
       ChatSession.countDocuments(filter),
     ]);
 
-    const processedConversations = conversations.map((conversation: any) =>
+    let processedConversations = conversations.map((conversation: any) =>
       addComputedFields(conversation as IConversation, userId),
     );
+    if (!isOwned) {
+      processedConversations = await attachSharedBy(
+        processedConversations,
+        orgId,
+      );
+    }
 
     const response = {
       conversations: processedConversations,
@@ -3016,6 +3043,10 @@ export const getConversationById = async (
         escapedSearch,
       );
     }
+    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
+      orgId,
+      userId,
+    );
     const baseFilter = buildFilter(
       req,
       orgId,
@@ -3024,6 +3055,7 @@ export const getConversationById = async (
       true,
       true,
       contentMatchIds,
+      accessibleProjectIds,
     );
 
     // Build message filter
@@ -3048,6 +3080,8 @@ export const getConversationById = async (
         status: 1,
         failReason: 1,
         modelInfo: 1,
+        projectId: 1,
+        projectVisibility: 1,
       })
       .lean()
       .exec();
@@ -3081,19 +3115,21 @@ export const getConversationById = async (
       messageSortOptions as { field: keyof IMessage },
     );
 
-    // Build conversation response using existing helper
-    const conversationResponse = buildConversationResponse(
-      conversationWithMessages as unknown as IChatSessionDocument,
-      userId,
-      {
-        page,
-        limit,
-        skip,
-        totalMessages,
-        hasNextPage: skip > 0,
-        hasPrevPage: skip + effectiveLimit < totalMessages,
-      },
-      sortedMessages,
+    const conversationResponse = await attachSharedByIfRecipient(
+      buildConversationResponse(
+        conversationWithMessages as unknown as IChatSessionDocument,
+        userId,
+        {
+          page,
+          limit,
+          skip,
+          totalMessages,
+          hasNextPage: skip > 0,
+          hasPrevPage: skip + effectiveLimit < totalMessages,
+        },
+        sortedMessages,
+      ),
+      orgId,
     );
 
     // Build filters metadata using existing helper
@@ -3686,6 +3722,150 @@ export const unshareConversationById =
 };
 
 /**
+ * PUT /api/v1/conversations/:conversationId/project
+ * PUT /api/v1/agents/:agentKey/conversations/:conversationId/project
+ * @desc Link or unlink a chat/agent session to a project. Initiator-only
+ * (mirrors `shareConversationById`'s ownership check) — a chat shared to
+ * this user does not let them move someone else's conversation between
+ * projects. `projectId: null` unlinks. `ProjectService.assertAccess`
+ * enforces the caller has at least viewer access to the target project
+ * (cross-org / no-access -> 404, never a leak of the project's existence).
+ */
+export const setConversationProject = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    const { conversationId, agentKey } = req.params;
+    const { projectId } = req.body as { projectId: string | null };
+
+    const sessionTypeFilter = agentKey
+      ? { ...ONLY_AGENT, agentKey }
+      : EXCLUDE_AGENT;
+
+    const conversation = await ChatSession.findOne({
+      _id: conversationId,
+      orgId,
+      userId,
+      initiator: userId,
+      isDeleted: false,
+      ...sessionTypeFilter,
+    });
+    if (!conversation) {
+      throw new NotFoundError('Conversation not found or unauthorized');
+    }
+
+    let update: Record<string, unknown>;
+    if (projectId === null) {
+      update = { $unset: { projectId: '', projectVisibility: '' } };
+    } else {
+      const { project } = await ProjectService.assertAccess(
+        orgId,
+        userId,
+        projectId,
+        'viewer',
+      );
+      const projectVisibility =
+        conversation.projectVisibility === 'project'
+          ? 'project'
+          : project.chatSharing === 'members'
+            ? 'project'
+            : 'private';
+      update = {
+        $set: {
+          projectId: new mongoose.Types.ObjectId(projectId),
+          projectVisibility,
+        },
+      };
+      void ProjectService.touchActivity(projectId);
+    }
+
+    const updated = await ChatSession.findOneAndUpdate(
+      { _id: conversationId, ...sessionTypeFilter },
+      update,
+      { new: true },
+    );
+    if (!updated) {
+      throw new InternalServerError('Failed to update conversation project link');
+    }
+
+    // Explicit nulls: an unlinked session has no projectId, and JSON would drop the key.
+    res.status(200).json({
+      conversationId: updated._id,
+      projectId: updated.projectId ?? null,
+      projectVisibility: updated.projectVisibility ?? null,
+    });
+  } catch (error: any) {
+    logger.error('Error linking conversation to project', {
+      requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  }
+};
+
+/**
+ * PATCH /api/v1/conversations/:conversationId/project-visibility
+ * PATCH /api/v1/agents/:agentKey/conversations/:conversationId/project-visibility
+ * @desc Override, per conversation, whether this chat is visible to other
+ * members of its project ('project') or stays visible only to its owner
+ * ('private', the default — see plan's "Chats in shared projects are
+ * private by default"). Requires the session already be linked to a project.
+ */
+export const setConversationProjectVisibility = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    const { conversationId, agentKey } = req.params;
+    const { visibility } = req.body as { visibility: 'private' | 'project' };
+
+    const sessionTypeFilter = agentKey
+      ? { ...ONLY_AGENT, agentKey }
+      : EXCLUDE_AGENT;
+
+    const conversation = await ChatSession.findOne({
+      _id: conversationId,
+      orgId,
+      userId,
+      initiator: userId,
+      isDeleted: false,
+      ...sessionTypeFilter,
+    });
+    if (!conversation) {
+      throw new NotFoundError('Conversation not found or unauthorized');
+    }
+    if (!conversation.projectId) {
+      throw new BadRequestError('Conversation is not linked to a project');
+    }
+
+    const updated = await ChatSession.findOneAndUpdate(
+      { _id: conversationId, ...sessionTypeFilter },
+      { $set: { projectVisibility: visibility } },
+      { new: true },
+    );
+    if (!updated) {
+      throw new InternalServerError('Failed to update conversation visibility');
+    }
+
+    res.status(200).json({
+      conversationId: updated._id,
+      projectVisibility: updated.projectVisibility,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * Configuration for regeneration function
  */
 interface RegenerationConfig {
@@ -3860,6 +4040,15 @@ async function regenerateAnswersInternal(
       assignToolsToPayload(aiPayload, req.body.tools);
       assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
     }
+    const regenProject = await loadProjectForSession(
+      existingConversation.orgId.toString(),
+      (existingConversation.userId as unknown as Types.ObjectId).toString(),
+      existingConversation.projectId,
+    );
+    applyProjectScope(aiPayload, regenProject);
+    if (existingConversation.projectId) {
+      void ProjectService.touchActivity(existingConversation.projectId.toString());
+    }
 
     const regenEndpoint = regenIsAgentMode
       ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream`
@@ -4015,7 +4204,7 @@ async function regenerateAnswersInternal(
 
             if (error.cause && error.cause.code === 'ECONNREFUSED') {
               throw new InternalServerError(
-                AI_SERVICE_UNAVAILABLE_MESSAGE,
+                SERVICE_UNAVAILABLE_MESSAGE,
                 error,
               );
             }
@@ -4025,7 +4214,7 @@ async function regenerateAnswersInternal(
           // Mark as failed if no complete data received
           if (existingConversation && messageId) {
             const errorMessage =
-              'No complete response received from AI service';
+              CHAT_ERROR_MESSAGES.interrupted;
             await replaceMessageWithError(
               existingConversation,
               messageId,
@@ -4061,7 +4250,7 @@ async function regenerateAnswersInternal(
           } else {
             await sendSSEErrorEvent(
               res,
-              'No complete response received from AI service',
+              CHAT_ERROR_MESSAGES.interrupted,
               undefined,
               undefined,
               protocol,
@@ -4081,7 +4270,7 @@ async function regenerateAnswersInternal(
         // Try to replace message with error if we have the message id
         if (existingConversation && messageId) {
           try {
-            const errorMessage = `Failed to save regenerated AI response: ${dbError.message}`;
+            const errorMessage = CHAT_ERROR_MESSAGES.saveFailed;
             await replaceMessageWithError(
               existingConversation,
               messageId,
@@ -4125,7 +4314,7 @@ async function regenerateAnswersInternal(
             );
             await sendSSEErrorEvent(
               res,
-              'Failed to save regenerated AI response',
+              CHAT_ERROR_MESSAGES.saveFailed,
               dbError.message,
               undefined,
               protocol,
@@ -4134,7 +4323,7 @@ async function regenerateAnswersInternal(
         } else {
           await sendSSEErrorEvent(
             res,
-            'Failed to save regenerated AI response',
+            CHAT_ERROR_MESSAGES.saveFailed,
             dbError.message,
             undefined,
             protocol,
@@ -4175,7 +4364,7 @@ async function regenerateAnswersInternal(
         });
         await sendSSEErrorEvent(
           res,
-          error.message || 'Stream error occurred',
+          userFacingChatError(error),
           error.message,
           undefined,
           protocol,
@@ -4216,7 +4405,7 @@ async function regenerateAnswersInternal(
       });
       await sendSSEErrorEvent(
         res,
-        error.message || 'Internal server error',
+        userFacingChatError(error),
         error.message,
         undefined,
         protocol,
@@ -5107,10 +5296,10 @@ export const search =
           (await aiCommand.execute()) as AIServiceResponse<AiSearchResponse>;
       } catch (error: any) {
         if (error.cause && error.cause.code === 'ECONNREFUSED') {
-          throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
+          throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE, error);
         }
         logger.error(' Failed error ', error);
-        throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
+        throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE, error);
       }
       
       if (!aiResponse || !aiResponse.data) {
@@ -6174,6 +6363,12 @@ export const deleteAgent =
         req.body.attachments,
       );
 
+      const projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
       const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
@@ -6187,6 +6382,12 @@ export const deleteAgent =
         // Set explicitly: the legacy agentConversations schema defaulted this,
         // the unified chatSessions schema can't (it also backs plain chats).
         conversationSource: 'agent_chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
       // Start transaction if replica set is available
@@ -6242,12 +6443,14 @@ export const deleteAgent =
               value: {
                 conversationId: newAgentConversationId,
                 title: savedConversation.title || undefined,
+                ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
               },
             })
           : `event: connected\ndata: ${JSON.stringify({
               message: 'SSE connection established',
               conversationId: newAgentConversationId,
               title: savedConversation.title || undefined,
+              ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
             })}\n\n`,
       );
       (res as any).flush?.();
@@ -6273,8 +6476,15 @@ export const deleteAgent =
         // so a header alone would never reach Python (see agui.ts docstring).
         ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
       };
-
       assignToolsToPayload(aiPayload, req.body.tools);
+      // Must run after assignToolsToPayload — a project's own tool scope
+      // always wins over whatever the request carried (see
+      // applyProjectScope's doc comment in project-context.ts).
+      applyProjectScope(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
+      }
+
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
       assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
 
@@ -6418,7 +6628,7 @@ export const deleteAgent =
                 const errorData = JSON.parse(dataLine) as Record<string, unknown>;
                 const errorMessage =
                   (typeof errorData.message === 'string' && errorData.message) ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   void markAgentConversationFailed(
@@ -6516,7 +6726,7 @@ export const deleteAgent =
                 const errorMessage =
                   (typeof errorData.message === 'string' && errorData.message) ||
                   (typeof errorData.error === 'string' && errorData.error) ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   const meta =
@@ -6546,7 +6756,7 @@ export const deleteAgent =
                 });
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
-                  const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
+                  const parseFailMsg = CHAT_ERROR_MESSAGES.failed;
                   void markAgentConversationFailed(
                     savedConversation,
                     parseFailMsg,
@@ -6655,7 +6865,7 @@ export const deleteAgent =
             if (savedConversation) {
               await markAgentConversationFailed(
                 savedConversation,
-                'No complete response received from AI service',
+                CHAT_ERROR_MESSAGES.interrupted,
                 session,
                 'no_response',
               );
@@ -6665,11 +6875,11 @@ export const deleteAgent =
             res.write(
               isAGUI(protocol)
                 ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                    message: 'No complete response received from AI service',
+                    message: CHAT_ERROR_MESSAGES.interrupted,
                     code: 'no_response',
                   })
                 : `event: error\ndata: ${JSON.stringify({
-                    error: 'No complete response received from AI service',
+                    error: CHAT_ERROR_MESSAGES.interrupted,
                   })}\n\n`,
             );
           }
@@ -6684,7 +6894,7 @@ export const deleteAgent =
           if (savedConversation) {
             await markAgentConversationFailed(
               savedConversation,
-              `Failed to save conversation: ${dbError.message}`,
+              CHAT_ERROR_MESSAGES.saveFailed,
               session,
               'save_error',
               dbError.stack,
@@ -6695,12 +6905,11 @@ export const deleteAgent =
           res.write(
             isAGUI(protocol)
               ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                  message: 'Failed to save conversation',
+                  message: CHAT_ERROR_MESSAGES.saveFailed,
                   code: 'save_error',
                 })
               : `event: error\ndata: ${JSON.stringify({
-                  error: 'Failed to save conversation',
-                  details: dbError.message,
+                  error: CHAT_ERROR_MESSAGES.saveFailed,
                 })}\n\n`,
           );
         }
@@ -6720,7 +6929,7 @@ export const deleteAgent =
           if (savedConversation) {
             await markAgentConversationFailed(
               savedConversation,
-              `Stream error: ${error.message}`,
+              userFacingChatError(error),
               session,
             );
           }
@@ -6735,12 +6944,11 @@ export const deleteAgent =
 
         const errorEvent = isAGUI(protocol)
           ? frameAGUI(AGUIEventType.RUN_ERROR, {
-              message: error.message || 'Stream error occurred',
+              message: userFacingChatError(error),
               code: 'stream_error',
             })
           : `event: error\ndata: ${JSON.stringify({
-              error: error.message || 'Stream error occurred',
-              details: error.message,
+              error: userFacingChatError(error),
             })}\n\n`;
         res.write(errorEvent);
         res.end();
@@ -6753,7 +6961,7 @@ export const deleteAgent =
         if (savedConversation) {
           await markAgentConversationFailed(
             savedConversation,
-            error.message || 'Internal server error',
+            userFacingChatError(error),
             session,
           );
         }
@@ -6770,12 +6978,11 @@ export const deleteAgent =
 
       const errorEvent = isAGUI(protocol)
         ? frameAGUI(AGUIEventType.RUN_ERROR, {
-            message: error.message || 'Internal server error',
+            message: userFacingChatError(error),
             code: 'internal_error',
           })
         : `event: error\ndata: ${JSON.stringify({
-            error: error.message || 'Internal server error',
-            details: error.message,
+            error: userFacingChatError(error),
           })}\n\n`;
       res.write(errorEvent);
       res.end();
@@ -6826,6 +7033,8 @@ export const createAgentConversation =
       throw new BadRequestError('Query is required');
     }
 
+    let projectLink: ResolvedProjectLink = {};
+
     // Helper function that contains the common conversation operations.
     async function createConversationUtil(
       session?: ClientSession | null,
@@ -6850,6 +7059,12 @@ export const createAgentConversation =
         // Set explicitly: the legacy agentConversations schema defaulted this,
         // the unified chatSessions schema can't (it also backs plain chats).
         conversationSource: 'agent_chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
       const conversation = new ChatSession(userConversationData);
@@ -6880,7 +7095,12 @@ export const createAgentConversation =
         currentTime: req.body.currentTime || null,
         attachments: req.body.attachments || [],
       };
+      assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+      applyProjectScope(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
@@ -6901,7 +7121,8 @@ export const createAgentConversation =
           (await aiServiceCommand.execute()) as AIServiceResponse<IAIResponse>;
         if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
           savedConversation.status = CONVERSATION_STATUS.FAILED as any;
-          savedConversation.failReason = `AI service error: ${aiResponseData?.msg || 'Unknown error'} (Status: ${aiResponseData?.statusCode})`;
+          const failReason = userFacingAIResponseError(aiResponseData);
+          savedConversation.failReason = failReason;
 
           const updatedWithError = session
             ? await savedConversation.save({ session })
@@ -6909,12 +7130,12 @@ export const createAgentConversation =
 
           if (!updatedWithError) {
             throw new InternalServerError(
-              'Failed to update conversation status',
+              CHAT_ERROR_MESSAGES.saveFailed,
             );
           }
 
           throw new InternalServerError(
-            'Failed to get AI response',
+            failReason,
             aiResponseData?.data,
           );
         }
@@ -6986,14 +7207,19 @@ export const createAgentConversation =
           'internal_error',
           error.stack,
         );
-        if (error.cause && error.cause.code === 'ECONNREFUSED') {
-          throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
-        }
-        throw error;
+        // Returned, not thrown: inside a transaction a throw would roll back
+        // the failed state just saved, so replica-set installs lose it.
+        return new CommittedFailure(clientChatError(error, failReason));
       }
     }
 
     try {
+      projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
       logger.debug('Creating new conversation', {
         requestId,
         userId,
@@ -7007,12 +7233,12 @@ export const createAgentConversation =
       if (rsAvailable) {
         // Start a session and run the operations inside a transaction.
         session = await mongoose.startSession();
-        responseData = await session.withTransaction(() =>
-          createConversationUtil(session),
+        responseData = throwIfFailed(
+          await session.withTransaction(() => createConversationUtil(session)),
         );
       } else {
         // Execute without session/transaction.
-        responseData = await createConversationUtil();
+        responseData = throwIfFailed(await createConversationUtil());
       }
 
       logger.debug('Conversation created successfully', {
@@ -7179,6 +7405,15 @@ export const createAgentConversation =
         };
         assignToolsToPayload(aiPayload, req.body.tools);
         assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+        const followUpProject = await loadProjectForSession(
+          conversation.orgId.toString(),
+          (conversation.userId as unknown as Types.ObjectId).toString(),
+          conversation.projectId,
+        );
+        applyProjectScope(aiPayload, followUpProject);
+        if (conversation.projectId) {
+          void ProjectService.touchActivity(conversation.projectId.toString());
+        }
 
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
@@ -7196,10 +7431,9 @@ export const createAgentConversation =
             // Update conversation status for AI service connection errors
             conversation.status = CONVERSATION_STATUS.FAILED;
             if (error.cause?.code === 'ECONNREFUSED') {
-              conversation.failReason = `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
+              conversation.failReason = CHAT_ERROR_MESSAGES.unavailable;
             } else {
-              conversation.failReason =
-                error.message || 'Unknown connection error';
+              conversation.failReason = userFacingChatError(error);
             }
 
             const saveErrorStatus = session
@@ -7213,19 +7447,17 @@ export const createAgentConversation =
               });
             }
             if (error.cause && error.cause.code === 'ECONNREFUSED') {
-              throw new InternalServerError(
-                AI_SERVICE_UNAVAILABLE_MESSAGE,
-                error,
-              );
+              throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
             }
             logger.error(' Failed error ', error);
-            throw new InternalServerError('Failed to get AI response', error);
+            throw new InternalServerError(userFacingChatError(error));
           }
 
           if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
             // Update conversation status for API errors
             conversation.status = CONVERSATION_STATUS.FAILED as any;
-            conversation.failReason = `AI service API error: ${aiResponseData?.msg || 'Unknown error'} (Status: ${aiResponseData?.statusCode})`;
+            const failReason = userFacingAIResponseError(aiResponseData);
+            conversation.failReason = failReason;
 
             const saveApiError = session
               ? await conversation.save({ session })
@@ -7239,7 +7471,7 @@ export const createAgentConversation =
             }
 
             throw new InternalServerError(
-              'Failed to get AI response',
+              failReason,
               aiResponseData?.data,
             );
           }
@@ -7307,31 +7539,28 @@ export const createAgentConversation =
           // and append the response to the correct messageId
 
           // Update conversation status for general errors
+          const failReason = failReasonFromCaughtError(conversation, error);
           await markAgentConversationFailed(
             conversation,
-            failReasonFromCaughtError(conversation, error),
+            failReason,
             session,
             'internal_error',
             error.stack,
           );
-          if (error.cause && error.cause.code === 'ECONNREFUSED') {
-            throw new InternalServerError(
-              AI_SERVICE_UNAVAILABLE_MESSAGE,
-              error,
-            );
-          }
-          throw error;
+          // Returned, not thrown: inside a transaction a throw would roll
+          // back the failed state just saved, so replica-set installs lose it.
+          return new CommittedFailure(clientChatError(error, failReason));
         }
       }
 
       let responseData;
       if (rsAvailable) {
         session = await mongoose.startSession();
-        responseData = await session.withTransaction(() =>
-          performAddMessage(session),
+        responseData = throwIfFailed(
+          await session.withTransaction(() => performAddMessage(session)),
         );
       } else {
-        responseData = await performAddMessage();
+        responseData = throwIfFailed(await performAddMessage());
       }
 
       logger.debug('Message added successfully', {
@@ -7561,6 +7790,15 @@ export const addMessageStreamToAgentConversation =
       assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
       assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
+      const followUpProject = await loadProjectForSession(
+        confirmedConversation.orgId.toString(),
+        (confirmedConversation.userId as unknown as Types.ObjectId).toString(),
+        confirmedConversation.projectId,
+      );
+      applyProjectScope(aiPayload, followUpProject);
+      if (confirmedConversation.projectId) {
+        void ProjectService.touchActivity(confirmedConversation.projectId.toString());
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
@@ -7696,7 +7934,8 @@ export const addMessageStreamToAgentConversation =
             } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
-                const errorMessage = errorData.message || 'Unknown error occurred';
+                const errorMessage =
+                  errorData.message || CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (existingConversation) {
                   void markAgentConversationFailed(
@@ -7793,7 +8032,7 @@ export const addMessageStreamToAgentConversation =
                 const errorMessage =
                   errorData.message ||
                   errorData.error ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (existingConversation) {
                   void markAgentConversationFailed(
@@ -7823,7 +8062,7 @@ export const addMessageStreamToAgentConversation =
                 if (existingConversation) {
                   void markAgentConversationFailed(
                     existingConversation,
-                    `Failed to parse error event: ${parseError.message}`,
+                    CHAT_ERROR_MESSAGES.failed,
                     session,
                     'parse_error',
                     parseError.stack,
@@ -7976,7 +8215,7 @@ export const addMessageStreamToAgentConversation =
               if (existingConversation) {
                 await markAgentConversationFailed(
                   existingConversation,
-                  error.message || 'Unknown error occurred',
+                  userFacingChatError(error),
                   session,
                   'internal_error',
                   error.stack,
@@ -7985,7 +8224,7 @@ export const addMessageStreamToAgentConversation =
 
               if (error.cause && error.cause.code === 'ECONNREFUSED') {
                 throw new InternalServerError(
-                  AI_SERVICE_UNAVAILABLE_MESSAGE,
+                  SERVICE_UNAVAILABLE_MESSAGE,
                   error,
                 );
               }
@@ -7996,7 +8235,7 @@ export const addMessageStreamToAgentConversation =
             if (existingConversation) {
               await markAgentConversationFailed(
                 existingConversation,
-                'No complete response received from AI service',
+                CHAT_ERROR_MESSAGES.interrupted,
                 session,
                 'no_response',
               );
@@ -8006,11 +8245,11 @@ export const addMessageStreamToAgentConversation =
             res.write(
               isAGUI(protocol)
                 ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                    message: 'No complete response received from AI service',
+                    message: CHAT_ERROR_MESSAGES.interrupted,
                     code: 'no_response',
                   })
                 : `event: error\ndata: ${JSON.stringify({
-                    error: 'No complete response received from AI service',
+                    error: CHAT_ERROR_MESSAGES.interrupted,
                   })}\n\n`,
             );
           }
@@ -8025,12 +8264,11 @@ export const addMessageStreamToAgentConversation =
           res.write(
             isAGUI(protocol)
               ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                  message: 'Failed to save AI response',
+                  message: CHAT_ERROR_MESSAGES.saveFailed,
                   code: 'save_error',
                 })
               : `event: error\ndata: ${JSON.stringify({
-                  error: 'Failed to save AI response',
-                  details: dbError.message,
+                  error: CHAT_ERROR_MESSAGES.saveFailed,
                 })}\n\n`,
           );
         }
@@ -8050,7 +8288,7 @@ export const addMessageStreamToAgentConversation =
             // Awaited so the catch below actually observes a rejection.
             await markAgentConversationFailed(
               existingConversation,
-              error.message,
+              userFacingChatError(error),
               session,
             );
           }
@@ -8065,12 +8303,11 @@ export const addMessageStreamToAgentConversation =
 
         const errorEvent = isAGUI(protocol)
           ? frameAGUI(AGUIEventType.RUN_ERROR, {
-              message: error.message || 'Stream error occurred',
+              message: userFacingChatError(error),
               code: 'stream_error',
             })
           : `event: error\ndata: ${JSON.stringify({
-              error: error.message || 'Stream error occurred',
-              details: error.message,
+              error: userFacingChatError(error),
             })}\n\n`;
         res.write(errorEvent);
         res.end();
@@ -8087,7 +8324,7 @@ export const addMessageStreamToAgentConversation =
         if (existingConversation) {
           await markAgentConversationFailed(
             existingConversation as IChatSessionDocument,
-            error.message || 'Internal server error',
+            userFacingChatError(error),
             session,
             'internal_error',
             error.stack,
@@ -8108,12 +8345,11 @@ export const addMessageStreamToAgentConversation =
 
       const errorEvent = isAGUI(protocol)
         ? frameAGUI(AGUIEventType.RUN_ERROR, {
-            message: error.message || 'Internal server error',
+            message: userFacingChatError(error),
             code: 'internal_error',
           })
         : `event: error\ndata: ${JSON.stringify({
-            error: error.message || 'Internal server error',
-            details: error.message,
+            error: userFacingChatError(error),
           })}\n\n`;
       res.write(errorEvent);
       res.end();
@@ -8260,6 +8496,10 @@ export const getAllAgentConversations = async (
         escapedSearch,
       );
     }
+    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
+      orgId,
+      userId,
+    );
     const filter = {
       ...buildAgentConversationFilter(
         req,
@@ -8268,6 +8508,7 @@ export const getAllAgentConversations = async (
         agentKey as string,
         conversationId as string,
         contentMatchIds,
+        accessibleProjectIds,
       ),
       // Sidebar / chat list: omit archived threads (archived view uses a dedicated route).
       isArchived: { $ne: true },
@@ -8388,6 +8629,10 @@ export const getAgentConversationById = async (
         escapedSearch,
       );
     }
+    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
+      orgId,
+      userId,
+    );
     const baseFilter = buildAgentConversationFilter(
       req,
       orgId,
@@ -8395,6 +8640,7 @@ export const getAgentConversationById = async (
       agentKey as string,
       conversationId as string,
       contentMatchIds,
+      accessibleProjectIds,
     );
 
     // Build message filter
@@ -8419,6 +8665,8 @@ export const getAgentConversationById = async (
         status: 1,
         failReason: 1,
         modelInfo: 1,
+        projectId: 1,
+        projectVisibility: 1,
       })
       .lean()
       .exec();

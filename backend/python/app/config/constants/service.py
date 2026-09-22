@@ -76,6 +76,11 @@ class OAuthScopes(str, Enum):
     SKILL_READ = "skill:read"
     SKILL_WRITE = "skill:write"
 
+    # MCP Servers
+    MCP_READ = "mcp:read"
+    MCP_WRITE = "mcp:write"
+    MCP_DELETE = "mcp:delete"
+
     # Knowledge Base
     KB_READ = "kb:read"
     KB_WRITE = "kb:write"

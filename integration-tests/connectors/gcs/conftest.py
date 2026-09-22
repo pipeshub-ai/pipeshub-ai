@@ -11,6 +11,7 @@ import pytest_asyncio
 from connector_lifecycle import GCS_BUCKET_NAME, constructor, destructor
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol
+from helper.source_credentials import source_unavailable
 
 from connectors.gcs.gcs_storage_helper import GCSStorageHelper
 
@@ -19,7 +20,10 @@ from connectors.gcs.gcs_storage_helper import GCSStorageHelper
 def gcs_storage():
     sa_json = os.getenv("GCS_SERVICE_ACCOUNT_JSON")
     if not sa_json:
-        pytest.skip("GCS_SERVICE_ACCOUNT_JSON not set.")
+        source_unavailable(
+            "The Google Cloud Storage bucket this suite syncs from is not configured.",
+            secrets=["GCS_SERVICE_ACCOUNT_JSON"],
+        )
     return GCSStorageHelper(service_account_json=sa_json)
 
 
