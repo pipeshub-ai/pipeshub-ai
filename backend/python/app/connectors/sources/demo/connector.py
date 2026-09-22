@@ -96,7 +96,11 @@ _TYPE_LABEL = {
     "COMMENT": "Review comment",
 }
 _MARKDOWN = "text/markdown"
-# How long a sync waits for the sign-in personas to appear in the graph.
+# How long a sync waits for the sign-in personas to appear in the graph. The
+# grace is what an instance without personas pays before it gives up on them;
+# the longer wait only applies once one persona has arrived, which means the
+# rest are on their way.
+_MEMBERS_GRACE_SECONDS = 15.0
 _MEMBERS_WAIT_SECONDS = 60.0
 _MEMBERS_POLL_SECONDS = 1.0
 
@@ -105,31 +109,39 @@ async def _wait_for_members(
     emails: list[str],
     lookup: Callable[[str], Awaitable[object | None]],
     logger: Logger,
+    grace: float = _MEMBERS_GRACE_SECONDS,
     timeout: float = _MEMBERS_WAIT_SECONDS,
     poll: float = _MEMBERS_POLL_SECONDS,
-) -> None:
-    """Wait until every address in *emails* has an account in the graph.
+) -> list[str]:
+    """Wait for *emails* to have accounts in the graph; report those that do not.
 
     Accounts are created through the outbox, a second or two behind the API
-    call, while enabling a connector reaches the sync straight away. Group
-    membership silently skips a member the graph does not have yet, so a sync
-    that starts first would leave the personas out of every group with no
-    retry. Raising instead fails the sync, which is retried.
+    call that asks for them, while enabling a connector reaches the sync
+    straight away. Group membership skips a member the graph has not caught up
+    with, so a sync that overtakes the first-run script would leave the
+    personas out of every group.
+
+    The personas are optional, though: a demo loaded from the connectors page,
+    or headless without `PIPESHUB_DEMO_PERSONAS`, never creates them and is
+    meant for the installer alone. So the wait gives up rather than failing the
+    sync, and gives up early while none of them have appeared.
     """
     missing = list(emails)
-    deadline = asyncio.get_running_loop().time() + timeout
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    arrived = False
     while missing:
-        missing = [email for email in missing if await lookup(email) is None]
+        still_missing = [email for email in missing if await lookup(email) is None]
+        arrived = arrived or len(still_missing) < len(missing)
+        missing = still_missing
         if not missing:
-            return
-        if asyncio.get_running_loop().time() >= deadline:
-            raise RuntimeError(
-                "Demo sync stopped: these accounts are not in the graph yet, so "
-                f"their group membership would be skipped: {', '.join(sorted(missing))}. "
-                "Sync the connector again once the accounts exist."
-            )
+            return []
+        waited = loop.time() - started
+        if waited >= timeout or (not arrived and waited >= grace):
+            return sorted(missing)
         logger.info("Demo connector waiting for %d account(s) to be created", len(missing))
         await asyncio.sleep(poll)
+    return []
 
 
 def _revision_of(body: str) -> str:
@@ -344,15 +356,20 @@ class DemoConnector(BaseConnector):
             app_users["installer"] = installer
         await self.data_entities_processor.on_new_app_users(list(app_users.values()))
 
-        # The personas who can sign in need real accounts before step 2, which
+        # The personas who can sign in want real accounts before step 2, which
         # skips a member the graph has not caught up with. Fixture people
-        # without `login` are authors only and never have one.
+        # without `login` are authors only and never have one; the installer
+        # was just read out of the graph, so they are already there.
         sign_in_emails = [p["email"] for p in fx["people"] if p.get("login")]
-        if installer is not None and installer.email:
-            sign_in_emails.append(installer.email)
-        await _wait_for_members(
+        absent = await _wait_for_members(
             sign_in_emails, self.data_entities_processor.get_user_by_email, self.logger
         )
+        if absent:
+            self.logger.info(
+                "Demo connector syncing without %s: no account on this instance. "
+                "Sync again if you add them, to put them in their groups.",
+                ", ".join(absent),
+            )
 
         # 2. Groups and their members — the only mechanism permissions use here.
         groups: dict[str, AppUserGroup] = {}

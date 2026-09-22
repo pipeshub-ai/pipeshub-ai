@@ -4,6 +4,10 @@ Accounts land in the graph a second or two after the API call that creates
 them, while enabling the connector reaches the sync straight away. Group
 membership silently skips a member the graph does not have yet, so the wait is
 what keeps a first-run demo from leaving Alice and Bob out of every group.
+
+The personas are optional, so the wait reports who is missing rather than
+failing the sync: a demo loaded from the connectors page never creates them,
+and that instance still has to end up with its records.
 """
 
 from __future__ import annotations
@@ -17,15 +21,22 @@ from app.connectors.sources.demo.connector import _wait_for_members
 
 LOGGER = logging.getLogger(__name__)
 
+ALICE = "alice@acme-demo.example"
+BOB = "bob@acme-demo.example"
+
 
 @pytest.mark.asyncio
-async def test_returns_once_every_account_exists() -> None:
-    present = {"alice@acme-demo.example", "bob@acme-demo.example"}
+async def test_returns_at_once_when_every_account_exists() -> None:
+    present = {ALICE, BOB}
 
     async def lookup(email: str) -> object | None:
         return object() if email in present else None
 
-    await _wait_for_members(sorted(present), lookup, LOGGER, timeout=1.0, poll=0.01)
+    missing = await _wait_for_members(
+        sorted(present), lookup, LOGGER, grace=1.0, timeout=2.0, poll=0.01
+    )
+
+    assert missing == []
 
 
 @pytest.mark.asyncio
@@ -36,22 +47,45 @@ async def test_waits_for_an_account_that_arrives_late() -> None:
         calls.append(email)
         return object() if calls.count(email) > 2 else None
 
-    await _wait_for_members(["bob@acme-demo.example"], lookup, LOGGER, timeout=2.0, poll=0.01)
+    missing = await _wait_for_members(
+        [BOB], lookup, LOGGER, grace=1.0, timeout=2.0, poll=0.01
+    )
 
-    assert calls.count("bob@acme-demo.example") == 3
+    assert missing == []
+    assert calls.count(BOB) == 3
 
 
 @pytest.mark.asyncio
-async def test_fails_the_sync_when_an_account_never_arrives() -> None:
+async def test_keeps_waiting_past_the_grace_once_one_persona_has_arrived() -> None:
+    """Alice being there means Bob is on his way, so he gets the longer wait."""
+    calls: list[str] = []
+
+    async def lookup(email: str) -> object | None:
+        calls.append(email)
+        if email == ALICE:
+            return object()
+        return object() if calls.count(BOB) > 4 else None
+
+    missing = await _wait_for_members(
+        [ALICE, BOB], lookup, LOGGER, grace=0.02, timeout=2.0, poll=0.01
+    )
+
+    assert missing == []
+    assert calls.count(BOB) == 5
+
+
+@pytest.mark.asyncio
+async def test_gives_up_on_personas_this_instance_never_creates() -> None:
+    """Demo data without personas: the sync goes on, for the installer alone."""
+
     async def lookup(_email: str) -> object | None:
         return None
 
-    with pytest.raises(RuntimeError) as failure:
-        await _wait_for_members(
-            ["alice@acme-demo.example"], lookup, LOGGER, timeout=0.05, poll=0.01
-        )
+    missing = await _wait_for_members(
+        [ALICE, BOB], lookup, LOGGER, grace=0.02, timeout=5.0, poll=0.01
+    )
 
-    assert "alice@acme-demo.example" in str(failure.value)
+    assert missing == [ALICE, BOB]
 
 
 @pytest.mark.asyncio
@@ -59,4 +93,5 @@ async def test_an_empty_list_does_not_wait() -> None:
     async def lookup(_email: str) -> object | None:  # pragma: no cover - never called
         raise AssertionError("no account should be looked up")
 
-    await asyncio.wait_for(_wait_for_members([], lookup, LOGGER), timeout=1.0)
+    waited = asyncio.wait_for(_wait_for_members([], lookup, LOGGER), timeout=1.0)
+    assert await waited == []
