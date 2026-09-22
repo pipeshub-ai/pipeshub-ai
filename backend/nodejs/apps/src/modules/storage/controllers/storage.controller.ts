@@ -356,6 +356,81 @@ export class StorageController {
       next(error);
     }
   }
+
+  async deleteDocumentsByPathPrefix(
+    req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const { pathPrefix } = req.body || req.query;
+      if (!pathPrefix || typeof pathPrefix !== 'string') {
+        res.status(HTTP_STATUS.OK).json({ success: true, count: 0 });
+        return;
+      }
+
+      const escapedPrefix = pathPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const documents = await DocumentModel.find({
+        documentPath: { $regex: `^${escapedPrefix}` },
+      });
+
+      const successfulDocIds: mongoose.Types.ObjectId[] = [];
+      const failedDocIds: mongoose.Types.ObjectId[] = [];
+
+      try {
+        const adapter = await this.initializeStorageAdapter(req);
+        for (const doc of documents) {
+          try {
+            await adapter.deleteObject(doc);
+            successfulDocIds.push(doc._id as mongoose.Types.ObjectId);
+          } catch (err) {
+            failedDocIds.push(doc._id as mongoose.Types.ObjectId);
+            this.logger.warn('Failed to delete object from storage adapter', {
+              documentId: String(doc._id),
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      } catch (adapterErr) {
+        this.logger.warn('Could not initialize storage adapter during path prefix deletion', {
+          error: adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
+        });
+        for (const doc of documents) {
+          failedDocIds.push(doc._id as mongoose.Types.ObjectId);
+        }
+      }
+
+      let deletedCount = 0;
+      if (successfulDocIds.length > 0) {
+        const result = await DocumentModel.deleteMany({
+          _id: { $in: successfulDocIds },
+        });
+        deletedCount = result.deletedCount;
+      }
+
+      if (failedDocIds.length > 0) {
+        this.logger.error('Path prefix storage deletion had failures', {
+          failedCount: failedDocIds.length,
+          successfulCount: deletedCount,
+        });
+        res.status(HTTP_STATUS.INTERNAL_SERVER).json({
+          success: false,
+          count: deletedCount,
+          failedCount: failedDocIds.length,
+          error: 'Some blob deletions failed; corresponding MongoDB records were preserved',
+        });
+        return;
+      }
+
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        count: deletedCount,
+        failedCount: 0,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
   /**
    * Removes a new document whose direct upload never arrived. Refused unless a
    * signed URL was issued for it and storage confirms its file is absent, so a

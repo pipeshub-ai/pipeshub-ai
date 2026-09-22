@@ -60,7 +60,6 @@ class TestDeletingOneRecord:
 
         await vector_store.assert_embeddings_gone(virtual_id, timeout=120)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=BLOB_ISSUE)
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_files_are_removed_from_blob_storage(
         self, indexed_record, kb_client, blob_store
@@ -73,7 +72,6 @@ class TestDeletingOneRecord:
 
         await blob_store.assert_blobs_gone(prefix, vendor, timeout=120)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=MONGO_ISSUE)
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_storage_documents_are_removed_from_mongodb(
         self, indexed_record, kb_client, mongo_store

@@ -578,6 +578,23 @@ class RecordEventHandler(BaseEventService):
                 self.logger.info(
                     f"✅ Bulk deletion complete: {result}"
                 )
+                org_id = payload.get("orgId", "")
+                if org_id and virtual_record_ids:
+                    from app.utils.storage_cleanup import cleanup_storage_and_mongo_for_prefix
+                    for vrid in virtual_record_ids:
+                        if vrid:
+                            path_prefix = f"{org_id}/PipesHub/records/{vrid}"
+                            try:
+                                await cleanup_storage_and_mongo_for_prefix(
+                                    path_prefix,
+                                    org_id=org_id,
+                                    config_service=self.config_service,
+                                )
+                            except Exception as cleanup_err:
+                                self.logger.warning(
+                                    f"Storage and Mongo cleanup failed for {path_prefix}: {cleanup_err}"
+                                )
+
                 # `bulk_delete_embeddings` reports success=False when it refused
                 # to proceed — no managed collection resolved, so nothing was
                 # deleted and the mapping rows were deliberately kept. Yielding
@@ -632,8 +649,6 @@ class RecordEventHandler(BaseEventService):
                     details={"event_type": event_type},
                 )
 
-        
-
             record = await self.event_processor.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
@@ -644,9 +659,26 @@ class RecordEventHandler(BaseEventService):
                 f"Extension: {extension}, Mime Type: {mime_type}"
             )
 
+            org_id = payload.get("orgId") or payload.get("org_id") or (record.get("orgId") if record else None) or (record.get("org_id") if record else None)
+            if not virtual_record_id and record:
+                virtual_record_id = record.get("virtualRecordId")
+
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
-                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([ virtual_record_id])
+                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([virtual_record_id])
+                if virtual_record_id and org_id:
+                    path_prefix = f"{org_id}/PipesHub/records/{virtual_record_id}"
+                    try:
+                        from app.utils.storage_cleanup import cleanup_storage_and_mongo_for_prefix
+                        await cleanup_storage_and_mongo_for_prefix(
+                            path_prefix,
+                            org_id=org_id,
+                            config_service=self.config_service,
+                        )
+                    except Exception as cleanup_err:
+                        self.logger.warning(
+                            f"Storage and Mongo cleanup failed for {path_prefix}: {cleanup_err}"
+                        )
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
