@@ -638,7 +638,33 @@ export class UserController {
       // to take back (the group membership, and the event the graph side
       // acts on). If a later write fails, undo what was saved so the address
       // is free to try again, and nothing has been published.
+      // Whether the everyone-group write was reached. A write that threw may
+      // still have applied, so the undo takes the membership back either way;
+      // before it, there is nothing to take back.
+      let groupWriteAttempted = false;
       const undoSavedAccount = async (reason: string): Promise<void> => {
+        // Membership goes first, so nothing is left pointing at a user that is
+        // about to go, and in its own try: when the group write is what failed,
+        // this is likely to fail too, and the account still has to go.
+        try {
+          if (groupWriteAttempted) {
+            await UserGroups.updateOne(
+              { orgId: newUser.orgId, type: 'everyone' },
+              { $pull: { users: newUser._id } },
+            );
+          }
+        } catch (membershipError) {
+          this.logger.warn(
+            `Account was saved but ${reason}, and taking it out of the everyone group failed too`,
+            {
+              userId: String(newUser._id),
+              error:
+                membershipError instanceof Error
+                  ? membershipError.message
+                  : String(membershipError),
+            },
+          );
+        }
         try {
           if (hashedPassword !== undefined) {
             await UserCredentials.deleteOne({ userId: newUser._id });
@@ -675,6 +701,7 @@ export class UserController {
       }
 
       try {
+        groupWriteAttempted = true;
         await UserGroups.updateOne(
           { orgId: newUser.orgId, type: 'everyone' }, // Find the everyone group in the same org
           { $addToSet: { users: newUser._id } }, // Add user to the group if not already present
@@ -696,8 +723,19 @@ export class UserController {
           syncAction: SyncAction.Immediate,
         } as UserAddedEvent,
       };
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      try {
+        await this.eventService.publishEvent(event);
+      } catch (publishError) {
+        // The event is what the graph side acts on, and publishing writes an
+        // outbox row that can fail by itself. Without this undo the address
+        // stays taken by an account nothing downstream knows about, a demo
+        // account with a password could already sign in, and a retry would hit
+        // the unique email index.
+        await undoSavedAccount('its creation event was not published');
+        throw publishError;
+      } finally {
+        await this.eventService.stop();
+      }
       if (hashedPassword !== undefined) {
         this.logger.info('Demo account created with a starting password', {
           orgId: newUser.orgId.toString(),

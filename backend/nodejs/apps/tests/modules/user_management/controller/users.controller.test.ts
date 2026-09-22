@@ -3458,6 +3458,55 @@ describe('UserController', () => {
       expect(res.status.called).to.be.false;
     });
 
+    it('undoes the whole account when the creation event cannot be published', async () => {
+      // Publishing writes an outbox row and can fail on its own. Left alone,
+      // the address would stay taken by an account the graph side has never
+      // heard of, a password account could sign in, and a retry would hit the
+      // unique email index.
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
+      const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+      mockEventService.publishEvent.rejects(new Error('outbox insert failed'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('outbox insert failed');
+      expect(credentialDelete.calledOnce).to.be.true;
+      expect(userDelete.calledOnce).to.be.true;
+      const pull = groupUpdate.getCalls().find((call) => '$pull' in call.args[1]);
+      expect(pull, 'the user is taken back out of the everyone group').to.exist;
+      expect(String(pull!.args[1].$pull.users)).to.equal(String(userDelete.firstCall.args[0]._id));
+      expect(mockEventService.stop.calledOnce).to.be.true;
+      expect(res.status.called).to.be.false;
+    });
+
+    it('still removes the account when taking it out of the everyone group fails', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
+      const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(credentialDelete.calledOnce).to.be.true;
+      expect(userDelete.calledOnce).to.be.true;
+      expect(mockLogger.warn.called).to.be.true;
+    });
+
     it('publishes the creation event only after the user and credential are saved', async () => {
       req.body = {
         email: 'alice@acme-demo.example',
