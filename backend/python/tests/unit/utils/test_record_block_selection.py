@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.utils.record_block_selection import (
+    BLOCK_RENDER_OVERHEAD,
+    GAP_MARKER_CHARS,
     build_selection_query,
     describe_gaps,
     estimate_record_chars,
@@ -44,6 +46,12 @@ def _retrieval(*hit_indices: int, virtual_record_id: str = "vr-1") -> MagicMock:
     return service
 
 
+def _room(blocks: int, chars: int = 500) -> int:
+    """Room for `blocks` rendered blocks of `chars` each, in one region that
+    does not start the record -- so it also carries one gap marker."""
+    return blocks * (chars + BLOCK_RENDER_OVERHEAD) + GAP_MARKER_CHARS
+
+
 async def _select(record: dict, service, budget: RenderBudget, **kwargs) -> set[int] | None:
     return await select_relevant_blocks(
         record=record,
@@ -63,7 +71,7 @@ class TestSelection:
         the sentence defining the term is usually the one next to it. Sized to
         exactly three blocks so the neighbourhood is what is being tested, not
         the fill that uses up whatever room is left."""
-        budget = RenderBudget(max_chars=1_500)   # 3 blocks of 500
+        budget = RenderBudget(max_chars=_room(3))
 
         selected = await _select(_record(), _retrieval(40), budget)
 
@@ -72,7 +80,7 @@ class TestSelection:
     async def test_selection_stops_at_the_allowance(self) -> None:
         """Four blocks of room: the best-ranked neighbourhood, then one more
         block of context around it — and nothing from the other two hits."""
-        budget = RenderBudget(max_chars=2_000)   # 4 blocks of 500
+        budget = RenderBudget(max_chars=_room(4))
 
         selected = await _select(_record(), _retrieval(10, 50, 90), budget)
 

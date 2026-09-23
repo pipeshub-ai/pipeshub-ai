@@ -588,3 +588,180 @@ async def test_a_clipped_block_is_not_registered_as_shown() -> None:
     manifest = manifest_registry(context.tool_state).lookup(context.output.data)
 
     assert manifest is not None and manifest.blocks == frozenset()
+
+
+def _text_record(record_id: str, blocks: int, chars: int = 400) -> dict:
+    return {
+        "id": record_id,
+        "virtual_record_id": f"vr-{record_id}",
+        "frontend_url": "",
+        "context_metadata": f"Record ID: {record_id}",
+        "block_containers": {
+            "blocks": [
+                {"index": i, "type": "text", "parent_index": None,
+                 "parent_block_index": None, "data": f"{record_id} block {i} " + "x" * chars}
+                for i in range(blocks)
+            ],
+            "block_groups": [],
+        },
+    }
+
+
+async def _fetch_records(
+    records: list[dict],
+    *,
+    start_block: int = 0,
+    retrieval: MagicMock | None = None,
+    tool_state: dict | None = None,
+) -> tuple[str, SimpleNamespace]:
+    context = _make_context(
+        query="what does it say",
+        retrieval_service=retrieval,
+        include_retrieval_context=True,
+        tool_state=tool_state if tool_state is not None else {},
+    )
+    structured = MagicMock()
+    structured.coroutine = AsyncMock(return_value={
+        "ok": True, "records": records, "not_available_ids": [],
+    })
+    with patch(
+        "app.utils.fetch_full_record.create_fetch_full_record_tool",
+        return_value=structured,
+    ):
+        output, _ = await execute_fetch_record(
+            context=context, virtual_records={}, citation_ref_mapper=None,
+            record_ids=[r["id"] for r in records], start_block=start_block,
+        )
+    return output.data, context
+
+
+def _rendered(context: SimpleNamespace, record_id: str) -> int:
+    return context.tool_state["fetch_render_outcomes"][record_id][-1]["blocksRendered"]
+
+
+class TestSeveralRecordsInOneCall:
+    """One call naming several records splits the room between them. Handing
+    it all to the first left the rest as empty shells the model read as
+    "not in the document"."""
+
+    @pytest.mark.asyncio
+    async def test_no_record_is_starved(self) -> None:
+        records = [_text_record(f"r{i}", blocks=300) for i in range(3)]
+
+        text, context = await _fetch_records(records)
+
+        for record in records:
+            assert _rendered(context, record["id"]) > 0, record["id"]
+            assert f"{record['id']} block 0 " in text
+
+    @pytest.mark.asyncio
+    async def test_the_split_is_even_between_equal_records(self) -> None:
+        records = [_text_record(f"r{i}", blocks=300) for i in range(3)]
+
+        _text, context = await _fetch_records(records)
+
+        counts = [_rendered(context, r["id"]) for r in records]
+        assert max(counts) - min(counts) <= 1, counts
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_fits_is_read_in_full_and_its_room_passes_on(self) -> None:
+        small = _text_record("small", blocks=5)
+        large = [_text_record(f"big{i}", blocks=300) for i in range(2)]
+
+        text, context = await _fetch_records([small, *large])
+
+        assert _rendered(context, "small") == 5
+        assert "small" in context.full_records_fetched
+        spare = [_rendered(context, r["id"]) for r in large]
+        assert min(spare) > 60, "the room the small record left went to the others"
+        assert len(text) <= DEFAULT_MAX_RESULT_CHARS
+
+    @pytest.mark.asyncio
+    async def test_order_does_not_decide_who_gets_read(self) -> None:
+        records = [_text_record("small", blocks=5), *(_text_record(f"big{i}", 300) for i in range(2))]
+
+        _t1, forward = await _fetch_records(records)
+        _t2, backward = await _fetch_records(list(reversed(records)))
+
+        for record in records:
+            assert abs(_rendered(forward, record["id"]) - _rendered(backward, record["id"])) <= 1
+
+    @pytest.mark.asyncio
+    async def test_the_whole_result_stays_under_the_tool_cap(self) -> None:
+        records = [_text_record(f"r{i}", blocks=300) for i in range(5)]
+
+        text, _context = await _fetch_records(records)
+
+        assert len(text) <= DEFAULT_MAX_RESULT_CHARS
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_no_room_is_named_as_unread(self) -> None:
+        records = [_text_record(f"r{i}", blocks=300) for i in range(60)]
+
+        text, context = await _fetch_records(records)
+
+        unread = [r["id"] for r in records if f"Record {r['id']} was not read" in text]
+        assert unread, "sixty large records cannot all fit one result"
+        for record_id in unread:
+            assert record_id not in context.full_records_fetched
+            assert _rendered(context, record_id) == 0
+            ledger = context.tool_state["fetch_render_outcomes"][record_id][-1]
+            assert ledger["complete"] is False
+        read = [r["id"] for r in records if r["id"] not in unread]
+        assert all(_rendered(context, rid) > 0 for rid in read)
+
+    @pytest.mark.asyncio
+    async def test_a_starved_record_shows_no_blocks_to_elision(self) -> None:
+        """A record not read in this call must not let this result claim its
+        blocks, or search copies of them would be dropped."""
+        tool_state: dict = {}
+        records = [_text_record(f"r{i}", blocks=300) for i in range(60)]
+
+        text, _context = await _fetch_records(records, tool_state=tool_state)
+
+        manifest = manifest_registry(tool_state).lookup(text)
+        unread = {f"vr-{r['id']}" for r in records if f"Record {r['id']} was not read" in text}
+
+        assert manifest is not None
+        assert manifest.source is ManifestSource.FETCH
+        assert unread
+        assert not {key.virtual_record_id for key in manifest.blocks} & unread
+
+
+class TestContinuingARecord:
+    """`start_block` is a continuation pointer the model was handed. Ranking
+    the whole record again returned the same leading blocks, so the tail of
+    a large record could not be reached at all."""
+
+    @pytest.mark.asyncio
+    async def test_a_continuation_reads_in_order_from_the_offset(self) -> None:
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value={"searchResults": [
+            {"metadata": {"virtualRecordId": "vr-long", "blockIndex": 10}},
+        ]})
+        record = _text_record("long", blocks=536)
+
+        text, context = await _fetch_records([record], start_block=250, retrieval=retrieval)
+
+        retrieval.search_with_filters.assert_not_awaited()
+        assert _rendered(context, "long") > 0
+        assert "long block 250 " in text
+        assert "long block 249 " not in text
+
+    @pytest.mark.asyncio
+    async def test_a_first_read_still_ranks(self) -> None:
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value={"searchResults": [
+            {"metadata": {"virtualRecordId": "vr-long", "blockIndex": 400}},
+        ]})
+
+        text, _context = await _fetch_records([_text_record("long", 536)], retrieval=retrieval)
+
+        retrieval.search_with_filters.assert_awaited_once()
+        assert "long block 400 " in text
+
+    @pytest.mark.asyncio
+    async def test_an_offset_past_the_end_names_the_last_block(self) -> None:
+        text, _context = await _fetch_records([_text_record("short", 20)], start_block=50)
+
+        assert "last renderable block is 19" in text

@@ -5,12 +5,15 @@ Pure accounting, so these are exhaustive and need nothing but the object.
 
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
 )
 from app.utils.render_budget import (
+    fair_shares,
     DEFAULT_CONTEXT_LENGTH,
     FETCH_RESULT_RESERVE,
     MAX_CHARS_ENV_VAR,
@@ -247,3 +250,73 @@ class TestSizing:
     ) -> None:
         monkeypatch.setenv(MAX_CHARS_ENV_VAR, "999999999")
         assert resolve_render_budget(128_000).max_chars == MAX_RENDER_CHARS
+
+
+class TestFairShares:
+    """How one call's room is split between the records it names."""
+
+    def test_records_that_fit_get_what_they_need(self) -> None:
+        assert fair_shares([100, 200], 1_000) == [100, 200]
+
+    def test_equal_records_split_evenly(self) -> None:
+        assert fair_shares([900, 900, 900], 900) == [300, 300, 300]
+
+    def test_what_a_small_record_leaves_goes_to_the_large_ones(self) -> None:
+        assert fair_shares([5_000, 100, 5_000], 1_100) == [500, 100, 500]
+
+    def test_shares_follow_the_input_order(self) -> None:
+        assert fair_shares([100, 5_000], 1_000) == [100, 900]
+        assert fair_shares([5_000, 100], 1_000) == [900, 100]
+
+    def test_no_room_means_no_shares(self) -> None:
+        assert fair_shares([10, 20], 0) == [0, 0]
+        assert fair_shares([], 1_000) == []
+
+    def test_never_over_allocates_and_never_starves(self) -> None:
+        rng = random.Random(7)
+        for _ in range(500):
+            sizes = [rng.randint(0, 20_000) for _ in range(rng.randint(1, 12))]
+            total = rng.randint(0, 60_000)
+
+            shares = fair_shares(sizes, total)
+
+            assert sum(shares) <= total
+            assert all(0 <= share <= max(0, size) for share, size in zip(shares, sizes, strict=True))
+            equal = total // len(sizes)
+            assert all(share >= min(size, equal) for share, size in zip(shares, sizes, strict=True))
+
+
+class TestPerRecordAllowance:
+    def test_an_allotted_record_cannot_spend_past_its_share(self) -> None:
+        budget = RenderBudget(max_chars=10_000)
+        budget.allot("a", 1_000)
+        budget.begin_record("a")
+
+        assert budget.chars_remaining == 1_000
+        assert budget.take("x" * 800) is not None
+        assert budget.take("x" * 800) is None
+        assert budget.call_chars_remaining == 9_200
+
+    def test_framing_counts_against_the_share(self) -> None:
+        budget = RenderBudget(max_chars=10_000)
+        budget.allot("a", 1_000)
+        budget.begin_record("a")
+        budget.charge_framing("h" * 300)
+
+        assert budget.chars_remaining == 700
+
+    def test_each_record_can_clip_a_prefix_of_its_first_block(self) -> None:
+        """A later record whose share is smaller than its first block gets a
+        prefix, not an empty shell."""
+        budget = RenderBudget(max_chars=10_000)
+        budget.begin_record("a")
+        budget.take("a" * 500)
+        budget.allot("b", 1_000)
+        budget.begin_record("b")
+
+        emitted = budget.take("b" * 5_000)
+
+        assert emitted is not None
+        assert emitted.startswith("b" * 100)
+        assert budget.outcome("b").clipped
+        assert not budget.outcome("a").clipped

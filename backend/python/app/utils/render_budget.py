@@ -18,6 +18,10 @@ answers three questions the fetch path needs: how much room is left overall
 (the cap across records), how much this record may still use, and where each
 record stopped so the model can continue it. `ImageAdmission` composes
 `ImageBudget` the same way.
+
+A call that names several records splits the room with `fair_shares` instead
+of letting the first record take it all: a record left with nothing renders
+as an empty shell the model reads as "not in the document".
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
 from app.utils.env_utils import env_int
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +104,10 @@ class RecordRenderOutcome:
 class _RecordState:
     blocks_rendered: int = 0
     chars_rendered: int = 0
+    # Everything charged while this record was current, framing included.
+    spent: int = 0
+    # This record's share of the call; `None` means only the call's cap applies.
+    limit: int | None = None
     stopped_at_block: int | None = None
     table_truncation: TableTruncation | None = None
     shown: set[int] = field(default_factory=set)
@@ -134,6 +142,11 @@ class RenderBudget:
         self._records.setdefault(record_id, _RecordState())
         self._current = record_id
 
+    def allot(self, record_id: str, limit: int) -> None:
+        """Cap what `record_id` may spend, framing included. Set before its
+        render; `begin_record` keeps it."""
+        self._records.setdefault(record_id, _RecordState()).limit = max(0, limit)
+
     def outcome(self, record_id: str) -> RecordRenderOutcome:
         state = self._records.get(record_id) or _RecordState()
         return RecordRenderOutcome(
@@ -149,8 +162,17 @@ class RenderBudget:
     # -- spending -----------------------------------------------------------
 
     @property
-    def chars_remaining(self) -> int:
+    def call_chars_remaining(self) -> int:
+        """Room left in the whole call, whatever the current record's share."""
         return max(0, self.max_chars - self.chars_used)
+
+    @property
+    def chars_remaining(self) -> int:
+        remaining = self.call_chars_remaining
+        state = self._records.get(self._current) if self._current is not None else None
+        if state is not None and state.limit is not None:
+            remaining = min(remaining, max(0, state.limit - state.spent))
+        return remaining
 
     @property
     def exhausted(self) -> bool:
@@ -168,12 +190,16 @@ class RenderBudget:
         pieces (a table's rows) charge as they go."""
         self.chars_used += len(text)
         if self._current is not None:
-            self._records[self._current].chars_rendered += len(text)
+            state = self._records[self._current]
+            state.chars_rendered += len(text)
+            state.spent += len(text)
 
     def charge_framing(self, text: str) -> None:
         """Record characters spent on framing around the blocks."""
         self.chars_used += len(text)
         self.framing_chars += len(text)
+        if self._current is not None:
+            self._records[self._current].spent += len(text)
 
     def take(self, text: str) -> str | None:
         """The text to emit, or None when there is no room left.
@@ -188,7 +214,7 @@ class RenderBudget:
         if self.can_afford(text):
             self.charge(text)
             return text
-        if self.chars_used == self.framing_chars:
+        if self._has_no_content_yet():
             # No content rendered yet: emit what fits.
             room = max(0, self.chars_remaining - len(TRUNCATION_MARKER))
             clipped = text[:room] + TRUNCATION_MARKER
@@ -197,6 +223,13 @@ class RenderBudget:
                 self._records[self._current].clipped = True
             return clipped
         return None
+
+    def _has_no_content_yet(self) -> bool:
+        # Per record: each record of a call gets its own prefix rather than
+        # only the first one.
+        if self._current is None:
+            return self.chars_used == self.framing_chars
+        return self._records[self._current].chars_rendered == 0
 
     def note_shown(self, block_indices: Iterable[int]) -> None:
         """Record blocks the model can now read in full, for the current record.
@@ -236,6 +269,31 @@ class RenderBudget:
             state.table_truncation = TableTruncation(group_index, shown, total)
 
 
+def fair_shares(sizes: Sequence[int], total: int) -> list[int]:
+    """Split `total` across records of the given sizes, max-min fair.
+
+    A record that needs less than an equal split gets exactly what it needs,
+    and what it leaves over is divided among the larger ones. Shares follow
+    the input order and never sum past `total`.
+    """
+    shares = [0] * len(sizes)
+    remaining = max(0, total)
+    pending = sorted(range(len(sizes)), key=lambda i: max(0, sizes[i]))
+    while pending:
+        equal = remaining // len(pending)
+        index = pending[0]
+        need = max(0, sizes[index])
+        if need <= equal:
+            shares[index] = need
+            remaining -= need
+            pending.pop(0)
+            continue
+        for index in pending:
+            shares[index] = equal
+        break
+    return shares
+
+
 def resolve_render_budget(
     context_length: int | None,
     max_blocks: int | None = None,
@@ -273,5 +331,6 @@ __all__ = [
     "RecordRenderOutcome",
     "RenderBudget",
     "TableTruncation",
+    "fair_shares",
     "resolve_render_budget",
 ]

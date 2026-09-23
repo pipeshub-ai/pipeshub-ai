@@ -48,6 +48,12 @@ DEFAULT_HIT_LIMIT = 60
 # is how a selection overruns its budget.
 _UNKNOWN_BLOCK_CHARS = 400
 
+# What the renderer wraps around each block ("[ref12] …\n\n") and around each
+# record (the `<record>` header before `context_metadata`). Counted so a plan
+# made from estimates does not overrun what the render then charges.
+BLOCK_RENDER_OVERHEAD = 12
+_RECORD_FRAME_OVERHEAD = 64
+
 
 def estimate_block_chars(block: dict[str, Any]) -> int:
     """Roughly how many characters this block will render to.
@@ -68,6 +74,10 @@ def estimate_block_chars(block: dict[str, Any]) -> int:
     return _UNKNOWN_BLOCK_CHARS
 
 
+def _render_cost(block: dict[str, Any]) -> int:
+    return estimate_block_chars(block) + BLOCK_RENDER_OVERHEAD
+
+
 def estimate_record_chars(record: dict[str, Any]) -> int:
     """Rough rendered size of a whole record, used to decide whether selection
     is needed at all. Cheap: no rendering, no I/O."""
@@ -77,6 +87,22 @@ def estimate_record_chars(record: dict[str, Any]) -> int:
         estimate_block_chars(b)
         for b in blocks
         if isinstance(b, dict) and b.get("parent_block_index") is None
+    )
+
+
+def estimate_render_chars(record: dict[str, Any], start_block: int = 0) -> int:
+    """Rough size of the fetch result this record would produce when read from
+    `start_block`, framing included. What a multi-record fetch plans with."""
+    containers = record.get("block_containers") or {}
+    blocks = containers.get("blocks", []) if isinstance(containers, dict) else []
+    metadata = record.get("context_metadata")
+    frame = _RECORD_FRAME_OVERHEAD + (len(metadata) if isinstance(metadata, str) else 0)
+    return frame + sum(
+        estimate_block_chars(b) + BLOCK_RENDER_OVERHEAD
+        for b in blocks
+        if isinstance(b, dict)
+        and b.get("parent_block_index") is None
+        and b.get("index", 0) >= start_block
     )
 
 
@@ -193,13 +219,19 @@ async def select_relevant_blocks(
     }
 
     # Admit whole neighbourhoods, best first, until the next one would not fit.
+    # A region not touching what is already selected also costs the gap marker
+    # the render puts in front of it.
     selected: set[int] = set()
     spent = 0
     room = budget.chars_remaining
     for group in _widen(hits, available, neighbour_span):
         fresh = [i for i in group if i not in selected]
-        cost = sum(estimate_block_chars(by_index.get(i, {})) for i in fresh)
-        if fresh and spent + cost > room:
+        if not fresh:
+            continue
+        cost = sum(_render_cost(by_index.get(i, {})) for i in fresh)
+        if not any((i - 1) in selected or (i + 1) in selected for i in fresh):
+            cost += GAP_MARKER_CHARS
+        if spent + cost > room:
             break
         selected.update(fresh)
         spent += cost
@@ -246,7 +278,7 @@ def _grow_selection(
             break
         progressed = False
         for index in frontier:
-            cost = estimate_block_chars(by_index.get(index, {}))
+            cost = _render_cost(by_index.get(index, {}))
             if spent + cost > room:
                 continue
             selected.add(index)
@@ -292,12 +324,20 @@ def _gap_text(start: int, end: int) -> str:
     )
 
 
+# A gap marker's length barely varies with the range it names; this is the
+# longest it gets for records under 100,000 blocks.
+GAP_MARKER_CHARS = len(_gap_text(10_000, 10_999))
+
+
 __all__ = [
+    "BLOCK_RENDER_OVERHEAD",
     "DEFAULT_HIT_LIMIT",
+    "GAP_MARKER_CHARS",
     "NEIGHBOUR_SPAN",
     "build_selection_query",
     "describe_gaps",
     "estimate_block_chars",
     "estimate_record_chars",
+    "estimate_render_chars",
     "select_relevant_blocks",
 ]

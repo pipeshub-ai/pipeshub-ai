@@ -4079,6 +4079,15 @@ def record_to_message_content(
                     f"record_ids=[\"{record_label}\"] and start_block=0.]\n"
                 ),
             })
+        elif _truncated_at is not None and _renderable_rendered == 0:
+            content.append({
+                "type": "text",
+                "text": (
+                    f"\n[Record {record_label}: no blocks fit in this result. Call "
+                    f"knowledgegraph__fetch_record with record_ids=[\"{record_label}\"] "
+                    f"and start_block={_truncated_at} to read it on its own.]\n"
+                ),
+            })
         elif _truncated_at is not None:
             total_blocks = len([b for b in blocks if b.get("parent_block_index") is None])
             end_block = _truncated_at - 1

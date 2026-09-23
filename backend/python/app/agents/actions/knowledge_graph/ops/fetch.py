@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import ToolOutput
     from app.agents.agent_loop.context import AgentContext
+    from app.utils.chat_helpers import RecordIdShortener
     from app.utils.render_budget import RenderBudget
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,27 @@ def _unavailable_note(
     return "\n\nNote: " + "; ".join(lines)
 
 
+# Below this, a record's share of a multi-record fetch holds a header and a
+# sliver of text -- too little to read, enough to pass for "read". Such a
+# record is named as unread instead.
+_MIN_RECORD_SHARE_CHARS = 2_000
+
+
+def _not_read_note(
+    record: dict[str, Any], record_id_shortener: RecordIdShortener | None = None,
+) -> str:
+    record_id = str(record.get("id") or record.get("virtual_record_id") or "")
+    label = (
+        record_id_shortener.shorten_if_known(record_id)
+        if record_id_shortener is not None else record_id
+    )
+    return (
+        f"\n[Record {label} was not read: this call named more records than one "
+        f"result can hold. Call knowledgegraph__fetch_record with "
+        f"record_ids=[\"{label}\"] to read it.]\n"
+    )
+
+
 def _register_shown_blocks(
     tool_state: dict[str, Any], text: str, records: list[dict[str, Any]], budget: RenderBudget,
 ) -> None:
@@ -139,10 +161,14 @@ async def execute_fetch_record(
     from app.utils.image_admission import ImageOrigin, admission_from_state
     from app.utils.record_block_selection import (
         build_selection_query,
-        estimate_record_chars,
+        estimate_render_chars,
         select_relevant_blocks,
     )
-    from app.utils.render_budget import resolve_render_budget
+    from app.utils.render_budget import (
+        RecordRenderOutcome,
+        fair_shares,
+        resolve_render_budget,
+    )
 
     if isinstance(record_ids, str):
         record_ids = [record_ids]
@@ -193,7 +219,22 @@ async def execute_fetch_record(
         admission = admission_from_state(context.tool_state)
         collected_images: list[dict[str, Any]] = []
         selection_query = build_selection_query(context.query, reason)
-        for record in result["records"]:
+        records = result["records"]
+        estimates = [estimate_render_chars(record, start_block) for record in records]
+        unread: set[str] = set()
+        for position, record in enumerate(records):
+            record_key = str(record.get("id") or record.get("virtual_record_id") or "")
+            # Fair shares for this record and the ones after it, re-planned
+            # after every render so room a record did not use passes on. A
+            # record may use everything not reserved for the later ones: the
+            # estimate is rough, and a record that fits must not be cut short.
+            remaining = budget.call_chars_remaining
+            shares = fair_shares(estimates[position:], remaining)
+            if shares[0] < min(_MIN_RECORD_SHARE_CHARS, estimates[position]):
+                unread.add(record_key)
+                parts.append(_not_read_note(record, record_id_shortener))
+                continue
+            budget.allot(record_key, remaining - sum(shares[1:]))
             # A record that does not fit loses something. Losing the tail is
             # the worst choice for the questions this tool answers, so the
             # blocks are ranked against what the model is looking for and the
@@ -210,7 +251,15 @@ async def execute_fetch_record(
                 getattr(context, "needs_whole_document", False)
                 or context.tool_state.get("needs_whole_document")
             )
-            if not wants_everything and estimate_record_chars(record) > budget.chars_remaining:
+            # A continuation (`start_block` > 0) follows the pointer the model
+            # was given, so it reads in order; ranking the whole record again
+            # would return the same blocks it already has.
+            budget.begin_record(record_key)
+            if (
+                not wants_everything
+                and start_block == 0
+                and estimates[position] > budget.chars_remaining
+            ):
                 include_blocks = await select_relevant_blocks(
                     record=record,
                     virtual_record_id=record.get("virtual_record_id"),
@@ -243,13 +292,14 @@ async def execute_fetch_record(
             rendered = "".join(
                 item["text"] for item in content_list if item.get("type") == "text"
             )
-            record_key = str(record.get("id") or record.get("virtual_record_id") or "")
             if start_block > 0 and budget.outcome(record_key).blocks_rendered == 0:
-                total = len(_renderable_block_indices(record))
-                rendered += (
-                    f"\n[No blocks at offset {start_block}: this record has {total} "
-                    f"renderable block(s), numbered from 0.]\n"
-                )
+                indices = _renderable_block_indices(record)
+                if not any(index >= start_block for index in indices):
+                    last = max(indices) if indices else -1
+                    rendered += (
+                        f"\n[No blocks at offset {start_block}: this record's last "
+                        f"renderable block is {last}.]\n"
+                    )
             parts.append(rendered)
 
         text = "\n".join(parts)
@@ -276,8 +326,10 @@ async def execute_fetch_record(
             # Only a record read end to end counts as fetched: this set is what
             # hides records from candidate lists, and hiding one the model has
             # only partly seen is how a follow-up question loses its source.
-            outcome = budget.outcome(
-                str(record.get("id") or record.get("virtual_record_id") or "")
+            record_key = str(record.get("id") or record.get("virtual_record_id") or "")
+            outcome = (
+                RecordRenderOutcome(record_id=record_key, stopped_at_block=start_block)
+                if record_key in unread else budget.outcome(record_key)
             )
             if outcome.complete:
                 context.full_records_fetched.add(rid)
