@@ -492,6 +492,67 @@ class TestExecuteSearchFullPath:
         result = await execute_search(state, "test query")
         assert "Top 1 block" in result
 
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="")
+    @patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
+    @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="")
+    @patch("app.modules.agents.record_escalation.build_candidates")
+    @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={})
+    @patch("app.agents.actions.knowledge_graph.ops.search.build_message_content_array")
+    @patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.agents.actions.knowledge_graph.ops.search.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
+    @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_record_written_by_a_parallel_fetch_survives(
+        self, mock_parse, mock_shortener, mock_blob, mock_flatten, mock_enrich,
+        mock_build_content, mock_analyze, mock_build_cands, mock_render_cand,
+        mock_render_note, mock_dedupe, mock_compose,
+    ) -> None:
+        """fetch_record writes into the records map it was handed; a search in
+        the same turn must add to that dict, not swap in a new one."""
+        search_result = {"virtual_record_id": "vr1", "block_index": 0}
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [search_result],
+            "virtual_to_record_map": {"vr1": {"id": "r1"}},
+        }
+
+        async def flatten(_results, _blob, _org, _mm, vr_map, *_a, **_kw) -> list[dict]:
+            vr_map["vr1"] = {"id": "r1"}
+            await asyncio.sleep(0)
+            return [search_result]
+
+        mock_flatten.side_effect = flatten
+        mock_build_content.return_value = ([[{"type": "text", "text": "B"}]], MagicMock())
+        plan = MagicMock()
+        plan.has_candidates = False
+        mock_build_cands.return_value = plan
+
+        live = {"vr-old": {"id": "r-old"}}
+        state = {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []},
+            "final_results": [],
+            "virtual_record_id_to_result": live,
+        }
+
+        async def parallel_fetch() -> None:
+            await asyncio.sleep(0)
+            live["vr-fetched"] = {"id": "r-fetched"}
+
+        await asyncio.gather(execute_search(state, "test query"), parallel_fetch())
+
+        assert state["virtual_record_id_to_result"] is live
+        assert {"vr-old", "vr1", "vr-fetched"} <= live.keys()
+
 
 class TestExecuteSearchException:
     @pytest.mark.asyncio

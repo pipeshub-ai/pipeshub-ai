@@ -626,9 +626,15 @@ async def execute_search(
         state["final_results"] = _dedupe_append_final_results(
             state.get("final_results", []), final_results,
         )
-        existing_virtual_map = state.get("virtual_record_id_to_result") or {}
-        state["virtual_record_id_to_result"] = {**existing_virtual_map, **virtual_record_id_to_result}
-        existing_tool_records = state.get("tool_records") or []
+        # Updated in place: a fetch running in the same turn writes into this
+        # same dict, and replacing it would drop what that fetch added.
+        live_virtual_map = state.get("virtual_record_id_to_result")
+        if not isinstance(live_virtual_map, dict):
+            live_virtual_map = state["virtual_record_id_to_result"] = {}
+        live_virtual_map.update(virtual_record_id_to_result)
+        existing_tool_records = state.get("tool_records")
+        if not isinstance(existing_tool_records, list):
+            existing_tool_records = []
         new_tool_records = list(virtual_record_id_to_result.values())
         existing_ids = {r.get("_id") for r in existing_tool_records if isinstance(r, dict)}
         state["tool_records"] = existing_tool_records + [
