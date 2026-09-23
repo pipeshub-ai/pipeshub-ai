@@ -140,6 +140,13 @@ class TestEntityToolGrant:
     async def test_progressive_entity_tools_hook_registered_on_post_tool_use(self) -> None:
         _context, _agent, runtime = await _create()
 
-        # No public "is X registered" query on Pipeline — same approach
-        # test_factory_wiring.py uses for its own hook-count assertions.
-        assert len(runtime.hooks.on(HookEvent.POST_TOOL_USE)._stack) >= 5
+        # A count alone passes when this hook is missing and an unrelated one
+        # takes its place, so match the closure `progressive_entity_tools`
+        # returns. Its behaviour is covered in test_progressive_entity_tools.py.
+        qualnames = [
+            getattr(mw, "__qualname__", "")
+            for _matcher, mw in runtime.hooks.on(HookEvent.POST_TOOL_USE)._stack
+        ]
+        assert any(
+            name.startswith("progressive_entity_tools.") for name in qualnames
+        ), qualnames

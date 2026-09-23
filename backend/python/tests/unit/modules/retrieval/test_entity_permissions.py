@@ -48,7 +48,21 @@ def _hit(entity_id: str, entity_type: str, score: float, **extra) -> dict:
 
 def _graph(candidates=None, permitted=None) -> MagicMock:
     graph = MagicMock()
-    graph.get_entity_candidate_records = AsyncMock(side_effect=candidates or (lambda *a, **k: {}))
+    build = candidates or (lambda *a, **k: {})
+
+    def _candidates(refs, org, **kwargs):
+        """Adapt id-keyed test fixtures to the provider's (type, id) keys.
+
+        The cases below care about which rows come back for an entity, not
+        about the key shape, which the provider tests pin directly.
+        """
+        types = {str(ref["id"]): ref.get("type", "") for ref in refs}
+        return {
+            key if isinstance(key, tuple) else (types.get(key, ""), key): rows
+            for key, rows in build(refs, org, **kwargs).items()
+        }
+
+    graph.get_entity_candidate_records = AsyncMock(side_effect=_candidates)
     graph.filter_nodes_with_permission_role = AsyncMock(return_value=set(permitted or ()))
     return graph
 

@@ -5213,7 +5213,10 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List of dicts shaped like ``EntityRecord`` source fields:
-            ``{entityId, entityType, name}``.
+            ``{entityId, entityType, name, aliases, level}``, where ``aliases``
+            is a list of strings and ``level`` is the subcategory level
+            (``"1"``/``"2"``/``"3"``) or None for every other entity type.
+            ``sync_entities_for_duplicate`` reads all five.
         """
         pass
 
@@ -5227,7 +5230,7 @@ class IGraphDBProvider(ABC):
         limit_per_entity: int = 20,
         offset: int = 0,
         transaction: str | None = None,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
         """Records linked to each knowledge-graph entity in ``refs``, scoped
         to the org and to each ref's connectors. **No permission check** —
         callers (``app.modules.retrieval.entity_permissions``) check every
@@ -5260,7 +5263,10 @@ class IGraphDBProvider(ABC):
             transaction: Optional transaction id.
 
         Returns:
-            ``{entity_id: [row, ...]}`` for every ref queried, where each row is
+            ``{(entity_type, entity_id): [row, ...]}`` for every ref queried.
+            The key carries the type because ids are only unique within a
+            collection, so an id-keyed result would let one type's rows
+            overwrite another's. Each row is
             ``{"_key", "recordName", "recordType", "connectorId",
             "virtualRecordId", "webUrl", "sourceLastModifiedTimestamp",
             "updatedAtTimestamp"}``. A ref with no rows maps to ``[]``.

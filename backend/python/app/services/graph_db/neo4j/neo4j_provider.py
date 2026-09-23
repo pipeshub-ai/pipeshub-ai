@@ -15021,6 +15021,9 @@ class Neo4jProvider(IGraphDBProvider):
         """Taxonomy nodes one record links to over ``edge_collection`` — the
         record itself pins the scope, so there is no org filter and no
         pagination.
+
+        Departments are the one taxonomy label that stores its name in
+        ``departmentName`` rather than ``name``.
         """
         if not self.client:
             return []
@@ -15034,7 +15037,8 @@ class Neo4jProvider(IGraphDBProvider):
         query = f"""
             MATCH (rec:{record_label} {{id: $record_key}})-[:{rel_type}]->(v)
             WHERE any(l IN labels(v) WHERE l IN $node_labels)
-            RETURN DISTINCT v.id AS entityId, coalesce(v.name, v.id) AS name,
+            RETURN DISTINCT v.id AS entityId,
+                   coalesce(v.name, v.departmentName, v.id) AS name,
                    coalesce(v.aliases, []) AS aliases, labels(v) AS nodeLabels
         """
         try:
@@ -15078,14 +15082,27 @@ class Neo4jProvider(IGraphDBProvider):
         """See :meth:`IGraphDBProvider.get_taxonomy_entities_for_record`."""
         if not record_key:
             return []
-        results: list[dict[str, Any]] = []
-        for edge_collection, node_map in self._TAXONOMY_EDGE_GROUPS.values():
-            results.extend(
-                await self._get_taxonomy_entities_for_record_via_edge(
-                    record_key, edge_collection, node_map, transaction
+        groups = list(self._TAXONOMY_EDGE_GROUPS.values())
+        if transaction is not None:
+            # Queries on one txn_id serialise on the client's per-transaction
+            # lock anyway, so overlapping them buys nothing.
+            results: list[dict[str, Any]] = []
+            for edge_collection, node_map in groups:
+                results.extend(
+                    await self._get_taxonomy_entities_for_record_via_edge(
+                        record_key, edge_collection, node_map, transaction
+                    )
                 )
+            return results
+        grouped = await asyncio.gather(
+            *(
+                self._get_taxonomy_entities_for_record_via_edge(
+                    record_key, edge_collection, node_map, None
+                )
+                for edge_collection, node_map in groups
             )
-        return results
+        )
+        return [row for rows in grouped for row in rows]
 
     _ENTITY_CANDIDATE_RECORD_PROJECTION = (
         "rec {_key: rec.id, .recordName, .recordType, .connectorId, .virtualRecordId, "
@@ -15151,7 +15168,7 @@ class Neo4jProvider(IGraphDBProvider):
         limit_per_entity: int = 20,
         offset: int = 0,
         transaction: str | None = None,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
         """See :meth:`IGraphDBProvider.get_entity_candidate_records`."""
         if not refs or not org_id:
             return {}
@@ -15176,7 +15193,7 @@ class Neo4jProvider(IGraphDBProvider):
                 {"id": str(ref_id), "connectorIds": list(ref.get("connectorIds") or [])}
             )
 
-        results: dict[str, list[dict[str, Any]]] = {}
+        results: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for entity_type, typed_refs in refs_by_type.items():
             rows = await self.client.execute_query(
                 self._entity_candidate_records_cypher(entity_type),
@@ -15190,10 +15207,12 @@ class Neo4jProvider(IGraphDBProvider):
                 txn_id=transaction,
             )
             for typed_ref in typed_refs:
-                results.setdefault(typed_ref["id"], [])
+                results.setdefault((entity_type, typed_ref["id"]), [])
             for row in rows or []:
                 if row.get("id"):
-                    results[str(row["id"])] = [dict(rec) for rec in row.get("rows") or []]
+                    results[(entity_type, str(row["id"]))] = [
+                        dict(rec) for rec in row.get("rows") or []
+                    ]
         return results
 
     # ------------------------------------------------------------------

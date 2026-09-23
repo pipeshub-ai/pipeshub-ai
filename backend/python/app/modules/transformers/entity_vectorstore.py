@@ -31,6 +31,13 @@ currently has in hand — a plain payload overwrite would leave the point
 remembering only the last writer's single group/connector instead of the
 union across all of them. See ``_merge_membership`` and the per-entity lock
 in ``_entity_lock``.
+
+That lock is per process (it lives on the instance, keyed by event loop), so
+it serialises writers inside one service only. Two indexing workers in
+separate processes can still each merge against the same stale read and drop
+one another's membership; the loser is restored when the affected record is
+next reindexed. Making this safe across processes needs a distributed lock or
+a backend compare-and-set, neither of which exists here yet.
 """
 
 from __future__ import annotations
@@ -62,6 +69,15 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
     from app.models.entities import EntityRecord
     from app.services.vector_db.interface.vector_db import IVectorDBService
+
+
+class _MembershipReadError(Exception):
+    """The stored membership for an entity could not be read.
+
+    Distinct from "this entity has no point yet": the caller must skip the
+    write rather than treat the entity as new. See ``_fetch_existing_state``.
+    """
+
 
 _ENTITIES_COLLECTION = QdrantCollectionNames.ENTITIES.value
 
@@ -279,9 +295,17 @@ class EntityVectorStore:
                             )
                             continue
                         if merge_membership:
-                            existing = await self._fetch_existing_state(
-                                entity.org_id, entity.entity_type.value, entity.entity_id
-                            )
+                            try:
+                                existing = await self._fetch_existing_state(
+                                    entity.org_id,
+                                    entity.entity_type.value,
+                                    entity.entity_id,
+                                )
+                            except _MembershipReadError as exc:
+                                self.logger.warning(
+                                    "Skipping entity upsert, membership unknown: %s", exc
+                                )
+                                continue
                             connector_ids = self._union_ids(
                                 existing["connectorIds"], entity.connector_ids
                             )
@@ -364,14 +388,16 @@ class EntityVectorStore:
     async def _fetch_existing_state(
         self, org_id: str, entity_type: str, entity_id: str
     ) -> dict[str, Any]:
-        """Best-effort read of a point's current membership arrays and text.
+        """Read a point's current membership arrays and text.
 
-        ``exists`` is False on lookup failure or first-ever write for this
-        entity — a fresh entity or a transient read error must not block the
-        upsert; it just starts (or stays) with only what this call
-        contributes. Caller must hold the entity's lock (``_entity_lock``)
-        across this read and the eventual write, otherwise two concurrent
-        writers can each merge against a stale read and one update is lost.
+        ``exists`` is False for the first-ever write of this entity. A lookup
+        *failure* raises ``_MembershipReadError`` instead: the point ID is
+        deterministic, so upserting against an assumed-empty state would
+        replace the stored membership with only what this caller knows about,
+        silently dropping every other connector and record group. Caller must
+        hold the entity's lock (``_entity_lock``) across this read and the
+        eventual write, otherwise two concurrent writers can each merge
+        against a stale read and one update is lost.
         """
         empty: dict[str, Any] = {
             "exists": False,
@@ -394,11 +420,9 @@ class EntityVectorStore:
                 limit=1,
             )
         except Exception as exc:
-            self.logger.debug(
-                "Membership merge read failed for %s/%s (treating as new): %s",
-                entity_type, entity_id, exc,
-            )
-            return empty
+            raise _MembershipReadError(
+                f"membership read failed for {entity_type}/{entity_id}"
+            ) from exc
         if not result.points:
             return empty
         payload = result.points[0].payload or {}
@@ -581,6 +605,7 @@ class EntityVectorStore:
                             canonical_name=meta.get("canonicalName") or "",
                             aliases=list(meta.get("aliases") or []),
                             domain=meta.get("domain"),
+                            level=meta.get("level"),
                             type_category=type_category,
                             connector_ids=connector_ids,
                             record_group_ids=record_group_ids,

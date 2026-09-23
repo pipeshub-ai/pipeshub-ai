@@ -163,13 +163,15 @@ class TestSkipUnchanged:
         await store.upsert_entities_batch([stored], merge_membership=False)
         service.upsert_points.assert_awaited_once()
 
-    async def test_read_failure_still_writes(self) -> None:
+    async def test_read_failure_skips_the_write(self) -> None:
+        """Writing blind would replace the stored membership with only this
+        caller's ids — the deterministic point ID makes it an overwrite."""
         service = MagicMock()
         service.scroll = AsyncMock(side_effect=RuntimeError("down"))
         service.upsert_points = AsyncMock()
         store = _make_store(service)
         await store.upsert_entities_batch([self._entity()])
-        service.upsert_points.assert_awaited_once()
+        service.upsert_points.assert_not_awaited()
 
     async def test_only_changed_entities_in_a_batch_are_embedded(self) -> None:
         service = MagicMock()

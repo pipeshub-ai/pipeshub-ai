@@ -71,6 +71,9 @@ class TestGetEntityAccessContext:
             "seed.hideChildren != true",
             "INBOUND seed._id inheritPermissions",
             "PRUNE child.orgId != @org_id",
+            # PRUNE stops the traversal past a node; it does not drop the node
+            # itself from the result, so the FILTER is the load-bearing one.
+            "child.orgId == @org_id",
             '"TEAM"',
             '"ORG"',
             '"GROUP"',
@@ -113,7 +116,12 @@ class TestGetEntityCandidateRecords:
         result = await provider.get_entity_candidate_records(refs, "org1")
 
         assert provider.execute_query.await_count == 3
-        assert result == {"t1": [row], "t2": [], "rg1": [], "r9": [row]}
+        assert result == {
+            ("topic", "t1"): [row],
+            ("topic", "t2"): [],
+            ("record_group", "rg1"): [],
+            ("record", "r9"): [row],
+        }
         topic_vars = _bind_vars(provider)[0]
         assert topic_vars["refs"] == [
             {"id": "t1", "connectorIds": ["c1"]},
@@ -195,7 +203,7 @@ class TestGetEntityCandidateRecords:
             ],
             "org1",
         )
-        assert result == {"t1": [], "t2": [{"_key": "r1"}]}
+        assert result == {("topic", "t1"): [], ("topic", "t2"): [{"_key": "r1"}]}
         assert _bind_vars(provider)[0]["refs"] == [{"id": "t2", "connectorIds": ["c1"]}]
 
     @pytest.mark.asyncio
@@ -203,7 +211,7 @@ class TestGetEntityCandidateRecords:
         result = await provider.get_entity_candidate_records(
             [{"id": "t1", "type": "topic", "connectorIds": []}], "org1"
         )
-        assert result == {"t1": []}
+        assert result == {("topic", "t1"): []}
         provider.execute_query.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -215,7 +223,7 @@ class TestGetEntityCandidateRecords:
             ],
             "org1",
         )
-        assert result == {"d1": [], "l1": []}
+        assert result == {("department", "d1"): [], ("language", "l1"): []}
 
     @pytest.mark.asyncio
     async def test_propagates_query_error(self, provider) -> None:

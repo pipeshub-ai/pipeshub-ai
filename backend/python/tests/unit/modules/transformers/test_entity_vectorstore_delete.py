@@ -110,6 +110,34 @@ class TestDeleteEntitiesByConnectorSharedMembership:
         assert point.payload["connectorIds"] == ["conn-b"]
 
     @pytest.mark.asyncio
+    async def test_shrink_preserves_subcategory_level(self) -> None:
+        """`level` is a filter key in find_best_matches/search_entities. Losing
+        it here makes the resolver mint a duplicate node for a subcategory that
+        already exists."""
+        vector_db_service = MagicMock()
+        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
+        vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(
+                points=[
+                    _point(
+                        "sub-1", "subcategory", ["conn-a", "conn-b"], [],
+                        name="Budgets", canonicalName="budgets", level="1",
+                    )
+                ],
+                next_offset=None,
+            )
+        )
+        vector_db_service.upsert_points = AsyncMock()
+        vector_db_service.delete_points = AsyncMock()
+        store = _make_store(vector_db_service)
+
+        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
+
+        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
+        assert point.payload["metadata"]["level"] == "1"
+        assert point.payload["connectorIds"] == ["conn-b"]
+
+    @pytest.mark.asyncio
     async def test_entity_with_no_membership_left_is_deleted_outright(self) -> None:
         vector_db_service = MagicMock()
         vector_db_service.filter_collection = AsyncMock(return_value={"must": []})

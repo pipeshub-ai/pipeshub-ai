@@ -930,6 +930,28 @@ class TestDeleteRecordEvent:
         )
 
     @pytest.mark.asyncio
+    async def test_delete_record_entity_falls_back_to_record_org_id(self):
+        """delete_entity filters on metadata.orgId; an empty one matches no
+        point and strands the record's entity."""
+        from app.models.entities import EntityType
+
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={"_key": "r1", "virtualRecordId": "vr1", "orgId": "org-1"}
+        )
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        entity_store = AsyncMock()
+        handler.event_processor.sink_orchestrator = MagicMock(entity_vector_store=entity_store)
+
+        payload = {"recordId": "r1", "virtualRecordId": "vr1"}  # no orgId
+        await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
+
+        entity_store.delete_entity.assert_awaited_once_with(
+            "org-1", EntityType.RECORD.value, "r1"
+        )
+
+    @pytest.mark.asyncio
     async def test_delete_record_without_entity_vector_store_still_completes(self):
         """No entity store configured (the default in most deployments/tests)
         must not break the delete — it is a best-effort cleanup."""
@@ -2621,6 +2643,54 @@ class TestReconcilePromotedDuplicates:
         await handler._reconcile_promoted_duplicates("r1", None)
 
         gp.get_records_by_virtual_record_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("promoted,expected_calls", [(0, 0), (2, 1)])
+    async def test_reconcile_runs_only_when_a_duplicate_was_promoted(
+        self, promoted, expected_calls
+    ):
+        """Reconciliation walks every sibling of the vrid, so running it on
+        each completion makes a widely-duplicated file cost O(siblings) every
+        time — gate it on the promotion count."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record_initial = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/pdf",
+        }
+        record_final = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(side_effect=[record_initial, record_final])
+        gp.update_queued_duplicates_status = AsyncMock(return_value=promoted)
+        handler._reconcile_promoted_duplicates = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": "application/pdf",
+            "extension": "pdf",
+            "signedUrl": "https://example.com/file.pdf",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"content"
+            await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        gp.update_queued_duplicates_status.assert_awaited_once()
+        assert handler._reconcile_promoted_duplicates.await_count == expected_calls
 
     @pytest.mark.asyncio
     async def test_no_siblings_besides_self_is_noop(self):

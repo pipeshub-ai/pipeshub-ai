@@ -15891,6 +15891,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Taxonomy nodes one record links to over ``edge_collection`` — the
         record itself pins the scope, so there is no org filter and no
         pagination.
+
+        Departments are the one taxonomy collection that stores its label in
+        ``departmentName`` rather than ``name``.
         """
         node_collections = list(node_collection_types.keys())
         record_doc = f"{CollectionNames.RECORDS.value}/{record_key}"
@@ -15899,7 +15902,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER PARSE_IDENTIFIER(v._id).collection IN @node_collections
                 RETURN DISTINCT {{
                     entityId: v._key,
-                    name: NOT_NULL(v.name, v._key),
+                    name: NOT_NULL(v.name, v.departmentName, v._key),
                     aliases: NOT_NULL(v.aliases, []),
                     _collection: PARSE_IDENTIFIER(v._id).collection,
                 }}
@@ -15936,14 +15939,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """See :meth:`IGraphDBProvider.get_taxonomy_entities_for_record`."""
         if not record_key:
             return []
-        results: list[dict[str, Any]] = []
-        for edge_collection, node_map in self._TAXONOMY_EDGE_GROUPS.values():
-            results.extend(
-                await self._get_taxonomy_entities_for_record_via_edge(
-                    record_key, edge_collection, node_map, transaction
+        groups = list(self._TAXONOMY_EDGE_GROUPS.values())
+        if transaction is not None:
+            # Concurrent requests sharing one x-arango-trx-id are not safe.
+            results: list[dict[str, Any]] = []
+            for edge_collection, node_map in groups:
+                results.extend(
+                    await self._get_taxonomy_entities_for_record_via_edge(
+                        record_key, edge_collection, node_map, transaction
+                    )
                 )
+            return results
+        grouped = await asyncio.gather(
+            *(
+                self._get_taxonomy_entities_for_record_via_edge(
+                    record_key, edge_collection, node_map, None
+                )
+                for edge_collection, node_map in groups
             )
-        return results
+        )
+        return [row for rows in grouped for row in rows]
 
     @classmethod
     def _entity_candidate_record_projection(cls, var: str) -> str:
@@ -16014,7 +16029,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit_per_entity: int = 20,
         offset: int = 0,
         transaction: str | None = None,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
         """See :meth:`IGraphDBProvider.get_entity_candidate_records`."""
         if not refs or not org_id:
             return {}
@@ -16033,10 +16048,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if connector_id and str(connector_id) not in connector_ids:
                     connector_ids.append(str(connector_id))
 
-        results: dict[str, list[dict[str, Any]]] = {}
+        results: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for ref_type, connectors_by_id in connectors_by_type.items():
             for ref_id in connectors_by_id:
-                results.setdefault(ref_id, [])
+                results.setdefault((ref_type, ref_id), [])
             # A ref without connectors can never match a row, so it is not sent.
             query_refs = [
                 {"id": ref_id, "connectorIds": connector_ids}
@@ -16065,8 +16080,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 transaction=transaction,
             )
             for row in rows or []:
-                if row and row.get("id") in results:
-                    results[row["id"]] = row.get("rows") or []
+                if not row:
+                    continue
+                key = (ref_type, str(row.get("id") or ""))
+                if key in results:
+                    results[key] = row.get("rows") or []
         return results
 
     # ------------------------------------------------------------------
