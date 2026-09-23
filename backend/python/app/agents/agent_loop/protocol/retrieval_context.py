@@ -42,6 +42,9 @@ class RetrievedRecordPayload(BaseModel):
     # A record-level (summary) hit carries no block index.
     summaryHit: bool = False
     maxScore: float | None = None
+    # 1-based position of the record in what the model was shown, most
+    # relevant first. None when the record was not ranked (e.g. a fetch).
+    relevanceRank: int | None = None
     fetched: list[FetchedRangePayload] = Field(default_factory=list)
 
 

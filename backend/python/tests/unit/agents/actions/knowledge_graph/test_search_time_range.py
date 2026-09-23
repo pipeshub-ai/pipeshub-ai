@@ -34,8 +34,7 @@ def _empty_results_service() -> AsyncMock:
     hits — `execute_search` short-circuits to "No results found" right
     after checking `search_results`, so tests that only care about what
     was forwarded to the service don't need to mock the downstream
-    enrichment/formatting pipeline (BlobStorage, get_flattened_results,
-    build_message_content_array, ...)."""
+    context pipeline (BlobStorage, KnowledgeContextBuilder, ...)."""
     service = AsyncMock()
     service.search_with_filters = AsyncMock(
         return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
@@ -199,17 +198,16 @@ class TestSearchTimeRangeFanOut:
 
         from unittest.mock import patch
 
-        from app.utils.chat_helpers import CitationRefMapper
+        from app.modules.retrieval.context.builder import KnowledgeContext
 
+        builder = MagicMock()
+        builder.return_value.build = AsyncMock(
+            return_value=KnowledgeContext(units=[], virtual_record_id_to_result={}),
+        )
         with patch(
-            "app.agents.actions.knowledge_graph.ops.search.get_flattened_results",
-            new_callable=AsyncMock,
-            return_value=[],
+            "app.agents.actions.knowledge_graph.ops.search.KnowledgeContextBuilder", builder,
         ), patch(
             "app.agents.actions.knowledge_graph.ops.search.BlobStorage",
-        ), patch(
-            "app.agents.actions.knowledge_graph.ops.search.build_message_content_array",
-            return_value=([], CitationRefMapper()),
         ):
             await execute_search(
                 state,

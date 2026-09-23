@@ -16,9 +16,9 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
     _navigate_args_summary,
     _navigate_result_summary,
     _normalize_identifiers,
-    _search_result_summary,
     _time_range_error_message,
 )
+from app.agents.actions.knowledge_graph.ops.results import search_result_summary
 
 
 def _tool_result(content: str = "", is_error: bool = False) -> SimpleNamespace:
@@ -156,47 +156,49 @@ class TestLookupResultSummary:
 
 class TestSearchResultSummary:
     def test_none_content(self) -> None:
-        result = _search_result_summary({}, _tool_result(""))
+        result = search_result_summary({}, _tool_result(""))
         assert result is None
 
     def test_error_status_in_json(self) -> None:
         import json
         content = json.dumps({"status": "error", "message": "bad query"})
-        result = _search_result_summary({}, _tool_result(content))
+        result = search_result_summary({}, _tool_result(content))
         assert "bad query" in result
 
     def test_zero_results_json(self) -> None:
         import json
         content = json.dumps({"result_count": 0, "message": "No results found"})
-        result = _search_result_summary({}, _tool_result(content))
+        result = search_result_summary({}, _tool_result(content))
         assert "No results found" in result
 
     def test_empty_results_list(self) -> None:
         import json
         content = json.dumps({"results": [], "message": "No matching docs"})
-        result = _search_result_summary({}, _tool_result(content))
+        result = search_result_summary({}, _tool_result(content))
         assert "No matching docs" in result
 
     def test_top_n_blocks_header(self) -> None:
         content = "Top 5 blocks from 3 records\nName : Doc1\nName : Doc2"
-        result = _search_result_summary({}, _tool_result(content))
+        result = search_result_summary({}, _tool_result(content))
         assert "5 blocks" in result
         assert "3 records" in result
         assert "Doc1" in result
 
-    def test_retrieved_n_blocks_header(self) -> None:
-        content = "Retrieved 10 knowledge blocks from 4 documents\nName : Report"
-        result = _search_result_summary({}, _tool_result(content))
-        assert "10 blocks" in result
-        assert "4 records" in result
+    def test_ranked_header_from_search(self) -> None:
+        content = (
+            "Top 10 blocks from 4 records, most relevant record first "
+            "(a ranked sample — other records may match).\nName : Report"
+        )
+        result = search_result_summary({}, _tool_result(content))
+        assert result == "Retrieved 10 blocks from 4 records\n- Report"
 
     def test_no_match_returns_none(self) -> None:
-        result = _search_result_summary({}, _tool_result("Random text without header"))
+        result = search_result_summary({}, _tool_result("Random text without header"))
         assert result is None
 
     def test_header_without_names(self) -> None:
         content = "Top 2 blocks from 1 record\nSome content"
-        result = _search_result_summary({}, _tool_result(content))
+        result = search_result_summary({}, _tool_result(content))
         assert "2 blocks" in result
         assert "1 record" in result
 

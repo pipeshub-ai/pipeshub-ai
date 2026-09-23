@@ -120,6 +120,24 @@ class TestLedger:
         assert delta.cumulative_blocks == 3
         assert delta.cumulative_records == 2
 
+    def test_reports_each_records_relevance_rank(self) -> None:
+        ledger = RetrievalContextLedger()
+        state = _state(final_results=[
+            {**_block("vr-2", 3), "relevance_rank": 1},
+            {**_block("vr-1", 0), "relevance_rank": 2},
+            _block("vr-3", 5),
+        ])
+
+        delta = ledger.take_delta(state)
+
+        by_vrid = {r.virtualRecordId: r for r in delta.records}
+        assert by_vrid["vr-2"].relevanceRank == 1
+        assert by_vrid["vr-1"].relevanceRank == 2
+        assert by_vrid["vr-3"].relevanceRank is None
+        # Unranked records leave the key off the wire rather than sending null.
+        assert by_vrid["vr-2"].model_dump(exclude_none=True)["relevanceRank"] == 1
+        assert "relevanceRank" not in by_vrid["vr-3"].model_dump(exclude_none=True)
+
     def test_second_delta_contains_only_new_items(self) -> None:
         ledger = RetrievalContextLedger()
         state = _state(final_results=[_block("vr-1", 1)])

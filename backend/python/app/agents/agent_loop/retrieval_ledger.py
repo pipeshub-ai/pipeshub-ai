@@ -22,6 +22,7 @@ from app.agents.agent_loop.protocol.retrieval_context import (
     RetrievalStatus,
     RetrievedRecordPayload,
 )
+from app.modules.retrieval.context.ordering import RELEVANCE_RANK_KEY
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
@@ -42,12 +43,17 @@ class _RecordDelta:
     block_indices: list[int] = field(default_factory=list)
     summary_hit: bool = False
     max_score: float | None = None
+    relevance_rank: int | None = None
     fetched: list[FetchedRangePayload] = field(default_factory=list)
 
     def observe_score(self, score: object) -> None:
         if isinstance(score, (int, float)) and not isinstance(score, bool):
             value = float(score)
             self.max_score = value if self.max_score is None else max(self.max_score, value)
+
+    def observe_rank(self, rank: object) -> None:
+        if isinstance(rank, int) and not isinstance(rank, bool):
+            self.relevance_rank = rank if self.relevance_rank is None else min(self.relevance_rank, rank)
 
     def to_payload(self) -> RetrievedRecordPayload:
         return RetrievedRecordPayload(
@@ -58,6 +64,7 @@ class _RecordDelta:
             blockIndices=self.block_indices,
             summaryHit=self.summary_hit,
             maxScore=self.max_score,
+            relevanceRank=self.relevance_rank,
             fetched=self.fetched,
         )
 
@@ -161,6 +168,7 @@ class RetrievalContextLedger:
             else:
                 delta.block_indices.append(block_index)
             delta.observe_score(block.get("score"))
+            delta.observe_rank(block.get(RELEVANCE_RANK_KEY))
 
     def _collect_fetches(
         self,
