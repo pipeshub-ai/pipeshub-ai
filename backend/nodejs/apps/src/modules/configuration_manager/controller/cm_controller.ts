@@ -2208,12 +2208,14 @@ export const createQdrantConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { port, apiKey, host, grpcPort } = req.body;
+      const { port, apiKey, host, grpcPort, https, preferGrpc } = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedQdrantConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ port, apiKey, host, grpcPort }));
+      ).encrypt(
+        JSON.stringify({ port, apiKey, host, grpcPort, https, preferGrpc }),
+      );
       await keyValueStoreService.set<string>(
         configPaths.db.qdrant,
         encryptedQdrantConfig,

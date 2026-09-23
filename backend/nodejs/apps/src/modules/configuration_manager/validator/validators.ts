@@ -239,6 +239,8 @@ export const qdrantConfigSchema = z.object({
     port: z.number().min(1, { message: 'Qdrant Port is required' }),
     grpcPort: z.number().optional(),
     apiKey: z.string().optional(),
+    https: z.boolean().optional(),
+    preferGrpc: z.boolean().optional(),
   }),
 });
 
