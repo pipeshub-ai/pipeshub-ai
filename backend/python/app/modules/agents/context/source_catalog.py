@@ -265,7 +265,7 @@ class SourceCatalog:
                 "appears in, and a few openable records for the best matches. "
                 "`knowledgegraph__find_records_by_entity(entity_id=...)` (available after "
                 f"{search_entities}) lists the records connected to one entity, newest first, "
-                f"paging with `cursor`. {entity_content_hint}".rstrip(),
+                f"paging with `cursor` copied from its output. {entity_content_hint}".rstrip(),
                 "",
             ])
         # ID-specific header — only when connector IDs are actionable (agent route).

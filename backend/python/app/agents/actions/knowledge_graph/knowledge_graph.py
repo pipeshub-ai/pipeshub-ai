@@ -882,7 +882,8 @@ class KnowledgeGraph:
             "inside an entity, use search(entity_ids=[...]) instead.\n\n"
             "Pages with cursor: when more records may exist the output ends with the exact "
             "call for the next page. There are no totals. 'No accessible records found' is the "
-            "same response whether the entity has no records or none you can access."
+            "same response whether the entity has no records or none you can access; paging "
+            "past the last page says so separately."
         ),
         parameters=[
             ToolParameter(
@@ -918,7 +919,10 @@ class KnowledgeGraph:
             ToolParameter(
                 name="cursor",
                 type=ParameterType.STRING,
-                description="Cursor from the previous page's output. Omit for the first page.",
+                description=(
+                    "Cursor from the previous page's output, copied exactly as printed "
+                    "(a plain integer offset). Omit for the first page."
+                ),
                 required=False,
             ),
         ],
