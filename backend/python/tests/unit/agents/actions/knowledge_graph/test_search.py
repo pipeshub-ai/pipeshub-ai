@@ -17,6 +17,11 @@ from app.agents.actions.knowledge_graph.ops.search import (
     resolve_record_scoped_entities,
 )
 from app.modules.retrieval.context.builder import KnowledgeContext
+from app.modules.retrieval.context.manifest import (
+    BlockKey,
+    ManifestSource,
+    manifest_registry,
+)
 from app.modules.retrieval.context.ranking import RelevanceRanker
 from app.modules.retrieval.context.renderer import RenderedKnowledge
 from app.modules.retrieval.context.reranking import RerankingRanker
@@ -484,6 +489,29 @@ class TestExecuteSearchFullPath:
 
         assert state["virtual_record_id_to_result"] is live
         assert {"vr-old", "vr1", "vr-fetched"} <= live.keys()
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_registers_which_characters_of_its_result_show_which_blocks(self, mock_parse) -> None:
+        """Spans are for the text the model gets, header included, so a later
+        step can find each block's copy in the ToolMessage."""
+        state = _full_path_state(_one_hit_retrieval())
+        unit = {"virtual_record_id": "vr1", "block_index": 0, "block_type": "text",
+                "content": "the only hit", "metadata": {}}
+        record = {"id": "r1", "virtual_record_id": "vr1", "context_metadata": "Record ID: r1",
+                  "frontend_url": "", "block_containers": {"blocks": [], "block_groups": []}}
+        builder = MagicMock()
+        builder.return_value.build = AsyncMock(return_value=KnowledgeContext(
+            units=[unit], virtual_record_id_to_result={"vr1": record},
+        ))
+        with patch(f"{_SEARCH}.KnowledgeContextBuilder", builder), patch(f"{_SEARCH}.BlobStorage"):
+            result = await execute_search(state, "test query")
+
+        manifest = manifest_registry(state).lookup(result)
+        assert manifest is not None and manifest.source is ManifestSource.SEARCH
+        (segment,) = manifest.segments
+        assert result[segment.start:segment.end].endswith("the only hit\n\n")
+        assert segment.blocks == {BlockKey("vr1", 0)}
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))

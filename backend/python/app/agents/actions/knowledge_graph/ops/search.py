@@ -26,6 +26,7 @@ from app.agents.actions.knowledge_graph.ops.results import (
 )
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.manifest import manifest_registry
 from app.modules.retrieval.context.renderer import render_knowledge
 from app.modules.retrieval.context.reranking import ranker_for
 from app.modules.retrieval.entity_permissions import EntityAccessError
@@ -648,6 +649,7 @@ async def execute_search(
         text = summary + rendered.text + compose_result_tail(
             virtual_record_id_to_result, candidate_suffix,
         ) + pm_hint
+        manifest_registry(state).register(text, rendered.manifest.shifted(len(summary)))
         return tool_output(text, rendered.images, state)
 
     except Exception as exc:

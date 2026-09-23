@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.manifest import ContentManifest, ManifestSource
 from app.modules.retrieval.context.renderer import render_knowledge
 from app.modules.retrieval.context.reranking import ranker_for
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget
@@ -58,6 +59,9 @@ class PrefetchResult:
     # since prefetch produces plain text (folded into `goal.constraints`),
     # not a tool result that could carry a multipart `ToolMessage`.
     collected_images: list[dict[str, Any]] = field(default_factory=list)
+    # Which blocks the prefetched context shows; the bridge registers it so
+    # later results can drop their copies of those blocks.
+    manifest: ContentManifest | None = None
 
 
 def _is_followup(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -174,6 +178,7 @@ async def prefetch_retrieval(
         ref_mapper=ref_mapper,
         is_multimodal_llm=is_multimodal_llm,
         image_budget=image_budget if image_budget is not None else ImageBudget(),
+        source=ManifestSource.PREFETCH,
     )
     formatted_context = rendered.text
     final_results = rendered.units
@@ -187,4 +192,5 @@ async def prefetch_retrieval(
         citation_ref_mapper=ref_mapper,
         is_empty=not formatted_context.strip(),
         collected_images=collected_images,
+        manifest=rendered.manifest,
     )

@@ -46,7 +46,9 @@ from app.agents.agent_loop.hooks import (
     CitationCollector,
     ensure_fetch_full_record_available,
 )
+from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
+from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
     _cancel_orphaned_agent_tasks,
@@ -63,8 +65,6 @@ from app.agents.chat_modes.policy import (
     ChatModePolicy,
     resolve_chat_mode_policy,
 )
-from app.agents.agent_loop.protocol.run_usage import emit_run_usage
-from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
 from app.agents.chat_modes.prefetch import prefetch_retrieval
 from app.config.constants.service import config_node_constants
 from app.modules.demo_data.chat import (
@@ -73,6 +73,7 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.modules.retrieval.context.manifest import manifest_registry
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.streaming import create_sse_event, handle_simple_mode
@@ -524,6 +525,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 context.tool_state["tool_records"] = [
                     *context.tool_state.get("tool_records", []), *prefetch_result.tool_records,
                 ]
+                if prefetch_result.manifest is not None:
+                    manifest_registry(context.tool_state).register_prefetch(prefetch_result.manifest)
                 # No `citation_ref_mapper` reassignment here: `prefetch_result.
                 # citation_ref_mapper` IS `ref_mapper` (passed in above), the
                 # same instance `context.tool_state["citation_ref_mapper"]`

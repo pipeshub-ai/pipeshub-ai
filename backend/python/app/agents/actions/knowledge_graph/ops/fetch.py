@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import ToolOutput
     from app.agents.agent_loop.context import AgentContext
+    from app.utils.render_budget import RenderBudget
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,30 @@ def _unavailable_note(
         ids_str = ", ".join(f"'{rid}'" for rid in ids)
         lines.append(f"{ids_str}: {_UNAVAILABLE_PHRASING.get(reason, 'not available')}")
     return "\n\nNote: " + "; ".join(lines)
+
+
+def _register_shown_blocks(
+    tool_state: dict[str, Any], text: str, records: list[dict[str, Any]], budget: RenderBudget,
+) -> None:
+    """Record which blocks this result shows, so other results can drop their copies."""
+    from app.modules.retrieval.context.manifest import (
+        BlockKey,
+        ContentManifest,
+        ManifestSource,
+        manifest_registry,
+    )
+
+    shown = frozenset(
+        BlockKey(str(record["virtual_record_id"]), index)
+        for record in records
+        if record.get("virtual_record_id")
+        for index in budget.outcome(
+            str(record.get("id") or record.get("virtual_record_id") or ""),
+        ).shown_blocks
+    )
+    manifest_registry(tool_state).register(
+        text, ContentManifest(ManifestSource.FETCH, segments=(), records=(), shown_blocks=shown),
+    )
 
 
 async def execute_fetch_record(
@@ -269,6 +294,8 @@ async def execute_fetch_record(
                     "blocksRendered": outcome.blocks_rendered,
                     "complete": outcome.complete,
                 })
+
+        _register_shown_blocks(context.tool_state, text, result["records"], budget)
 
         if collected_images and context.is_multimodal_llm:
             # Mirrors `retrieval.py`'s matching branch: multipart `data`

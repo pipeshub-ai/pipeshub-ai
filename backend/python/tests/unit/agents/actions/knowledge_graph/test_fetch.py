@@ -16,6 +16,11 @@ from app.agents.actions.knowledge_graph.ops.fetch import (
     execute_fetch_record,
     resolve_block_cap,
 )
+from app.modules.retrieval.context.manifest import (
+    BlockKey,
+    ManifestSource,
+    manifest_registry,
+)
 from app.utils.render_budget import MAX_RENDER_CHARS
 
 
@@ -546,10 +551,11 @@ class TestFullyFetched:
             "app.utils.fetch_full_record.create_fetch_full_record_tool",
             return_value=structured,
         ):
-            await execute_fetch_record(
+            output, _ = await execute_fetch_record(
                 context=context, virtual_records={}, citation_ref_mapper=None,
                 record_ids=["rec-1"],
             )
+        context.output = output
         return context
 
     @pytest.mark.asyncio
@@ -562,3 +568,23 @@ class TestFullyFetched:
         context = await self._fetch(block_chars=10 * MAX_RENDER_CHARS)
         assert "rec-1" not in context.full_records_fetched
         assert "rec-1" not in context.tool_state.get("full_records_fetched", set())
+
+
+@pytest.mark.asyncio
+async def test_a_fetch_registers_the_blocks_it_showed() -> None:
+    """So other results can drop their copies of exactly those blocks."""
+    context = await TestFullyFetched._fetch(block_chars=1_000)
+
+    manifest = manifest_registry(context.tool_state).lookup(context.output.data)
+
+    assert manifest is not None and manifest.source is ManifestSource.FETCH
+    assert manifest.blocks == {BlockKey("vr-1", 0)}
+
+
+@pytest.mark.asyncio
+async def test_a_clipped_block_is_not_registered_as_shown() -> None:
+    context = await TestFullyFetched._fetch(block_chars=10 * MAX_RENDER_CHARS)
+
+    manifest = manifest_registry(context.tool_state).lookup(context.output.data)
+
+    assert manifest is not None and manifest.blocks == frozenset()

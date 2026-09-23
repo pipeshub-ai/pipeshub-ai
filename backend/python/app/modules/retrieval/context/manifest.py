@@ -7,7 +7,8 @@ each unit costs, and a later pass uses it to find a block's other copies.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -58,10 +59,64 @@ class ContentManifest:
     source: ManifestSource
     segments: tuple[Segment, ...]
     records: tuple[RecordSpan, ...]
+    shown_blocks: frozenset[BlockKey] = frozenset()
+    """Blocks shown without spans: a fetch result is never edited, so only
+    what it covers matters."""
 
     @property
     def blocks(self) -> frozenset[BlockKey]:
-        return frozenset(key for segment in self.segments for key in segment.blocks)
+        return self.shown_blocks.union(key for segment in self.segments for key in segment.blocks)
+
+    def shifted(self, offset: int) -> ContentManifest:
+        """The same manifest for text that has ``offset`` characters in front."""
+        return replace(
+            self,
+            segments=tuple(
+                replace(s, start=s.start + offset, end=s.end + offset) for s in self.segments
+            ),
+            records=tuple(
+                replace(r, start=r.start + offset, end=r.end + offset) for r in self.records
+            ),
+        )
+
+
+_REGISTRY_KEY = "content_manifests"
+
+
+@dataclass
+class ManifestRegistry:
+    """The manifests of one request's knowledge results.
+
+    Keyed by a digest of the exact text a tool returned. A message any later
+    step changed (cleared, truncated, compacted) no longer matches, so it is
+    treated as not showing anything: a duplicate is kept rather than lost.
+    Prefetch goes into the system prompt, which is rebuilt every call and
+    never shaped, so it always counts as shown.
+    """
+
+    _by_digest: dict[str, ContentManifest] = field(default_factory=dict)
+    prefetch: list[ContentManifest] = field(default_factory=list)
+
+    def register(self, text: str, manifest: ContentManifest) -> None:
+        self._by_digest[_digest(text)] = manifest
+
+    def lookup(self, text: str) -> ContentManifest | None:
+        return self._by_digest.get(_digest(text))
+
+    def register_prefetch(self, manifest: ContentManifest) -> None:
+        self.prefetch.append(manifest)
+
+
+def manifest_registry(tool_state: dict[str, Any]) -> ManifestRegistry:
+    """The request's registry, created on first use."""
+    registry = tool_state.get(_REGISTRY_KEY)
+    if not isinstance(registry, ManifestRegistry):
+        registry = tool_state[_REGISTRY_KEY] = ManifestRegistry()
+    return registry
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def build_manifest(

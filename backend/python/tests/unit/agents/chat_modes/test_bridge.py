@@ -29,6 +29,12 @@ from app.agents.chat_modes.policy import (
 )
 from app.agents.chat_modes.prefetch import PrefetchResult
 from app.config.constants.arangodb import Connectors
+from app.modules.retrieval.context.manifest import (
+    BlockKey,
+    ContentManifest,
+    ManifestSource,
+    manifest_registry,
+)
 from app.utils.chat_helpers import CitationRefMapper
 
 
@@ -462,6 +468,9 @@ class TestRunChatStream:
             tool_records=[{"recordId": "r1"}],
             citation_ref_mapper=CitationRefMapper(),
             is_empty=False,
+            manifest=ContentManifest(
+                ManifestSource.PREFETCH, (), (), shown_blocks=frozenset({BlockKey("vr1", 0)}),
+            ),
         )
         captured: dict[str, Any] = {}
 
@@ -501,6 +510,8 @@ class TestRunChatStream:
         assert any(
             "Refunds are processed" in str(c) for c in captured["goal"].constraints
         )
+        # So later results can drop their copies of the prefetched blocks.
+        assert manifest_registry(captured["context"].tool_state).prefetch == [prefetch_result.manifest]
 
     async def test_prefetch_appends_candidate_list_when_records_are_incomplete(self) -> None:
         """In prefetch mode the retrieval tool never runs, so candidate-list

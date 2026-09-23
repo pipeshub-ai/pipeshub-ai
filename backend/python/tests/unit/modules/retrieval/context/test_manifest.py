@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from app.models.blocks import BlockType, GroupType
-from app.modules.retrieval.context.manifest import BlockKey, ManifestSource
+from app.modules.retrieval.context.manifest import (
+    BlockKey,
+    ContentManifest,
+    ManifestRegistry,
+    ManifestSource,
+    RecordSpan,
+    Segment,
+    manifest_registry,
+)
 from app.modules.retrieval.context.renderer import render_knowledge
 from app.utils.chat_helpers import CitationRefMapper
 
@@ -122,3 +130,56 @@ def test_the_source_is_recorded() -> None:
         is_multimodal_llm=False, source=ManifestSource.PREFETCH,
     )
     assert rendered.manifest.source is ManifestSource.PREFETCH
+
+
+class TestRegistry:
+    def _manifest(self) -> ContentManifest:
+        return ContentManifest(
+            ManifestSource.SEARCH,
+            (Segment(10, 20, frozenset({BlockKey("a", 0)}), True, 0),),
+            (RecordSpan("a", "id-a", 5, 30),),
+        )
+
+    def test_a_result_is_found_by_its_exact_text(self) -> None:
+        registry = ManifestRegistry()
+        manifest = self._manifest()
+        registry.register("result text", manifest)
+
+        assert registry.lookup("result text") is manifest
+
+    def test_one_changed_character_is_a_different_result(self) -> None:
+        """A shaper that cleared, truncated or compacted it made it something
+        the manifest no longer describes."""
+        registry = ManifestRegistry()
+        registry.register("result text", self._manifest())
+
+        assert registry.lookup("result text.") is None
+
+    def test_prefetch_is_kept_apart(self) -> None:
+        registry = ManifestRegistry()
+        registry.register_prefetch(self._manifest())
+        assert len(registry.prefetch) == 1
+
+    def test_the_request_has_one_registry(self) -> None:
+        tool_state: dict = {}
+        assert manifest_registry(tool_state) is manifest_registry(tool_state)
+        tool_state["content_manifests"] = "not a registry"
+        assert isinstance(manifest_registry(tool_state), ManifestRegistry)
+
+
+def test_shifting_moves_every_span() -> None:
+    manifest = ContentManifest(
+        ManifestSource.SEARCH,
+        (Segment(10, 20, frozenset(), True, 0),),
+        (RecordSpan("a", "id-a", 5, 30),),
+    ).shifted(100)
+
+    assert (manifest.segments[0].start, manifest.segments[0].end) == (110, 120)
+    assert (manifest.records[0].start, manifest.records[0].end) == (105, 130)
+
+
+def test_a_fetch_manifest_shows_blocks_without_spans() -> None:
+    manifest = ContentManifest(
+        ManifestSource.FETCH, (), (), shown_blocks=frozenset({BlockKey("a", 1)}),
+    )
+    assert manifest.blocks == {BlockKey("a", 1)}

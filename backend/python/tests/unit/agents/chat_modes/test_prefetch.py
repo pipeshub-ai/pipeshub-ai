@@ -7,6 +7,7 @@ import pytest
 
 from app.agents.chat_modes.prefetch import PrefetchResult, prefetch_retrieval
 from app.modules.retrieval.context.builder import KnowledgeContext
+from app.modules.retrieval.context.manifest import ManifestSource
 from app.modules.retrieval.context.renderer import RenderedKnowledge
 from app.modules.retrieval.context.reranking import RerankingRanker
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget
@@ -154,6 +155,9 @@ class TestSuccessfulPrefetch:
         # The system prompt is not subject to the tool-result cap: nothing is cut.
         assert build_kwargs.get("max_units") is None
         assert mock_render.call_args.kwargs.get("max_chars") is None
+        # Prefetch goes into the system prompt: its blocks count as always shown.
+        assert mock_render.call_args.kwargs["source"] is ManifestSource.PREFETCH
+        assert result.manifest is mock_render.return_value.manifest
 
     async def test_the_active_reranker_ranks_against_the_users_question(self) -> None:
         resolver = MagicMock(active=AsyncMock(return_value=MagicMock()))
