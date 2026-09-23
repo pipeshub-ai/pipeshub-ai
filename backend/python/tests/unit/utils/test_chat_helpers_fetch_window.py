@@ -301,3 +301,73 @@ class TestBlockGroupsCountAsBlocks:
         _render(self._group_record("rec-g"), budget)
 
         assert budget.outcome("rec-g").complete is True
+
+
+class TestShownBlocks:
+    """Which blocks the model can read in full after a fetch.
+
+    A later step removes duplicates of exactly these from other results, so a
+    block listed here but not rendered would be lost from the model's view.
+    """
+
+    @staticmethod
+    def _shown(record: dict, budget: RenderBudget, **kwargs) -> frozenset[int]:
+        budget.begin_record(record["id"])
+        _render(record, budget, **kwargs)
+        return budget.outcome(record["id"]).shown_blocks
+
+    def test_every_block_of_a_record_that_fits(self) -> None:
+        record = _record("rec-1", [_text_block(i, f"block {i}") for i in range(5)])
+        assert self._shown(record, RenderBudget(max_chars=100_000)) == {0, 1, 2, 3, 4}
+
+    def test_only_the_blocks_before_the_allowance_ran_out(self) -> None:
+        record = _record("rec-1", [_text_block(i, "x" * 500) for i in range(50)])
+        budget = RenderBudget(max_chars=2_000)
+
+        shown = self._shown(record, budget)
+
+        assert shown == set(range(len(shown)))
+        assert budget.outcome("rec-1").stopped_at_block == len(shown)
+
+    def test_only_the_rows_of_a_table_that_rendered(self) -> None:
+        budget = RenderBudget(max_chars=3_000)
+
+        shown = self._shown(_table_record("rec-t", rows=500), budget)
+
+        truncation = budget.outcome("rec-t").table_truncation
+        assert truncation is not None
+        assert shown == set(range(truncation.rows_shown))
+
+    def test_every_child_of_a_group(self) -> None:
+        shown = self._shown(
+            TestBlockGroupsCountAsBlocks._group_record("rec-g", lines=4),
+            RenderBudget(max_chars=100_000),
+        )
+        assert shown == {0, 1, 2, 3}
+
+    def test_only_the_selected_blocks(self) -> None:
+        record = _record("rec-1", [_text_block(i, f"block {i}") for i in range(10)])
+        shown = self._shown(record, RenderBudget(max_chars=100_000), include_blocks={2, 3, 7})
+        assert shown == {2, 3, 7}
+
+    def test_only_the_window_that_was_read(self) -> None:
+        record = _record("rec-1", [_text_block(i, f"block {i}") for i in range(10)])
+        shown = self._shown(record, RenderBudget(max_chars=100_000), start_block=6)
+        assert shown == {6, 7, 8, 9}
+
+    def test_an_image_block_that_rendered_as_text(self) -> None:
+        image = {"index": 1, "type": BlockType.IMAGE.value, "parent_index": None,
+                 "data": {"uri": "", "description": "a bar chart"}}
+        record = _record("rec-1", [_text_block(0, "intro"), image])
+
+        assert self._shown(record, RenderBudget(max_chars=100_000)) == {0, 1}
+
+    def test_a_clipped_block_is_not_shown_and_the_record_is_incomplete(self) -> None:
+        """A prefix of a block is not the block: a copy elsewhere must stay."""
+        record = _record("rec-1", [_text_block(0, "y" * 50_000), _text_block(1, "z")])
+        budget = RenderBudget(max_chars=1_000)
+
+        shown = self._shown(record, budget)
+
+        assert shown == frozenset()
+        assert budget.outcome("rec-1").complete is False

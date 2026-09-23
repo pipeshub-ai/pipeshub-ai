@@ -514,3 +514,51 @@ class TestWholeDocumentRequests:
         for text in (whole, targeted):
             assert len(text) > 0.9 * MAX_RENDER_CHARS, "the allowance was left unused"
             assert len(text) <= DEFAULT_MAX_RESULT_CHARS, "the tool-result cap would cut it"
+
+
+class TestFullyFetched:
+    """Only a record read end to end counts as fetched: that set hides a
+    record from the candidate list, and hiding one the model only partly saw
+    is how an answer loses its source."""
+
+    @staticmethod
+    async def _fetch(block_chars: int, *, tool_state: dict | None = None) -> SimpleNamespace:
+        record = {
+            "id": "rec-1",
+            "virtual_record_id": "vr-1",
+            "frontend_url": "",
+            "context_metadata": "Record ID: rec-1",
+            "block_containers": {
+                "blocks": [{"index": 0, "type": "text", "parent_index": None,
+                            "parent_block_index": None, "data": "x" * block_chars}],
+                "block_groups": [],
+            },
+        }
+        context = _make_context(
+            needs_whole_document=True,
+            tool_state=tool_state if tool_state is not None else {"needs_whole_document": True},
+        )
+        structured = MagicMock()
+        structured.coroutine = AsyncMock(return_value={
+            "ok": True, "records": [record], "not_available_ids": [],
+        })
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=structured,
+        ):
+            await execute_fetch_record(
+                context=context, virtual_records={}, citation_ref_mapper=None,
+                record_ids=["rec-1"],
+            )
+        return context
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_fits_counts_as_fetched(self) -> None:
+        context = await self._fetch(block_chars=1_000)
+        assert "rec-1" in context.full_records_fetched
+
+    @pytest.mark.asyncio
+    async def test_a_record_whose_only_block_was_clipped_does_not(self) -> None:
+        context = await self._fetch(block_chars=10 * MAX_RENDER_CHARS)
+        assert "rec-1" not in context.full_records_fetched
+        assert "rec-1" not in context.tool_state.get("full_records_fetched", set())

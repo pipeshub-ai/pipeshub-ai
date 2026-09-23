@@ -24,11 +24,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
 )
 from app.utils.env_utils import env_int
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +82,18 @@ class RecordRenderOutcome:
     blocks_rendered: int = 0
     chars_rendered: int = 0
     table_truncation: TableTruncation | None = None
+    # Indices of the blocks the model can read in full: top-level blocks,
+    # table rows and group children. A clipped block is not among them.
+    shown_blocks: frozenset[int] = frozenset()
+    clipped: bool = False
 
     @property
     def complete(self) -> bool:
-        return self.stopped_at_block is None and self.table_truncation is None
+        return (
+            self.stopped_at_block is None
+            and self.table_truncation is None
+            and not self.clipped
+        )
 
 
 @dataclass
@@ -90,6 +102,8 @@ class _RecordState:
     chars_rendered: int = 0
     stopped_at_block: int | None = None
     table_truncation: TableTruncation | None = None
+    shown: set[int] = field(default_factory=set)
+    clipped: bool = False
 
 
 @dataclass
@@ -128,6 +142,8 @@ class RenderBudget:
             blocks_rendered=state.blocks_rendered,
             chars_rendered=state.chars_rendered,
             table_truncation=state.table_truncation,
+            shown_blocks=frozenset(state.shown),
+            clipped=state.clipped,
         )
 
     # -- spending -----------------------------------------------------------
@@ -165,7 +181,7 @@ class RenderBudget:
         Returns a truncated prefix rather than nothing when a single block is
         larger than the entire budget and nothing has been rendered yet: a
         fetch that returns a prefix is useful, one that returns an empty
-        record is not.
+        record is not. The record then counts as incomplete.
         """
         if not text:
             return text
@@ -177,8 +193,22 @@ class RenderBudget:
             room = max(0, self.chars_remaining - len(TRUNCATION_MARKER))
             clipped = text[:room] + TRUNCATION_MARKER
             self.charge(clipped)
+            if self._current is not None:
+                self._records[self._current].clipped = True
             return clipped
         return None
+
+    def note_shown(self, block_indices: Iterable[int]) -> None:
+        """Record blocks the model can now read in full, for the current record.
+
+        A clipped block is only a prefix, and a clip exhausts the budget, so
+        nothing is recorded once the record was clipped.
+        """
+        if self._current is None:
+            return
+        state = self._records[self._current]
+        if not state.clipped:
+            state.shown.update(block_indices)
 
     def count_block(self) -> None:
         """One renderable unit was emitted -- a top-level block, or a whole

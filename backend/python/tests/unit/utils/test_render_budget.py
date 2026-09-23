@@ -63,6 +63,27 @@ class TestSpending:
         budget.take("x" * 10)
         assert budget.take("y" * 5_000) is None
 
+    def test_shown_blocks_accumulate_per_record(self) -> None:
+        budget = _budget(1_000)
+        budget.note_shown([1, 2])
+        budget.begin_record("rec-2")
+        budget.note_shown([7])
+        budget.begin_record("rec-1")
+        budget.note_shown((3,))
+
+        assert budget.outcome("rec-1").shown_blocks == {1, 2, 3}
+        assert budget.outcome("rec-2").shown_blocks == {7}
+
+    def test_a_clip_makes_the_record_incomplete_and_shows_nothing_more(self) -> None:
+        budget = _budget(100)
+        budget.take("x" * 5_000)
+        budget.note_shown([0])
+
+        outcome = budget.outcome("rec-1")
+        assert outcome.clipped is True
+        assert outcome.complete is False
+        assert outcome.shown_blocks == frozenset()
+
     def test_framing_counts_against_the_size_but_still_allows_a_prefix(self) -> None:
         """A record header is spent before the first block; that block must
         still render a prefix rather than nothing."""

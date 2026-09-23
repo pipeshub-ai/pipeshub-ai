@@ -3798,6 +3798,7 @@ def record_to_message_content(
                     content.append({"type": "text", "text": marker})
                     _renderable_rendered += 1
                     render_budget.count_block()
+                    render_budget.note_shown((block_index,))
                 elif admitted:
                     label = render_budget.take(
                         f"[{ref}] {description}" if description else f"[{ref}]"
@@ -3810,6 +3811,7 @@ def record_to_message_content(
                     content.append({"type": "image_url", "image_url": {"url": wire_uri}})
                     _renderable_rendered += 1
                     render_budget.count_block()
+                    render_budget.note_shown((block_index,))
                 elif has_image or description:
                     marker = render_budget.take(
                         image_marker_text(f"[{ref}]", description, reason=reason)
@@ -3821,6 +3823,7 @@ def record_to_message_content(
                     content.append({"type": "text", "text": marker})
                     _renderable_rendered += 1
                     render_budget.count_block()
+                    render_budget.note_shown((block_index,))
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 emitted = render_budget.take(f"[{ref}] {data}\n\n")
@@ -3831,6 +3834,7 @@ def record_to_message_content(
                 content.append({"type": "text", "text": emitted})
                 _renderable_rendered += 1
                 render_budget.count_block()
+                render_budget.note_shown((block_index,))
             elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
                 # Top-level code -- module functions, imports, module-level
                 # statements. These belong to no group, so without this branch
@@ -3846,6 +3850,7 @@ def record_to_message_content(
                 content.append({"type": "text", "text": emitted})
                 _renderable_rendered += 1
                 render_budget.count_block()
+                render_budget.note_shown((block_index,))
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
@@ -3873,6 +3878,7 @@ def record_to_message_content(
                                 rows_to_be_included_list = [child.get("block_index") for child in children if child.get("block_index") is not None]
 
                         child_results = []
+                        rows_rendered: list[int] = []
                         has_row_images = False
                         rows_total = len(rows_to_be_included_list)
                         rows_shown = 0
@@ -3897,6 +3903,7 @@ def record_to_message_content(
                                         break
                                     render_budget.charge(row_text)
                                     rows_shown += 1
+                                    rows_rendered.append(row_index)
                                     child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
                                     child_results.append({
                                         "content": row_text,
@@ -3910,6 +3917,7 @@ def record_to_message_content(
                                     # emit each fragment in reading order under the container's block_index.
                                     container_idx = block.get("index")
                                     if container_idx is not None and container_idx in fragment_map:
+                                        rows_rendered.append(row_index)
                                         child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
                                         child_citation_ref = ref_mapper.get_or_create_ref(child_block_web_url)
                                         for frag in sorted(fragment_map[container_idx], key=lambda b: b.get("index", 0)):
@@ -3987,6 +3995,7 @@ def record_to_message_content(
                                 ))
                             _renderable_rendered += 1
                             render_budget.count_block()
+                            render_budget.note_shown(rows_rendered)
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
@@ -4045,6 +4054,9 @@ def record_to_message_content(
                 # found nothing, so it appended "no blocks at offset N" under
                 # the group it had just rendered.
                 render_budget.count_block()
+                render_budget.note_shown(
+                    gb["block_index"] for gb in group_blocks if isinstance(gb.get("block_index"), int)
+                )
             else:
                 continue
 
