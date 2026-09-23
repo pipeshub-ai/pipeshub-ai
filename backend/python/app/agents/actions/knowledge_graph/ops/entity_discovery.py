@@ -47,7 +47,7 @@ async def execute_search_entities(
     state: "ChatState",
     query: str | None,
     entity_types: list[str] | None = None,
-    top_k: int = _DEFAULT_TOP_K,
+    top_k: int | None = _DEFAULT_TOP_K,
 ) -> tuple[bool, str]:
     """Returns ``(success, json)``. A failure to resolve access or run the
     search is reported as a failed call, never as "no matching entities"."""
@@ -67,7 +67,9 @@ async def execute_search_entities(
         supported = ", ".join(sorted(SEARCHABLE_ENTITY_TYPES))
         return False, _error(f"Unsupported entity_types {requested}; supported: {supported}")
 
-    bounded_top_k = max(1, min(top_k or _DEFAULT_TOP_K, _MAX_TOP_K))
+    bounded_top_k = max(
+        1, min(top_k if top_k is not None else _DEFAULT_TOP_K, _MAX_TOP_K)
+    )
     scope = derive_scope(state)
     try:
         context = await get_entity_access_context(

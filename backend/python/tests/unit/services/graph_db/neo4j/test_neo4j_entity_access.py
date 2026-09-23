@@ -192,7 +192,7 @@ class TestGetEntityCandidateRecords:
             ],
             "org1",
         )
-        assert out == {"t1": [row], "t2": []}
+        assert out == {("topic", "t1"): [row], ("topic", "t2"): []}
 
     @pytest.mark.asyncio
     async def test_query_failure_propagates(self) -> None:

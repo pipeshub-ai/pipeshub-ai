@@ -214,7 +214,7 @@ async def _fetch_candidates(
     record_types: list[str] | None,
     limit_per_entity: int,
     offset: int,
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
     try:
         return await graph_provider.get_entity_candidate_records(
             refs,
@@ -253,7 +253,9 @@ async def _run_probes(
             limit_per_entity=PROBE_BATCH,
             offset=round_index * PROBE_BATCH,
         )
-        rows_by_probe = {id(p): by_entity.get(p.entity_id) or [] for p in pending}
+        rows_by_probe = {
+            id(p): by_entity.get((p.entity_type, p.entity_id)) or [] for p in pending
+        }
         permitted = await _filter_permitted_rows(
             graph_provider, context, [row for rows in rows_by_probe.values() for row in rows],
         )
@@ -420,7 +422,7 @@ async def list_accessible_entity_records(
             limit_per_entity=size,
             offset=offset,
         )
-        batch = by_entity.get(entity_id) or []
+        batch = by_entity.get((entity_type, entity_id)) or []
         permitted = await _filter_permitted_rows(graph_provider, context, batch)
         for index, row in enumerate(batch):
             if row.get("_key") not in permitted:

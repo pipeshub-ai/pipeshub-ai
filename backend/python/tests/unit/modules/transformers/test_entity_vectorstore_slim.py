@@ -71,6 +71,10 @@ class TestUpsertPayloadShape:
     async def test_upsert_uses_deterministic_id_and_slim_payload(self) -> None:
         vector_db_service = MagicMock()
         vector_db_service.upsert_points = AsyncMock(return_value=None)
+        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
+        vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[], next_offset=None)
+        )
         store = _make_store(vector_db_service)
         entity = _entity(entity_id="e1", org_id="org-1", name="Legal", aliases=["Law"])
 
@@ -99,6 +103,10 @@ class TestUpsertPayloadShape:
     async def test_upsert_includes_populated_membership_arrays(self) -> None:
         vector_db_service = MagicMock()
         vector_db_service.upsert_points = AsyncMock(return_value=None)
+        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
+        vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[], next_offset=None)
+        )
         store = _make_store(vector_db_service)
         entity = _entity(
             entity_id="e1",
@@ -195,9 +203,10 @@ class TestMembershipMerge:
         assert point.payload["recordGroupIds"] == ["group_A"]
 
     @pytest.mark.asyncio
-    async def test_merge_read_failure_falls_back_to_new_values_only(self) -> None:
-        """A transient read error must not block the upsert — it degrades to
-        exactly today's (pre-merge) behaviour for that one write."""
+    async def test_merge_read_failure_skips_the_write(self) -> None:
+        """The point ID is deterministic, so upserting against an unknown
+        state would replace the stored membership with only this caller's
+        ids. Skipping leaves the point intact for the next write."""
         vector_db_service = MagicMock()
         vector_db_service.upsert_points = AsyncMock(return_value=None)
         vector_db_service.filter_collection = AsyncMock(
@@ -213,8 +222,33 @@ class TestMembershipMerge:
 
         await store.upsert_entities_batch([entity])
 
+        vector_db_service.upsert_points.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_merge_read_failure_skips_only_the_failing_entity(self) -> None:
+        """One bad read must not cost the other 63 entities in the batch."""
+        vector_db_service = MagicMock()
+        vector_db_service.upsert_points = AsyncMock(return_value=None)
+        vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[], next_offset=None)
+        )
+
+        async def _filter(must):
+            if must["metadata.entityId"] == "bad":
+                raise RuntimeError("vector db down")
+            return {"must": []}
+
+        vector_db_service.filter_collection = AsyncMock(side_effect=_filter)
+        store = _make_store(vector_db_service)
+        entities = [
+            _entity(entity_id="bad", entity_type=EntityType.DEPARTMENT, name="Bad"),
+            _entity(entity_id="good", entity_type=EntityType.DEPARTMENT, name="Good"),
+        ]
+
+        await store.upsert_entities_batch(entities)
+
         (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert point.payload["recordGroupIds"] == ["group_B"]
+        assert point.payload["metadata"]["entityId"] == "good"
 
 
 class TestConcurrentMergeIsSerialised:

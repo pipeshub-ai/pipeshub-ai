@@ -776,9 +776,26 @@ class RecordEventHandler(BaseEventService):
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([ virtual_record_id])
                 entity_store = self._entity_vector_store()
                 if entity_store is not None:
-                    await entity_store.delete_entity(
-                        payload.get("orgId", ""), EntityType.RECORD.value, record_id
-                    )
+                    # delete_entity filters on orgId, so an empty one would
+                    # match no point and strand the entity. The fallback read
+                    # is non-raising: the embeddings are already gone, and an
+                    # unreadable graph must not fail the delete.
+                    org_id = payload.get("orgId")
+                    if not org_id:
+                        record_doc = await self.event_processor.graph_provider.get_document(
+                            record_id, CollectionNames.RECORDS.value
+                        )
+                        org_id = (record_doc or {}).get("orgId")
+                    if org_id:
+                        await entity_store.delete_entity(
+                            org_id, EntityType.RECORD.value, record_id
+                        )
+                    else:
+                        self.logger.warning(
+                            "deleteRecord %s carries no orgId and the record is gone; "
+                            "its entity point is left for reconciliation",
+                            record_id,
+                        )
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1407,8 +1424,12 @@ class RecordEventHandler(BaseEventService):
                     indexing_status = record.get("indexingStatus")
                     virtual_record_id = record.get("virtualRecordId")
                     if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
-                        await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
-                        await self._reconcile_promoted_duplicates(record_id, virtual_record_id)
+                        promoted = await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
+                        # Reconciliation walks every sibling of the vrid, so
+                        # running it when nothing was promoted costs the whole
+                        # duplicate group on each completion.
+                        if promoted:
+                            await self._reconcile_promoted_duplicates(record_id, virtual_record_id)
                         if indexing_status == ProgressStatus.COMPLETED.value:
                             # Duplicates just became searchable too. They can live in
                             # a different KB than this record, which only the TTL
