@@ -329,6 +329,35 @@ class TestExecuteSearchFanOut:
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_fan_out_interleaves_sources_by_rank(self, mock_parse) -> None:
+        """Each source's scores are ranks within its own search; sorting them
+        together would let the higher-scoring search take every top slot."""
+        def response(vrid: str, scores: list[float]) -> dict:
+            return {
+                "status_code": 200,
+                "searchResults": [
+                    {"score": score, "metadata": {"virtualRecordId": vrid, "blockId": f"{vrid}{i}"}}
+                    for i, score in enumerate(scores)
+                ],
+                "virtual_to_record_map": {vrid: {"id": vrid}},
+            }
+
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [
+            response("a", [0.9, 0.8, 0.7]),
+            response("b", [0.02, 0.01]),
+        ]
+        state = _full_path_state(retrieval, filters={"apps": [], "kb": ["kb-1", "kb-2"]})
+        builder_patch, render_patch, blob_patch = _pipeline()
+        with builder_patch as mock_builder, render_patch, blob_patch:
+            await execute_search(state, "test query", source_ids=["kb-1", "kb-2"])
+
+        hits = mock_builder.return_value.build.call_args.args[0]
+        assert [h["metadata"]["blockId"] for h in hits] == ["a0", "b0", "a1", "b1", "a2"]
+        assert [h["score"] for h in hits] == sorted((h["score"] for h in hits), reverse=True)
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
     async def test_retrieval_status_202_treated_as_error(self, mock_parse) -> None:
         retrieval = AsyncMock()
         retrieval.search_with_filters.return_value = {
