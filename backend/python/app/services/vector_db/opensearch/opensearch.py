@@ -616,7 +616,12 @@ class OpenSearchService(IVectorDBService):
         try:
             mapping = await self.client.indices.get_mapping(index=collection_name)  # type: ignore
             props = mapping.get(collection_name, {}).get("mappings", {}).get("properties", {})
-            space_type = props.get("dense_embedding", {}).get("space_type", "")
+            dense_emb = props.get("dense_embedding", {})
+            # Prefer the nested method.space_type path (OpenSearch k-NN plugin
+            # stores it there for method-based indices); fall back to the
+            # top-level space_type field for older index mappings.
+            method = dense_emb.get("method", {})
+            space_type = method.get("space_type", "") or dense_emb.get("space_type", "")
             is_cosine = space_type == "cosinesimil"
             self._is_cosine_cache[collection_name] = is_cosine
             return is_cosine
@@ -736,7 +741,15 @@ class OpenSearchService(IVectorDBService):
 
             result = await self.client.search(**search_kwargs)  # type: ignore
             hits = result.get("hits", {}).get("hits", [])
-            is_cosine = await self._is_cosine_index(collection_name)
+            # Only apply cosine-score normalisation for dense-only requests
+            # (no text/BM25 leg).  Hybrid scores come from the RRF pipeline
+            # and are already rank-fused; applying (2s-1) there would corrupt
+            # them.  Text-only requests have no dense scores to normalise.
+            is_cosine = (
+                req.dense_query is not None
+                and req.text_query is None
+                and await self._is_cosine_index(collection_name)
+            )
             return [OpenSearchUtils.hit_to_search_result(h, is_cosine) for h in hits]
 
         # Agent retrieval issues one request per source, so this fan-out is

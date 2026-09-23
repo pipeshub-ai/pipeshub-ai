@@ -5130,8 +5130,19 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_corpus_revision(self, org_id: str) -> str:
         """Get the current corpus revision for an organization.
-        
-        Returns a string representation of the revision (e.g. "0" if not set).
+
+        Returns:
+            A string representation of the revision (e.g. ``"0"`` for a
+            successful lookup where no revision has been stored yet).
+
+        Raises:
+            RuntimeError: When the underlying database client is not connected.
+            Exception: When ``execute_query`` fails.
+
+        Callers that use the revision to scope a semantic-cache lookup MUST
+        catch exceptions and treat a failure as ``None`` (cache bypass), so
+        that a read failure does not silently collapse all orgs into the
+        ``"0"`` cache scope.
         """
         pass
 

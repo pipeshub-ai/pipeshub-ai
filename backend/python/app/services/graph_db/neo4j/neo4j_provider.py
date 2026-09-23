@@ -19631,9 +19631,15 @@ class Neo4jProvider(IGraphDBProvider):
             return None
 
     async def get_corpus_revision(self, org_id: str) -> str:
-        """Get the current corpus revision for an organization."""
+        """Get the current corpus revision for an organization.
+
+        Raises RuntimeError when the Neo4j client is not connected so callers
+        (e.g. the semantic cache bypass in askAIStream) receive a clear signal
+        rather than a silent "0" that would incorrectly merge all orgs into the
+        same cache scope.
+        """
         if not self.client:
-            return "0"
+            raise RuntimeError("Neo4j client not connected")
         query = """
         MATCH (r:CorpusRevision {orgId: $org_id})
         RETURN toString(r.revision) AS revision
@@ -19644,9 +19650,12 @@ class Neo4jProvider(IGraphDBProvider):
         return "0"
 
     async def increment_corpus_revision(self, org_id: str) -> str:
-        """Atomically increment and return the corpus revision for an organization."""
+        """Atomically increment and return the corpus revision for an organization.
+
+        Raises RuntimeError when the Neo4j client is not connected.
+        """
         if not self.client:
-            return "0"
+            raise RuntimeError("Neo4j client not connected")
         query = """
         MERGE (r:CorpusRevision {orgId: $org_id})
         ON CREATE SET r.revision = 1

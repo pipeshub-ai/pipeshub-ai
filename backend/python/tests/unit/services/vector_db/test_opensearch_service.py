@@ -981,6 +981,8 @@ def _make_os_service():
     svc.config_service = MagicMock()
     svc._cfg = None
     svc._client_loop = None
+    # _is_cosine_cache must exist so _is_cosine_index doesn't raise AttributeError
+    svc._is_cosine_cache = {}
     client = MagicMock()
     # Make transport.perform_request awaitable for pipeline tests
     client.transport = MagicMock()
@@ -988,6 +990,8 @@ def _make_os_service():
     client.indices = MagicMock()
     client.indices.exists = AsyncMock(return_value=False)
     client.indices.create = AsyncMock()
+    # get_mapping used by _is_cosine_index; return empty mapping so it doesn't error
+    client.indices.get_mapping = AsyncMock(return_value={})
     client.search = AsyncMock(return_value={"hits": {"hits": []}})
     client.delete_by_query = AsyncMock()
     client.update_by_query = AsyncMock()
@@ -1000,6 +1004,7 @@ class TestOpenSearchPipelineGating:
     async def test_single_leg_query_omits_search_pipeline(self):
         """Dense-only request must not pass search_pipeline kwarg to client.search."""
         from app.services.vector_db.models import HybridSearchRequest, FilterExpression
+        from unittest.mock import patch
         svc = _make_os_service()
 
         req = HybridSearchRequest(
@@ -1008,7 +1013,10 @@ class TestOpenSearchPipelineGating:
             filter=FilterExpression(),
             limit=5,
         )
-        await svc.query_nearest_points("records", [req])
+        # Patch _is_cosine_index so this test stays focused on pipeline-param
+        # presence and is not affected by mapping-inspection logic.
+        with patch.object(svc, "_is_cosine_index", AsyncMock(return_value=False)):
+            await svc.query_nearest_points("records", [req])
 
         call_kwargs = svc.client.search.call_args.kwargs
         assert "params" not in call_kwargs or "search_pipeline" not in call_kwargs.get("params", {}), (
@@ -1019,6 +1027,7 @@ class TestOpenSearchPipelineGating:
     async def test_hybrid_query_uses_search_pipeline(self):
         """Dense + text_query request must pass search_pipeline to client.search."""
         from app.services.vector_db.models import HybridSearchRequest, FilterExpression
+        from unittest.mock import patch
         svc = _make_os_service()
 
         req = HybridSearchRequest(
@@ -1027,7 +1036,10 @@ class TestOpenSearchPipelineGating:
             filter=FilterExpression(),
             limit=5,
         )
-        await svc.query_nearest_points("records", [req])
+        # Patch _is_cosine_index so this test stays focused on pipeline-param
+        # presence and is not affected by mapping-inspection logic.
+        with patch.object(svc, "_is_cosine_index", AsyncMock(return_value=False)):
+            await svc.query_nearest_points("records", [req])
 
         call_kwargs = svc.client.search.call_args.kwargs
         params = call_kwargs.get("params", {})

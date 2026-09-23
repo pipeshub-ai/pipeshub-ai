@@ -362,6 +362,33 @@ class AccessibleRecordsInvalidator:
         self.graph_provider = graph_provider
         self._scheduled_bumps: dict[str, asyncio.Task] = {}
 
+    async def close(self) -> None:
+        """Flush all pending corpus-revision increments and cancel their timers.
+
+        Call this from the application shutdown hook (e.g. FastAPI ``on_shutdown``)
+        to guarantee that any increment coalesced but not yet written to the graph
+        is applied before the worker exits.
+
+        This is SIGTERM-safe: it runs the increment synchronously for each
+        pending org before the event loop closes.  A hard ``kill -9`` will still
+        lose any outstanding bump, but that is acceptable under the TTL backstop.
+        """
+        orgs = list(self._scheduled_bumps.keys())
+        for org_id in orgs:
+            task = self._scheduled_bumps.pop(org_id, None)
+            if task is not None:
+                task.cancel()
+            try:
+                await self.graph_provider.increment_corpus_revision(org_id)
+                self.logger.info(
+                    "Flushed pending corpus revision bump for org %s on shutdown", org_id
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "Failed to flush corpus revision bump for org %s on shutdown: %s",
+                    org_id, str(e),
+                )
+
     async def on_connector_sync_completed(
         self, connector_id: str, org_id: str | None = None
     ) -> None:

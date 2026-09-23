@@ -22744,7 +22744,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         return "0"
 
     async def increment_corpus_revision(self, org_id: str) -> str:
-        """Atomically increment and return the corpus revision for an organization."""
+        """Atomically increment and return the corpus revision for an organization.
+
+        Retries the UPSERT exactly once when ArangoDB raises unique-constraint
+        error 1210 (can occur on a concurrent INSERT/UPDATE race).  Any other
+        error, and any failure on the retry attempt, is propagated to the caller.
+        """
         query = """
         UPSERT { _key: @org_id }
         INSERT { _key: @org_id, orgId: @org_id, revision: 1 }
@@ -22752,7 +22757,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
         IN CorpusRevision
         RETURN TO_STRING(NEW.revision)
         """
-        results = await self.execute_query(query, bind_vars={"org_id": org_id})
-        if results and results[0] is not None:
-            return str(results[0])
-        return "0"
+        for attempt in range(2):
+            try:
+                results = await self.execute_query(query, bind_vars={"org_id": org_id})
+                if results and results[0] is not None:
+                    return str(results[0])
+                return "0"
+            except Exception as exc:
+                # ArangoDB error 1210 is a unique-constraint violation that can
+                # arise from a concurrent UPSERT race.  Retry once; propagate
+                # all other errors immediately, and propagate 1210 on the second
+                # attempt.
+                if "1210" in str(exc) and attempt == 0:
+                    continue
+                raise
+        return "0"  # unreachable; satisfies the type checker
+

@@ -17,14 +17,17 @@ from app.services.vector_db.models import (
 )
 from app.services.vector_db.collections import CollectionType
 
+
 class SemanticCacheScope(BaseModel):
     orgId: str
     userId: str
     permissionsRevision: str
-    corpusRevision: int
+    corpusRevision: str
     filters: dict | None = None
 
+
 logger = logging.getLogger(__name__)
+
 
 class SemanticCacheService:
     def __init__(
@@ -39,13 +42,18 @@ class SemanticCacheService:
     async def initialize(self, embedding_dimension: int) -> None:
         if self._initialized:
             return
-            
+
         exists = await self.vector_db.collection_exists(self.collection_name)
         if not exists:
             config = CollectionConfig(embedding_size=embedding_dimension)
             await self.vector_db.create_collection(self.collection_name, config)
-            
-        await self.vector_db.create_index(self.collection_name, "filters_hash", {"type": "keyword"})
+
+        # Index on the nested metadata field so filters survive OpenSearch
+        # document conversion (top-level payload fields are discarded by the
+        # vector_point_to_document adapter; only metadata.* survives).
+        await self.vector_db.create_index(
+            self.collection_name, "metadata.filters_hash", {"type": "keyword"}
+        )
         self._initialized = True
 
     async def get_cached_response(
@@ -58,7 +66,9 @@ class SemanticCacheService:
             req = HybridSearchRequest(
                 dense_query=embedding,
                 filter=FilterExpression(
-                    must=[FieldCondition(key="filters_hash", value=filters_hash)]
+                    # Use metadata.filters_hash because OpenSearch stores custom
+                    # cache fields inside the metadata sub-document.
+                    must=[FieldCondition(key="metadata.filters_hash", value=filters_hash)]
                 ),
                 limit=1,
                 with_payload=True
@@ -68,7 +78,10 @@ class SemanticCacheService:
                 top_match = results[0][0]
                 if top_match.score >= self.threshold:
                     logger.info(f"Semantic cache hit! Score: {top_match.score}")
-                    return top_match.payload.get("response_text")
+                    # response_text lives in metadata.response_text after the
+                    # OpenSearch round-trip (hit_to_search_result rebuilds payload
+                    # as {"metadata": {...}, "page_content": ...}).
+                    return top_match.payload.get("metadata", {}).get("response_text")
         except Exception as e:
             logger.error(f"Error reading from semantic cache: {e}", exc_info=True)
         return None
@@ -80,40 +93,61 @@ class SemanticCacheService:
         embedding: list[float],
         filters_hash: str,
         org_id: str,
-        corpus_revision: int
+        corpus_revision: str,
     ) -> None:
         try:
+            # Store all cache-specific fields inside the `metadata` sub-document
+            # so they survive the OpenSearch adapter's vector_point_to_document /
+            # hit_to_search_result round-trip.  Top-level payload fields (other
+            # than page_content / connectorIds / recordGroupIds) are dropped by
+            # the adapter.
             point = VectorPoint(
                 id=str(uuid.uuid4()),
                 dense_vector=embedding,
                 payload={
-                    "query_text": query,
-                    "response_text": response_text,
-                    "filters_hash": filters_hash,
-                    "orgId": org_id,
-                    "corpusRevision": corpus_revision,
-                    "createdAt": int(time.time()),
+                    "page_content": query,
+                    "metadata": {
+                        "query_text": query,
+                        "response_text": response_text,
+                        "filters_hash": filters_hash,
+                        "orgId": org_id,
+                        "corpusRevision": corpus_revision,
+                        "createdAt": int(time.time()),
+                    },
                 }
             )
             await self.vector_db.upsert_points(self.collection_name, [point])
             logger.info("Saved response to semantic cache.")
-            
+
             # Fire-and-forget stale entry purge
             import asyncio
             asyncio.create_task(self.purge_stale_entries(org_id, corpus_revision))
         except Exception as e:
             logger.error(f"Error writing to semantic cache: {e}", exc_info=True)
 
-    async def purge_stale_entries(self, org_id: str, current_revision: int) -> None:
+    async def purge_stale_entries(self, org_id: str, current_revision: str) -> None:
         try:
             filter_expr = FilterExpression(
-                must=[FieldCondition(key="orgId", value=org_id)],
-                must_not=[FieldCondition(key="corpusRevision", value=current_revision)]
+                must=[FieldCondition(key="metadata.orgId", value=org_id)],
+                must_not=[FieldCondition(key="metadata.corpusRevision", value=current_revision)]
             )
             await self.vector_db.delete_points(self.collection_name, filter_expr)
             logger.debug(f"Purged stale semantic cache entries for org {org_id}")
         except Exception as e:
             logger.warning(f"Failed to purge stale semantic cache entries: {e}")
 
+
 def hash_filters(scope: SemanticCacheScope) -> str:
-    return hashlib.sha256(scope.model_dump_json(exclude_none=True).encode()).hexdigest()
+    """Produce a stable SHA-256 hex digest for a SemanticCacheScope.
+
+    Keys are sorted recursively (via json.dumps sort_keys=True) so that
+    equivalent filter dicts with different insertion orders hash identically.
+    None values are excluded via model_dump's exclude_none so they do not
+    contribute to the hash.
+    """
+    canonical = json.dumps(
+        scope.model_dump(exclude_none=True),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
