@@ -34,3 +34,6 @@ class CONFIG:
     # Controls whether coding_sandbox.* tools are exposed to agents.
     # Defaults to enabled; admins can disable from Labs.
     ENABLE_CODE_EXECUTION = "ENABLE_CODE_EXECUTION"
+    # Reorders search results with the configured reranker model before the
+    # model reads them. Defaults to disabled; admins opt in from Labs.
+    ENABLE_RERANKER = "ENABLE_RERANKER"

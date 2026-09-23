@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
+    from app.modules.reranker.resolver import RerankerResolver
     from app.utils.stage_timer import StageTimer
 
 logger = logging.getLogger(__name__)
@@ -254,7 +255,7 @@ async def run_agent_loop_stream(
     log: logging.Logger,
     retrieval_service: Any,
     graph_provider: Any,
-    reranker_service: Any,
+    reranker_resolver: RerankerResolver | None,
     config_service: Any,
     org_info: dict[str, Any] | None = None,
     model_name: str | None = None,
@@ -324,7 +325,7 @@ async def run_agent_loop_stream(
         query_info = exclude_from_query(query_info, demo_excluded)
         chat_state = build_initial_state(
             query_info, user_info, llm, log, retrieval_service, graph_provider,
-            reranker_service, config_service, model_name, model_key, org_info,
+            reranker_resolver, config_service, model_name, model_key, org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
             has_slack_connector=has_slack_connector, client_name=client_name,
             entity_vector_store=entity_vector_store,

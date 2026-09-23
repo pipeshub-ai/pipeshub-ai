@@ -45,6 +45,8 @@ class RetrievedRecordPayload(BaseModel):
     # 1-based position of the record in what the model was shown, most
     # relevant first. None when the record was not ranked (e.g. a fetch).
     relevanceRank: int | None = None
+    # Best reranker score among the record's blocks; None when not reranked.
+    rerankScore: float | None = None
     fetched: list[FetchedRangePayload] = Field(default_factory=list)
 
 

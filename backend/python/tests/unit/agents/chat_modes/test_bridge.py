@@ -240,7 +240,7 @@ class TestRunChatStream:
             "log": MagicMock(),
             "retrieval_service": AsyncMock(),
             "graph_provider": MagicMock(),
-            "reranker_service": MagicMock(),
+            "reranker_resolver": MagicMock(),
             "config_service": config_service,
         }
 
@@ -818,7 +818,7 @@ class TestRunChatStreamNoToolsDegradation:
             "log": MagicMock(),
             "retrieval_service": AsyncMock(),
             "graph_provider": MagicMock(),
-            "reranker_service": MagicMock(),
+            "reranker_resolver": MagicMock(),
             "config_service": AsyncMock(),
             "supports_tool_calls": False,
         }

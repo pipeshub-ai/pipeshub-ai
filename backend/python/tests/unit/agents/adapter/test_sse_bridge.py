@@ -518,7 +518,7 @@ class TestRunAgentLoopStream:
             "log": MagicMock(),
             "retrieval_service": MagicMock(),
             "graph_provider": MagicMock(),
-            "reranker_service": MagicMock(),
+            "reranker_resolver": MagicMock(),
             "config_service": MagicMock(),
         }
 

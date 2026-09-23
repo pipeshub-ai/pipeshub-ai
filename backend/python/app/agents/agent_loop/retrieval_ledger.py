@@ -23,6 +23,7 @@ from app.agents.agent_loop.protocol.retrieval_context import (
     RetrievedRecordPayload,
 )
 from app.modules.retrieval.context.ordering import RELEVANCE_RANK_KEY
+from app.modules.retrieval.context.ranking import RERANK_SCORE_KEY
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
@@ -44,12 +45,14 @@ class _RecordDelta:
     summary_hit: bool = False
     max_score: float | None = None
     relevance_rank: int | None = None
+    rerank_score: float | None = None
     fetched: list[FetchedRangePayload] = field(default_factory=list)
 
     def observe_score(self, score: object) -> None:
-        if isinstance(score, (int, float)) and not isinstance(score, bool):
-            value = float(score)
-            self.max_score = value if self.max_score is None else max(self.max_score, value)
+        self.max_score = _max_score(self.max_score, score)
+
+    def observe_rerank_score(self, score: object) -> None:
+        self.rerank_score = _max_score(self.rerank_score, score)
 
     def observe_rank(self, rank: object) -> None:
         if isinstance(rank, int) and not isinstance(rank, bool):
@@ -65,6 +68,7 @@ class _RecordDelta:
             summaryHit=self.summary_hit,
             maxScore=self.max_score,
             relevanceRank=self.relevance_rank,
+            rerankScore=self.rerank_score,
             fetched=self.fetched,
         )
 
@@ -79,6 +83,12 @@ class RetrievalDelta:
     @property
     def is_empty(self) -> bool:
         return not self.records and not self.known_record_ids
+
+
+def _max_score(current: float | None, score: object) -> float | None:
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        return current
+    return float(score) if current is None else max(current, float(score))
 
 
 def _str_or_none(value: object) -> str | None:
@@ -169,6 +179,7 @@ class RetrievalContextLedger:
                 delta.block_indices.append(block_index)
             delta.observe_score(block.get("score"))
             delta.observe_rank(block.get(RELEVANCE_RANK_KEY))
+            delta.observe_rerank_score(block.get(RERANK_SCORE_KEY))
 
     def _collect_fetches(
         self,

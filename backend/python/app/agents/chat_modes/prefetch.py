@@ -18,11 +18,13 @@ from typing import TYPE_CHECKING, Any
 
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.renderer import render_knowledge
+from app.modules.retrieval.context.reranking import ranker_for
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget
 
 if TYPE_CHECKING:
     import logging
 
+    from app.modules.reranker.resolver import RerankerResolver
     from app.modules.transformers.blob_storage import BlobStorage
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -81,6 +83,7 @@ async def prefetch_retrieval(
     force: bool = False,
     ref_mapper: CitationRefMapper | None = None,
     image_budget: ImageBudget | None = None,
+    reranker_resolver: RerankerResolver | None = None,
 ) -> PrefetchResult | None:
     """Runs upfront retrieval for the current query.
 
@@ -139,15 +142,18 @@ async def prefetch_retrieval(
     search_results = result.get("searchResults", [])
     virtual_to_record_map = result.get("virtual_to_record_map", {})
 
+    reranker = await reranker_resolver.active() if reranker_resolver else None
     knowledge = await KnowledgeContextBuilder(
         blob_store=blob_store,
         graph_provider=graph_provider,
         org_id=org_id,
         user_id=user_id,
         config_service=getattr(blob_store, "config_service", None),
+        ranker=ranker_for(reranker),
     ).build(
         search_results,
         virtual_to_record_map,
+        query=query,
         is_multimodal_llm=is_multimodal_llm,
         include_fk_children=True,
     )

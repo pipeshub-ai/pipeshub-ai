@@ -7,7 +7,7 @@ from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
 from app.config.configuration_service import ConfigurationService
-from app.modules.reranker.reranker import RerankerService
+from app.modules.reranker.resolver import RerankerResolver
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -47,7 +47,7 @@ class ChatState(TypedDict):
 
     retrieval_service: RetrievalService
     graph_provider: IGraphDBProvider
-    reranker_service: RerankerService
+    reranker_resolver: RerankerResolver | None
     config_service: ConfigurationService
     entity_vector_store: Any | None  # EntityVectorStore, optional for graceful degradation
 
@@ -447,7 +447,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
+                        reranker_resolver: RerankerResolver | None, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -558,7 +558,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "logger": logger,
         "retrieval_service": retrieval_service,
         "graph_provider": graph_provider,
-        "reranker_service": reranker_service,
+        "reranker_resolver": reranker_resolver,
         "config_service": config_service,
         "entity_vector_store": entity_vector_store,
         "model_name": model_name,

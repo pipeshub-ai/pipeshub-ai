@@ -138,6 +138,19 @@ class TestLedger:
         assert by_vrid["vr-2"].model_dump(exclude_none=True)["relevanceRank"] == 1
         assert "relevanceRank" not in by_vrid["vr-3"].model_dump(exclude_none=True)
 
+    def test_reports_each_records_best_rerank_score(self) -> None:
+        ledger = RetrievalContextLedger()
+        state = _state(final_results=[
+            {**_block("vr-1", 0), "rerank_score": 0.4},
+            {**_block("vr-1", 1), "rerank_score": 0.9},
+            _block("vr-2", 0),
+        ])
+
+        by_vrid = {r.virtualRecordId: r for r in ledger.take_delta(state).records}
+
+        assert by_vrid["vr-1"].rerankScore == 0.9
+        assert by_vrid["vr-2"].rerankScore is None
+
     def test_second_delta_contains_only_new_items(self) -> None:
         ledger = RetrievalContextLedger()
         state = _state(final_results=[_block("vr-1", 1)])

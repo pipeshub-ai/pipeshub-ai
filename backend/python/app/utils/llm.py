@@ -214,6 +214,12 @@ async def get_image_generation_config(config_service: ConfigurationService) -> d
     return _select_default_config(ai_models.get("imageGeneration") or [])
 
 
+async def get_reranker_config(config_service: ConfigurationService) -> dict | None:
+    """Return the active reranker model config, or ``None`` if unset."""
+    ai_models = await _load_ai_models(config_service)
+    return _select_default_config(ai_models.get("reranker") or [])
+
+
 async def _get_speech_config(
     config_service: ConfigurationService,
     bucket: str,

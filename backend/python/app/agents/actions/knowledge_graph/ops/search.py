@@ -26,6 +26,7 @@ from app.agents.actions.knowledge_graph.ops.results import (
 )
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.reranking import ranker_for
 from app.modules.retrieval.context.renderer import render_knowledge
 from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.transformers.blob_storage import BlobStorage
@@ -469,6 +470,8 @@ async def execute_search(
             graph_provider=graph_provider,
         )
         is_multimodal_llm = bool(state.get("is_multimodal_llm", False))
+        reranker_resolver = state.get("reranker_resolver")
+        reranker = await reranker_resolver.active() if reranker_resolver else None
 
         knowledge = await KnowledgeContextBuilder(
             blob_store=blob_store,
@@ -476,9 +479,11 @@ async def execute_search(
             org_id=org_id,
             user_id=user_id,
             config_service=config_service,
+            ranker=ranker_for(reranker),
         ).build(
             search_results,
             virtual_to_record_map,
+            query=query,
             is_multimodal_llm=is_multimodal_llm,
             # A fan-out already gave each source its own limit.
             max_units=None if per_source_fan_out else adjusted_limit,

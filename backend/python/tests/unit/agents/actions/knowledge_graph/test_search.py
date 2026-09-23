@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +16,9 @@ from app.agents.actions.knowledge_graph.ops.search import (
     resolve_record_scoped_entities,
 )
 from app.modules.retrieval.context.builder import KnowledgeContext
+from app.modules.retrieval.context.ranking import RelevanceRanker
 from app.modules.retrieval.context.renderer import RenderedKnowledge
+from app.modules.retrieval.context.reranking import RerankingRanker
 from app.modules.retrieval.entity_permissions import EntityAccessError
 
 _SEARCH = "app.agents.actions.knowledge_graph.ops.search"
@@ -432,6 +435,30 @@ class TestExecuteSearchFullPath:
             await execute_search(state, "test query")
 
         assert mock_builder.return_value.build.call_args.kwargs["max_units"] == 50
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_ranks_by_retrieval_score_when_no_reranker_is_active(self, mock_parse) -> None:
+        state = _full_path_state(_one_hit_retrieval())
+        state["reranker_resolver"] = MagicMock(active=AsyncMock(return_value=None))
+        builder_patch, render_patch, blob_patch = _pipeline()
+        with builder_patch as mock_builder, render_patch, blob_patch:
+            await execute_search(state, "test query")
+
+        assert type(mock_builder.call_args.kwargs["ranker"]) is RelevanceRanker
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_the_active_reranker_ranks_against_this_search_query(self, mock_parse) -> None:
+        state = _full_path_state(_one_hit_retrieval())
+        state["query"] = "the user's original question"
+        state["reranker_resolver"] = MagicMock(active=AsyncMock(return_value=MagicMock()))
+        builder_patch, render_patch, blob_patch = _pipeline()
+        with builder_patch as mock_builder, render_patch, blob_patch:
+            await execute_search(state, "hop query")
+
+        assert isinstance(mock_builder.call_args.kwargs["ranker"], RerankingRanker)
+        assert mock_builder.return_value.build.call_args.kwargs["query"] == "hop query"
 
     @pytest.mark.asyncio
     @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")

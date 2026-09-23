@@ -675,7 +675,7 @@ class TestGetServices:
         retrieval.llm = MagicMock()
         container.retrieval_service = AsyncMock(return_value=retrieval)
         container.graph_provider = AsyncMock(return_value=AsyncMock())
-        container.reranker_service.return_value = MagicMock()
+        container.reranker_resolver.return_value = MagicMock()
         container.config_service.return_value = MagicMock()
         container.logger.return_value = MagicMock()
         request.app.container = container
@@ -698,7 +698,7 @@ class TestChatStreamWithPlaceholder:
         services = {
             "graph_provider": AsyncMock(),
             "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
+            "reranker_resolver": MagicMock(),
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
@@ -752,7 +752,7 @@ class TestChatStreamWithPlaceholder:
         services = {
             "graph_provider": AsyncMock(),
             "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
+            "reranker_resolver": MagicMock(),
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
@@ -796,7 +796,7 @@ class TestChatStreamWithPlaceholder:
         services = {
             "graph_provider": AsyncMock(),
             "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
+            "reranker_resolver": MagicMock(),
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
@@ -838,7 +838,7 @@ class TestChatStreamWithPlaceholder:
         services = {
             "graph_provider": AsyncMock(),
             "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
+            "reranker_resolver": MagicMock(),
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
@@ -878,7 +878,7 @@ class TestChatStreamWithPlaceholder:
         services = {
             "graph_provider": AsyncMock(),
             "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
+            "reranker_resolver": MagicMock(),
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
@@ -1032,7 +1032,7 @@ class TestReasoningModelValidation:
         services = {
             "graph_provider": AsyncMock(),
             "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
+            "reranker_resolver": MagicMock(),
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
@@ -1081,7 +1081,7 @@ class TestKBFilterHandling:
         services = {
             "graph_provider": AsyncMock(),
             "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
+            "reranker_resolver": MagicMock(),
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
@@ -1122,7 +1122,7 @@ class TestKBFilterHandling:
         services = {
             "graph_provider": AsyncMock(),
             "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
+            "reranker_resolver": MagicMock(),
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),

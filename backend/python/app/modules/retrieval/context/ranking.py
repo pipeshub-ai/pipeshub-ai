@@ -2,17 +2,44 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from typing import Any
+
 from app.modules.retrieval.context.units import Unit, unit_score
 
+# Set on a unit a reranker scored; telemetry reports it.
+RERANK_SCORE_KEY = "rerank_score"
 
-class RelevanceRanker:
-    """Orders units most relevant first and keeps the best ``limit``.
 
-    Ranks by retrieval score; ties, and units without a score, keep the order
-    retrieval returned them in, so the ranking is deterministic.
+class UnitRanker(ABC):
+    """Orders units most relevant to ``query`` first and keeps the best ``limit``."""
+
+    @abstractmethod
+    async def rank(
+        self,
+        units: list[Unit],
+        *,
+        query: str,
+        records: dict[str, Any],
+        limit: int | None = None,
+    ) -> list[Unit]: ...
+
+
+class RelevanceRanker(UnitRanker):
+    """Ranks by retrieval score.
+
+    Ties, and units without a score, keep the order retrieval returned them
+    in, so the ranking is deterministic.
     """
 
-    def rank(self, units: list[Unit], limit: int | None = None) -> list[Unit]:
+    async def rank(
+        self,
+        units: list[Unit],
+        *,
+        query: str = "",
+        records: dict[str, Any] | None = None,
+        limit: int | None = None,
+    ) -> list[Unit]:
         ranked = [
             unit
             for _, unit in sorted(

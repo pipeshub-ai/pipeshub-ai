@@ -41,21 +41,21 @@ def _keys(units: list[dict]) -> list[tuple[str, int | None]]:
 
 
 class TestRelevanceRanker:
-    def test_most_relevant_first(self) -> None:
+    async def test_most_relevant_first(self) -> None:
         units = [_text("a", 0, 0.2), _text("b", 0, 0.9), _text("c", 0, 0.5)]
-        assert _keys(RelevanceRanker().rank(units)) == [("b", 0), ("c", 0), ("a", 0)]
+        assert _keys(await RelevanceRanker().rank(units)) == [("b", 0), ("c", 0), ("a", 0)]
 
-    def test_keeps_only_the_best_units(self) -> None:
+    async def test_keeps_only_the_best_units(self) -> None:
         units = [_text("a", 0, 0.2), _text("b", 0, 0.9), _text("c", 0, 0.5)]
-        assert _keys(RelevanceRanker().rank(units, limit=2)) == [("b", 0), ("c", 0)]
+        assert _keys(await RelevanceRanker().rank(units, limit=2)) == [("b", 0), ("c", 0)]
 
-    def test_a_table_ranks_by_its_best_matched_row(self) -> None:
+    async def test_a_table_ranks_by_its_best_matched_row(self) -> None:
         units = [_text("a", 0, 0.5), _table("t", {4: 0.1, 5: 0.8})]
-        assert _keys(RelevanceRanker().rank(units)) == [("t", 4), ("a", 0)]
+        assert _keys(await RelevanceRanker().rank(units)) == [("t", 4), ("a", 0)]
 
-    def test_ties_and_unscored_units_keep_retrieval_order(self) -> None:
+    async def test_ties_and_unscored_units_keep_retrieval_order(self) -> None:
         units = [_text("a", 0), _text("b", 0, 0.5), _text("c", 0, 0.5), _text("d", 0)]
-        assert _keys(RelevanceRanker().rank(units)) == [("b", 0), ("c", 0), ("a", 0), ("d", 0)]
+        assert _keys(await RelevanceRanker().rank(units)) == [("b", 0), ("c", 0), ("a", 0), ("d", 0)]
 
 
 class TestExpandNeighbours:
@@ -65,9 +65,9 @@ class TestExpandNeighbours:
         assert _keys(expanded) == [("a", 1), ("a", 0), ("a", 2)]
         assert "score" not in expanded[1]
 
-    def test_only_around_units_that_survived(self) -> None:
+    async def test_only_around_units_that_survived(self) -> None:
         records = {"a": _record(*[BlockType.TEXT.value] * 6)}
-        kept = RelevanceRanker().rank([_text("a", 1, 0.9), _text("a", 4, 0.1)], limit=1)
+        kept = await RelevanceRanker().rank([_text("a", 1, 0.9), _text("a", 4, 0.1)], limit=1)
         assert _keys(expand_neighbours(kept, records)) == [("a", 1), ("a", 0), ("a", 2)]
 
     def test_never_repeats_a_block_already_shown(self) -> None:

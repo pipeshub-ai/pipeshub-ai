@@ -48,6 +48,7 @@ from app.modules.parsers.pdf.pdf_rasterizer import (
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
+from app.modules.reranker.resolver import RerankerResolver
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
@@ -297,6 +298,11 @@ async def get_config_service(request: Request) -> ConfigurationService:
 async def get_run_cancellation_registry(request: Request) -> RunCancellationRegistry:
     container: QueryAppContainer = request.app.container
     return container.run_cancellation_registry()
+
+
+async def get_reranker_resolver(request: Request) -> RerankerResolver:
+    container: QueryAppContainer = request.app.container
+    return container.reranker_resolver()
 
 
 async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1279,6 +1285,7 @@ async def _generate_chat_stream_via_agent_loop(
     graph_provider: IGraphDBProvider,
     config_service: ConfigurationService,
     cancellation_registry: RunCancellationRegistry | None = None,
+    reranker_resolver: RerankerResolver | None = None,
 ) -> AsyncGenerator[str, None]:
     """Adapts a validated `ChatQuery` + the authenticated request into the
     plain-dict `query_info`/`user_info` contract `chat_modes.run_chat_stream()`
@@ -1442,7 +1449,7 @@ async def _generate_chat_stream_via_agent_loop(
     async with aclosing(run_chat_stream(
         query_dict, user_info, llm, policy, logger_,
         retrieval_service=retrieval_service, graph_provider=graph_provider,
-        reranker_service=None, config_service=config_service,
+        reranker_resolver=reranker_resolver, config_service=config_service,
         org_info=org_info,
         model_name=query_info.modelName, model_key=query_info.modelKey,
         is_multimodal_llm=is_multimodal_llm, context_length=context_length,
@@ -1531,6 +1538,7 @@ async def askAIStream(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(get_config_service),
     cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
+    reranker_resolver: RerankerResolver = Depends(get_reranker_resolver),
 ) -> StreamingResponse:
     """Perform semantic search across documents with streaming events and tool support.
 
@@ -1547,6 +1555,7 @@ async def askAIStream(
         graph_provider=graph_provider,
         config_service=config_service,
         cancellation_registry=cancellation_registry,
+        reranker_resolver=reranker_resolver,
     )
 
     return StreamingResponse(

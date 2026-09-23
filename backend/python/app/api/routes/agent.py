@@ -256,7 +256,7 @@ async def get_services(request: Request) -> dict[str, Any]:
 
     retrieval_service = await container.retrieval_service()
     graph_provider = await container.graph_provider()
-    reranker_service = container.reranker_service()
+    reranker_resolver = container.reranker_resolver()
     config_service = container.config_service()
     logger = container.logger()
 
@@ -272,7 +272,7 @@ async def get_services(request: Request) -> dict[str, Any]:
     return {
         "retrieval_service": retrieval_service,
         "graph_provider": graph_provider,
-        "reranker_service": reranker_service,
+        "reranker_resolver": reranker_resolver,
         "config_service": config_service,
         "logger": logger,
         "entity_vector_store": entity_vector_store,
@@ -3282,7 +3282,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         graph_provider = services["graph_provider"]
         retrieval_service = services["retrieval_service"]
-        reranker_service = services["reranker_service"]
+        reranker_resolver = services["reranker_resolver"]
         config_service = services["config_service"]
         entity_vector_store = services["entity_vector_store"]
         user_context = _get_user_context(request)
@@ -3918,7 +3918,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     logger,
                     retrieval_service,
                     graph_provider,
-                    reranker_service,
+                    reranker_resolver,
                     config_service,
                     org_info,
                     model_name=model_name,

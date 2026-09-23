@@ -23,6 +23,7 @@ from app.utils.chat_helpers import (
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
+    from app.modules.retrieval.context.ranking import UnitRanker
     from app.modules.retrieval.context.units import Unit
     from app.modules.transformers.blob_storage import BlobStorage
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -45,7 +46,7 @@ class KnowledgeContextBuilder:
         org_id: str,
         user_id: str,
         config_service: ConfigurationService | None = None,
-        ranker: RelevanceRanker | None = None,
+        ranker: UnitRanker | None = None,
     ) -> None:
         self._blob_store = blob_store
         self._graph_provider = graph_provider
@@ -59,11 +60,14 @@ class KnowledgeContextBuilder:
         search_results: list[dict[str, Any]],
         virtual_to_record_map: dict[str, Any],
         *,
+        query: str,
         is_multimodal_llm: bool,
         max_units: int | None = None,
         include_fk_children: bool = False,
     ) -> KnowledgeContext:
-        """``max_units`` caps the ranked units; neighbours come on top of it.
+        """``query`` is what the units are ranked against: the search that found them.
+
+        ``max_units`` caps the ranked units; neighbours come on top of it.
 
         ``include_fk_children`` adds the DDL of tables related by foreign key
         to any SQL table that survived ranking.
@@ -79,7 +83,7 @@ class KnowledgeContextBuilder:
             graph_provider=self._graph_provider,
         )
         units = [u for u in units if records.get(u.get("virtual_record_id")) is not None]
-        units = self._ranker.rank(units, max_units)
+        units = await self._ranker.rank(units, query=query, records=records, limit=max_units)
         units = expand_neighbours(units, records)
 
         kept = {unit.get("virtual_record_id") for unit in units}

@@ -55,3 +55,27 @@ async def test_top_n_is_applied_by_the_server(reranker) -> None:
         pytest.skip(f"{_TINY_RERANKER} unavailable: {exc}")
 
     assert len(hits) == 1
+
+
+async def test_units_reach_the_model_in_reranked_order(reranker) -> None:
+    from app.modules.retrieval.context.reranking import RerankingRanker
+
+    # Retrieval scored the off-topic passage highest; the cross-encoder should not.
+    units = [
+        {"virtual_record_id": "fruit", "block_index": 0, "block_type": "text", "score": 0.9,
+         "content": "Bananas are a good source of potassium and dietary fibre."},
+        {"virtual_record_id": "geo", "block_index": 3, "block_type": "text", "score": 0.4,
+         "content": "Paris is the capital and most populous city of France."},
+    ]
+    records = {"fruit": {"record_name": "Nutrition guide"}, "geo": {"record_name": "World capitals"}}
+    try:
+        await reranker.rerank("warm-up", ["model load"])
+    except Exception as exc:
+        pytest.skip(f"{_TINY_RERANKER} unavailable: {exc}")
+
+    ranked = await RerankingRanker(reranker).rank(
+        units, query="What is the capital of France?", records=records,
+    )
+
+    assert [u["virtual_record_id"] for u in ranked] == ["geo", "fruit"]
+    assert ranked[0]["rerank_score"] > ranked[1]["rerank_score"]

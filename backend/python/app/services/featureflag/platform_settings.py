@@ -123,3 +123,11 @@ async def is_user_context_enabled(config_service: Optional["ConfigurationService
     own ``sendUserContext`` field.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_USER_CONTEXT, default=True)
+
+
+async def is_reranker_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+    """Org-level gate for reranking search results. Source of truth is the
+    ``ENABLE_RERANKER`` platform feature flag. Defaults to DISABLED; admins
+    opt in from Labs.
+    """
+    return await _platform_flag(config_service, CONFIG.ENABLE_RERANKER, default=False)

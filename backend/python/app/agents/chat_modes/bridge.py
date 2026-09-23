@@ -81,6 +81,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
+    from app.modules.reranker.resolver import RerankerResolver
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +265,7 @@ async def _run_no_tools_degradation(
     *, query_info: dict[str, Any], user_info: dict[str, Any], llm: "BaseChatModel",
     policy: ChatModePolicy, log: logging.Logger, retrieval_service: Any, graph_provider: Any,
     config_service: Any, system_prompts_config: dict[str, Any], is_multimodal_llm: bool,
-    context_length: int,
+    context_length: int, reranker_resolver: RerankerResolver | None = None,
 ) -> AsyncGenerator[str, None]:
     """`supports_tool_calls=False` (Ollama) path. `internal_search` degrades
     gracefully to a single no-tools turn seeded with forced (`force=True`)
@@ -291,7 +292,7 @@ async def _run_no_tools_degradation(
         retrieval_service=retrieval_service, graph_provider=graph_provider, blob_store=blob_store,
         filters=query_info.get("filters"), limit=query_info.get("limit"),
         is_multimodal_llm=is_multimodal_llm, previous_conversations=query_info.get("previous_conversations"),
-        logger=log, force=True,
+        logger=log, force=True, reranker_resolver=reranker_resolver,
     )
     ref_mapper = prefetch.citation_ref_mapper if prefetch else CitationRefMapper()
     context_text = prefetch.formatted_context if prefetch else ""
@@ -326,7 +327,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     log: logging.Logger,
     retrieval_service: Any,
     graph_provider: Any,
-    reranker_service: Any,
+    reranker_resolver: RerankerResolver | None,
     config_service: Any,
     org_info: dict[str, Any] | None = None,
     model_name: str | None = None,
@@ -381,6 +382,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 retrieval_service=retrieval_service, graph_provider=graph_provider,
                 config_service=config_service, system_prompts_config=system_prompts_config,
                 is_multimodal_llm=is_multimodal_llm, context_length=context_length,
+                reranker_resolver=reranker_resolver,
             ):
                 yield event
         finally:
@@ -436,7 +438,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
         chat_state = build_initial_state(
             query_info, user_info, llm, log, retrieval_service, graph_provider,
-            reranker_service, config_service, model_name or "", model_key or "", org_info,
+            reranker_resolver, config_service, model_name or "", model_key or "", org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
             has_slack_connector=has_slack_connector, client_name=client_name,
             entity_vector_store=entity_vector_store,
@@ -498,6 +500,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                         # `prefetch_retrieval`'s `ref_mapper` docstring.
                         ref_mapper=ref_mapper,
                         image_budget=image_budget,
+                        reranker_resolver=reranker_resolver,
                     )
                 )
                 if policy.prefetch_retrieval else None

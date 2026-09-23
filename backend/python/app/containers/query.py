@@ -5,7 +5,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
-from app.modules.reranker.reranker import RerankerService
+from app.modules.reranker.resolver import RerankerResolver
 from app.services.vector_db.const.const import VECTOR_DB_ENTITIES_COLLECTION_NAME
 from app.utils.logger import create_logger
 
@@ -65,10 +65,7 @@ class QueryAppContainer(BaseAppContainer):
         blob_store=blob_store,
         collection_registry=collection_registry,
     )
-    reranker_service = providers.Singleton(
-        RerankerService,
-        model_name="BAAI/bge-reranker-base",  # Choose model based on speed/accuracy needs
-    )
+    reranker_resolver = providers.Singleton(RerankerResolver, config_service=config_service)
 
     # Stop Generation (Phase 3a): one registry per worker process, shared by
     # every `/chat/stream`, `/{agent_id}/chat/stream`, and `/chat/cancel`

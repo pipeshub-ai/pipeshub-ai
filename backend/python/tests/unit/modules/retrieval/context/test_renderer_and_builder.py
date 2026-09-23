@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.models.blocks import BlockType
+from app.modules.reranker.interface import IReranker, RerankHit
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.reranking import RerankingRanker
 from app.modules.retrieval.context.renderer import render_knowledge
 from app.utils.chat_helpers import CitationRefMapper
 
@@ -121,7 +123,7 @@ class TestKnowledgeContextBuilder:
         with flatten, graph as mock_graph, fk as mock_fk:
             knowledge = await KnowledgeContextBuilder(
                 blob_store=object(), graph_provider=object(), org_id="o1", user_id="u1",
-            ).build([], {}, is_multimodal_llm=False, max_units=2)
+            ).build([], {}, query="q", is_multimodal_llm=False, max_units=2)
 
         # a1 (lowest score) was cut; neighbours only around b2 and a4.
         assert [(u["virtual_record_id"], u["block_index"]) for u in knowledge.units] == [
@@ -133,12 +135,37 @@ class TestKnowledgeContextBuilder:
         mock_fk.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_reranker_decides_what_survives_and_what_is_read_first(self, records) -> None:
+        class _PrefersA4(IReranker):
+            model_name = "fake"
+
+            async def rerank(self, query, documents, top_n=None):
+                self.query = query
+                return [RerankHit(i, 1.0) for i, doc in enumerate(documents) if doc.endswith("a4")]
+
+        reranker = _PrefersA4()
+        units = [_unit("a", 4, "a4", 0.2), _unit("b", 2, "b2", 0.9), _unit("a", 1, "a1", 0.1)]
+        flatten, graph, fk = self._patches(units, records)
+        with flatten, graph, fk:
+            knowledge = await KnowledgeContextBuilder(
+                blob_store=object(), graph_provider=None, org_id="o1", user_id="u1",
+                ranker=RerankingRanker(reranker),
+            ).build([], {}, query="hop query", is_multimodal_llm=False, max_units=2)
+
+        assert reranker.query == "hop query"
+        # Retrieval liked b2 best; the reranker kept only a4, with its neighbours.
+        assert [(u["virtual_record_id"], u["block_index"]) for u in knowledge.units] == [
+            ("a", 3), ("a", 4), ("a", 5),
+        ]
+        assert set(knowledge.virtual_record_id_to_result) == {"a"}
+
+    @pytest.mark.asyncio
     async def test_keeps_only_the_records_it_shows(self, records) -> None:
         flatten, graph, fk = self._patches([_unit("b", 0, "b0", 0.9), _unit("a", 0, "a0", 0.1)], records)
         with flatten, graph, fk:
             knowledge = await KnowledgeContextBuilder(
                 blob_store=object(), graph_provider=None, org_id="o1", user_id="u1",
-            ).build([], {}, is_multimodal_llm=False, max_units=1)
+            ).build([], {}, query="q", is_multimodal_llm=False, max_units=1)
 
         assert set(knowledge.virtual_record_id_to_result) == {"b"}
 
@@ -148,6 +175,6 @@ class TestKnowledgeContextBuilder:
         with flatten, graph, fk as mock_fk:
             await KnowledgeContextBuilder(
                 blob_store=object(), graph_provider=object(), org_id="o1", user_id="u1",
-            ).build([], {}, is_multimodal_llm=False, include_fk_children=True)
+            ).build([], {}, query="q", is_multimodal_llm=False, include_fk_children=True)
 
         mock_fk.assert_awaited_once()

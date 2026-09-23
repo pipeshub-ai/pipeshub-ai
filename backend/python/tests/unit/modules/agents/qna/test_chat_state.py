@@ -27,7 +27,7 @@ def mock_deps():
         "logger": MagicMock(),
         "retrieval_service": MagicMock(),
         "graph_provider": MagicMock(),
-        "reranker_service": MagicMock(),
+        "reranker_resolver": MagicMock(),
         "config_service": MagicMock(),
         "model_name": "gpt-test",
         "model_key": "test-model-key",

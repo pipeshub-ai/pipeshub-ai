@@ -8,6 +8,7 @@ import pytest
 from app.agents.chat_modes.prefetch import PrefetchResult, prefetch_retrieval
 from app.modules.retrieval.context.builder import KnowledgeContext
 from app.modules.retrieval.context.renderer import RenderedKnowledge
+from app.modules.retrieval.context.reranking import RerankingRanker
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget
 
 LOGGER = logging.getLogger("test")
@@ -153,6 +154,17 @@ class TestSuccessfulPrefetch:
         # The system prompt is not subject to the tool-result cap: nothing is cut.
         assert build_kwargs.get("max_units") is None
         assert mock_render.call_args.kwargs.get("max_chars") is None
+
+    async def test_the_active_reranker_ranks_against_the_users_question(self) -> None:
+        resolver = MagicMock(active=AsyncMock(return_value=MagicMock()))
+        builder, render = _pipeline()
+        with builder as mock_builder, render:
+            await prefetch_retrieval(
+                **_make_kwargs(retrieval_service=_one_hit_retrieval(), reranker_resolver=resolver)
+            )
+
+        assert isinstance(mock_builder.call_args.kwargs["ranker"], RerankingRanker)
+        assert mock_builder.return_value.build.call_args.kwargs["query"] == "what is our refund policy?"
 
 
 class TestPrefetchImageCollection:
