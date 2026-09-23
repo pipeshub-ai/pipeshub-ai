@@ -75,6 +75,8 @@ class TestGetEntityAccessContext:
             "USER_APP_RELATION",
             "rg.orgId = $org_id",
             "child.orgId = $org_id",
+            # A hidden KB is reachable only when source_ids names it.
+            "coalesce(app.isHidden, false) = false",
         ):
             assert fragment in query, fragment
 
