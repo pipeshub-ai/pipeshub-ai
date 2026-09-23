@@ -1264,6 +1264,52 @@ class TestIndexingHealthCheck:
         body = json.loads(result.body)
         assert body["resource_governor"] == {"ceilings": {"index": 5}}
 
+    async def test_health_check_unhealthy_when_worker_loop_died(self) -> None:
+        """A consumer whose worker loop exited on its own can no longer index,
+        so the probe must fail instead of reporting healthy."""
+        import json
+
+        from app.indexing_main import health_check
+
+        consumer = MagicMock()
+        consumer.worker_loop_error = SystemExit("boom")
+        consumer.dispatch_stats.return_value = {}
+        mock_container = MagicMock()
+        mock_container.kafka_consumers = [("record", consumer, None)]
+
+        with (
+            patch("app.indexing_main.container", mock_container),
+            patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1),
+        ):
+            result = await health_check(_make_health_request())
+
+        assert result.status_code == 503
+        body = json.loads(result.body)
+        assert body["status"] == "unhealthy"
+        assert "SystemExit" in body["worker_loop_failures"]["record"]
+
+    async def test_health_check_healthy_with_live_worker_loop(self) -> None:
+        import json
+
+        from app.indexing_main import health_check
+
+        consumer = MagicMock()
+        consumer.worker_loop_error = None
+        consumer.dispatch_stats.return_value = {}
+        mock_container = MagicMock()
+        mock_container.kafka_consumers = [("record", consumer, None)]
+
+        with (
+            patch("app.indexing_main.container", mock_container),
+            patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1),
+        ):
+            result = await health_check(_make_health_request())
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["status"] == "healthy"
+        assert "worker_loop_failures" not in body
+
     async def test_health_check_general_exception(self):
         """Health check returns 500 when get_epoch_timestamp_in_ms raises on first call."""
         from app.indexing_main import health_check

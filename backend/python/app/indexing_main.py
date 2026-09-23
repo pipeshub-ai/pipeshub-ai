@@ -1518,8 +1518,12 @@ async def health_check(request: Request) -> JSONResponse:
         # light idle is attachments queueing on heavy parse, which is fine as
         # long as light keeps moving; both pinned means the node is full.
         dispatch: dict[str, Any] = {}
+        worker_loop_failures: dict[str, str] = {}
         for entry in getattr(container, "kafka_consumers", None) or []:
             consumer = entry[1] if len(entry) > 1 else None
+            worker_loop_error = getattr(consumer, "worker_loop_error", None)
+            if isinstance(worker_loop_error, BaseException):
+                worker_loop_failures[str(entry[0])] = repr(worker_loop_error)
             stats = getattr(consumer, "dispatch_stats", None)
             if not callable(stats):
                 continue
@@ -1529,8 +1533,13 @@ async def health_check(request: Request) -> JSONResponse:
                 dispatch[str(entry[0])] = {"error": str(stats_error)}
         if dispatch:
             content["dispatch"] = dispatch
+        if worker_loop_failures:
+            # The consumer stopped itself; nothing on this node indexes again
+            # until the process restarts.
+            content["status"] = "unhealthy"
+            content["worker_loop_failures"] = worker_loop_failures
         return JSONResponse(
-            status_code=200,
+            status_code=503 if worker_loop_failures else 200,
             content=content,
         )
     except Exception as e:

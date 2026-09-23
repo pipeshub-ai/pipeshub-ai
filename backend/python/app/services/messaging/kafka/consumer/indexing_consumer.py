@@ -201,6 +201,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.worker_executor: ThreadPoolExecutor | None = None
         self.worker_loop: asyncio.AbstractEventLoop | None = None
         self.worker_loop_ready = threading.Event()  # Signal when worker loop is ready
+        self.worker_loop_error: BaseException | None = None
         self.main_loop: asyncio.AbstractEventLoop | None = None
         # Nested active-pipeline and parsing gates (created in worker thread).
         # Legacy fallback only: unused (stay None) once a governor is set.
@@ -340,9 +341,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.worker_loop_ready.set()
 
             # Run the event loop until stopped
+            exit_error: BaseException | None = None
             try:
                 self.worker_loop.run_forever()
+            except BaseException as exc:
+                exit_error = exc
+                raise
             finally:
+                concurrency.record_worker_loop_exit(self, exit_error)
                 # Cancel all remaining tasks
                 pending = asyncio.all_tasks(self.worker_loop)
                 for task in pending:
@@ -364,6 +370,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         # Reset the ready event
         self.worker_loop_ready.clear()
+        self.worker_loop_error = None
 
         # Create executor with single worker thread
         self.worker_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="indexing-worker")
