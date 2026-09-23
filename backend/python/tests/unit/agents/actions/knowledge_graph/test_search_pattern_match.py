@@ -148,3 +148,36 @@ class TestAccumulatedStateIsRepaired:
 
         assert result.startswith("Top 1 block")
         assert isinstance(state[key], expected_type)
+
+
+class TestKeywordMatchesDoNotDisplaceStoredRecords:
+    """A keyword match is graph metadata. It once replaced the stored record
+    that prefetch had loaded for the same content, so a later citation of
+    that record had no name or MIME type and the conversation failed to
+    save."""
+
+    @pytest.mark.asyncio
+    async def test_a_stored_record_survives_a_keyword_match_on_it(self) -> None:
+        stored = {"id": "rec-1", "virtual_record_id": "vr-1", "record_name": "All Little Devils",
+                  "mime_type": "text/html", "block_containers": {"blocks": [], "block_groups": []}}
+        state = _state(
+            retrieval_service=_retrieval([]),
+            virtual_record_id_to_result={"vr-1": stored},
+            known_record_ids=set(),
+        )
+        graph_record = {"_key": "rec-1", "recordName": "All Little Devils", "virtualRecordId": "vr-1"}
+        builder, render, blob = _pipeline([])
+        with builder, render, blob, patch(
+            f"{_SEARCH}.run_pattern_match_with_llm_grep",
+            new_callable=AsyncMock, return_value=[{"raw": "record"}],
+        ), patch(
+            f"{_SEARCH}.merge_pattern_match_results",
+            new_callable=AsyncMock,
+            return_value=[{"virtual_record_id": "vr-1", "graph_record": graph_record}],
+        ):
+            result = await execute_search(state, "revenue")
+
+        assert state["virtual_record_id_to_result"]["vr-1"] is stored
+        assert all(r.get("record_name") for r in state.get("tool_records") or [])
+        assert "rec-1" in state["known_record_ids"], "so fetch is offered for it"
+        assert "All Little Devils" in result

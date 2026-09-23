@@ -25,6 +25,7 @@ from app.agents.actions.knowledge_graph.ops.results import (
     tool_output,
 )
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
+from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.manifest import manifest_registry
 from app.modules.retrieval.context.renderer import render_knowledge
@@ -45,6 +46,7 @@ from app.utils.image_admission import admission_from_state
 from app.utils.pattern_match import (
     cancel_task_if_running,
     merge_pattern_match_results,
+    pattern_match_record_ids,
     render_pattern_match_hint,
     run_pattern_match_with_llm_grep,
 )
@@ -531,6 +533,10 @@ async def execute_search(
                     logger_instance.info(
                         "Pattern match: %d record(s) found via grep", len(pm_record_entries),
                     )
+                    # Their Record IDs are shown for fetching, but they add no
+                    # stored record to the map, which is what normally grants
+                    # the fetch tool.
+                    remember_record_ids(state, pattern_match_record_ids(pm_record_entries))
             except Exception as exc:
                 logger_instance.warning(
                     "Pattern match merge failed, continuing with semantic results only: %s", exc,
@@ -643,8 +649,7 @@ async def execute_search(
                 "No results found.\n\n"
             )
         pm_hint = render_pattern_match_hint(
-            pm_record_entries, virtual_record_id_to_result,
-            has_semantic_blocks=has_semantic_blocks,
+            pm_record_entries, has_semantic_blocks=has_semantic_blocks,
         )
         text = summary + rendered.text + compose_result_tail(
             virtual_record_id_to_result, candidate_suffix,

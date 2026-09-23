@@ -8,23 +8,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.utils.pattern_match import (
-    DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
-    GrepCommandResult,
     _LLM_GREP_TIMEOUT,
     _MAX_GREP_OUTPUT_LINES,
     _MAX_LLM_GREP_COMMANDS,
     _MAX_SCOPED_SEARCH_PATHS,
     _PATTERN_MATCH_TIMEOUT,
+    DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+    GrepCommandResult,
     _build_root_grep,
     _build_synthetic_search_results,
     _ensure_null_delimited_pipeline,
-    _split_pipeline,
     _fetch_pattern_record,
     _get_frontend_url,
     _pre_validate_llm_grep,
     _record_in_time_range,
     _resolve_search_paths,
     _scope_grep_to_paths,
+    _split_pipeline,
     build_grep_command_from_query,
     cancel_task_if_running,
     cap_pattern_match_blocks,
@@ -32,13 +32,13 @@ from app.utils.pattern_match import (
     execute_pattern_match_pipeline,
     generate_grep_command_via_llm,
     merge_pattern_match_results,
+    pattern_match_record_ids,
     render_pattern_match_hint,
     resolve_connector_ids_for_search,
     run_pattern_match,
     run_pattern_match_with_llm_grep,
     validate_grep_command,
 )
-
 
 # ===========================================================================
 # build_grep_command_from_query
@@ -671,7 +671,10 @@ class TestMergePatternMatchResults:
         assert result[0]["virtual_record_id"] == "vr-1"
         assert result[0]["source"] == "pattern_match"
         assert result[0]["score"] == 0.0
-        assert vr_map["vr-1"] == graph_rec
+        assert result[0]["graph_record"] == graph_rec
+        # A graph record is metadata, not a stored record with blocks: in
+        # this map, fetch and citations would take it for one.
+        assert vr_map == {}
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_graph_records_found(self):
@@ -2078,14 +2081,24 @@ class TestExecutePatternMatchPipelineSkipValidation:
 # ===========================================================================
 
 
+class TestPatternMatchRecordIds:
+    def test_ids_come_from_each_entrys_graph_record(self):
+        entries = [
+            {"graph_record": {"_key": "rec-1"}},
+            {"graph_record": {"id": "rec-2"}},
+            {"virtual_record_id": "vr-without-graph-record"},
+        ]
+        assert pattern_match_record_ids(entries) == ["rec-1", "rec-2"]
+
+
 class TestRenderPatternMatchHint:
     def test_empty_records_returns_empty(self):
-        assert render_pattern_match_hint([], {}) == ""
+        assert render_pattern_match_hint([]) == ""
 
     def test_single_record_renders_full_metadata(self):
-        entries = [{"virtual_record_id": "vrid-1", "score": 0.0, "source": "pattern_match"}]
-        vr_map = {
-            "vrid-1": {
+        entries = [{
+            "virtual_record_id": "vrid-1", "score": 0.0, "source": "pattern_match",
+            "graph_record": {
                 "id": "rec-123",
                 "recordName": "Revenue Report Q3",
                 "recordType": "FILE",
@@ -2102,9 +2115,9 @@ class TestRenderPatternMatchHint:
                 "categories": ["Business"],
                 "subCategoryLevel1": "Finance",
             },
-        }
+        }]
 
-        result = render_pattern_match_hint(entries, vr_map)
+        result = render_pattern_match_hint(entries)
 
         assert "<record>" in result
         assert "</record>" in result
@@ -2129,55 +2142,45 @@ class TestRenderPatternMatchHint:
 
     def test_multiple_records(self):
         entries = [
-            {"virtual_record_id": "vrid-1"},
-            {"virtual_record_id": "vrid-2"},
+            {"virtual_record_id": "vrid-1",
+             "graph_record": {"id": "rec-1", "recordName": "Doc A", "recordType": "file"}},
+            {"virtual_record_id": "vrid-2",
+             "graph_record": {"_key": "rec-2", "recordName": "Doc B", "recordType": "file"}},
         ]
-        vr_map = {
-            "vrid-1": {"id": "rec-1", "recordName": "Doc A", "recordType": "file"},
-            "vrid-2": {"_key": "rec-2", "recordName": "Doc B", "recordType": "file"},
-        }
 
-        result = render_pattern_match_hint(entries, vr_map)
+        result = render_pattern_match_hint(entries)
 
         assert result.count("<record>") == 2
         assert "rec-1" in result
         assert "rec-2" in result
 
-    def test_skips_entries_missing_from_vr_map(self):
+    def test_skips_entries_without_a_graph_record(self):
         entries = [
-            {"virtual_record_id": "vrid-1"},
+            {"virtual_record_id": "vrid-1", "graph_record": {"id": "rec-1", "recordName": "Doc A"}},
             {"virtual_record_id": "vrid-missing"},
         ]
-        vr_map = {
-            "vrid-1": {"id": "rec-1", "recordName": "Doc A"},
-        }
 
-        result = render_pattern_match_hint(entries, vr_map)
+        result = render_pattern_match_hint(entries)
 
         assert result.count("<record>") == 1
         assert "rec-1" in result
 
     def test_caps_at_max_records(self):
-        entries = [{"virtual_record_id": f"vrid-{i}"} for i in range(10)]
-        vr_map = {
-            f"vrid-{i}": {"id": f"rec-{i}", "recordName": f"Doc {i}"}
+        entries = [
+            {"virtual_record_id": f"vrid-{i}",
+             "graph_record": {"id": f"rec-{i}", "recordName": f"Doc {i}"}}
             for i in range(10)
-        }
+        ]
 
-        result = render_pattern_match_hint(entries, vr_map, max_records=3)
+        result = render_pattern_match_hint(entries, max_records=3)
 
         assert result.count("<record>") == 3
         assert "rec-0" in result
         assert "rec-2" in result
         assert "rec-3" not in result
 
-    def test_returns_empty_when_no_vr_map_matches(self):
-        entries = [{"virtual_record_id": "vrid-gone"}]
-        vr_map = {}
-
-        result = render_pattern_match_hint(entries, vr_map)
-
-        assert result == ""
+    def test_returns_empty_when_no_entry_has_a_graph_record(self):
+        assert render_pattern_match_hint([{"virtual_record_id": "vrid-gone"}]) == ""
 
 
 # ===========================================================================
@@ -2609,7 +2612,9 @@ class TestRunPatternMatchPermissionModel:
         return {"virtual_record_id": vrid, "match_count": count}
 
     def _make_containers(self, *, app_ids_trusted=frozenset(), fallback_reason=None):
-        from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+        from app.services.graph_db.interface.graph_db_provider import (
+            AccessibleContainers,
+        )
         return AccessibleContainers(
             app_ids_trusted=app_ids_trusted,
             fallback_reason=fallback_reason,
@@ -2806,7 +2811,9 @@ class TestRunPatternMatchPermissionModel:
     async def test_rg_scoped_trusted_tags_container_scope(self):
         """When scoped RGs are all in record_group_ids_trusted, scoped records
         get _access_scope=container, but root records get _access_scope=record."""
-        from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+        from app.services.graph_db.interface.graph_db_provider import (
+            AccessibleContainers,
+        )
         rgs = [{"id": "rg-trusted", "group_name": "Engineering"}]
         config = MagicMock()
         graph = AsyncMock()
@@ -2853,7 +2860,9 @@ class TestRunPatternMatchPermissionModel:
     async def test_rg_scoped_verify_tags_record_scope(self):
         """When scoped RGs are in record_group_ids_verify (not trusted),
         records should be tagged _access_scope=record."""
-        from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+        from app.services.graph_db.interface.graph_db_provider import (
+            AccessibleContainers,
+        )
         rgs = [{"id": "rg-verify", "group_name": "Sales"}]
         config = MagicMock()
         graph = AsyncMock()

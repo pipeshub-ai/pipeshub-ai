@@ -996,7 +996,12 @@ async def merge_pattern_match_results(
     max_records: int = _MAX_PATTERN_MATCH_RECORDS,
     time_range: dict[str, int] | None = None,
 ) -> list[dict]:
-    """Dedup → permission check → time-range filter → fetch blob → flatten.
+    """Dedup → permission check → time-range filter → graph metadata.
+
+    Records already in *virtual_record_id_to_result* are skipped; the map is
+    only read. Each result carries its graph record under ``graph_record``:
+    it is metadata, not a stored record with blocks, so it must never enter
+    that map, where fetch and citations would take it for one.
 
     When *time_range* is set, graph records are fetched first (lightweight)
     and filtered before the expensive blob fetch.
@@ -1131,7 +1136,6 @@ async def merge_pattern_match_results(
         mc = match_count_by_vrid.get(vrid, 0)
         if mc > 0:
             graph_rec["_match_count"] = mc
-        virtual_record_id_to_result[vrid] = graph_rec
         results.append({
             "virtual_record_id": vrid,
             "metadata": {
@@ -1143,6 +1147,7 @@ async def merge_pattern_match_results(
             },
             "score": 0.0,
             "source": "pattern_match",
+            "graph_record": graph_rec,
         })
 
     logger_instance.info("Pattern match: %d record metadata results", len(results))
@@ -1193,9 +1198,19 @@ def _render_graph_record_metadata(graph_rec: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def pattern_match_record_ids(entries: list[dict]) -> list[str]:
+    """Record IDs of the records ``merge_pattern_match_results`` returned."""
+    ids = []
+    for entry in entries:
+        graph_rec = entry.get("graph_record") or {}
+        record_id = graph_rec.get("_key") or graph_rec.get("id")
+        if record_id:
+            ids.append(str(record_id))
+    return ids
+
+
 def render_pattern_match_hint(
     pm_records: list[dict],
-    virtual_record_id_to_result: dict[str, dict],
     fetch_tool_ref: str = "knowledgegraph__fetch_record",
     max_records: int = _MAX_PATTERN_MATCH_RECORDS,
     has_semantic_blocks: bool = True,
@@ -1222,8 +1237,7 @@ def render_pattern_match_hint(
 
     sections: list[str] = []
     for entry in capped:
-        vrid = entry.get("virtual_record_id", "")
-        graph_rec = virtual_record_id_to_result.get(vrid)
+        graph_rec = entry.get("graph_record")
         if not graph_rec:
             continue
         metadata_block = _render_graph_record_metadata(graph_rec)
