@@ -69,6 +69,7 @@ class TestNeo4jLabel:
     def test_other_labels(self) -> None:
         assert Neo4jLabel.PAGE_TOKENS.value == "PageToken"
         assert Neo4jLabel.BLOCKS.value == "Block"
+        assert Neo4jLabel.CORPUS_REVISION.value == "CorpusRevision"
 
     def test_tools_labels(self) -> None:
         assert Neo4jLabel.TOOLS.value == "Tool"
@@ -104,7 +105,7 @@ class TestNeo4jLabel:
         assert Neo4jLabel.AGENT_SKILL_CANDIDATES.value == "AgentSkillCandidates"
 
     def test_total_member_count(self) -> None:
-        assert len(Neo4jLabel) == 48
+        assert len(Neo4jLabel) == 49
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +195,7 @@ class TestCollectionToLabelMapping:
             (CollectionNames.AGENT_TOOLS.value, Neo4jLabel.AGENT_TOOLS.value),
             (CollectionNames.AGENT_MCP_SERVERS.value, Neo4jLabel.AGENT_MCP_SERVERS.value),
             (CollectionNames.ARTIFACTS.value, Neo4jLabel.ARTIFACTS.value),
+            (CollectionNames.CORPUS_REVISION.value, Neo4jLabel.CORPUS_REVISION.value),
             (CollectionNames.AGENT_SKILLS.value, Neo4jLabel.AGENT_SKILLS.value),
             (CollectionNames.AGENT_SKILL_VERSIONS.value, Neo4jLabel.AGENT_SKILL_VERSIONS.value),
             (CollectionNames.AGENT_SKILL_CANDIDATES.value, Neo4jLabel.AGENT_SKILL_CANDIDATES.value),
@@ -205,7 +207,7 @@ class TestCollectionToLabelMapping:
             )
 
     def test_mapping_size(self) -> None:
-        assert len(COLLECTION_TO_LABEL) == 46
+        assert len(COLLECTION_TO_LABEL) == 47
 
     def test_all_values_are_strings(self) -> None:
         for k, v in COLLECTION_TO_LABEL.items():

@@ -200,13 +200,20 @@ class OpenSearchUtils:
         return doc
 
     @staticmethod
-    def hit_to_search_result(hit: Dict[str, Any]) -> SearchResult:
+    def hit_to_search_result(hit: Dict[str, Any], is_cosine: bool = False) -> SearchResult:
         """Convert an OpenSearch hit to a generic SearchResult."""
         source = hit.get("_source", {})
         raw_score = hit.get("_score")
+        
+        score = float(raw_score) if raw_score is not None else 0.0
+        if is_cosine and raw_score is not None:
+            # OpenSearch uses (1 + cosine_similarity) / 2 for cosinesimil index type.
+            # Convert back to regular cosine similarity range.
+            score = 2 * score - 1
+
         return SearchResult(
             id=str(hit.get("_id", "")),
-            score=float(raw_score) if raw_score is not None else 0.0,
+            score=score,
             payload={
                 "metadata": source.get("metadata", {}),
                 "page_content": source.get("page_content", ""),

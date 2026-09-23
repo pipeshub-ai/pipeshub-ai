@@ -2148,7 +2148,7 @@ async def delete_record(
         if result["success"]:
             # Increment corpus revision to invalidate cache
             try:
-                org_id = request.state.user.get("orgId")
+                org_id = result.get("orgId")
                 if org_id:
                     await graph_provider.increment_corpus_revision(org_id)
             except Exception as e:

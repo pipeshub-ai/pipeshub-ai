@@ -123,6 +123,7 @@ class OpenSearchService(IVectorDBService):
         self.client: Optional[AsyncOpenSearch] = None
         self._cfg: Optional[OpenSearchConfig] = None
         self._client_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._is_cosine_cache: Dict[str, bool] = {}
 
     # ------------------------------------------------------------------
     # Factory
@@ -609,6 +610,19 @@ class OpenSearchService(IVectorDBService):
     # Data operations — all async
     # ------------------------------------------------------------------
 
+    async def _is_cosine_index(self, collection_name: str) -> bool:
+        if collection_name in self._is_cosine_cache:
+            return self._is_cosine_cache[collection_name]
+        try:
+            mapping = await self.client.indices.get_mapping(index=collection_name)  # type: ignore
+            props = mapping.get(collection_name, {}).get("mappings", {}).get("properties", {})
+            space_type = props.get("dense_embedding", {}).get("space_type", "")
+            is_cosine = space_type == "cosinesimil"
+            self._is_cosine_cache[collection_name] = is_cosine
+            return is_cosine
+        except Exception:
+            return False
+
     async def scroll(
         self,
         collection_name: str,
@@ -650,6 +664,8 @@ class OpenSearchService(IVectorDBService):
         hits = result.get("hits", {}).get("hits", [])
         if len(hits) > limit:
             hits = hits[:limit]
+            
+        is_cosine = await self._is_cosine_index(collection_name)
         points = [
             VectorPoint(
                 id=hit["_id"],
@@ -720,7 +736,8 @@ class OpenSearchService(IVectorDBService):
 
             result = await self.client.search(**search_kwargs)  # type: ignore
             hits = result.get("hits", {}).get("hits", [])
-            return [OpenSearchUtils.hit_to_search_result(h) for h in hits]
+            is_cosine = await self._is_cosine_index(collection_name)
+            return [OpenSearchUtils.hit_to_search_result(h, is_cosine) for h in hits]
 
         # Agent retrieval issues one request per source, so this fan-out is
         # caller-controlled and unbounded. Cap it so a wide query cannot open an

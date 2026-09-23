@@ -70,6 +70,15 @@ HTTP_MIN_STATUS = 100
 HTTP_MAX_STATUS = 600
 HTTP_INTERNAL_SERVER_ERROR = 500
 
+async def _increment_org_corpus_revision(request: Request) -> None:
+    try:
+        org_id = request.state.user.get("orgId")
+        if org_id:
+            graph_provider = request.app.state.graph_provider
+            await graph_provider.increment_corpus_revision(org_id)
+    except Exception as e:
+        _log.warning(f"Could not increment corpus revision for org: {e}")
+
 kb_router = APIRouter(prefix="/api/v1/kb", tags=["Knowledge Base"])
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
@@ -1379,13 +1388,7 @@ async def update_record(
             )
 
         # Increment corpus revision
-        try:
-            org_id = request.state.user.get("orgId")
-            if org_id:
-                graph_provider = request.app.state.graph_provider
-                await graph_provider.increment_corpus_revision(org_id)
-        except Exception as e:
-            logger.warning(f"Could not increment corpus revision for org: {e}")
+        await _increment_org_corpus_revision(request)
 
         # Publish update event
         event_data = result.get("eventData")
@@ -1533,13 +1536,7 @@ async def delete_records_in_kb(
             )
 
         if result and result.get("success") is True:
-            try:
-                org_id = request.state.user.get("orgId")
-                if org_id:
-                    graph_provider = request.app.state.graph_provider
-                    await graph_provider.increment_corpus_revision(org_id)
-            except Exception as e:
-                _log.warning(f"Could not increment corpus revision for org: {e}")
+            await _increment_org_corpus_revision(request)
 
         return result
 
@@ -1594,13 +1591,7 @@ async def delete_record_in_folder(
             )
 
         if result and result.get("success") is True:
-            try:
-                org_id = request.state.user.get("orgId")
-                if org_id:
-                    graph_provider = request.app.state.graph_provider
-                    await graph_provider.increment_corpus_revision(org_id)
-            except Exception as e:
-                _log.warning(f"Could not increment corpus revision for org: {e}")
+            await _increment_org_corpus_revision(request)
 
         return result
 

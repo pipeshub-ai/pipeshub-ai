@@ -360,6 +360,7 @@ class AccessibleRecordsInvalidator:
         self.logger = logger
         self.cache = cache
         self.graph_provider = graph_provider
+        self._scheduled_bumps: dict[str, asyncio.Task] = {}
 
     async def on_connector_sync_completed(
         self, connector_id: str, org_id: str | None = None
@@ -438,7 +439,17 @@ class AccessibleRecordsInvalidator:
             if not org_id:
                 return
             await self.cache.invalidate_kb(org_id, kb_id)
-            await self.graph_provider.increment_corpus_revision(org_id)
+            
+            # Coalesce corpus revision increments for the org
+            if org_id not in self._scheduled_bumps:
+                async def _trailing_bump(target_org: str) -> None:
+                    try:
+                        await asyncio.sleep(2.0)
+                        await self.graph_provider.increment_corpus_revision(target_org)
+                    finally:
+                        self._scheduled_bumps.pop(target_org, None)
+                
+                self._scheduled_bumps[org_id] = asyncio.create_task(_trailing_bump(org_id))
         except Exception as e:
             self.logger.warning(
                 "Could not invalidate accessible-records cache after indexing: %s", str(e)

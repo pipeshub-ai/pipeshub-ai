@@ -1269,7 +1269,7 @@ async def askAIStream(
     
     if use_cache:
         async def cached_or_live_stream(base_stream):
-            from app.services.cache.semantic_cache import SemanticCacheService, hash_filters
+            from app.services.cache.semantic_cache import SemanticCacheService, SemanticCacheScope, hash_filters
             from app.agents.agent_loop.protocol import frame, AGUIEventType
             from app.agents.agent_loop.protocol.agui import new_id
             import asyncio
@@ -1280,8 +1280,6 @@ async def askAIStream(
             org_id = _chat_user.get("orgId")
             
             try:
-                await semantic_cache.initialize()
-                
                 try:
                     corpus_revision = await graph_provider.get_corpus_revision(org_id)
                 except Exception:
@@ -1293,19 +1291,20 @@ async def askAIStream(
                     if query_info.strictScope:
                         effective_filters["strictScope"] = True
 
-                    cache_scope = {
-                        "orgId": org_id,
-                        "userId": _chat_user.get("userId"),
-                        "permissionsRevision": _chat_user.get("permissionsRevision", "0"),
-                        "corpusRevision": corpus_revision,
-                        "filters": effective_filters,
-                    }
+                    cache_scope = SemanticCacheScope(
+                        orgId=org_id,
+                        userId=_chat_user.get("userId"),
+                        permissionsRevision=_chat_user.get("permissionsRevision", "0"),
+                        corpusRevision=corpus_revision,
+                        filters=effective_filters,
+                    )
                     filters_hash_val = hash_filters(cache_scope)
                     
                     await retrieval_service.get_embedding_model_instance()
                     if retrieval_service.dense_embeddings:
                         query_vector = await retrieval_service.dense_embeddings.aembed_query(query_info.query)
                         if query_vector:
+                            await semantic_cache.initialize(len(query_vector))
                             cached_resp = await semantic_cache.get_cached_response(
                                 query_info.query, query_vector, filters_hash_val
                             )
@@ -1347,7 +1346,7 @@ async def askAIStream(
                                 run_failed = True
                             elif event_name == "RUN_FINISHED":
                                 run_finished = True
-                            elif event_name not in ["TEXT_MESSAGE_START", "TEXT_MESSAGE_END", "RUN_STARTED"]:
+                            elif event_name not in ["TEXT_MESSAGE_START", "TEXT_MESSAGE_END", "RUN_STARTED", "STATE_DELTA", "STATE_SNAPSHOT"]:
                                 has_complex_state = True
                         except Exception:
                             pass
@@ -1363,7 +1362,7 @@ async def askAIStream(
                     if current_revision is not None and current_revision == corpus_revision:
                         task = asyncio.create_task(
                             semantic_cache.set_cached_response(
-                                query_info.query, full_text, query_vector, filters_hash_val
+                                query_info.query, full_text, query_vector, filters_hash_val, org_id, corpus_revision
                             )
                         )
                         _background_tasks.add(task)

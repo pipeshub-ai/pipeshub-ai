@@ -7793,22 +7793,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
             origin = record.get("origin", "")
 
             # Route to connector-specific deletion method
+            result = {}
             if origin == OriginTypes.UPLOAD.value or connector_name == Connectors.KNOWLEDGE_BASE.value:
-                return await self.delete_knowledge_base_record(record_id, user_id, record, transaction)
+                result = await self.delete_knowledge_base_record(record_id, user_id, record, transaction)
             elif connector_name == Connectors.GOOGLE_DRIVE.value:
-                return await self.delete_google_drive_record(record_id, user_id, record, transaction)
+                result = await self.delete_google_drive_record(record_id, user_id, record, transaction)
             elif connector_name == Connectors.GOOGLE_MAIL.value:
-                return await self.delete_gmail_record(record_id, user_id, record, transaction)
+                result = await self.delete_gmail_record(record_id, user_id, record, transaction)
             elif connector_name == Connectors.OUTLOOK.value:
-                return await self.delete_outlook_record(record_id, user_id, record, transaction)
+                result = await self.delete_outlook_record(record_id, user_id, record, transaction)
             elif connector_name == Connectors.LOCAL_FS.value:
-                return await self.delete_local_fs_record(record_id, user_id, record, transaction)
+                result = await self.delete_local_fs_record(record_id, user_id, record, transaction)
             else:
                 return {
                     "success": False,
                     "code": 400,
                     "reason": f"Unsupported connector: {connector_name}"
                 }
+                
+            if result.get("success"):
+                result["orgId"] = record.get("orgId")
+                
+            return result
+
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete record {record_id}: {str(e)}")
