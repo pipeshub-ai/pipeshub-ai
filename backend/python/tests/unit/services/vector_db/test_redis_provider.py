@@ -312,11 +312,9 @@ class TestRedisHybridQuery:
 
         assert "coll_idx" in args
         assert "SEARCH" in args
-        # Spaces are word separators, not operators — they must NOT be escaped,
-        # otherwise multi-word queries fuse into a single non-matching token.
-        assert any("hello world" in str(a) for a in args), (
-            "multi-word text_query must keep its spaces unescaped"
-        )
+        # Each word is its own term, unioned: escaping the space would fuse them
+        # into one token, and a bare space would require every word to match.
+        assert args[args.index("SEARCH") + 1] == "(hello | world)"
         assert "VSIM" in args
         assert "@dense_embedding" in args
         assert "COMBINE" in args

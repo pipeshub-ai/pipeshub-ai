@@ -1349,7 +1349,7 @@ class TestStorageReconcileIsOptIn:
 
         with _patch.dict(os.environ, {}, clear=False):
             os.environ.pop("VECTOR_STORAGE_RECONCILE_ENABLED", None)
-            await vs._reconcile_storage_layout("records", 1024, False)
+            await vs._reconcile_storage_layout("records", 1024)
 
         vdb.reconcile_storage_layout.assert_not_awaited()
 
@@ -1373,7 +1373,7 @@ class TestStorageReconcileIsOptIn:
         )
 
         with _patch.dict(os.environ, {"VECTOR_STORAGE_RECONCILE_ENABLED": "true"}):
-            await vs._reconcile_storage_layout("records", 1024, False)
+            await vs._reconcile_storage_layout("records", 1024)
 
         vdb.reconcile_storage_layout.assert_awaited_once()
 

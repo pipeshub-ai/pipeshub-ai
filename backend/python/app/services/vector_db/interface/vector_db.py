@@ -104,6 +104,20 @@ class IVectorDBService(ABC):
         """
         return None
 
+    async def reconcile_lexical_scoring(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Bring an existing collection's keyword scoring in line with ``config``.
+
+        Unlike ``reconcile_storage_layout`` this must be cheap enough to run on
+        every startup: it may change how stored data is scored, never rewrite
+        it. Returns the setting that was changed, or None when nothing was.
+        Concrete for the same reason as ``reconcile_storage_layout``.
+        """
+        return None
+
     @abstractmethod
     async def get_collections(self) -> object:
         raise NotImplementedError

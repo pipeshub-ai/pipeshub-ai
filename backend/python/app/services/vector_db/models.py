@@ -270,7 +270,10 @@ class CollectionConfig:
     embedding_size: int = 1024
     distance_metric: DistanceMetric = DistanceMetric.COSINE
     enable_sparse: bool = True
-    sparse_idf: bool = False
+    # The sparse leg is fastembed's Qdrant/bm25, which emits term-frequency
+    # weights only and relies on the store for IDF. Without it a common word
+    # scores like a rare name, and hybrid search ranks below dense-only.
+    sparse_idf: bool = True
     # Performance / accuracy tuning knobs.
     # quantization defaults to SCALAR to preserve the original INT8 scalar behaviour.
     # Set to NONE to explicitly disable quantization.
