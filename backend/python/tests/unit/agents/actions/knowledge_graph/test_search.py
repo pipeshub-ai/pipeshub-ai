@@ -412,7 +412,7 @@ def _pipeline(*, text="Block content", units=None, omitted=0, images=None):
         units=units, virtual_record_id_to_result={"vr1": {"id": "r1"}},
     ))
     rendered = RenderedKnowledge(
-        records=[text], units=units, images=images or [], omitted_records=omitted,
+        records=[text], units=units, images=images or [], omitted_hits=omitted,
     )
     return (
         patch(f"{_SEARCH}.KnowledgeContextBuilder", builder),
@@ -436,13 +436,13 @@ class TestExecuteSearchFullPath:
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
-    async def test_header_says_when_lower_ranked_records_were_left_out(self, mock_parse) -> None:
+    async def test_header_says_when_lower_ranked_blocks_were_left_out(self, mock_parse) -> None:
         state = _full_path_state(_one_hit_retrieval())
         builder_patch, render_patch, blob_patch = _pipeline(omitted=3)
         with builder_patch, render_patch, blob_patch:
             result = await execute_search(state, "test query")
 
-        assert "3 lower-ranked records left out to fit the result size." in result
+        assert "3 lower-ranked blocks left out to fit the result size." in result
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))

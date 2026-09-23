@@ -9,6 +9,15 @@ from app.modules.retrieval.context.units import Unit, unit_score
 
 # Set on a unit a reranker scored; telemetry reports it.
 RERANK_SCORE_KEY = "rerank_score"
+# A unit's 0-based position in relevance order, kept through reading order so
+# a size budget can drop the least relevant units first.
+UNIT_RANK_KEY = "unit_rank"
+
+
+def stamp_unit_ranks(units: list[Unit]) -> None:
+    """Record each unit's position in ``units``, which must be in relevance order."""
+    for position, unit in enumerate(units):
+        unit[UNIT_RANK_KEY] = position
 
 
 class UnitRanker(ABC):

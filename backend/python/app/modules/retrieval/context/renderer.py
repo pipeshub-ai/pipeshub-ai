@@ -6,11 +6,13 @@ import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.modules.retrieval.context.budget import fit_to_budget
 from app.modules.retrieval.context.manifest import (
     ContentManifest,
     ManifestSource,
     build_manifest,
 )
+from app.modules.retrieval.context.ordering import order_for_reading
 from app.utils.chat_helpers import (
     CitationRefMapper,
     ImageBudget,
@@ -31,8 +33,8 @@ class RenderedKnowledge:
     """The units that made it into ``records``; what the model can cite."""
     images: list[dict[str, Any]] = field(default_factory=list)
     """Images collected for multimodal delivery alongside the text."""
-    omitted_records: int = 0
-    """Lower-ranked records left out to stay within ``max_chars``."""
+    omitted_hits: int = 0
+    """Lower-ranked hits left out to stay within ``max_chars``."""
     manifest: ContentManifest = field(
         default_factory=lambda: ContentManifest(ManifestSource.SEARCH, (), ()),
     )
@@ -57,26 +59,55 @@ def render_knowledge(
 ) -> RenderedKnowledge:
     """Render ``units`` (already in reading order) record by record.
 
-    With ``max_chars`` the lowest-ranked records are left out whole, so an
-    oversized result loses its least relevant records rather than whatever
-    a later character cut happens to land on. The most relevant record is
-    always kept. Records are measured on a throwaway render first so that
-    citation refs and images are only ever assigned to what is shown.
+    With ``max_chars`` the least relevant hits are left out, each with the
+    neighbours around it, so an oversized result loses what matters least
+    rather than whatever a later character cut happens to land on. The most
+    relevant hit is always kept. Units are measured on a throwaway render
+    first so that citation refs and images are only ever assigned to what is
+    shown.
     """
     units = [
         unit for unit in units
         if virtual_record_id_to_result.get(unit.get("virtual_record_id")) is not None
     ]
+    omitted = 0
     if max_chars is not None:
-        units, omitted = _fit_to_budget(
-            units, virtual_record_id_to_result, ref_mapper,
+        trial = _render(
+            units, virtual_record_id_to_result,
+            ref_mapper=copy.deepcopy(ref_mapper),
             is_multimodal_llm=is_multimodal_llm,
-            record_id_shortener=record_id_shortener,
-            max_chars=max_chars,
+            record_id_shortener=copy.deepcopy(record_id_shortener),
+            image_budget=ImageBudget(),
+            image_admission=None,
+            source=source,
         )
-    else:
-        omitted = 0
+        fit = fit_to_budget(units, trial.manifest, max_chars)
+        units, omitted = order_for_reading(fit.units), fit.omitted_hits
 
+    rendered = _render(
+        units, virtual_record_id_to_result,
+        ref_mapper=ref_mapper,
+        is_multimodal_llm=is_multimodal_llm,
+        record_id_shortener=record_id_shortener,
+        image_budget=image_budget,
+        image_admission=image_admission,
+        source=source,
+    )
+    rendered.omitted_hits = omitted
+    return rendered
+
+
+def _render(
+    units: list[Unit],
+    virtual_record_id_to_result: dict[str, Any],
+    *,
+    ref_mapper: CitationRefMapper,
+    is_multimodal_llm: bool,
+    record_id_shortener: RecordIdShortener | None,
+    image_budget: ImageBudget | None,
+    image_admission: ImageAdmission | None,
+    source: ManifestSource,
+) -> RenderedKnowledge:
     images: list[dict[str, Any]] = []
     item_units: dict[int, int] = {}
     content_array, _ = build_message_content_array(
@@ -95,44 +126,9 @@ def render_knowledge(
         records=[_record_text(record) for record in content_array],
         units=units,
         images=images,
-        omitted_records=omitted,
         manifest=build_manifest(
             source, content_array, units, item_units, virtual_record_id_to_result,
         ),
-    )
-
-
-def _fit_to_budget(
-    units: list[Unit],
-    virtual_record_id_to_result: dict[str, Any],
-    ref_mapper: CitationRefMapper,
-    *,
-    is_multimodal_llm: bool,
-    record_id_shortener: RecordIdShortener | None,
-    max_chars: int,
-) -> tuple[list[Unit], int]:
-    # The real render below overwrites the per-unit fields this one sets.
-    content_array, _ = build_message_content_array(
-        units,
-        virtual_record_id_to_result,
-        is_multimodal_llm=is_multimodal_llm,
-        ref_mapper=copy.deepcopy(ref_mapper),
-        from_tool=True,
-        record_id_shortener=copy.deepcopy(record_id_shortener),
-        image_budget=ImageBudget(),
-    )
-    record_order = list(dict.fromkeys(unit.get("virtual_record_id") for unit in units))
-    kept: set[Any] = set()
-    used = 0
-    for vrid, record in zip(record_order, content_array):
-        size = len(_record_text(record)) + 1
-        if kept and used + size > max_chars:
-            break
-        kept.add(vrid)
-        used += size
-    return (
-        [unit for unit in units if unit.get("virtual_record_id") in kept],
-        len(record_order) - len(kept),
     )
 
 

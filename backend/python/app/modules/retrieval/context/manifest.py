@@ -39,6 +39,8 @@ class Segment:
     blocks: frozenset[BlockKey]
     elidable: bool
     """Whether another copy of ``blocks`` can stand in for this one."""
+    unit_position: int
+    """Position of the unit in the list that was rendered."""
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,7 @@ def build_manifest(
             end=end,
             blocks=_block_keys(units[position]),
             elidable=_elidable(units[position]),
+            unit_position=position,
         )
         for position, (start, end) in sorted(unit_spans.items(), key=lambda item: item[1][0])
     )

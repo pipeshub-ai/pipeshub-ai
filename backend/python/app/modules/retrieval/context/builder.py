@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.modules.retrieval.context.neighbours import expand_neighbours
 from app.modules.retrieval.context.ordering import order_for_reading
-from app.modules.retrieval.context.ranking import RelevanceRanker
+from app.modules.retrieval.context.ranking import RelevanceRanker, stamp_unit_ranks
 from app.utils.chat_helpers import (
     enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
@@ -84,6 +84,7 @@ class KnowledgeContextBuilder:
         )
         units = [u for u in units if records.get(u.get("virtual_record_id")) is not None]
         units = await self._ranker.rank(units, query=query, records=records, limit=max_units)
+        stamp_unit_ranks(units)
         units = expand_neighbours(units, records)
 
         kept = {unit.get("virtual_record_id") for unit in units}

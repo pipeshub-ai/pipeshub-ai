@@ -9,8 +9,9 @@ import pytest
 from app.models.blocks import BlockType
 from app.modules.reranker.interface import IReranker, RerankHit
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
-from app.modules.retrieval.context.reranking import RerankingRanker
+from app.modules.retrieval.context.ranking import UNIT_RANK_KEY
 from app.modules.retrieval.context.renderer import render_knowledge
+from app.modules.retrieval.context.reranking import RerankingRanker
 from app.utils.chat_helpers import CitationRefMapper
 
 _BUILDER = "app.modules.retrieval.context.builder"
@@ -57,9 +58,9 @@ class TestRenderKnowledge:
         assert "Name: Beta" in rendered.records[0]
         assert "[1|ref1] beta hit" in rendered.records[0]
         assert "[0|ref2] alpha hit" in rendered.records[1]
-        assert rendered.omitted_records == 0
+        assert rendered.omitted_hits == 0
 
-    def test_over_budget_drops_the_lowest_ranked_records_whole(self) -> None:
+    def test_over_budget_drops_the_least_relevant_hits(self) -> None:
         records = {v: _record(v, v.upper()) for v in ("a", "b", "c")}
         units = [_unit(v, 0, "x" * 400) for v in ("a", "b", "c")]
         one_record = len(render_knowledge(
@@ -73,11 +74,11 @@ class TestRenderKnowledge:
         )
 
         assert [u["virtual_record_id"] for u in rendered.units] == ["a", "b"]
-        assert rendered.omitted_records == 1
+        assert rendered.omitted_hits == 1
         # Refs exist only for what was shown.
         assert len(ref_mapper.ref_to_url) == 2
 
-    def test_the_most_relevant_record_is_kept_even_if_it_alone_is_too_big(self) -> None:
+    def test_the_most_relevant_hit_is_kept_even_if_it_alone_is_too_big(self) -> None:
         records = {"a": _record("a", "A"), "b": _record("b", "B")}
         units = [_unit("a", 0, "y" * 5000), _unit("b", 0, "z")]
 
@@ -86,7 +87,7 @@ class TestRenderKnowledge:
         )
 
         assert [u["virtual_record_id"] for u in rendered.units] == ["a"]
-        assert rendered.omitted_records == 1
+        assert rendered.omitted_hits == 1
 
     def test_units_whose_record_failed_to_load_are_skipped(self) -> None:
         records = {"a": _record("a", "A"), "gone": None}
@@ -158,6 +159,43 @@ class TestKnowledgeContextBuilder:
             ("a", 3), ("a", 4), ("a", 5),
         ]
         assert set(knowledge.virtual_record_id_to_result) == {"a"}
+
+    @pytest.mark.asyncio
+    async def test_ranks_survive_reading_order_and_neighbours_share_their_hits(self, records) -> None:
+        units = [_unit("a", 4, "a4", 0.2), _unit("b", 2, "b2", 0.9)]
+        flatten, graph, fk = self._patches(units, records)
+        with flatten, graph, fk:
+            knowledge = await KnowledgeContextBuilder(
+                blob_store=object(), graph_provider=None, org_id="o1",
+            ).build([], {}, query="q", is_multimodal_llm=False)
+
+        ranks = {(u["virtual_record_id"], u["block_index"]): u[UNIT_RANK_KEY] for u in knowledge.units}
+        assert ranks == {("b", 1): 0, ("b", 2): 0, ("b", 3): 0, ("a", 3): 1, ("a", 4): 1, ("a", 5): 1}
+
+    @pytest.mark.asyncio
+    async def test_a_budget_keeps_the_best_hits_across_records(self, records) -> None:
+        """a1 ranks first, so record A reads first; A's weak a4 must still
+        lose to B's only hit when only two hits fit."""
+        units = [_unit("a", 1, "x" * 300, 0.9), _unit("b", 1, "y" * 300, 0.5), _unit("a", 4, "z" * 300, 0.1)]
+        # No stored blocks, so no neighbours: the budget is about hits alone.
+        records = {v: _record(v, v.upper(), blocks=0) for v in ("a", "b")}
+        flatten, graph, fk = self._patches(units, records)
+        with flatten, graph, fk:
+            knowledge = await KnowledgeContextBuilder(
+                blob_store=object(), graph_provider=None, org_id="o1",
+            ).build([], {}, query="q", is_multimodal_llm=False)
+        one_hit = len(render_knowledge(
+            knowledge.units[:1], knowledge.virtual_record_id_to_result,
+            ref_mapper=CitationRefMapper(), is_multimodal_llm=False,
+        ).text)
+
+        rendered = render_knowledge(
+            knowledge.units, knowledge.virtual_record_id_to_result,
+            ref_mapper=CitationRefMapper(), is_multimodal_llm=False, max_chars=2 * one_hit + 20,
+        )
+
+        assert [(u["virtual_record_id"], u["block_index"]) for u in rendered.units] == [("a", 1), ("b", 1)]
+        assert rendered.omitted_hits == 1
 
     @pytest.mark.asyncio
     async def test_keeps_only_the_records_it_shows(self, records) -> None:

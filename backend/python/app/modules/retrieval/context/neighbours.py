@@ -9,12 +9,16 @@ from __future__ import annotations
 from typing import Any
 
 from app.models.blocks import BlockType
+from app.modules.retrieval.context.ranking import UNIT_RANK_KEY
 from app.modules.retrieval.context.units import (
     Unit,
     takes_neighbours,
     unit_block_indices,
 )
 from app.utils.chat_helpers import get_enhanced_metadata
+
+# Marks a unit added as context around a hit rather than found by the search.
+NEIGHBOUR_KEY = "is_neighbour"
 
 
 def expand_neighbours(
@@ -43,6 +47,9 @@ def expand_neighbours(
                 continue
             neighbour = _text_neighbour(virtual_record_id_to_result.get(vrid), vrid, index)
             if neighbour is not None:
+                # It goes with its hit: kept or dropped with it under a budget.
+                if UNIT_RANK_KEY in unit:
+                    neighbour[UNIT_RANK_KEY] = unit[UNIT_RANK_KEY]
                 shown.add((vrid, index))
                 neighbours.append(neighbour)
     return [*units, *neighbours]
@@ -64,4 +71,5 @@ def _text_neighbour(record: dict[str, Any] | None, vrid: str, index: int) -> Uni
         "virtual_record_id": vrid,
         "block_index": index,
         "citationType": "vectordb|document",
+        NEIGHBOUR_KEY: True,
     }

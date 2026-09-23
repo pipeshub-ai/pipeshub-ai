@@ -92,7 +92,7 @@ def _ranked_header(blocks: int, records: int, omitted: int) -> str:
     )
     if omitted:
         header += (
-            f" {omitted} lower-ranked record{'s' if omitted != 1 else ''} "
+            f" {omitted} lower-ranked block{'s' if omitted != 1 else ''} "
             "left out to fit the result size."
         )
     return header
@@ -627,7 +627,7 @@ async def execute_search(
         has_semantic_blocks = len(final_results) > 0
         if has_semantic_blocks:
             summary = (
-                f"{_ranked_header(len(final_results), len(rendered.records), rendered.omitted_records)}\n\n"
+                f"{_ranked_header(len(final_results), len(rendered.records), rendered.omitted_hits)}\n\n"
                 f"{entity_filter_note}"
                 f"{coverage_note}"
             )
