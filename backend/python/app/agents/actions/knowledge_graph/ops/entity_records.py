@@ -43,6 +43,9 @@ _MAX_LIMIT = 50
 _DEFAULT_LIMIT = 20
 _MAX_READ_HINT_IDS = 8
 NO_ACCESSIBLE_RECORDS_MSG = "No accessible records found for this entity."
+NO_FURTHER_RECORDS_MSG = (
+    "No further accessible records for this entity - the previous page was the last."
+)
 LOOKUP_FAILED_MSG = "Lookup failed — try again."
 
 
@@ -106,7 +109,9 @@ async def execute_find_records_by_entity(
         return False, LOOKUP_FAILED_MSG
 
     if not page.records:
-        return True, NO_ACCESSIBLE_RECORDS_MSG
+        # After a page of results, "none found" reads as "this entity is empty"
+        # and contradicts what the caller was just shown.
+        return True, NO_FURTHER_RECORDS_MSG if cursor else NO_ACCESSIBLE_RECORDS_MSG
 
     record_ids = [r["_key"] for r in page.records if r.get("_key")]
     remember_record_ids(state, record_ids)
@@ -200,6 +205,7 @@ async def resolve_entity_virtual_ids(
 __all__ = [
     "LOOKUP_FAILED_MSG",
     "NO_ACCESSIBLE_RECORDS_MSG",
+    "NO_FURTHER_RECORDS_MSG",
     "execute_find_records_by_entity",
     "resolve_entity_virtual_ids",
 ]

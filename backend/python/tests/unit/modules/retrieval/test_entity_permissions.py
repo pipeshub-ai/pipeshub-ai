@@ -5,6 +5,8 @@ entities the vector search returns; every access decision comes from graph
 calls, and any failure raises ``EntityAccessError`` instead of looking like
 "no access".
 """
+import base64
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,6 +22,10 @@ from app.modules.retrieval.entity_permissions import (
 
 ORG = "org-1"
 USER = "user-1"
+
+
+def _b64(payload: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
 
 
 def _context(
@@ -242,11 +248,51 @@ class TestListAccessibleEntityRecords:
             )
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("cursor", ["abc", "-1"])
+    @pytest.mark.parametrize(
+        "cursor",
+        [
+            "abc",
+            "-1",
+            _b64({"offset": -1}),
+            _b64({"page": 2}),
+            '{"offset": "50"}',
+            '{"offset": true}',
+            "eyJ!!!",
+        ],
+    )
     async def test_invalid_cursor_rejected(self, cursor) -> None:
         with pytest.raises(ValueError):
             await list_accessible_entity_records(
                 _graph(), _context(), entity_id="t1", entity_type="topic", cursor=cursor,
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "cursor",
+        ["5", " 5 ", '{"offset": 5}', _b64({"offset": 5})],
+    )
+    async def test_cursor_envelopes_resolve_to_the_same_offset(self, cursor) -> None:
+        """Models reconstruct a cursor as an opaque base64 blob instead of
+        copying the integer back. The offset is unambiguous either way, and
+        every row it reaches is still permission-checked."""
+        rows = [_row(f"r{i}", "kb-1") for i in range(20)]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {
+                "t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]
+            }
+        )
+
+        page = await list_accessible_entity_records(
+            graph, _context(), entity_id="t1", entity_type="topic", limit=2, cursor=cursor,
+        )
+
+        assert [r["_key"] for r in page.records] == ["r5", "r6"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_cursor_message_names_the_recovery(self) -> None:
+        with pytest.raises(ValueError, match="omit it to start from the first page"):
+            await list_accessible_entity_records(
+                _graph(), _context(), entity_id="t1", entity_type="topic", cursor="abc",
             )
 
 

@@ -9,6 +9,7 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import ENTITY_INDEX_C
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     LOOKUP_FAILED_MSG,
     NO_ACCESSIBLE_RECORDS_MSG,
+    NO_FURTHER_RECORDS_MSG,
     execute_find_records_by_entity,
     resolve_entity_virtual_ids,
 )
@@ -76,6 +77,17 @@ class TestFindRecordsByEntity:
     async def test_no_rows_is_the_same_response_as_no_access(self, patched) -> None:
         ok, text = await execute_find_records_by_entity(_state(), "rg-x", entity_type="record_group")
         assert (ok, text) == (True, NO_ACCESSIBLE_RECORDS_MSG)
+
+    @pytest.mark.asyncio
+    async def test_empty_page_past_the_end_does_not_claim_the_entity_is_empty(
+        self, patched
+    ) -> None:
+        """Saying "no accessible records" on page 2 contradicts the page of
+        results the caller was just shown."""
+        ok, text = await execute_find_records_by_entity(
+            _state(), "t1", entity_type="topic", cursor="40",
+        )
+        assert (ok, text) == (True, NO_FURTHER_RECORDS_MSG)
 
     @pytest.mark.asyncio
     async def test_access_failure_is_a_failed_call(self, patched) -> None:

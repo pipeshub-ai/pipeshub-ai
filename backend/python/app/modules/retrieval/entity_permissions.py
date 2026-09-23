@@ -14,6 +14,8 @@ check even when the user can reach the record's group.
 """
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -375,15 +377,48 @@ async def search_entities_for_user(
     return kept[:top_k]
 
 
+def _decode_cursor_json(raw: str) -> int | None:
+    """Offset out of a ``{"offset": N}`` envelope, plain or base64."""
+    candidates = [raw]
+    try:
+        padded = raw + "=" * (-len(raw) % 4)
+        candidates.append(base64.urlsafe_b64decode(padded.encode()).decode())
+    except Exception:  # noqa: BLE001 - any malformed input is simply not a cursor
+        pass
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        offset = payload.get("offset") if isinstance(payload, dict) else None
+        # bool is an int subclass, and {"offset": true} is not an offset.
+        if isinstance(offset, int) and not isinstance(offset, bool):
+            return offset
+    return None
+
+
 def _parse_cursor(cursor: str | None) -> int:
+    """Offset from a cursor string.
+
+    Accepts the plain integer this module emits, and also the base64/JSON
+    ``{"offset": N}`` envelope a model reconstructs when it paraphrases the
+    cursor instead of copying it. The value is not a trust boundary — every
+    row the offset reaches is permission-checked, and ``max_scan`` bounds the
+    scan — so refusing a cursor whose meaning is unambiguous only costs the
+    caller a page.
+    """
     if cursor is None or cursor == "":
         return 0
+    raw = cursor.strip()
     try:
-        offset = int(cursor)
+        offset = int(raw)
     except (TypeError, ValueError):
-        raise ValueError(f"Invalid cursor {cursor!r}") from None
-    if offset < 0:
-        raise ValueError(f"Invalid cursor {cursor!r}")
+        offset = _decode_cursor_json(raw)
+    if offset is None or offset < 0:
+        raise ValueError(
+            f"Invalid cursor {cursor!r} - pass the cursor exactly as the previous "
+            "page printed it, or omit it to start from the first page."
+        )
     return offset
 
 
