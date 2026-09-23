@@ -1,9 +1,15 @@
+import json
 import logging
 
 from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.calculator.exact import (
+    ExpressionError,
+    date_difference,
+    evaluate_expression,
+)
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -21,7 +27,9 @@ class CalculatorTwoOperandsInput(BaseModel):
     b: float = Field(description="The second number")
     operation: str = Field(description="Mathematical operation: 'add', 'subtract', 'multiply', 'divide', 'power'")
 
-# Register Calculator toolset (internal - always available, no auth required, backend-only)
+# Register Calculator toolset (internal, no auth, backend-only). Essential, so
+# a lazily disclosed agent sees it from the first turn instead of doing
+# arithmetic in its head because the tool was one discovery call away.
 @ToolsetBuilder("Calculator")\
     .in_group("Internal Tools")\
     .with_description("Mathematical calculator tool - always available, no authentication required")\
@@ -30,6 +38,7 @@ class CalculatorTwoOperandsInput(BaseModel):
         AuthBuilder.type("NONE").fields([])
     ])\
     .as_internal()\
+    .as_essential()\
     .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/calculator.svg"))\
     .build_decorator()
 class Calculator:
@@ -111,6 +120,55 @@ class Calculator:
             return self._power(a, b)
         else:
             raise ValueError(f"Invalid operation: {operation}")
+
+    @tool(
+        path="/tools/calculator/evaluate_expression",
+        short_description="Evaluate an arithmetic expression exactly",
+        description=(
+            "Evaluate an arithmetic expression, e.g. '(90 - 16) * 1954'. Supports "
+            "numbers, + - * / // % ** and parentheses, and abs, round, min, max, "
+            "sqrt, floor, ceil. Use it for any calculation with more than one step, "
+            "copying the numbers exactly from their source."
+        ),
+        parameters=[
+            ToolParameter(
+                name="expression", type=ParameterType.STRING,
+                description="The arithmetic expression to evaluate", required=True,
+            ),
+        ],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
+    )
+    async def evaluate_expression(self, expression: str) -> str:
+        try:
+            return json.dumps({"expression": expression, "result": evaluate_expression(expression)})
+        except ExpressionError as exc:
+            return json.dumps({"expression": expression, "error": str(exc)})
+
+    @tool(
+        path="/tools/calculator/date_difference",
+        short_description="Exact difference between two dates",
+        description=(
+            "The difference between two dates (YYYY-MM-DD): total days, weeks, "
+            "completed years/months/days (an age), and calendar_years (end year "
+            "minus start year). Use it for every age or elapsed-time question."
+        ),
+        parameters=[
+            ToolParameter(
+                name="start_date", type=ParameterType.STRING,
+                description="The earlier date, YYYY-MM-DD", required=True,
+            ),
+            ToolParameter(
+                name="end_date", type=ParameterType.STRING,
+                description="The later date, YYYY-MM-DD", required=True,
+            ),
+        ],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
+    )
+    async def date_difference(self, start_date: str, end_date: str) -> str:
+        try:
+            return json.dumps(date_difference(start_date, end_date).to_dict())
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
 
     def _add(self, a: float, b: float) -> float:
         """Add two numbers

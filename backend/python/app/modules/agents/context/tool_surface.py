@@ -78,6 +78,10 @@ class ToolSurfaces:
     has_service_tools: bool
     """Convenience — True iff `live_api_apps` is non-empty."""
 
+    exact_math: tuple[str, ...] = ()
+    """Granted exact-arithmetic tools, expression evaluator first, then the
+    date difference; `()` when neither is granted."""
+
     @classmethod
     def resolve(
         cls,
@@ -153,6 +157,13 @@ class ToolSurfaces:
 
         has_service_tools = bool(live_api_apps)
 
+        exact_math = tuple(
+            name for name in (
+                granted("calculator.evaluate_expression", names_set),
+                granted("calculator.date_difference", names_set),
+            ) if name
+        )
+
         return cls(
             retrieval=retrieval,
             web_names=web_names,
@@ -165,6 +176,7 @@ class ToolSurfaces:
             has_knowledge=has_knowledge,
             has_web_search=has_web_search,
             has_service_tools=has_service_tools,
+            exact_math=exact_math,
         )
 
     # ── Convenience formatters ────────────────────────────────────────────────

@@ -426,6 +426,15 @@ def _build_finding_information(
         from app.modules.agents.record_escalation.policy import policy_text
         parts.append(policy_text(_FETCH_FULL_RECORD_TOOL_NAME))
 
+    if surfaces.exact_math:
+        tools = " and ".join(f"`{name}`" for name in surfaces.exact_math)
+        parts.append(
+            "Numbers and dates in the answer: work out any calculation with "
+            "more than one step, and any age or gap between two dates, with "
+            f"{tools} rather than in your head. Copy each figure exactly from "
+            "its source, and give the result in the unit the question asks for."
+        )
+
     return "\n## Finding Information\n\n" + "\n\n".join(parts)
 
 
