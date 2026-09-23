@@ -420,6 +420,30 @@ class TestRSSConnectorAppUsers:
 
 class TestRSSConnectorSync:
     @pytest.mark.asyncio
+    async def test_a_second_sync_on_the_same_instance_processes_entries_again(self):
+        # Scheduled syncs reuse the connector instance; an entry skipped as
+        # "already processed" on the second run is a change that never gets indexed.
+        connector = _make_connector()
+        connector.feed_urls = ["https://feed1.com/rss"]
+        connector.session = MagicMock()
+        connector.create_record_group = AsyncMock()
+        feed = MagicMock()
+        feed.entries = [_make_feed_entry(guid="entry-1")]
+        feed.feed = {"title": "Feed"}
+        connector._fetch_and_parse_feed = AsyncMock(return_value=feed)
+        connector._resolve_entry_text = AsyncMock(side_effect=["first text", "edited text"])
+
+        await connector.run_sync()
+        await connector.run_sync()
+
+        calls = connector.data_entities_processor.on_new_records.await_args_list
+        synced = [record.external_revision_id for call in calls for record, _ in call.args[0]]
+        assert synced == [
+            hashlib.md5(b"first text").hexdigest(),
+            hashlib.md5(b"edited text").hexdigest(),
+        ]
+
+    @pytest.mark.asyncio
     async def test_run_sync_processes_feeds(self):
         connector = _make_connector()
         connector.feed_urls = ["https://feed1.com/rss", "https://feed2.com/rss"]
@@ -566,7 +590,7 @@ def _make_connector_cov():
     dep.on_new_records = AsyncMock()
     ds_provider = MagicMock()
     config_service = AsyncMock()
-    return RSSConnector(
+    conn = RSSConnector(
         logger=logger,
         data_entities_processor=dep,
         data_store_provider=ds_provider,
@@ -575,6 +599,9 @@ def _make_connector_cov():
         scope="personal",
         created_by="test-user-id",
     )
+    # stream_record refuses to run without a live session (409).
+    conn.session = MagicMock()
+    return conn
 
 
 def _make_mock_response(status=200, content=b"<html>body</html>", headers=None):

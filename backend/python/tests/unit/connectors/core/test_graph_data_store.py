@@ -98,6 +98,7 @@ def mock_graph_provider():
     provider.get_record_by_conversation_index = AsyncMock(return_value=None)
     provider.get_record_by_weburl = AsyncMock(return_value=None)
     provider.get_records_by_parent = AsyncMock(return_value=[])
+    provider.get_records_by_record_type = AsyncMock(return_value=[])
     provider.get_record_path = AsyncMock(return_value=None)
     provider.get_app_creator_user = AsyncMock(return_value=None)
     provider.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
@@ -153,6 +154,17 @@ class TestGraphTransactionStore:
         result = await tx_store.get_records_by_status("org1", "conn1", ["active"], limit=10, offset=0)
         assert result == []
         mock_graph_provider.get_records_by_status.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_records_by_status_propagates_a_failed_listing(self, tx_store, mock_graph_provider) -> None:
+        """An empty list means no match; a failure must stay a failure."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        mock_graph_provider.get_records_by_status = AsyncMock(
+            side_effect=GraphQueryError("db down")
+        )
+        with pytest.raises(GraphQueryError):
+            await tx_store.get_records_by_status("org1", "conn1", ["active"])
 
     @pytest.mark.asyncio
     async def test_batch_upsert_records(self, tx_store, mock_graph_provider) -> None:
@@ -276,6 +288,13 @@ class TestGraphTransactionStore:
     async def test_get_records_by_parent(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_records_by_parent("conn1", "parent1", record_type="file")
         mock_graph_provider.get_records_by_parent.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_records_by_record_type(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_records_by_record_type("conn1", "DATABASE")
+        mock_graph_provider.get_records_by_record_type.assert_awaited_once_with(
+            "conn1", "DATABASE", transaction="txn-123"
+        )
 
     @pytest.mark.asyncio
     async def test_get_record_path(self, tx_store, mock_graph_provider) -> None:

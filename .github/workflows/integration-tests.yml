@@ -18,20 +18,34 @@ on:
         options:
             - integration
             - s3
+            - postgres
+            - mariadb
+            - nextcloud
+            - bookstack
+            - minio
+            - sharepoint
             - confluence
             - jira
             - linear
             - github_teams
+            - github
             - gitlab
             - notion
+            - web
+            - rss
+            - local_fs
             - google_drive_workspace
             - google_drive_individual
-            - notion
             - gcs
             - azure_blob
             - azure_files
             - messaging
             - oauth_clients
+            - mcp
+            - zammad
+            - resilience
+            - permissions
+            - storage
       commit_hash:
         description: 'Commit hash to checkout (defaults to HEAD)'
         required: false
@@ -98,12 +112,37 @@ concurrency:
 
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
-  MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'redis' }}
   PYTEST_WORKERS: ${{ github.event.inputs.pytest_workers || '2' }}
 
 jobs:
+  # Which parts the run tests on besides the graph databases (always both).
+  # Nightly runs rotate through the supported choices by weekday; pull requests
+  # use the default; a manual run uses what it asked for (scripts/nightly_setup.py).
+  setup:
+    name: Pick the setup to test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      message_broker: ${{ steps.pick.outputs.message_broker }}
+      label: ${{ steps.pick.outputs.label }}
+      is_default: ${{ steps.pick.outputs.is_default }}
+    steps:
+      # The base branch's copy on pull_request_target, never the PR's.
+      - name: Checkout the picker
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - name: Pick the setup
+        id: pick
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_BROKER: ${{ github.event.inputs.message_broker }}
+        run: python3 scripts/nightly_setup.py --event "$EVENT_NAME" --message-broker "$REQUESTED_BROKER"
+
   integration-tests:
-    name: Integration Tests (${{ matrix.graph_db }})
+    name: Integration Tests (${{ matrix.graph_db }} · ${{ matrix.shard }}${{ needs.setup.outputs.is_default == 'false' && format(' · {0}', needs.setup.outputs.message_broker) || '' }})
+    needs: setup
     if: ${{ github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 300
@@ -116,6 +155,19 @@ jobs:
         # it-neo4j / it-arango / it-parallel PR labels (default: sequential "both").
         # `strategy` can't read the job env block, so derive from inputs/labels here.
         graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
+        # Split the suite into parallel shards, each with its own stack, so the
+        # slow connector suites do not all serialize on one worker. Three
+        # connector shards (balanced on measured minutes, see
+        # scripts/shard_durations.json) plus a "core" shard for everything else.
+        # Each shard's marker is derived in the test step from CONN_SHARD_1 /
+        # CONN_SHARD_2 / CONN_SHARD_3 (one source of truth); "core" is everything
+        # those three do not own, so the four partition -m "integration" exactly.
+        # scripts/shard_balance.py checks that partition and the balance; run it
+        # after adding or growing a connector suite.
+        # A workflow_dispatch of one marker (a single connector or suite rather
+        # than the whole of `integration`) runs as a single "dispatch" job that
+        # selects exactly that marker, so it runs once rather than on every shard.
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || '["connectors-1","connectors-2","connectors-3","core"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -124,9 +176,15 @@ jobs:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
     env:
+      MESSAGE_BROKER: ${{ needs.setup.outputs.message_broker }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       DOCKER_BUILDKIT: "1"
       PIPESHUB_TEST_ENV: local
+      # A connector suite whose credential is missing skips itself, which on the
+      # nightly is indistinguishable from a pass. On the runs that were meant to
+      # cover these connectors — the nightly, and a dispatch that picked one —
+      # a missing credential is a failure instead.
+      PIPESHUB_REQUIRE_CONNECTOR_SECRETS: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != 'integration')) && '1' || '' }}
       ARANGO_PASSWORD: ${{ secrets.TEST_ARANGO_PASSWORD }}
       PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
       PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
@@ -135,14 +193,77 @@ jobs:
       TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
       TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
       S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+      # The PostgreSQL connector syncs from a database that runs in the
+      # integration stack, so these are fixed test values rather than
+      # secrets. The connector reaches it by service name from inside the
+      # compose network; the test process uses the published port.
+      POSTGRES_TEST_HOST: localhost
+      POSTGRES_TEST_PORT: '5433'
+      POSTGRES_CONNECTOR_HOST: postgres-source
+      POSTGRES_CONNECTOR_PORT: '5432'
+      POSTGRES_TEST_USER: pipeshubtest
+      POSTGRES_TEST_PASSWORD: pipeshubtest123
+      POSTGRES_TEST_DB: pipeshub_connector_test
+      # MariaDB, the same way: a source database in the compose stack.
+      MARIADB_TEST_HOST: localhost
+      MARIADB_TEST_PORT: '3307'
+      MARIADB_CONNECTOR_HOST: mariadb-source
+      MARIADB_CONNECTOR_PORT: '3306'
+      MARIADB_TEST_USER: pipeshubtest
+      MARIADB_TEST_PASSWORD: pipeshubtest123
+      MARIADB_TEST_DB: pipeshub_connector_test
+      # MinIO runs in the integration compose stack, so these are fixed
+      # test values rather than secrets. The connector runs inside the
+      # compose network and reaches MinIO by service name; the test process
+      # reaches it on the published port.
+      MINIO_TEST_ENDPOINT: http://localhost:9000
+      MINIO_CONNECTOR_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: pipeshubtest
+      MINIO_ROOT_PASSWORD: pipeshubtest123
+      MINIO_TEST_BUCKET: pipeshub-connector-test
+      # The Web and RSS connectors sync from the web-fixtures service in the
+      # integration stack: the connector by service name, the test process
+      # (which changes pages through its control API) on the published port.
+      WEB_FIXTURES_TEST_URL: http://localhost:8089
+      WEB_FIXTURES_CONNECTOR_URL: http://web-fixtures:8080
+      # Nextcloud and BookStack run in the compose stack too, behind the
+      # selfhosted-sources profile: only the shard that runs their tests
+      # (connectors-1, or a dispatch of just one of them) starts them.
+      # The Neo4j stack keeps Kafka behind the kafka profile, so a Kafka
+      # run has to enable it or the app has no broker to reach. Compose
+      # ignores the empty entry left when only one profile is on.
+      NEXTCLOUD_TEST_URL: http://localhost:8090
+      NEXTCLOUD_CONNECTOR_URL: http://nextcloud-source
+      BOOKSTACK_TEST_URL: http://localhost:8094
+      BOOKSTACK_CONNECTOR_URL: http://bookstack-source
+      BOOKSTACK_DB_PORT: '3308'
+      ZAMMAD_TEST_URL: http://localhost:8096
+      ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
+      COMPOSE_PROFILES: ${{ format('{0},{1},{2}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '') }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
       GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
       AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
       AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
-      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
       TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+      # Azure OpenAI is where the credits are, and TEST_AI_MODEL_PROVIDER names
+      # it outright: the helper falls back to the next provider on a health
+      # check failure, so without this an Azure problem retries against the
+      # OpenAI key and reports that instead.
+      TEST_AI_MODEL_PROVIDER: azureOpenAI
+      # _LLM_PROVIDER_ORDER tries Azure before OpenAI, but _azure_credentials_complete
+      # needs key, endpoint and deployment together — miss one and Azure is dropped
+      # from the candidates silently, leaving OpenAI as the only provider tried.
+      # secrets || vars so the non-secret names work from either store.
+      TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+      TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+      TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+      # Optional. Unset falls back to the LLM deployment above, which is what a
+      # local .env run does today.
+      TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
       CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
       CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
       CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
@@ -163,6 +284,7 @@ jobs:
       # GitHub Teams. Secret names may not start with GITHUB_ (reserved by Actions),
       # hence the GH_ prefix. The token is a classic PAT — not fine-grained, which
       # cannot reach GraphQL, used by the code-file timestamp backfill.
+      # GitHub Teams. Secret names cannot start with GITHUB_ (reserved by Actions).
       GH_TEAMS_TEST_TOKEN: ${{ secrets.GH_TEAMS_TEST_TOKEN }}
       GH_TEAMS_TEST_ORG: ${{ secrets.GH_TEAMS_TEST_ORG }}
       GH_TEAMS_TEST_PRIMARY_REPO: ${{ secrets.GH_TEAMS_TEST_PRIMARY_REPO }}
@@ -194,9 +316,23 @@ jobs:
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
+      # Connector shards, one source of truth. The `core` shard is everything
+      # these three do not own, built in the test step from the same values.
+      # Balanced on measured minutes across both graph legs (both legs run in
+      # one job, so a shard's wall clock is the sum of the two):
+      # shard 1 ~136 min, shard 2 ~135 min, shard 3 ~132 min. Shard 1 keeps
+      # nextcloud and bookstack, the only suites needing selfhosted-sources.
+      # Rebalance with scripts/shard_balance.py when a suite grows.
+      CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
+      CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files"
+      CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
+      # Routed through env (never interpolated into the shell) so untrusted
+      # dispatch input cannot inject; the test steps pick markers from these.
+      CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
+      SHARD: ${{ matrix.shard }}
       # Playwright runs once: on the neo4j/both leg, or the arango leg only when
       # arango is the sole backend (arango dispatch input, or it-arango alone).
-      RUN_PLAYWRIGHT: ${{ (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || (matrix.graph_db == 'arango' && (github.event.inputs.graph_db == 'arango' || (contains(github.event.pull_request.labels.*.name, 'it-arango') && !contains(github.event.pull_request.labels.*.name, 'it-neo4j') && !contains(github.event.pull_request.labels.*.name, 'it-parallel'))))) && 'true' || 'false' }}
+      RUN_PLAYWRIGHT: ${{ (matrix.shard == 'core' || matrix.shard == 'dispatch') && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || (matrix.graph_db == 'arango' && (github.event.inputs.graph_db == 'arango' || (contains(github.event.pull_request.labels.*.name, 'it-arango') && !contains(github.event.pull_request.labels.*.name, 'it-neo4j') && !contains(github.event.pull_request.labels.*.name, 'it-parallel'))))) && 'true' || 'false' }}
 
     steps:
       - name: Checkout code
@@ -298,17 +434,19 @@ jobs:
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         run: |
           echo "Creating organization..."
-          curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
+          # jq reads the credentials from the environment, so quotes or backslashes
+          # in a secret stay valid JSON and never appear on a command line.
+          jq -n --arg name "Integration Test" --arg short "INTTEST" '{
+              accountType: "business",
+              adminFullName: "\($name) Admin",
+              contactEmail: $ENV.PIPESHUB_TEST_USER_EMAIL,
+              password: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              confirmPassword: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              registeredName: "\($name) Org",
+              shortName: $short
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
             -H "Content-Type: application/json" \
-            -d '{
-              "accountType": "business",
-              "adminFullName": "Integration Test Admin",
-              "contactEmail": "'"${PIPESHUB_TEST_USER_EMAIL}"'",
-              "password": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
-              "confirmPassword": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
-              "registeredName": "Integration Test Org",
-              "shortName": "INTTEST"
-            }'
+            --data-binary @-
           echo ""
           echo "Organization created successfully!"
 
@@ -316,17 +454,22 @@ jobs:
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         run: |
           HEADERS=$(mktemp)
-          curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+          jq -n '{email: $ENV.PIPESHUB_TEST_USER_EMAIL}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
             -H "Content-Type: application/json" \
-            -d "{\"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            --data-binary @- \
             -D "${HEADERS}" -o /dev/null
           SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
           rm -f "${HEADERS}"
 
-          ACCESS_TOKEN=$(curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+          ACCESS_TOKEN=$(jq -n '{
+              method: "password",
+              credentials: {password: $ENV.PIPESHUB_TEST_USER_PASSWORD},
+              email: $ENV.PIPESHUB_TEST_USER_EMAIL
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
             -H "Content-Type: application/json" \
             -H "x-session-token: ${SESSION_TOKEN}" \
-            -d "{\"method\": \"password\", \"credentials\": {\"password\": \"${PIPESHUB_TEST_USER_PASSWORD}\"}, \"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            --data-binary @- \
             | jq -r '.accessToken')
 
           curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
@@ -343,17 +486,38 @@ jobs:
           TEST_GRAPH_DB_TYPE: neo4j
         run: |
           source .venv/bin/activate
-          MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
+          # Each shard runs its slice; `core` is everything the three connector
+          # lists do not own, built here so the lists live in one place. The
+          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
+          # the selected marker.
+          case "$SHARD" in
+            dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
+            connectors-1) MARKERS="$CONN_SHARD_1" ;;
+            connectors-2) MARKERS="$CONN_SHARD_2" ;;
+            connectors-3) MARKERS="$CONN_SHARD_3" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage" ;;
+            *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
+          esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
           # distributed and skips teardown. -n 0 runs in-process and restores it.
           WORKERS="$PYTEST_WORKERS"
           if [ "$WORKERS" = "1" ]; then WORKERS=0; fi
+          # Resilience tests restart shared services, so never two at once.
+          if [ "$MARKERS" = "resilience" ]; then WORKERS=0; fi
+          # Each xdist worker is its own session, and the storage suite repoints
+          # the whole deployment per session — two at once would fight.
+          if [ "$MARKERS" = "storage" ]; then WORKERS=0; fi
+          # No exit-code special-casing: an empty selection (pytest exit 5) fails.
+          # On a normal run that means a shard's marker was dropped or renamed; on
+          # a dispatch it means the chosen marker matches no tests (e.g. messaging).
           pytest -m "$MARKERS" -v --tb=short \
             -n "$WORKERS" --dist loadgroup \
             --junitxml=reports/neo4j-results.xml 2>&1
 
+
+
       - name: 'Neo4j: Run Playwright e2e tests'
-        if: ${{ !cancelled() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && env.RUN_PLAYWRIGHT == 'true' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
         working-directory: frontend
         env:
           CI: 'true'
@@ -363,6 +527,35 @@ jobs:
           TEST_USER_EMAIL: ${{ env.PIPESHUB_TEST_USER_EMAIL }}
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
+
+      # Restarts Redis, Qdrant, the graph database and MongoDB, kills the
+      # indexing process, cuts the app off from its AI provider and makes blob
+      # storage unwritable on the live stack, which would break any test
+      # running beside it. So it runs alone,
+      # after everything else on this stack, and only nightly on the core
+      # shard's Neo4j pass: one stack, no extra runner, no time added to a PR.
+      # A dispatch with connectors=resilience runs it through the step above.
+      - name: 'Neo4j: Run resilience tests'
+        if: ${{ !cancelled() && github.event_name == 'schedule' && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        working-directory: integration-tests
+        env:
+          TEST_GRAPH_DB_TYPE: neo4j
+        run: |
+          source .venv/bin/activate
+          pytest -m resilience -v --tb=short \
+            --junitxml=reports/neo4j-resilience-results.xml 2>&1
+
+      # These repoint the whole deployment's storage while they run, so they go
+      # last, after everything else has finished with this stack.
+      - name: 'Neo4j: Run storage-backend tests'
+        if: ${{ !cancelled() && github.event_name == 'schedule' && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        working-directory: integration-tests
+        env:
+          TEST_GRAPH_DB_TYPE: neo4j
+        run: |
+          source .venv/bin/activate
+          pytest -m storage -v --tb=short \
+            --junitxml=reports/neo4j-storage-results.xml 2>&1
 
       - name: 'Neo4j: Dump docker logs'
         if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
@@ -420,17 +613,19 @@ jobs:
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         run: |
           echo "Creating organization..."
-          curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
+          # jq reads the credentials from the environment, so quotes or backslashes
+          # in a secret stay valid JSON and never appear on a command line.
+          jq -n --arg name "Integration Test" --arg short "INTTEST" '{
+              accountType: "business",
+              adminFullName: "\($name) Admin",
+              contactEmail: $ENV.PIPESHUB_TEST_USER_EMAIL,
+              password: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              confirmPassword: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              registeredName: "\($name) Org",
+              shortName: $short
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
             -H "Content-Type: application/json" \
-            -d '{
-              "accountType": "business",
-              "adminFullName": "Integration Test Admin",
-              "contactEmail": "'"${PIPESHUB_TEST_USER_EMAIL}"'",
-              "password": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
-              "confirmPassword": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
-              "registeredName": "Integration Test Org",
-              "shortName": "INTTEST"
-            }'
+            --data-binary @-
           echo ""
           echo "Organization created successfully!"
 
@@ -438,17 +633,22 @@ jobs:
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         run: |
           HEADERS=$(mktemp)
-          curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+          jq -n '{email: $ENV.PIPESHUB_TEST_USER_EMAIL}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
             -H "Content-Type: application/json" \
-            -d "{\"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            --data-binary @- \
             -D "${HEADERS}" -o /dev/null
           SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
           rm -f "${HEADERS}"
 
-          ACCESS_TOKEN=$(curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+          ACCESS_TOKEN=$(jq -n '{
+              method: "password",
+              credentials: {password: $ENV.PIPESHUB_TEST_USER_PASSWORD},
+              email: $ENV.PIPESHUB_TEST_USER_EMAIL
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
             -H "Content-Type: application/json" \
             -H "x-session-token: ${SESSION_TOKEN}" \
-            -d "{\"method\": \"password\", \"credentials\": {\"password\": \"${PIPESHUB_TEST_USER_PASSWORD}\"}, \"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            --data-binary @- \
             | jq -r '.accessToken')
 
           curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
@@ -469,11 +669,30 @@ jobs:
           TEST_ARANGO_DB_NAME: es
         run: |
           source .venv/bin/activate
-          MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
+          # Each shard runs its slice; `core` is everything the three connector
+          # lists do not own, built here so the lists live in one place. The
+          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
+          # the selected marker.
+          case "$SHARD" in
+            dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
+            connectors-1) MARKERS="$CONN_SHARD_1" ;;
+            connectors-2) MARKERS="$CONN_SHARD_2" ;;
+            connectors-3) MARKERS="$CONN_SHARD_3" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage" ;;
+            *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
+          esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
           # distributed and skips teardown. -n 0 runs in-process and restores it.
           WORKERS="$PYTEST_WORKERS"
           if [ "$WORKERS" = "1" ]; then WORKERS=0; fi
+          # Resilience tests restart shared services, so never two at once.
+          if [ "$MARKERS" = "resilience" ]; then WORKERS=0; fi
+          # Each xdist worker is its own session, and the storage suite repoints
+          # the whole deployment per session — two at once would fight.
+          if [ "$MARKERS" = "storage" ]; then WORKERS=0; fi
+          # No exit-code special-casing: an empty selection (pytest exit 5) fails.
+          # On a normal run that means a shard's marker was dropped or renamed; on
+          # a dispatch it means the chosen marker matches no tests (e.g. messaging).
           pytest -m "$MARKERS" -v --tb=short \
             -n "$WORKERS" --dist loadgroup \
             --junitxml=reports/arango-results.xml 2>&1
@@ -528,6 +747,8 @@ jobs:
           PR_LOGIN_IN: ${{ github.event.pull_request.user.login }}
           ACTOR_IN: ${{ github.actor }}
           JOB_STATUS: ${{ job.status }}
+          SETUP_LABEL: ${{ needs.setup.outputs.label }}
+          SETUP_IS_DEFAULT: ${{ needs.setup.outputs.is_default }}
         run: |
           TOTAL_PASSED=0
           TOTAL_FAILED=0
@@ -536,7 +757,7 @@ jobs:
           TOTAL_TESTS=0
           BACKENDS_RUN=""
 
-          for xml in reports/neo4j-results.xml reports/arango-results.xml; do
+          for xml in reports/neo4j-results.xml reports/neo4j-resilience-results.xml reports/neo4j-storage-results.xml reports/arango-results.xml; do
             if [ -f "$xml" ]; then
               backend=$(basename "$xml" -results.xml)
               BACKENDS_RUN="${BACKENDS_RUN:+$BACKENDS_RUN, }$backend"
@@ -573,6 +794,11 @@ jobs:
             TRIGGER_LABEL="Manual Dispatch"
             AUTHOR="$ACTOR_IN"
             PR_FIELD_TEXT=""
+          fi
+          # Name a non-default setup in the headline, so a red run isn't read as
+          # a regression on the setup most customers use.
+          if [ "$SETUP_IS_DEFAULT" = "false" ]; then
+            TRIGGER_LABEL="${TRIGGER_LABEL} · on ${SETUP_LABEL}"
           fi
 
           # Parse helper unit-test JUnit XML (runs before Docker; no graph backend).
@@ -684,7 +910,7 @@ jobs:
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests (${{ matrix.graph_db }}) — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
+                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests (${{ matrix.graph_db }} · ${{ matrix.shard }}) — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
                   }
                 },
                 {
@@ -794,7 +1020,7 @@ jobs:
 
           RESPONSE=$(curl -s -X POST "https://slack.com/api/files.getUploadURLExternal" \
             -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-            -d "filename=integration-test-reports-${{ matrix.graph_db }}.zip" \
+            -d "filename=integration-test-reports-${{ matrix.graph_db }}-${{ matrix.shard }}.zip" \
             -d "length=$FILE_SIZE")
           OK=$(echo "$RESPONSE" | jq -r '.ok')
           if [ "$OK" != "true" ]; then
@@ -806,7 +1032,7 @@ jobs:
 
           curl -s -X POST "$UPLOAD_URL" -F "file=@reports.zip"
 
-          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports (${{ matrix.graph_db }})\"}],\"channel_id\":\"$CHANNEL_ID\""
+          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports (${{ matrix.graph_db }} · ${{ matrix.shard }})\"}],\"channel_id\":\"$CHANNEL_ID\""
           if [ -n "$THREAD_TS" ]; then
             COMPLETE_PAYLOAD="$COMPLETE_PAYLOAD,\"thread_ts\":\"$THREAD_TS\""
           fi
@@ -846,6 +1072,8 @@ jobs:
           for xml_path in [
               'reports/unit-results.xml',
               'reports/neo4j-results.xml',
+              'reports/neo4j-resilience-results.xml',
+              'reports/neo4j-storage-results.xml',
               'reports/arango-results.xml',
               'reports/playwright/playwright-junit.xml',
           ]:
@@ -888,10 +1116,21 @@ jobs:
               sys.exit(1)
           PYEOF
 
+      # A green run that skipped a connector entirely looks like a run that
+      # tested it. Say which is which on the job page.
+      - name: Summarise which connector suites ran
+        if: ${{ !cancelled() }}
+        working-directory: integration-tests
+        run: |
+          python report_connector_coverage.py \
+            reports/neo4j-results.xml \
+            reports/neo4j-resilience-results.xml \
+            reports/arango-results.xml >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload reports artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: reports-${{ matrix.graph_db }}
+          name: reports-${{ matrix.graph_db }}-${{ matrix.shard }}
           path: integration-tests/reports/
           if-no-files-found: ignore

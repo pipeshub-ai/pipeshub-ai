@@ -29,6 +29,12 @@
 
 import { useAuthStore, logoutAndRedirect } from '@/config';
 import {
+  CHAT_STREAM_ERROR_MESSAGES,
+  STREAM_ERROR_MESSAGES,
+  streamFailure,
+  streamHttpError,
+} from './stream-errors';
+import {
   isTokenExpired,
   isRefreshInProgress,
   refreshAccessToken,
@@ -36,6 +42,7 @@ import {
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { streamingFetch, isElectron } from '@/lib/electron';
 import { generateRequestId } from '@/lib/utils/request-id';
+import { busyMessage, parseRetryAfter } from './api-error';
 
 // Default to '' (same origin) rather than `undefined`, because template-string
 // concatenation like `${API_BASE_URL}${url}` would otherwise stringify
@@ -45,7 +52,7 @@ import { generateRequestId } from '@/lib/utils/request-id';
 // Override with `NEXT_PUBLIC_API_BASE_URL` at build time for split deployments.
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 
-const SESSION_EXPIRED_MESSAGE = 'Session expired, please login again';
+const SESSION_EXPIRED_MESSAGE = STREAM_ERROR_MESSAGES.sessionExpired;
 
 /**
  * Error thrown when an upload fails at the HTTP layer — i.e. the request is
@@ -97,15 +104,13 @@ async function readUploadHttpError(response: Response): Promise<UploadHttpError>
     /* non-JSON body — fall back below */
   }
   if (retryAfter == null) {
-    const header = response.headers.get('retry-after');
-    const parsed = header ? parseInt(header, 10) : NaN;
-    if (Number.isFinite(parsed)) retryAfter = parsed;
+    // Callers honour any wait the server asks for; only the message caps it.
+    retryAfter = parseRetryAfter(response.headers.get('retry-after') ?? undefined, Date.now(), Infinity);
   }
   if (!message) {
-    message =
-      response.status === 429
-        ? 'Too many requests. Please try again later.'
-        : `Upload failed (${response.status} ${response.statusText || 'error'})`;
+    message = [429, 503, 504].includes(response.status)
+      ? busyMessage(parseRetryAfter(retryAfter))
+      : "The upload didn't go through. Please try again, and if it keeps failing, contact your admin.";
   }
   return new UploadHttpError({ status: response.status, message, code, retryAfter });
 }
@@ -165,6 +170,7 @@ export async function streamRequest(
 ): Promise<void> {
   const { onChunk, onComplete, onError, signal } = options;
 
+  let responseStarted = false;
   try {
     const { token, sessionExpired } = await ensureFreshToken();
     if (sessionExpired) {
@@ -188,8 +194,9 @@ export async function streamRequest(
       : await fetch(`${API_BASE_URL}${url}`, requestInit);
 
     if (!response.ok) {
-      throw new Error(`Stream request failed: ${response.status} ${response.statusText}`);
+      throw await streamHttpError(response);
     }
+    responseStarted = true;
 
     const reader = response.body?.getReader();
     if (!reader) {
@@ -212,7 +219,7 @@ export async function streamRequest(
     if (error instanceof Error && error.name === 'AbortError') {
       return;
     }
-    onError(error instanceof Error ? error : new Error('Stream request failed'));
+    onError(streamFailure(error, responseStarted));
   }
 }
 
@@ -338,6 +345,7 @@ export async function streamSSERequest<T = unknown>(
 ): Promise<void> {
   const { onEvent, onError, signal } = options;
 
+  let responseStarted = false;
   try {
     const { token, sessionExpired } = await ensureFreshToken();
     if (sessionExpired) {
@@ -363,8 +371,9 @@ export async function streamSSERequest<T = unknown>(
       : await fetch(`${API_BASE_URL}${url}`, requestInit);
 
     if (!response.ok) {
-      throw new Error(`SSE request failed: ${response.status} ${response.statusText}`);
+      throw await streamHttpError(response, CHAT_STREAM_ERROR_MESSAGES);
     }
+    responseStarted = true;
 
     const reader = response.body?.getReader();
     if (!reader) {
@@ -404,7 +413,7 @@ export async function streamSSERequest<T = unknown>(
     if (error instanceof Error && error.name === 'AbortError') {
       return;
     }
-    onError(error instanceof Error ? error : new Error('SSE request failed'));
+    onError(streamFailure(error, responseStarted, CHAT_STREAM_ERROR_MESSAGES));
   }
 }
 
@@ -574,6 +583,7 @@ export async function streamSSEGet<T = unknown>(
 ): Promise<void> {
   const { onEvent, onError, headers: extraHeaders, signal } = options;
 
+  let responseStarted = false;
   try {
     const { token, sessionExpired } = await ensureFreshToken();
     if (sessionExpired) {
@@ -597,8 +607,9 @@ export async function streamSSEGet<T = unknown>(
       : await fetch(`${API_BASE_URL}${url}`, requestInit);
 
     if (!response.ok) {
-      throw new Error(`SSE request failed: ${response.status} ${response.statusText}`);
+      throw await streamHttpError(response);
     }
+    responseStarted = true;
 
     const reader = response.body?.getReader();
     if (!reader) {
@@ -628,6 +639,6 @@ export async function streamSSEGet<T = unknown>(
     if (error instanceof Error && error.name === 'AbortError') {
       return;
     }
-    onError(error instanceof Error ? error : new Error('SSE request failed'));
+    onError(streamFailure(error, responseStarted));
   }
 }

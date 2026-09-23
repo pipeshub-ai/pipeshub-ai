@@ -14,6 +14,8 @@ No LangChain QdrantVectorStore is imported or used.
 """
 
 import asyncio
+import codecs
+import logging
 import os
 import time
 import uuid
@@ -26,6 +28,8 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
     EmbeddingError,
+    EmbeddingModelUnavailableError,
+    EmbeddingNotConfiguredError,
     IndexingError,
     VectorStoreError,
 )
@@ -38,13 +42,14 @@ from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactor
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.services.messaging.error_classifier import format_exception_chain
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     reset_membership_context,
-    resolve_vector_membership,
+    resolve_virtual_record_state,
     rewrite_or_delete_virtual_record,
     set_membership_context,
     sync_vector_membership,
@@ -196,6 +201,160 @@ def _min_words_for_sentence_embeddings() -> int:
         return _DEFAULT_SENTENCE_EMBED_MIN_WORDS
 
 
+# Token-aware sizing for the embedder's context limit.
+#
+# Every character constant above bounds *characters*, but the limit that
+# actually rejects input is the embedding model's, in *tokens*. The two are not
+# proportional: English prose runs ~4 chars/token while base64 or dense code can
+# run under 2, so no single characters-per-token constant is correct for both.
+# These helpers make the decision in the unit the limit is expressed in.
+_module_logger = logging.getLogger(__name__)
+
+_EMBED_TOKEN_LIMIT_DEFAULT = 8191  # text-embedding-3-{small,large}; ada-002 is 2048
+_EMBED_TOKEN_ENV = "PIPESHUB_EMBED_TOKEN_LIMIT"
+# Halving from the ceiling, this reaches a step of 1 for any realistic limit.
+_MAX_SPLIT_ATTEMPTS = 16
+# Used only when no tokenizer resolves. A BPE token encodes at least one byte,
+# so the UTF-8 byte length is a guaranteed upper bound on the token count for
+# any input -- unlike a characters-per-token ratio, which is unsafe in exactly
+# the cases that matter: measured against cl100k_base, one character is ~0.17
+# tokens for ASCII prose but ~1.1 for CJK and ~3 for emoji.
+
+
+def _embed_token_ceiling() -> int:
+    """Maximum tokens the embedding model accepts in one input.
+
+    Overridable so a deployment on a smaller model can lower it. A malformed
+    value falls back to the default rather than disabling the ceiling.
+    """
+    raw = os.getenv(_EMBED_TOKEN_ENV)
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return _EMBED_TOKEN_LIMIT_DEFAULT
+
+
+def _token_encoder() -> object | None:
+    """A tiktoken encoding, or None when tiktoken is unavailable.
+
+    Cached, so indexing a corpus does not re-resolve it per block. None is a
+    supported state rather than an error -- callers fall back to a character
+    estimate.
+    """
+    cached = getattr(_token_encoder, "_cached", False)
+    if cached is not False:
+        return cached
+    encoder = None
+    try:
+        import tiktoken
+
+        encoder = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        # tiktoken absent or the encoding unavailable; the character estimate
+        # below is the documented fallback.
+        encoder = None
+    _token_encoder._cached = encoder
+    return encoder
+
+
+def _token_len(text: str) -> int:
+    """Exact token count, or a guaranteed upper bound when no tokenizer exists."""
+    encoder = _token_encoder()
+    if encoder is None:
+        return len(text.encode("utf-8"))
+    return len(encoder.encode(text))
+
+
+def _exceeds_token_ceiling(text: str, ceiling: int) -> bool:
+    """True when *text* will not embed as a single input.
+
+    The length check first is a cheap guard, not an approximation: a token
+    encodes at least one byte, so text of at most *ceiling* BYTES cannot exceed
+    it and the common case never pays for tokenization.
+
+    The guard must measure bytes, not characters. A character count is not an
+    upper bound on tokens -- one emoji is a single character and three tokens
+    against cl100k_base -- so a character-based guard would wave through exactly
+    the dense input this function exists to catch.
+    """
+    if len(text) <= ceiling and text.isascii():
+        return False  # ASCII: one byte per character, so chars bound tokens
+    if len(text.encode("utf-8")) <= ceiling:
+        return False
+    return _token_len(text) > ceiling
+
+
+def _slice_on_character_boundaries(text: str, step: int) -> List[str]:
+    """Cut *text* into pieces of at most *step* tokens (or bytes) each.
+
+    Slices on tokens when an encoder is available and on UTF-8 bytes otherwise,
+    but reassembles on CHARACTER boundaries either way: neither cut is
+    guaranteed to fall between characters, and decoding a partial sequence
+    substitutes U+FFFD, which corrupts the text and stops the pieces joining
+    back to the source. An incremental decoder carries an incomplete trailing
+    sequence into the next piece instead.
+    """
+    encoder = _token_encoder()
+    if encoder is None:
+        raw = text.encode("utf-8")
+        chunks = (raw[i : i + step] for i in range(0, len(raw), step))
+    else:
+        tokens = encoder.encode(text)
+        chunks = (
+            encoder.decode_bytes(tokens[i : i + step])
+            for i in range(0, len(tokens), step)
+        )
+
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    pieces: List[str] = []
+    for chunk in chunks:
+        piece = decoder.decode(chunk)
+        if piece:
+            pieces.append(piece)
+    tail = decoder.decode(b"", True)
+    if tail:
+        pieces.append(tail)
+    return pieces
+
+
+def _split_to_token_ceiling(text: str, ceiling: int) -> List[str]:
+    """Split *text* so every piece embeds. Last line of defence.
+
+    Applies to input the sentence splitter could not break up -- a table row, a
+    base64 payload, a minified line, or text in a script whose delimiters it
+    does not recognise.
+
+    The result is *verified* rather than assumed. Two effects make a slice of
+    ``ceiling`` units come back over ``ceiling`` tokens: carrying an incomplete
+    character forward can add a few bytes to the following piece, and
+    re-encoding a decoded slice does not always reproduce its original token
+    count, because BPE merges differ once the text is cut. Both are small, but
+    "small" is not a bound -- so each attempt is measured and the step halved
+    until every piece fits.
+    """
+    if not _exceeds_token_ceiling(text, ceiling):
+        return [text]
+
+    step = ceiling
+    pieces = [text]
+    for _ in range(_MAX_SPLIT_ATTEMPTS):
+        pieces = _slice_on_character_boundaries(text, step)
+        if all(not _exceeds_token_ceiling(p, ceiling) for p in pieces):
+            return pieces
+        step = max(1, step // 2)
+
+    _module_logger.warning(
+        "Could not split a %d-character block under the %d-token ceiling after "
+        "%d attempts; emitting %d piece(s) anyway.",
+        len(text), ceiling, _MAX_SPLIT_ATTEMPTS, len(pieces),
+    )
+    return pieces or [text]
+
+
 def _word_count(text: str) -> int:
     return len(text.split()) if text else 0
 
@@ -272,21 +431,33 @@ def _build_text_documents(
             "blockType": BlockType.TEXT.value,
         }
 
-        if len(block_text) > _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT:
+        # The character cap stays as a cheap upper guard for pathological
+        # blocks; the ceiling that decides whether this can embed as one
+        # document is the model's, in tokens.
+        if (
+            len(block_text) > _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT
+            or _exceeds_token_ceiling(block_text, _embed_token_ceiling())
+        ):
             # Too large to also embed as one whole-block document (would be a
             # useless retrieval unit) — pack into overlapping windows instead.
+            ceiling = _embed_token_ceiling()
             documents.extend(
-                Document(page_content=chunk, metadata={**metadata, "isBlock": False})
+                Document(page_content=piece, metadata={**metadata, "isBlock": False})
                 for chunk in _chunk_oversized_text(block_text, language)
+                # A sentence longer than the window is emitted whole by
+                # _chunk_oversized_text; bound it rather than let it be rejected.
+                for piece in _split_to_token_ceiling(chunk, ceiling)
             )
             continue
 
         if _word_count(block_text) > _min_words_for_sentence_embeddings():
             sentences = split_into_sentences(block_text, language=language)
             if len(sentences) > 1:
+                ceiling = _embed_token_ceiling()
                 documents.extend(
-                    Document(page_content=sentence, metadata={**metadata, "isBlock": False})
+                    Document(page_content=piece, metadata={**metadata, "isBlock": False})
                     for sentence in sentences
+                    for piece in _split_to_token_ceiling(sentence, ceiling)
                 )
         documents.append(
             Document(
@@ -374,6 +545,7 @@ class VectorStore(Transformer):
             strategy=collection_registry.strategy,
             manifest_store=collection_registry.manifest_store,
             logger=logger,
+            list_managed=collection_registry.list_managed_collections,
         )
 
         self.dense_embeddings = None
@@ -417,9 +589,9 @@ class VectorStore(Transformer):
                     await embedder._ensure_initialized()
                 except Exception as e:
                     raise IndexingError(
-                        "Failed to initialise sparse embeddings: " + str(e),
+                        "Failed to initialise sparse embeddings",
                         details={"error": str(e)},
-                    )
+                    ) from e
                 self._sparse_embedder = embedder
         return self._sparse_embedder
 
@@ -582,9 +754,9 @@ class VectorStore(Transformer):
                 await self.get_embedding_model_instance()
             except Exception as e:
                 raise IndexingError(
-                    "Failed to get embedding model instance: " + str(e),
+                    "Failed to get embedding model instance",
                     details={"error": str(e)},
-                )
+                ) from e
 
         collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
 
@@ -777,9 +949,12 @@ class VectorStore(Transformer):
         instead so it retries.
         """
         try:
-            connector_ids, record_group_ids = await resolve_vector_membership(
+            state = await resolve_virtual_record_state(
                 self.graph_provider, virtual_record_id, current_record=record
             )
+            connector_ids = state.connector_ids
+            record_group_ids = state.record_group_ids
+            root_record_group_ids = state.root_record_group_ids
         except Exception as e:
             self.logger.error(
                 "Failed to resolve vector membership for %s: %s",
@@ -797,7 +972,9 @@ class VectorStore(Transformer):
                 "vector filters until backfilled",
                 virtual_record_id,
             )
-        return set_membership_context(connector_ids, record_group_ids)
+        return set_membership_context(
+            connector_ids, record_group_ids, root_record_group_ids
+        )
 
     # ------------------------------------------------------------------
     # Embedding model initialisation
@@ -817,7 +994,7 @@ class VectorStore(Transformer):
         ai_models = await self.config_service.get_config(
             config_node_constants.AI_MODELS.value, use_cache=False
         )
-        embedding_configs = ai_models["embedding"]
+        embedding_configs = ai_models.get("embedding") if ai_models else None
         config_hash = embedding_config_hash(embedding_configs)
 
         # The config is re-read every record so an admin-UI change takes effect
@@ -841,8 +1018,18 @@ class VectorStore(Transformer):
         configuration = None
 
         if not embedding_configs:
-            dense_embeddings = get_default_embedding_model()
-            self.logger.info("Using default embedding model")
+            self.logger.info(
+                "No embedding model configured for this organisation; "
+                "falling back to the local embedding service."
+            )
+            try:
+                dense_embeddings = get_default_embedding_model()
+            except Exception as e:
+                raise EmbeddingNotConfiguredError(
+                    "No embedding model is configured for this organisation "
+                    "and the local fallback embedding service is unavailable.",
+                    details={"error": str(e)},
+                ) from e
         else:
             config = next(
                 (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]
@@ -856,10 +1043,10 @@ class VectorStore(Transformer):
             sample = await dense_embeddings.aembed_query("test")
             embedding_size = len(sample)
         except Exception as e:
-            raise IndexingError(
-                "Failed to get embedding model: " + str(e),
+            raise EmbeddingModelUnavailableError(
+                "Failed to get embedding model",
                 details={"error": str(e)},
-            )
+            ) from e
 
         model_name = (
             getattr(dense_embeddings, "model_name", None)
@@ -976,7 +1163,9 @@ class VectorStore(Transformer):
             )
         except Exception as e:
             self.logger.error(f"Error deleting blocks by IDs: {e}")
-            raise EmbeddingError(f"Failed to delete blocks by IDs: {e}")
+            raise VectorStoreError(
+                "Failed to delete blocks by IDs", details={"error": str(e)}
+            ) from e
 
     # ------------------------------------------------------------------
     # Embeddings deletion (full record)
@@ -993,7 +1182,9 @@ class VectorStore(Transformer):
             )
         except Exception as e:
             self.logger.error(f"Error deleting embeddings: {e}")
-            raise EmbeddingError(f"Failed to delete embeddings: {e}")
+            raise VectorStoreError(
+                "Failed to delete embeddings", details={"error": str(e)}
+            ) from e
 
     async def purge_record_vectors(
         self, org_id: str, virtual_record_id: str, record: Optional["Record"] = None
@@ -1176,17 +1367,21 @@ class VectorStore(Transformer):
             if attempt >= _EMBEDDING_BATCH_MAX_ATTEMPTS:
                 break
             delay = retry_delay_seconds(attempt)
+            # The chain, not str(): the OpenAI SDK reports every transport
+            # failure as "Connection error." and keeps the httpx exception that
+            # says which one as __cause__; a bare timeout's message is empty.
             self.logger.warning(
                 f"Dense embedding attempt {attempt}/{_EMBEDDING_BATCH_MAX_ATTEMPTS} "
                 f"failed for batch of {len(texts)} texts / {total_chars} chars "
-                f"(record {record_id}): {last_error}; retrying in {delay:.1f}s"
+                f"(record {record_id}); retrying in {delay:.1f}s: "
+                f"{format_exception_chain(last_error)}"
             )
             await asyncio.sleep(delay)
 
         raise EmbeddingError(
             f"Dense embedding failed after {_EMBEDDING_BATCH_MAX_ATTEMPTS} attempts "
             f"({attempt_timeout}s each) for batch of {len(texts)} texts / "
-            f"{total_chars} chars (record {record_id}): {last_error}"
+            f"{total_chars} chars (record {record_id}): {format_exception_chain(last_error)}"
         ) from last_error
 
     async def _embed_and_upsert_documents(
@@ -1261,9 +1456,9 @@ class VectorStore(Transformer):
                     await process_batch(start, batch)
                 except Exception as e:
                     raise VectorStoreError(
-                        f"Failed to store batch {idx}: {e}",
+                        f"Failed to store batch {idx}",
                         details={"error": str(e), "batch_index": idx},
-                    )
+                    ) from e
         else:
             semaphore = asyncio.Semaphore(_DEFAULT_CONCURRENCY_LIMIT)
 
@@ -1277,9 +1472,9 @@ class VectorStore(Transformer):
             for idx, result in enumerate(results):
                 if isinstance(result, Exception):
                     raise VectorStoreError(
-                        f"Failed to store batch {idx}: {result}",
+                        f"Failed to store batch {idx}",
                         details={"error": str(result), "batch_index": idx},
-                    )
+                    ) from result
 
     # ------------------------------------------------------------------
     # Embedding creation entry point
@@ -1321,9 +1516,9 @@ class VectorStore(Transformer):
                 await self._process_document_chunks(langchain_docs, record_id, collection_name)
             except Exception as e:
                 raise VectorStoreError(
-                    "Failed to store documents in vector store: " + str(e),
+                    "Failed to store documents in vector store",
                     details={"error": str(e)},
-                )
+                ) from e
 
         self.logger.info(f"✅ Embeddings created and stored for record '{record_id}'")
 
@@ -1346,9 +1541,9 @@ class VectorStore(Transformer):
             collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
         except Exception as e:
             raise IndexingError(
-                "Failed to get embedding model instance: " + str(e),
+                "Failed to get embedding model instance",
                 details={"error": str(e)},
-            )
+            ) from e
 
         # No LLM is resolved here any more: the only thing it was used for was
         # describing images, which now happens before the record is stored
@@ -1457,9 +1652,9 @@ class VectorStore(Transformer):
                     )
                 except Exception as e:
                     raise DocumentProcessingError(
-                        "Failed to create text document objects: " + str(e),
+                        "Failed to create text document objects",
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             # ── Image blocks ──
             if image_blocks:
@@ -1501,9 +1696,9 @@ class VectorStore(Transformer):
                                 )
                 except Exception as e:
                     raise DocumentProcessingError(
-                        "Failed to create image document objects: " + str(e),
+                        "Failed to create image document objects",
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             # ── Block groups (SQL tables/views and regular tables) ──
             for block_group in block_groups:
@@ -1732,8 +1927,8 @@ class VectorStore(Transformer):
             raise
         except Exception as e:
             raise IndexingError(
-                f"Unexpected error during indexing: {str(e)}",
-                details={"error_type": type(e).__name__},
-            )
+                "Unexpected error during indexing",
+                details={"error_type": type(e).__name__, "error": str(e)},
+            ) from e
         finally:
             reset_membership_context(tokens)

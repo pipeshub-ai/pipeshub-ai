@@ -648,12 +648,14 @@ class PipeshubClient:
             
         Example:
             # Update space filter for Confluence connector
+            # Filters nest under ``sync.values``; a top-level key is ignored.
             client.update_connector_filters_sync_safe(
                 connector_id,
                 filters={
-                    "space_keys": {
-                        "operator": "IN",
-                        "values": ["MYSPACE"]
+                    "sync": {
+                        "values": {
+                            "space_keys": {"operator": "in", "type": "list", "value": ["MYSPACE"]}
+                        }
                     }
                 }
             )

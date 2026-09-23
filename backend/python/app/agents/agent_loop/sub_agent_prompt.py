@@ -108,6 +108,8 @@ def build_sub_agent_prompt(
 def build_user_context_block(context: "AgentContext") -> str:
     """The child needs user identity to resolve 'my tickets', 'assigned to
     me' — mirrors the legacy `deep/sub_agent.py::_build_sub_agent_instructions`."""
+    if not context.send_user_info:
+        return ""
     user_info = context.user_info or {}
     email = context.user_email or user_info.get("userEmail") or user_info.get("email") or ""
     name = (

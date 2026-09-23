@@ -9,7 +9,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse, urlunparse
 
 import httpx
 from fastmcp import Client
@@ -21,6 +20,7 @@ from fastmcp.client.transports import (
 from mcp.shared._httpx_utils import create_mcp_http_client
 
 from app.agents.mcp.models import MCPServerConfig, MCPTransport
+from app.utils.url_redaction import redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -48,20 +48,6 @@ class MCPConnectionError(Exception):
     """Raised when an MCP server cannot be reached or its transport config is invalid."""
 
 
-def _sanitize_url_for_diagnostics(url: str) -> str:
-    """Scheme + host[:port] + path only — strip userinfo, query, and fragment so
-    credentials never land in logs or `MCPConnectionError` messages."""
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return "<unparseable-url>"
-    if not parsed.scheme or not parsed.netloc:
-        return "<redacted-url>"
-    # Drop userinfo (`user:pass@`) while keeping host/port, including bracketed IPv6.
-    netloc = parsed.netloc.rsplit("@", 1)[-1]
-    return urlunparse((parsed.scheme, netloc, parsed.path or "", "", "", ""))
-
-
 class _LastHttpResponse:
     """Records the most recent HTTP status/URL seen on an HTTP transport's httpx
     client, purely for diagnostics.
@@ -81,7 +67,7 @@ class _LastHttpResponse:
 
     async def _on_response(self, response: httpx.Response) -> None:
         self.status_code = response.status_code
-        self.url = _sanitize_url_for_diagnostics(str(response.request.url))
+        self.url = redact_url(str(response.request.url))
 
     def httpx_client_factory(
         self,

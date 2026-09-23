@@ -1,6 +1,8 @@
 """Knowledge Base API client for integration tests."""
 
 import io
+import json
+import time
 import uuid
 from typing import Any
 from urllib.parse import quote
@@ -54,6 +56,7 @@ class KBClient(APIClient):
         file_content: bytes,
         folder_id: str | None = None,
         mimetype: str = "text/plain",
+        file_path: str | None = None,
     ) -> dict[str, Any]:
         """Upload a file to a knowledge base.
 
@@ -63,11 +66,22 @@ class KBClient(APIClient):
             file_content: File content bytes
             folder_id: Optional folder ID
             mimetype: MIME type
+            file_path: Send the file's path the way the knowledge-base page
+                does. A path containing folders creates them, as a folder
+                upload does. Without it the server reads the name from the
+                multipart header instead.
 
         Returns:
             Parsed upload response from SSE stream
         """
         files = [("files", (file_name, io.BytesIO(file_content), mimetype))]
+        data = None
+        if file_path is not None:
+            data = {
+                "files_metadata": json.dumps(
+                    [{"file_path": file_path, "last_modified": int(time.time() * 1000)}]
+                )
+            }
         upload_path = f"/{kb_id}/upload"
         if folder_id:
             upload_path = f"{upload_path}?folderId={quote(folder_id, safe='')}"
@@ -80,6 +94,7 @@ class KBClient(APIClient):
             url,
             headers=headers,
             files=files,
+            data=data,
             stream=True,
             timeout=self._client.timeout_seconds,
         ) as resp:
@@ -101,8 +116,6 @@ class KBClient(APIClient):
         Returns:
             Response body from the API
         """
-        import time
-
         last_err = None
         for attempt in range(retries):
             resp = self.get(f"/record/{record_id}")
@@ -115,17 +128,26 @@ class KBClient(APIClient):
             resp.raise_for_status()
         raise RuntimeError(f"get_record failed after {retries} retries: {last_err}")
 
-    def list_records(self, kb_id: str, **params: Any) -> dict[str, Any]:
-        """List records in a knowledge base.
+    def list_records(self, kb_id: str, page: int = 1, limit: int = 200) -> dict[str, Any]:
+        """List every record in a knowledge base, including those in nested folders.
+
+        The gateway has no ``/{kb_id}/records`` route (a GET there falls through
+        to the web app and answers 200 with HTML), so this reads the Knowledge
+        Hub browse API, flattened to records only.
 
         Args:
             kb_id: KB ID
-            **params: Query params (page, limit, etc.)
+            page: 1-indexed page
+            limit: Items per page (the API allows up to 200)
 
         Returns:
-            Response body from the API
+            ``{"items": [...], "pagination": {"totalPages": ..., ...}}``; each
+            item carries ``id``, ``name``, ``indexingStatus`` and ``reason``.
         """
-        resp = self.get(f"/{kb_id}/records", params=params)
+        resp = self.get(
+            f"/knowledge-hub/nodes/app/{kb_id}",
+            params={"flattened": "true", "nodeTypes": "record", "page": page, "limit": limit},
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -159,9 +181,26 @@ class KBClient(APIClient):
             Response body from the API
         """
         payload: dict[str, Any] = {"folderName": folder_name}
-        if parent_id:
-            payload["parentId"] = parent_id
-        resp = self.post(f"/{kb_id}/folders", json=payload)
+        # A parentId in the body is ignored — the create-folder endpoint reads
+        # only the name. Nesting is done with the ?folderId= query parameter,
+        # which the gateway routes to the connector's /folder/{id}/subfolder
+        # (kb_controllers.ts:511-518).
+        params = {"folderId": parent_id} if parent_id else None
+        resp = self.post(f"/{kb_id}/folder", json=payload, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_folder(self, kb_id: str, folder_id: str) -> dict[str, Any]:
+        """Delete a folder and everything beneath it.
+
+        Args:
+            kb_id: KB ID
+            folder_id: Folder ID
+
+        Returns:
+            Response body from the API
+        """
+        resp = self.delete(f"/{kb_id}/folder/{folder_id}")
         resp.raise_for_status()
         return resp.json()
 

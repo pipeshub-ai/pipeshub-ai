@@ -102,6 +102,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
 )
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.artifact_store import build_artifact_store
+from app.agents.agent_loop.cancellation_transport import with_cancellation
 from app.agents.agent_loop.direct_transport import build_direct_transport
 from app.agents.agent_loop.domain_agents import (
     plan_domain_agents,
@@ -172,6 +173,7 @@ from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.mcp.service import is_mcp_enabled
+from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.image_policy import resolve_image_policy
 
 
@@ -316,6 +318,10 @@ class PipesHubAgentFactory:
                 lambda: LangChainTransport(
                     llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
                     max_images_per_request=image_cap,
+                    # Stop Generation (Phase 3b): per-chunk cancellation
+                    # check inside `stream()`. `None` for requests that
+                    # never registered a `runId` — the check is then a no-op.
+                    cancellation_token=context.cancellation_token,
                 ),
                 opik_active=opik_active,
                 project_name=opik_project_name,
@@ -343,15 +349,23 @@ class PipesHubAgentFactory:
                 llm, model_name=model_name, model_key=model_key,
             )
             if direct is not None:
-                # The direct SDK transports have no image cap of their own --
-                # they live in `agent_loop_lib` and know nothing about
-                # PipesHub's per-provider policy -- so the same net the
-                # LangChain arm applies inline is wrapped around them here.
-                return with_image_cap(direct, image_cap)
+                # The direct SDK transports have no image cap and no
+                # `CancellationToken` wiring of their own -- they live in
+                # `agent_loop_lib` and know nothing about PipesHub's
+                # per-provider image policy or Stop Generation -- so both
+                # nets the LangChain arm applies inline (`max_images_per_
+                # request`, `cancellation_token=` above) are wrapped around
+                # them here instead. `with_cancellation` is a no-op when
+                # `context.cancellation_token` is `None` (no `runId`
+                # registered for this request).
+                return with_cancellation(
+                    with_image_cap(direct, image_cap), context.cancellation_token,
+                )
             return LangChainTransport(
                 llm, model_name=model_name,
                 opik_project_name=opik_project_name, model_key=model_key,
                 max_images_per_request=image_cap,
+                cancellation_token=context.cancellation_token,
             )
 
         transport_registry.register(
@@ -458,14 +472,17 @@ class PipesHubAgentFactory:
                 "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
             )
 
-        # Skills subsystem (env-gated, off by default — see skills_wiring.py's
-        # module docstring for the full rollout/ordering rationale). Built
-        # and its tools registered BEFORE `plan_domain_agents()` runs below
-        # so `skill_search`/`load_skill`/`skill_manage`/... land in that
-        # call's registered-tool snapshot and fall into the residual (never
-        # domain-claimed) top-level grant.
+        # Skills subsystem, gated by two layers that must BOTH be true:
+        # `skills_enabled()` is the deployment-level env kill-switch
+        # (default ON); `is_skills_enabled()` is the org-level `ENABLE_SKILLS`
+        # platform feature flag toggled from Labs (also default ON — see
+        # skills_wiring.py's module docstring for the full rollout/ordering
+        # rationale). Built and its tools registered BEFORE
+        # `plan_domain_agents()` runs below so `skill_search`/`load_skill`/
+        # `skill_manage`/... land in that call's registered-tool snapshot and
+        # fall into the residual (never domain-claimed) top-level grant.
         skill_manager = None
-        if skills_enabled():
+        if skills_enabled() and await is_skills_enabled(context.config_service):
             _mark("f:sandbox")
             skill_manager = await build_skill_manager(context, transport_registry)
             if skill_manager is not None:
@@ -627,6 +644,12 @@ class PipesHubAgentFactory:
             opik_project_name=opik_project_name,
             skills=skill_manager,
             summarizer=PipesHubToolSummarizer(),
+            # Stop Generation (Phase 3a): `None` for callers that never
+            # registered a `runId` (background/test runs) — `Agent.__init__`
+            # only installs the `check_not_cancelled` PRE_TURN guard (and
+            # `step()`'s per-tool-call check) when this is set, so those
+            # callers are unaffected.
+            cancellation_token=context.cancellation_token,
         )
         if skill_manager is not None:
             # `hooks` here is the SAME HookRegistry instance now held by
@@ -822,7 +845,14 @@ class PipesHubAgentFactory:
         # `AgentContext.root_agent_spec`'s docstring.
         context.root_agent_spec = spec
 
-        agent = Agent(spec, runtime, session_id=session_id)
+        # Stop Generation (Phase 3a): `context.run_id`, when already set by
+        # `stream_bridge.py`/`bridge.py` from the client-supplied `runId`,
+        # becomes the root run's OWN `RunContext.run_id` — so every AG-UI
+        # frame this run emits already carries the id the client used to
+        # register the cancel-able run, with no separate mapping to keep
+        # in sync. `None` (callers that never set one) falls through to
+        # `Agent.__init__`'s own `RunContext` default (a fresh uuid4).
+        agent = Agent(spec, runtime, session_id=session_id, run_id=context.run_id)
         # `AGUIFormatter` (direct EventSink writers — see protocol/formatter.py)
         # has no Agent/RunContext reference of its own; stash the top-level
         # run_id here, the one place both `context` and the freshly-built

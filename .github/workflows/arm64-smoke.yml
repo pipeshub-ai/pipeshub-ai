@@ -1,0 +1,93 @@
+name: ARM64 first-run
+
+# Releases publish an arm64 image, but the only place it is ever started is the
+# release job itself. A change on main that breaks the arm64 build (typically a
+# new dependency with no arm64 wheel or binary) stays invisible until it blocks
+# a release.
+#
+# This builds the slim app image and the sandbox image natively on an arm64
+# runner from this commit, then runs the same first-run smoke the release uses
+# against them. Nothing is pushed: the images exist only on the runner, under a
+# tag Docker Hub does not have, so the smoke cannot silently fall back to a
+# published image.
+on:
+  pull_request:
+    branches:
+      - main
+    # What decides whether the arm64 build works: the image definitions and the
+    # dependency manifests they install from.
+    paths:
+      - 'Dockerfile'
+      - 'deployment/sandbox/**'
+      - 'backend/python/pyproject.toml'
+      - 'backend/nodejs/apps/package.json'
+      - 'backend/nodejs/apps/package-lock.json'
+      - 'frontend/package.json'
+      - 'frontend/package-lock.json'
+      - '.github/workflows/arm64-smoke.yml'
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+# Pull-request code runs here with no secrets and a read-only token, on a
+# GitHub-hosted runner, checked out without persisting credentials.
+permissions:
+  contents: read
+
+concurrency:
+  group: arm64-smoke-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  BASE_IMAGE: pipeshubai/pipeshub-ai-base
+  # Must not exist on Docker Hub; see the header.
+  CI_TAG: ci-arm64
+
+jobs:
+  slim:
+    name: Build and start slim (arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Confirm the runner is really arm64
+        run: |
+          set -euo pipefail
+          actual="$(dpkg --print-architecture)"
+          echo "runner architecture: ${actual}"
+          [ "$actual" = "arm64" ] || { echo "expected arm64, got ${actual}"; exit 1; }
+
+      # Plain `docker build` puts the image straight into the local image store
+      # the installer reads from, with no builder to export out of.
+      - name: Build the slim app image
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg PYTHON_DEPS_IMAGE="${BASE_IMAGE}:python-deps-slim" \
+            --build-arg RUNTIME_BASE_IMAGE="${BASE_IMAGE}:runtime" \
+            -t "pipeshubai/pipeshub-ai:${CI_TAG}" .
+
+      - name: Build the sandbox image
+        run: docker build -t "pipeshubai/pipeshub-sandbox:${CI_TAG}" deployment/sandbox
+
+      - name: First-run smoke against the arm64 build
+        env:
+          PIPESHUB_DEPLOY_TYPE: slim
+          PIPESHUB_VERSION: ${{ env.CI_TAG }}
+          # The installer would otherwise try to refresh this tag from Docker
+          # Hub. It does not exist there, and the local build is what we test.
+          PIPESHUB_NO_PULL: '1'
+          PUBLISHED_HUB_SMOKE_DIAG: ${{ runner.temp }}/diag
+        run: bash deployment/docker-compose/tests/published_hub_smoke.sh
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-smoke-slim
+          path: ${{ runner.temp }}/diag
+          if-no-files-found: ignore

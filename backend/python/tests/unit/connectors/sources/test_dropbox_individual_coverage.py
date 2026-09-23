@@ -578,7 +578,7 @@ class TestProcessDropboxEntry:
         )
 
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     @pytest.mark.asyncio
     async def test_shared_link_unexpected_first_error(self):
@@ -590,7 +590,7 @@ class TestProcessDropboxEntry:
         )
 
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     @pytest.mark.asyncio
     async def test_shared_link_regex_miss_logs_error(self):
@@ -604,7 +604,19 @@ class TestProcessDropboxEntry:
         )
 
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
+
+    @pytest.mark.asyncio
+    async def test_fallback_url_encodes_special_characters(self):
+        c, _, _ = _make_connector()
+        entry = _make_file_entry(path="/folder/a#b?c.pdf")
+        _mock_temp_link(c)
+        c.data_source.sharing_create_shared_link_with_settings = AsyncMock(
+            return_value=_make_response(False, error="access_denied")
+        )
+
+        result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/a%23b%3Fc.pdf"
 
     @pytest.mark.asyncio
     async def test_parent_metadata_lookup(self):
@@ -928,11 +940,11 @@ class TestRunSyncWithCursor:
 
         c._process_dropbox_items_generator = _deleted_gen
 
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await c._run_sync_with_cursor("uid", "u@test.com")
 
-        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(
-            record_id="id:deleted"
-        )
+        c.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(c.connector_id, "id:deleted")
+        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
     @pytest.mark.asyncio
     async def test_api_error_invalid_cursor_stops(self):

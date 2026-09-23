@@ -14,6 +14,7 @@ from fastapi.exceptions import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import IndexingFilterKey, ListOperator, SyncFilterKey
 from app.models.blocks import ChildRecord, ChildType, GroupSubType
 from app.connectors.sources.atlassian.jira_data_center.connector import (
@@ -152,8 +153,8 @@ async def test_init_rejects_empty_auth_type_whitespace_only():
     conn.config_service.get_config = AsyncMock(
         return_value={"auth": {"authType": "   ", "baseUrl": "https://jira.example", "apiToken": "x"}}
     )
-    ok = await conn.init()
-    assert ok is False
+    with pytest.raises(ConnectorInitError, match="unsupported authType"):
+        await conn.init()
 
 
 @pytest.mark.parametrize(
@@ -530,25 +531,27 @@ async def test_init_success_sets_clients():
 
 
 @pytest.mark.asyncio
-async def test_init_unsupported_auth_returns_false():
+async def test_init_unsupported_auth_raises():
     conn = _make_connector()
     conn.config_service.get_config = AsyncMock(
         return_value={"auth": {"authType": "OAUTH", "baseUrl": "https://x"}}
     )
-    assert await conn.init() is False
+    with pytest.raises(ConnectorInitError, match="unsupported authType"):
+        await conn.init()
 
 
 @pytest.mark.asyncio
-async def test_init_missing_base_url_returns_false():
+async def test_init_missing_base_url_raises():
     conn = _make_connector()
     conn.config_service.get_config = AsyncMock(
         return_value={"auth": {"authType": "API_TOKEN", "baseUrl": "  ", "apiToken": "t"}}
     )
-    assert await conn.init() is False
+    with pytest.raises(ConnectorInitError, match="baseUrl is required"):
+        await conn.init()
 
 
 @pytest.mark.asyncio
-async def test_init_build_raises_returns_false():
+async def test_init_build_raises():
     conn = _make_connector()
     conn.config_service.get_config = AsyncMock(
         return_value={"auth": {"authType": "API_TOKEN", "baseUrl": "https://x", "apiToken": "t"}}
@@ -558,15 +561,17 @@ async def test_init_build_raises_returns_false():
         new_callable=AsyncMock,
         side_effect=RuntimeError("boom"),
     ):
-        assert await conn.init() is False
+        with pytest.raises(ConnectorInitError, match="boom"):
+            await conn.init()
 
 
 @pytest.mark.asyncio
 async def test_get_fresh_datasource_requires_init():
     conn = _make_connector()
     conn.external_client = None
-    with pytest.raises(RuntimeError, match="init"):
+    with pytest.raises(HTTPException) as exc_info:
         await conn._get_fresh_datasource()
+    assert exc_info.value.status_code == 409
 
 
 @pytest.mark.asyncio
@@ -1056,8 +1061,9 @@ async def test_stream_record_attachment_fetch_fails_raises():
     ds = _mock_ds_attachment_download_fail(500, "fail")
     with patch.object(conn, "init", new_callable=AsyncMock):
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            with pytest.raises(Exception, match="Failed to fetch attachment"):
+            with pytest.raises(HTTPException) as exc_info:
                 await conn.stream_record(_file_record())
+        assert exc_info.value.status_code == 502
 
 
 @pytest.mark.asyncio
@@ -3763,8 +3769,10 @@ async def test_stream_record_rejects_placeholder():
     conn = _make_connector()
     conn.data_source = MagicMock()
     stub = _placeholder_ticket()
-    with pytest.raises(ValueError, match="Cannot stream placeholder"):
+    with pytest.raises(HTTPException) as exc_info:
         await conn.stream_record(stub)
+    assert exc_info.value.status_code == 422
+    assert "Cannot stream placeholder" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
@@ -4185,8 +4193,9 @@ async def test_process_issue_blockgroups_fetch_issue_fails():
     ds.get_issue_v2 = AsyncMock(return_value=bad)
     with patch.object(conn, "init", new_callable=AsyncMock):
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            with pytest.raises(Exception, match="Failed to fetch issue content"):
+            with pytest.raises(HTTPException) as exc_info:
                 await conn._process_issue_blockgroups_for_streaming(_ticket_record())
+        assert exc_info.value.status_code == 502
 
 
 @pytest.mark.asyncio
@@ -4390,25 +4399,28 @@ class TestFetchGroupsPicker:
 
 class TestFallbackPermissionsForForbiddenSchemeDC:
 
-    def test_returns_user_permission_when_email_set(self):
+    @pytest.mark.asyncio
+    async def test_returns_user_permission_when_email_set(self):
         conn = _make_connector()
         conn.creator_email = "owner@example.com"
-        result = conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
+        result = await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
         assert len(result) == 1
         assert result[0].entity_type == EntityType.USER
         assert result[0].email == "owner@example.com"
         assert result[0].type == PermissionType.READ
 
-    def test_returns_empty_when_no_email(self):
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_email(self):
         conn = _make_connector()
         conn.creator_email = None
-        assert conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
+        assert await conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
 
-    def test_works_for_both_401_and_403(self):
+    @pytest.mark.asyncio
+    async def test_works_for_both_401_and_403(self):
         conn = _make_connector()
         conn.creator_email = "e@x.com"
         for status in (401, 403):
-            result = conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
+            result = await conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
             assert len(result) == 1
             assert result[0].entity_type == EntityType.USER
 
@@ -4684,7 +4696,7 @@ class TestGetIssueWithRetryDC:
         ds.get_issue_v2 = AsyncMock(side_effect=httpx.RemoteProtocolError("disconnected"))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                with pytest.raises(Exception, match="after 3 attempts"):
+                with pytest.raises(httpx.RemoteProtocolError):
                     await conn._get_issue_with_retry("10001", fields=["summary"], max_attempts=3)
         assert ds.get_issue_v2.await_count == 3
 
@@ -4768,7 +4780,7 @@ class TestStreamRecordFile404DC:
             with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
                 with pytest.raises(HTTPException) as exc_info:
                     await conn.stream_record(_file_record())
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_http_exception_not_swallowed_by_outer_handler(self):

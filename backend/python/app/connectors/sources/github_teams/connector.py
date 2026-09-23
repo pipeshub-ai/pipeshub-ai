@@ -116,7 +116,19 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
                 ],
                 app_description="OAuth application for accessing Github organization data",
                 app_categories=["Knowledge Management"],
-            )
+            ),
+            # A GitHub personal access token as an alternative to OAuth. The field
+            # is named "token" because GitHubClient.build_from_services reads the
+            # API_TOKEN value from auth.token.
+            AuthBuilder.type(AuthType.API_TOKEN).fields(
+                [
+                    CommonFields.api_token(
+                        token_name="Personal Access Token",
+                        placeholder="Enter a GitHub personal access token",
+                        field_name="token",
+                    ),
+                ]
+            ),
         ]
     )
     .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)
@@ -137,10 +149,11 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.REPO_IDS.value,
-            display_name="Repositories",
-            description="Limit sync to specific repositories (full_name, e.g. my-org/my-repo)",
-            filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
+            display_name="Repository",
+            description="Select the repository to sync.",
+            filter_type=FilterType.SELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
+            required=True,
         ))
         .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,

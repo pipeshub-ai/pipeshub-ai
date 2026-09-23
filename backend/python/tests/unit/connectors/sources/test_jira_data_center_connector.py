@@ -8,9 +8,11 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import AppGroups, Connectors, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
@@ -238,8 +240,8 @@ class TestJiraDataCenterConnectorInit:
                 {"authType": "OAUTH", "baseUrl": "https://jira.company.com"}
             )
         )
-        ok = await conn.init()
-        assert ok is False
+        with pytest.raises(ConnectorInitError, match="unsupported authType"):
+            await conn.init()
         assert conn.external_client is None
 
     @pytest.mark.asyncio
@@ -247,8 +249,8 @@ class TestJiraDataCenterConnectorInit:
         conn = _make_connector()
         bad = {"authType": "API_TOKEN", "baseUrl": "", "apiToken": "x"}
         conn.config_service.get_config = AsyncMock(return_value=_wrap_config(bad))
-        ok = await conn.init()
-        assert ok is False
+        with pytest.raises(ConnectorInitError, match="baseUrl is required"):
+            await conn.init()
 
     @pytest.mark.asyncio
     async def test_init_build_from_services_failure(self) -> None:
@@ -263,8 +265,8 @@ class TestJiraDataCenterConnectorInit:
             new_callable=AsyncMock,
             side_effect=RuntimeError("etcd"),
         ):
-            ok = await conn.init()
-        assert ok is False
+            with pytest.raises(ConnectorInitError, match="etcd"):
+                await conn.init()
 
 
 # -----------------------------------------------------------------------------
@@ -277,8 +279,9 @@ class TestJiraDataCenterFreshDatasource:
     async def test_raises_when_not_initialized(self) -> None:
         conn = _make_connector()
         conn.external_client = None
-        with pytest.raises(RuntimeError, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_returns_jira_data_source(self) -> None:

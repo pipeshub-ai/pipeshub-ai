@@ -1,7 +1,7 @@
 from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -52,6 +52,7 @@ CONNECTOR_NOTION_PERSONAL_INFO = (
         max_delay=60.0,
     )\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Notion Personal",
@@ -244,6 +245,9 @@ class NotionPersonalConnector(NotionConnector):
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Notion Personal sync for org: {org_id}")
 
+            datasource = await self._get_fresh_datasource()
+            await self._assert_required_capabilities(datasource)
+
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "notionpersonal", self.connector_id, self.logger
             )
@@ -280,6 +284,13 @@ class NotionPersonalConnector(NotionConnector):
                 await self._sweep_placeholder_records()
             except Exception as e:
                 self.logger.error(f"Placeholder sweep failed: {e}", exc_info=True)
+
+            try:
+                await self._retire_leftover_database_records()
+            except Exception as e:
+                self.logger.error(
+                    f"Leftover database pass failed: {e}", exc_info=True
+                )
 
             self.logger.info("✅ Notion Personal sync completed successfully")
 

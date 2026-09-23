@@ -4,6 +4,11 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import { Logger } from '../../../libs/services/logger.service';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import {
   ConfigurationManagerCommandOptions,
   ConfigurationManagerServiceCommand,
@@ -11,6 +16,10 @@ import {
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { fetchConfigJwtGenerator } from '../../../libs/utils/createJwt';
 import { mailConfigInternalUrl } from '../constants/constants';
+
+const logger = Logger.getInstance({
+  service: 'SMTP Config Check',
+});
 
 export const smtpConfigCheck =
   (cmBackend: string, scopedJwtSecret: string) =>
@@ -51,12 +60,18 @@ export const smtpConfigCheck =
         typeof response !== 'object' ||
         typeof response.statusCode !== 'number'
       ) {
-        throw new InternalServerError('Error getting smtp config');
+        logger.error('The configuration service gave an unreadable answer');
+        throw markClientSafe(
+          new InternalServerError(serverFailureMessage('check the email settings')),
+        );
       }
       if (response.statusCode !== 200) {
-        throw new InternalServerError(
-          'Error getting smtp config',
-          response?.data?.error?.message,
+        logger.error('Reading the email settings failed', {
+          statusCode: response.statusCode,
+          upstream: response?.data?.error?.message,
+        });
+        throw markClientSafe(
+          new InternalServerError(serverFailureMessage('check the email settings')),
         );
       }
       const credentialsData = response.data;

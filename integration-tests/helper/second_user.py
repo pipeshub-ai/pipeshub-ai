@@ -75,11 +75,23 @@ class SecondUser:
 
     def search(self, query: str, kb_id: str, limit: int = 5) -> requests.Response:
         """Search as this user, scoped to one knowledge base."""
+        return self.search_filtered(query, {"kb": [kb_id]}, limit)
+
+    def search_filtered(
+        self, query: str, filters: dict[str, list[str]], limit: int = 5
+    ) -> requests.Response:
+        """Search as this user with any filter, e.g. ``{"apps": [connector_id]}``."""
         return requests.post(
             f"{self.base_url}/api/v1/search",
             headers=self.headers,
-            json={"query": query, "filters": {"kb": [kb_id]}, "limit": limit},
+            json={"query": query, "filters": filters, "limit": limit},
             timeout=self.timeout,
+        )
+
+    def get(self, path: str) -> requests.Response:
+        """GET an API path as this user."""
+        return requests.get(
+            f"{self.base_url}{path}", headers=self.headers, timeout=self.timeout
         )
 
 
@@ -322,16 +334,115 @@ def create_second_user(client: PipeshubClient) -> SecondUser:
     )
 
 
-def delete_second_user(client: PipeshubClient, user: SecondUser) -> None:
+def _credential_filter(org_id: str, user_id: str) -> dict[str, str]:
+    return {"userId": str(user_id), "orgId": str(org_id)}
+
+
+def _read_credentials(org_id: str, user_id: str) -> list[dict[str, Any]]:
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
+    try:
+        return list(
+            client[MONGO_DB_NAME].userCredentials.find(_credential_filter(org_id, user_id))
+        )
+    finally:
+        client.close()
+
+
+def _restore_credentials(org_id: str, user_id: str, saved: list[dict[str, Any]]) -> None:
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
+    try:
+        collection = client[MONGO_DB_NAME].userCredentials
+        collection.delete_many(_credential_filter(org_id, user_id))
+        if saved:
+            collection.insert_many(saved)
+    finally:
+        client.close()
+
+
+# Credential rows an existing account had before the test gave it a password,
+# keyed by user id, so logging out puts them back instead of deleting them.
+_saved_credentials: dict[str, list[dict[str, Any]]] = {}
+
+
+def log_in_existing_user(client: PipeshubClient, user_id: str, email: str) -> SecondUser:
+    """Log in as an account that already exists, such as a connector's test user.
+
+    Connector permissions are keyed by the source system's email, so a test that
+    asks what a Drive user can open has to log in as that exact address rather
+    than a fresh random one. The account may be someone's real login (a local run
+    can point the connector at the admin), so its credential rows are saved first
+    and ``log_out_existing_user`` puts them back.
+
+    Reading them needs the direct Mongo connection: without it the old password
+    could not be restored, so this refuses rather than overwrite it.
+    """
+    saved = _read_credentials(client.org_id, user_id)
+    try:
+        # Inside the try: seeding deletes the old rows before inserting, so a
+        # failed insert must restore them too.
+        _seed_password(client.org_id, user_id)
+        graph_user = _wait_for_graph_user(client, email)
+        graph_id = str(graph_user.get("id") or "")
+        if not graph_id:
+            raise RuntimeError(f"graph user for {email} has no id: {graph_user}")
+        token = _login(client.base_url, email, client.timeout_seconds)
+    except BaseException:
+        # The caller never gets a user to log out, so restore here.
+        _restore_credentials(client.org_id, user_id, saved)
+        raise
+    _saved_credentials[user_id] = saved
+    return SecondUser(
+        user_id=user_id,
+        graph_id=graph_id,
+        email=email,
+        token=token,
+        base_url=client.base_url,
+        timeout=client.timeout_seconds,
+    )
+
+
+def log_out_existing_user(client: PipeshubClient, user: SecondUser) -> None:
+    """Put back the credentials the account had before ``log_in_existing_user``."""
+    saved = _saved_credentials.pop(user.user_id, [])
+    _restore_credentials(client.org_id, user.user_id, saved)
+
+
+def delete_second_user(
+    client: PipeshubClient, user: SecondUser, strict: bool = False
+) -> None:
+    """Remove the disposable account.
+
+    ``strict`` decides what a failure means. The default stays lenient because
+    existing suites rely on teardown never failing a run. Callers that care —
+    these accounts are real logins in a shared environment, and one that
+    outlives its test is a credential nobody knows exists — pass ``strict=True``
+    and get an exception on a transport error or a non-2xx reply.
+    """
     _delete_credentials(client.org_id, user.user_id)
     try:
-        requests.delete(
+        response = requests.delete(
             f"{client.base_url}/api/v1/users/{user.user_id}",
             headers=client._headers(),
             timeout=client.timeout_seconds,
         )
-    except Exception:  # noqa: BLE001 - teardown must not fail the run
-        logger.warning("Could not delete test user %s", user.user_id)
+    except Exception as exc:  # noqa: BLE001 - lenient callers must not fail
+        if strict:
+            raise RuntimeError(
+                f"Could not delete test user {user.email}: {exc}"
+            ) from exc
+        logger.warning("Could not delete test user %s: %s", user.user_id, exc)
+        return
+
+    # requests does not raise on 4xx/5xx, so the status has to be read: a
+    # refused delete looks exactly like a successful one otherwise.
+    if response.status_code >= 400:
+        message = (
+            f"Deleting test user {user.email} returned "
+            f"{response.status_code}: {response.text[:200]}"
+        )
+        if strict:
+            raise RuntimeError(message)
+        logger.warning(message)
 
 
 @pytest.fixture(scope="session")

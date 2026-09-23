@@ -104,6 +104,21 @@ export class AuthMiddleware {
       throw new UnauthorizedError('User not found, please login again');
     }
 
+    // Sessions already handed out have to be stopped too, not only the next
+    // sign-in. generateAuthToken refuses to issue one for a disabled account,
+    // but a session minted before it was disabled would otherwise keep working
+    // until it expired — which for the account an administrator has just
+    // switched off is the whole point of switching it off.
+    if (user.isDisabled) {
+      throw new UnauthorizedError('This account is disabled');
+    }
+
+    // A service account has no way to obtain a session in the first place, so
+    // one turning up here means something is wrong rather than merely stale.
+    if (user.kind === 'service') {
+      throw new UnauthorizedError('Service accounts cannot sign in');
+    }
+
     if (userId && orgId) {
       let userActivity: IUserActivity | null = null;
       try {
@@ -192,7 +207,7 @@ export class AuthMiddleware {
       orgId: orgId,
       isDeleted: false,
     })
-      .select('email fullName role')
+      .select('email fullName role isDisabled kind')
       .lean()
       .exec();
 
@@ -203,13 +218,28 @@ export class AuthMiddleware {
       throw new UnauthorizedError('User not found, please login again');
     }
 
+    // Disabling an account has to reach the tokens already issued from it,
+    // or it only stops the next sign-in and leaves every outstanding token
+    // working. That matters most for a service account, whose whole purpose
+    // is to be used by long-lived automation holding a long-lived token.
+    if (user.isDisabled) {
+      throw new UnauthorizedError('This account is disabled');
+    }
+
     email = user.email;
     if (!fullName) {
       fullName = user.fullName;
     }
     // Attach role so Node-side isUserAdmin matches session-JWT behavior
     // (OAuth access tokens do not carry a role claim).
-    role = user.role === 'admin' ? 'admin' : 'member';
+    //
+    // A service account is never an admin, whatever its record says. The
+    // schema refuses to store that combination, so this is the backstop for a
+    // row that predates the rule or was written straight to the database:
+    // the guarantee is worth holding at the point the role is actually read,
+    // not only at the points it is written.
+    role =
+      user.role === 'admin' && user.kind !== 'service' ? 'admin' : 'member';
 
     if (!accountType && isClientCredentials) {
       try {

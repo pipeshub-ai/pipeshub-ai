@@ -5,6 +5,7 @@ Provides a data source class for interacting with Google Cloud Storage API.
 """
 
 from datetime import timedelta
+from http import HTTPStatus
 from typing import Any, AsyncIterator, Dict, Optional
 
 try:
@@ -42,11 +43,12 @@ class GCSDataSource:
     def _handle_response(
         self,
         data: Optional[Dict[str, Any]] = None,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        status_code: Optional[int] = None,
     ) -> GCSResponse:
         """Create a standardized response."""
         if error:
-            return GCSResponse(success=False, error=error)
+            return GCSResponse(success=False, error=error, status_code=status_code)
         return GCSResponse(success=True, data=data)
 
     async def list_buckets(self) -> GCSResponse:
@@ -387,10 +389,14 @@ class GCSDataSource:
 
         except NotFound:
             return self._handle_response(
-                error=f"Blob not found: {bucket_name}/{blob_name}"
+                error=f"Blob not found: {bucket_name}/{blob_name}",
+                status_code=HTTPStatus.NOT_FOUND.value,
             )
         except GoogleAPIError as e:
-            return self._handle_response(error=f"GCS API error: {str(e)}")
+            return self._handle_response(
+                error=f"GCS API error: {str(e)}",
+                status_code=getattr(e, "code", None),
+            )
         except Exception as e:
             return self._handle_response(error=f"Unexpected error: {str(e)}")
 

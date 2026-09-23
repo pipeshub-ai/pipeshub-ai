@@ -1,0 +1,318 @@
+name: Scale and Stress
+
+# Monthly scale run, plus a stress run and a soak run that can be started by
+# hand (integration-tests/perf/). Never runs on pull requests: it holds secrets
+# and only ever checks out this repository's own branches, the same way the
+# scheduled integration run does.
+#
+# Roughly what each mode costs on the 4-CPU runner these jobs use:
+#   scale   2,000 files, up to 4 hours of indexing, a few dollars of AI usage
+#   stress    400 files uploaded at once, under an hour, well under a dollar
+#   soak    4,000 files, up to 4.5 hours, mainly to watch memory over time
+# A run that hits its limit fails rather than reporting part of a corpus.
+# The plan's target of 100,000 files needs a bigger machine — see
+# integration-tests/perf/README.md.
+on:
+  # First of the month, 21:00 UTC, clear of the nightly integration run.
+  schedule:
+    - cron: '0 21 1 * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'scale (grow the corpus), stress (overload it) or soak (long run, watch memory)'
+        required: true
+        default: 'scale'
+        type: choice
+        options:
+          - scale
+          - stress
+          - soak
+      docs:
+        description: 'Files to index (scale/soak) or to fire at once (stress). Blank uses the mode default.'
+        required: false
+        default: ''
+      seed:
+        description: 'Corpus seed (change only when you also refresh the baseline)'
+        required: true
+        default: '1337'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-scale
+  cancel-in-progress: false
+
+env:
+  PIPESHUB_BASE_URL: http://localhost:3000
+  MESSAGE_BROKER: redis
+  COMPOSE_FILE_NEO4J: docker-compose.integration.neo4j.yml
+
+jobs:
+  scale-run:
+    name: ${{ github.event.inputs.mode || 'scale' }} run (neo4j)
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
+    timeout-minutes: 330
+
+    # Same environments, and so the same approval gate and secrets, as the
+    # integration workflow.
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+
+    env:
+      # SECRET_KEY stays at job scope because every `docker compose` call
+      # interpolates it out of the compose file — build, up, ps, logs and down.
+      # The credentials and the provider key are given only to the steps that
+      # use them.
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      DOCKER_BUILDKIT: "1"
+      PIPESHUB_TEST_ENV: local
+      # Routed through env (never interpolated into the shell) so dispatch
+      # input cannot inject; validated before use.
+      MODE_INPUT: ${{ github.event.inputs.mode || 'scale' }}
+      DOCS_INPUT: ${{ github.event.inputs.docs }}
+      SEED_INPUT: ${{ github.event.inputs.seed || '1337' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        run: |
+          case "$MODE_INPUT" in
+            scale|stress|soak) ;;
+            *) echo "mode must be one of: scale, stress, soak (got '$MODE_INPUT')"; exit 1 ;;
+          esac
+          # Each mode has its own sensible size. The stress run is a burst, not
+          # a marathon, so it takes far fewer files than the scale run.
+          if [ -z "$DOCS_INPUT" ]; then
+            case "$MODE_INPUT" in
+              scale) DOCS_INPUT=2000 ;;
+              stress) DOCS_INPUT=400 ;;
+              soak) DOCS_INPUT=4000 ;;
+            esac
+          fi
+          [[ "$DOCS_INPUT" =~ ^[0-9]+$ ]] || { echo "docs must be a whole number"; exit 1; }
+          [[ "$SEED_INPUT" =~ ^[0-9]+$ ]] || { echo "seed must be a whole number"; exit 1; }
+          # Indexing budget per mode, inside the job's own 330-minute limit with
+          # room for building the stack and tearing it down.
+          case "$MODE_INPUT" in
+            scale) RUN_TIMEOUT=14400 ;;   # 4 hours
+            soak) RUN_TIMEOUT=16200 ;;    # 4.5 hours
+            stress) RUN_TIMEOUT=2700 ;;   # 45 minutes to drain the backlog
+          esac
+          {
+            echo "RUN_TIMEOUT=$RUN_TIMEOUT"
+            echo "DOCS_INPUT=$DOCS_INPUT"
+            echo "PERF_LABEL=ci-$MODE_INPUT-neo4j-4cpu"
+          } >> "$GITHUB_ENV"
+          echo "Running the $MODE_INPUT mode over $DOCS_INPUT files."
+
+      - name: Pull pre-built base images
+        run: |
+          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
+          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+
+      - name: Build Neo4j stack images
+        working-directory: deployment/docker-compose
+        run: docker compose -f "$COMPOSE_FILE_NEO4J" build
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install integration-test dependencies
+        working-directory: integration-tests
+        run: |
+          uv venv
+          uv pip install -e .
+
+      # Only the app and the stores it depends on: the connector source
+      # databases the integration suite also starts would be idle neighbours
+      # competing for the same four CPUs.
+      - name: Start services
+        working-directory: deployment/docker-compose
+        run: docker compose -f "$COMPOSE_FILE_NEO4J" up -d pipeshub-ai
+
+      - name: Wait for core services
+        run: |
+          deadline=$((SECONDS + 300))
+          delay=1
+          until curl -sf "${PIPESHUB_BASE_URL}/api/v1/health" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "Core services not healthy after 300s"; exit 1; fi
+            echo "Not ready, retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+            if [ "$delay" -gt 64 ]; then delay=64; fi
+          done
+
+      - name: Wait for Python microservices
+        run: |
+          deadline=$((SECONDS + 300))
+          delay=1
+          until curl -sf "${PIPESHUB_BASE_URL}/api/v1/health/services" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "Python services not healthy after 300s"; exit 1; fi
+            echo "Not ready, retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+            if [ "$delay" -gt 64 ]; then delay=64; fi
+          done
+
+      # Bodies are built with jq so a secret containing a quote, backslash or
+      # newline still produces valid JSON.
+      - name: Create organization and admin user
+        env:
+          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+        run: |
+          jq -n \
+            --arg email "$PIPESHUB_TEST_USER_EMAIL" \
+            --arg password "$PIPESHUB_TEST_USER_PASSWORD" \
+            '{
+              accountType: "business",
+              adminFullName: "Integration Test Admin",
+              contactEmail: $email,
+              password: $password,
+              confirmPassword: $password,
+              registeredName: "Integration Test Org",
+              shortName: "INTTEST"
+            }' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
+                -H "Content-Type: application/json" \
+                --data-binary @- > /dev/null
+
+      - name: Skip onboarding
+        env:
+          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+        run: |
+          HEADERS=$(mktemp)
+          jq -n --arg email "$PIPESHUB_TEST_USER_EMAIL" '{email: $email}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+                -H "Content-Type: application/json" \
+                --data-binary @- \
+                -D "${HEADERS}" -o /dev/null
+          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
+          rm -f "${HEADERS}"
+
+          ACCESS_TOKEN=$(jq -n \
+              --arg email "$PIPESHUB_TEST_USER_EMAIL" \
+              --arg password "$PIPESHUB_TEST_USER_PASSWORD" \
+              '{method: "password", credentials: {password: $password}, email: $email}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+                -H "Content-Type: application/json" \
+                -H "x-session-token: ${SESSION_TOKEN}" \
+                --data-binary @- \
+            | jq -r '.accessToken')
+
+          curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -d '{"status": "configured"}' > /dev/null
+
+      - name: Run the scale or soak run
+        if: ${{ env.MODE_INPUT != 'stress' }}
+        working-directory: integration-tests
+        env:
+          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+          # Azure OpenAI is where the credits are. The helper prefers it over
+          # OpenAI when its credentials are present, and TEST_AI_MODEL_PROVIDER
+          # stops a failure here quietly falling back to a key we no longer fund.
+          TEST_AI_MODEL_PROVIDER: azureOpenAI
+          TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+          TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+          TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+          # Without its own value this falls back to the LLM deployment, which
+          # would send embedding requests to a chat model.
+          TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+        run: |
+          source .venv/bin/activate
+          CONTAINER=$(docker compose -f "../deployment/docker-compose/$COMPOSE_FILE_NEO4J" ps -q pipeshub-ai)
+          python perf/bench_scale.py \
+            --docs "$DOCS_INPUT" --seed "$SEED_INPUT" \
+            --label "$PERF_LABEL" --graph-db neo4j --ai-models seed \
+            --container "$CONTAINER" \
+            --windows 8 \
+            --timeout "$RUN_TIMEOUT" \
+            --fail-if-incomplete \
+            --output reports/perf/scale.json \
+            --summary reports/perf/summary.md
+
+      # A lost file is a fault, not a slow number, so this one does fail the job.
+      - name: Run the stress run
+        if: ${{ env.MODE_INPUT == 'stress' }}
+        working-directory: integration-tests
+        env:
+          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+          # Azure OpenAI is where the credits are. The helper prefers it over
+          # OpenAI when its credentials are present, and TEST_AI_MODEL_PROVIDER
+          # stops a failure here quietly falling back to a key we no longer fund.
+          TEST_AI_MODEL_PROVIDER: azureOpenAI
+          TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+          TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+          TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+          # Without its own value this falls back to the LLM deployment, which
+          # would send embedding requests to a chat model.
+          TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+        run: |
+          source .venv/bin/activate
+          CONTAINER=$(docker compose -f "../deployment/docker-compose/$COMPOSE_FILE_NEO4J" ps -q pipeshub-ai)
+          python perf/bench_stress.py \
+            --docs "$DOCS_INPUT" --seed "$SEED_INPUT" \
+            --label "$PERF_LABEL" --graph-db neo4j --ai-models seed \
+            --container "$CONTAINER" \
+            --recovery-timeout "$RUN_TIMEOUT" \
+            --fail-on-violation \
+            --output reports/perf/stress.json \
+            --summary reports/perf/summary.md
+
+      # Reports only: compare.py exits 0 on a regression until the thresholds
+      # have a few months of history behind them (see perf/README.md).
+      - name: Compare with baseline
+        if: ${{ !cancelled() && env.MODE_INPUT != 'stress' && hashFiles('integration-tests/reports/perf/scale.json') != '' }}
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          python perf/compare.py \
+            --baseline "perf/baselines/$PERF_LABEL.json" \
+            --current reports/perf/scale.json \
+            --summary reports/perf/summary.md
+
+      - name: Write job summary
+        if: ${{ !cancelled() && hashFiles('integration-tests/reports/perf/summary.md') != '' }}
+        run: cat integration-tests/reports/perf/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dump docker logs
+        if: failure()
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p ../../integration-tests/reports/perf/docker-logs
+          docker compose -f "$COMPOSE_FILE_NEO4J" logs --no-color --timestamps pipeshub-ai \
+            > ../../integration-tests/reports/perf/docker-logs/pipeshub-ai.log 2>&1 || true
+
+      - name: Upload run result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ env.MODE_INPUT }}-${{ github.run_id }}
+          path: integration-tests/reports/perf/
+          if-no-files-found: ignore
+
+      - name: Tear down services
+        if: always()
+        working-directory: deployment/docker-compose
+        run: docker compose -f "$COMPOSE_FILE_NEO4J" down -v

@@ -69,6 +69,21 @@ class TestChatQueryModel:
         q = ChatQuery(query="q", attachments=att)
         assert q.attachments == att
 
+    def test_project_instructions_defaults_to_none(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="q")
+        assert q.projectInstructions is None
+
+    def test_project_instructions_accepts_value(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="q", projectInstructions="Cite the Q3 report.")
+        assert q.projectInstructions == "Cite the Q3 report."
+
+    def test_project_instructions_rejects_over_max_length(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        with pytest.raises(ValidationError):
+            ChatQuery(query="q", projectInstructions="x" * 8001)
+
 
 class TestMergeEndUserServiceAccountUserInfo:
     def _creator_like(self) -> dict:
@@ -491,51 +506,56 @@ class TestGetServices:
         assert result["reranker_service"] is mock_reranker
         assert result["config_service"] is mock_config
         assert result["logger"] is mock_logger
-        assert result["llm"] is mock_retrieval.llm
+        assert "llm" not in result
+
+    @staticmethod
+    def _request_with_no_llm_configured(graph: MagicMock) -> MagicMock:
+        retrieval = MagicMock()
+        retrieval.llm = None
+        retrieval.get_llm_instance = AsyncMock(return_value=None)
+        container = MagicMock()
+        container.retrieval_service = AsyncMock(return_value=retrieval)
+        container.graph_provider = AsyncMock(return_value=graph)
+        container.reranker_service.return_value = MagicMock()
+        container.config_service.return_value = MagicMock()
+        container.logger.return_value = MagicMock()
+        request = MagicMock()
+        request.app.container = container
+        return request
 
     @pytest.mark.asyncio
-    async def test_llm_none_falls_back_to_get_llm_instance(self) -> None:
+    async def test_does_not_require_a_configured_llm(self) -> None:
+        """Agent routes other than chat never use an LLM, so none is resolved."""
         from app.api.routes.agent import get_services
 
-        mock_llm = MagicMock()
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = None
-        mock_retrieval.get_llm_instance = AsyncMock(return_value=mock_llm)
-
-        container = MagicMock()
-        container.retrieval_service = AsyncMock(return_value=mock_retrieval)
-        container.graph_provider = AsyncMock(return_value=MagicMock())
-        container.reranker_service.return_value = MagicMock()
-        container.config_service.return_value = MagicMock()
-        container.logger.return_value = MagicMock()
-
-        request = MagicMock()
-        request.app.container = container
+        request = self._request_with_no_llm_configured(MagicMock())
 
         result = await get_services(request)
-        assert result["llm"] is mock_llm
-        mock_retrieval.get_llm_instance.assert_awaited_once()
+
+        retrieval = await request.app.container.retrieval_service()
+        assert result["retrieval_service"] is retrieval
+        retrieval.get_llm_instance.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_llm_none_and_fallback_none_raises(self) -> None:
-        from app.api.routes.agent import LLMInitializationError, get_services
+    async def test_agent_list_loads_before_any_model_is_configured(self) -> None:
+        """Was a 500 ("LLM configuration is missing") on every page load during onboarding."""
+        import json
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = None
-        mock_retrieval.get_llm_instance = AsyncMock(return_value=None)
+        from app.api.routes.agent import get_agents
 
-        container = MagicMock()
-        container.retrieval_service = AsyncMock(return_value=mock_retrieval)
-        container.graph_provider = AsyncMock(return_value=MagicMock())
-        container.reranker_service.return_value = MagicMock()
-        container.config_service.return_value = MagicMock()
-        container.logger.return_value = MagicMock()
+        graph = MagicMock()
+        graph.get_all_agents = AsyncMock(return_value={"agents": [], "totalItems": 0})
+        request = self._request_with_no_llm_configured(graph)
 
-        request = MagicMock()
-        request.app.container = container
+        with patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "k1"}):
+            response = await get_agents(
+                request, page=1, limit=20, search=None,
+                sort_by="updatedAtTimestamp", sort_order="desc", is_deleted=False,
+            )
 
-        with pytest.raises(LLMInitializationError):
-            await get_services(request)
+        assert response.status_code == 200
+        assert json.loads(response.body)["agents"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -1370,6 +1390,22 @@ class TestGetUserContextExtended:
         request.query_params = {"sendUserInfo": False}
         ctx = _get_user_context(request)
         assert ctx["userId"] == "u1"
+
+
+class TestApplyUserContextGate:
+    def test_disabled_sets_send_user_info_false(self) -> None:
+        from app.api.routes.agent import _apply_user_context_gate
+
+        info = {"userId": "u1", "sendUserInfo": True}
+        _apply_user_context_gate(info, enabled=False)
+        assert info["sendUserInfo"] is False
+
+    def test_enabled_leaves_existing_value(self) -> None:
+        from app.api.routes.agent import _apply_user_context_gate
+
+        info = {"userId": "u1", "sendUserInfo": True}
+        _apply_user_context_gate(info, enabled=True)
+        assert info["sendUserInfo"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -3502,7 +3538,7 @@ class TestChatStream:
             body = await _drain(await chat_stream(request, "a1"))
 
         assert "RUN_ERROR" in body or "event: error" in body
-        assert "Failed to initialize LLM service" in body
+        assert "An admin can add one in Workspace" in body
 
 
 # ===========================================================================

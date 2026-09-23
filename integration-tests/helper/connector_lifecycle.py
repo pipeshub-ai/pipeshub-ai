@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict
 
+import pytest
 import requests
 from neo4j.exceptions import Neo4jError
 
@@ -20,14 +21,13 @@ try:
 except ImportError:
     _GRAPH_TEARDOWN_HTTP_ERRORS = ()
 
+from helper.graph_provider import GraphProviderProtocol
+from helper.graph_provider_utils import wait_until_graph_condition
 from pipeshub_client import (  # type: ignore[import-not-found]
     PipeshubAuthError,
     PipeshubClient,
     PipeshubClientError,
 )
-
-from helper.graph_provider import GraphProviderProtocol
-from helper.graph_provider_utils import wait_until_graph_condition
 
 logger = logging.getLogger("connector-lifecycle")
 
@@ -72,6 +72,25 @@ def _storage_clear_error_types() -> tuple[type[BaseException], ...]:
 
 STORAGE_CLEAR_ERRORS = _storage_clear_error_types()
 
+
+def source_unavailable(reason: str) -> None:
+    """A connector source that cannot be reached: skip locally, fail in CI.
+
+    Suites that sync from a self-hosted source check it is up before running.
+    Skipping on any failure there turns a broken stack into a green run, because
+    the checks catch wrong credentials and setup errors as readily as a service
+    that is not listening.
+
+    CI starts these sources itself, so being unable to reach one there is a
+    result. Locally, running against a partial stack is normal and skipping is
+    the useful behaviour.
+    """
+    if os.getenv("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+from helper.run_folder import RUN_FOLDER_PREFIX, folder_filter, new_run_folder
+
 RESOURCE_NAME = "pipeshub-integration-tests"
 
 # GCS connector tests target this bucket (pre-provisioned; must exist in GCP).
@@ -85,7 +104,8 @@ def ensure_resource_exists(storage: object, resource_name: str) -> None:
     provisioned out of band. This only performs an accessibility check.
     """
     try:
-        objects = storage.list_objects(resource_name)
+        # Listing an unused prefix proves access without listing the whole bucket.
+        objects = storage.list_objects(resource_name, prefix=f"{RUN_FOLDER_PREFIX}access-check/")
         assert isinstance(objects, list)
     except Exception as e:
         raise AssertionError(
@@ -117,22 +137,23 @@ async def constructor(
     )
     connector_name = f"{connector_type.lower().replace(' ', '-')}-lifecycle-test-{uuid.uuid4().hex[:8]}"
 
+    # This run's own folder in the shared bucket; see helper/run_folder.py.
+    folder = new_run_folder()
     state: Dict[str, Any] = {
         "resource_name": resource_name,
         "connector_name": connector_name,
+        "folder": folder,
     }
 
     logger.info("CONSTRUCTOR [%s]: Ensuring %s exists", connector_type, resource_name)
     ensure_resource_exists(storage, resource_name)
-    objects = storage.list_objects(resource_name)
-    assert isinstance(objects, list), f"{storage_name} should be accessible"
 
-    count = storage.upload_directory(resource_name, sample_data_root)
-    logger.info("CONSTRUCTOR [%s]: Uploaded %d files to %s", connector_type, count, resource_name)
+    count = storage.upload_directory(resource_name, sample_data_root, prefix=folder)
+    logger.info("CONSTRUCTOR [%s]: Uploaded %d files to %s/%s", connector_type, count, resource_name, folder)
     assert count > 0, "Expected at least 1 file in sample data"
     state["uploaded_count"] = count
 
-    objects = storage.list_objects(resource_name)
+    objects = storage.list_objects(resource_name, prefix=folder)
     picked_files = [k for k in objects if not k.endswith("/")][:2]
     assert len(picked_files) >= 1, "No file objects after upload"
 
@@ -144,6 +165,42 @@ async def constructor(
     state["update_target_key"] = update_key
     state["update_target_name"] = Path(update_key).name
 
+    await create_connector_and_await_sync(
+        pipeshub_client,
+        graph_provider,
+        state,
+        connector_type=connector_type,
+        connector_name=connector_name,
+        connector_config={**connector_config, "filters": folder_filter(folder)},
+        scope=scope,
+        auth_type=auth_type,
+        expected_records=state["uploaded_count"],
+    )
+
+    return state
+
+
+async def create_connector_and_await_sync(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    state: dict[str, Any],
+    *,
+    connector_type: str,
+    connector_name: str,
+    connector_config: dict,
+    expected_records: int,
+    scope: str = "personal",
+    auth_type: str | None = None,
+    timeout: int = 180,
+) -> dict[str, Any]:
+    """Create the connector, enable sync, and wait for the records to land.
+
+    Shared by every connector fixture. What differs between connectors is how
+    the source data gets there — objects uploaded to a bucket, rows inserted
+    into a table — not what happens afterwards, which is identical.
+
+    Sets ``connector_id`` and ``full_sync_count`` on ``state``.
+    """
     instance = pipeshub_client.create_connector(
         connector_type=connector_type,
         instance_name=connector_name,
@@ -159,15 +216,13 @@ async def constructor(
     pipeshub_client.toggle_sync(connector_id, enable=True)
     logger.info("CONSTRUCTOR [%s]: Sync enabled — waiting for full sync (connector %s)", connector_type, connector_id)
 
-    uploaded = state["uploaded_count"]
-
     async def _check_full_sync() -> bool:
-        return await graph_provider.count_records(connector_id) >= uploaded
+        return await graph_provider.count_records(connector_id) >= expected_records
 
     await wait_until_graph_condition(
         connector_id,
         check=_check_full_sync,
-        timeout=180,
+        timeout=timeout,
         poll_interval=10,
         description="full sync",
     )
@@ -212,9 +267,13 @@ async def destructor(
     except _CONNECTOR_DELETE_TEARDOWN_ERRORS:
         logger.exception("DESTRUCTOR [%s]: Failed to delete/clean connector %s", connector_type, connector_id)
 
-    logger.info("DESTRUCTOR [%s]: Clearing content in %s", connector_type, resource_name)
+    folder = state.get("folder", "")
+    if not folder:
+        logger.warning("DESTRUCTOR [%s]: No run folder recorded; nothing to clear", connector_type)
+        return
+    logger.info("DESTRUCTOR [%s]: Clearing %s/%s", connector_type, resource_name, folder)
     try:
-        storage.clear_objects(resource_name)
+        storage.clear_objects(resource_name, folder)
         logger.info("DESTRUCTOR [%s]: Content cleared in %s", connector_type, resource_name)
     except STORAGE_CLEAR_ERRORS:
         logger.exception("DESTRUCTOR [%s]: Failed to clear content in %s", connector_type, resource_name)

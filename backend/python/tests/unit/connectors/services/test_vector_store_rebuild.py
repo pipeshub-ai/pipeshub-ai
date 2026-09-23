@@ -844,3 +844,105 @@ class TestRebuildLockLifecycle:
 
         assert lock.refresh.await_count == 2
         logger.exception.assert_called_once()
+
+
+# ── An unreadable listing must never read as "nothing in flight" ──
+
+
+@pytest.mark.asyncio
+async def test_gate_refuses_when_the_listing_cannot_be_read():
+    """The gate must fail closed.
+
+    A listing that could not be read is not evidence that indexing has drained;
+    treating it as "nothing queued" starts a rebuild that wipes points a live
+    run just wrote.
+    """
+    from app.connectors.services import vector_store_rebuild as rebuild
+    from app.exceptions.graph_db_exceptions import GraphQueryError
+
+    graph = AsyncMock()
+    graph.get_records_by_status = AsyncMock(side_effect=GraphQueryError("db down"))
+
+    with patch.object(rebuild.sync_task_manager, "active_keys", return_value=[]):
+        with pytest.raises(rebuild.VectorStoreRebuildConflictError) as exc_info:
+            await rebuild.assert_no_indexing_in_flight(graph, [("org-1", "app-1")])
+
+    message = str(exc_info.value)
+    assert "could not check whether indexing is still running" in message.lower()
+    # Plain language only: no exception name, repr, status code or internal id.
+    assert "GraphQueryError" not in message
+    assert "db down" not in message
+
+
+@pytest.mark.asyncio
+async def test_cleanup_does_not_drop_when_the_listing_cannot_be_read():
+    """The job re-runs the gate before dropping; that recheck must fail closed too."""
+    from app.connectors.services import vector_store_rebuild as rebuild
+    from app.exceptions.graph_db_exceptions import GraphQueryError
+
+    redis = FakeRedis()
+    lock = RebuildJobLock(redis, token="cleanup")
+    await lock.try_acquire()
+    graph = AsyncMock()
+    graph.get_records_by_status = AsyncMock(side_effect=GraphQueryError("db down"))
+    kafka = AsyncMock()
+
+    with patch.object(rebuild.sync_task_manager, "active_keys", return_value=[]):
+        with pytest.raises(rebuild.VectorStoreRebuildConflictError):
+            await rebuild.start_vector_store_cleanup(
+                logger=MagicMock(),
+                graph_provider=graph,
+                kafka_service=kafka,
+                lock=lock,
+                redis=redis,
+                org_id="org-1",
+                user_id="user-1",
+                apps=[("org-1", "app-1")],
+            )
+
+    kafka.publish_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reindex_stops_as_a_failure_when_a_page_cannot_be_read():
+    """A failed page must not end the walk as if the connector were fully done.
+
+    The records after the failed page have already been reset to NOT_STARTED and
+    would never be republished, so the job has to surface as failed.
+    """
+    from app.connectors.services import vector_store_rebuild as rebuild
+    from app.exceptions.graph_db_exceptions import GraphQueryError
+
+    redis = FakeRedis()
+    lock = RebuildJobLock(redis, token="reindex")
+    await lock.try_acquire()
+
+    rec1 = MagicMock(id="r1", is_placeholder=False, virtual_record_id="v1")
+    graph = AsyncMock()
+    graph.reset_indexing_status_for_connector = AsyncMock()
+    graph.get_records_by_status = AsyncMock(
+        side_effect=[[rec1], GraphQueryError("db down")]
+    )
+
+    processor = AsyncMock()
+    processor.initialize = AsyncMock()
+    processor.reindex_existing_records = AsyncMock()
+
+    with (
+        patch.object(rebuild, "DataSourceEntitiesProcessor", return_value=processor),
+        patch.object(rebuild, "_page_size", return_value=1),
+    ):
+        with pytest.raises(GraphQueryError):
+            await rebuild.start_vector_store_reindex(
+                logger=MagicMock(),
+                graph_provider=graph,
+                data_store_provider=MagicMock(),
+                config_service=MagicMock(),
+                lock=lock,
+                redis=redis,
+                apps=[("org-1", "app-1")],
+            )
+
+    # The first page was real work; the second was a failure, not the end.
+    assert processor.reindex_existing_records.await_count == 1
+    assert JOB_LOCK_KEY not in redis.store

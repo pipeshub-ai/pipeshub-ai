@@ -1113,4 +1113,5 @@ class TestReindexConnectorKbAuth:
             )
         
         assert exc.value.status_code == 404
-        assert "not found or access denied" in exc.value.detail
+        # the person is told to refresh, and the id stays out of it
+        assert exc.value.detail == "This connector was removed, or you no longer have access. Refresh the page and try again."

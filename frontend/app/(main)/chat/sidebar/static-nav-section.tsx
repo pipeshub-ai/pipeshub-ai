@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Flex } from '@radix-ui/themes';
+import { Badge, Flex } from '@radix-ui/themes';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { KBD_BADGE_PADDING, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
@@ -11,6 +11,7 @@ import { getModifierSymbol } from '@/lib/utils/platform';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useNotificationStore } from '@/app/(main)/notifications/store';
+import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { SidebarItem } from './sidebar-item';
 
 // ========================================
@@ -29,6 +30,9 @@ const MAIN_NAV_ITEMS: NavItem[] = [
   { icon: 'folder', labelKey: 'nav.collections', route: '/knowledge-base/' },
   { icon: 'inventory_2', labelKey: 'nav.allRecords', route: '/knowledge-base/?view=all-records' },
 ];
+
+/** Projects nav item — gated behind `ENABLE_PROJECTS`, rendered separately below. */
+const PROJECTS_NAV_ITEM: NavItem = { icon: 'folder_special', labelKey: 'nav.projects', route: '/projects/' };
 
 // ========================================
 // Components
@@ -64,6 +68,7 @@ export function StaticNavSection() {
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const unreadCount = useNotificationStore((s) => s.unreadCount);
   const toggleNotificationsPanel = useNotificationStore((s) => s.togglePanel);
+  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
 
   const notificationLabel = unreadCount > 99 ? '99+' : String(unreadCount);
   const notificationBadgeSize =
@@ -136,6 +141,28 @@ export function StaticNavSection() {
       </div>
 
       {/* Navigation items — hidden on mobile */}
+      {!isMobile && projectsEnabled && (
+        <SidebarItem
+          icon={<MaterialIcon name={PROJECTS_NAV_ITEM.icon} size={ICON_SIZE_DEFAULT} />}
+          label={
+            <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
+              <span
+                style={{
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {t(PROJECTS_NAV_ITEM.labelKey)}
+              </span>
+              <Badge size="1" color="amber" variant="soft" style={{ flexShrink: 0 }}>
+                {t('nav.beta', { defaultValue: 'Beta' })}
+              </Badge>
+            </Flex>
+          }
+          href={PROJECTS_NAV_ITEM.route}
+        />
+      )}
       {!isMobile &&
         MAIN_NAV_ITEMS.map((item) => (
           <SidebarItem

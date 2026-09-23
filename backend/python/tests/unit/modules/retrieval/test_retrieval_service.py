@@ -310,6 +310,15 @@ class TestGetLlmInstance:
             result = await retrieval_service.get_llm_instance()
             assert result is None
 
+    @pytest.mark.asyncio
+    async def test_no_model_config_yet_is_not_an_error(self, retrieval_service, mock_config_service) -> None:
+        """Before onboarding there is no AI-models config at all; that was logged
+        as "Error getting LLM: 'NoneType' object is not subscriptable"."""
+        mock_config_service.get_config.return_value = None
+        with patch.object(retrieval_service, "logger", MagicMock()) as logger:
+            assert await retrieval_service.get_llm_instance() is None
+        logger.error.assert_not_called()
+
 
 # ============================================================================
 # get_embedding_model_instance
@@ -2208,3 +2217,65 @@ class TestSearchWithFiltersTimeRange:
         )
         assert "time_range" not in filters_passed
         assert result.get("appliedFilters") == {"kb": ["kb-123"], "kb_count": 1}
+
+
+# ============================================================================
+# search_with_filters strictScope key-casing
+# ============================================================================
+
+
+class TestSearchWithFiltersStrictScope:
+    """`strictScope` is a control flag (see `ChatQuery.strictScope` in
+    `chatbot.py`/`agent.py`), not a metadata filter key. The generic
+    `key.lower()` normalization loop below would otherwise turn it into
+    "strictscope" before it reaches `get_accessible_virtual_record_ids`,
+    silently breaking `filters.get("strictScope")` in both graph providers
+    and re-opening Scenario 3's "search everything" fallback for an
+    empty project scope."""
+
+    @pytest.mark.asyncio
+    async def test_strict_scope_key_survives_unlowercased(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(
+            queries=["test"],
+            user_id="u1",
+            org_id="o1",
+            filter_groups={"apps": [], "kb": [], "strictScope": True},
+        )
+        filters_passed = (
+            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs["filters"]
+        )
+        assert filters_passed.get("strictScope") is True
+        assert "strictscope" not in filters_passed
+
+    @pytest.mark.asyncio
+    async def test_other_keys_still_lowercased_alongside_strict_scope(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(
+            queries=["test"],
+            user_id="u1",
+            org_id="o1",
+            filter_groups={"Departments": ["eng"], "strictScope": True},
+        )
+        filters_passed = (
+            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs["filters"]
+        )
+        assert filters_passed.get("departments") == ["eng"]
+        assert filters_passed.get("strictScope") is True
+
+    @pytest.mark.asyncio
+    async def test_absent_strict_scope_key_is_not_introduced(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1", filter_groups={"kb": ["kb-1"]},
+        )
+        filters_passed = (
+            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs["filters"]
+        )
+        assert "strictScope" not in filters_passed

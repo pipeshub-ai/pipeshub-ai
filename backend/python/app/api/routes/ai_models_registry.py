@@ -1,14 +1,15 @@
 """API routes for the AI model provider registry."""
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 # Importing triggers provider registration via __init__.py side-effect
 import app.config.ai_models.providers  # noqa: F401
+from app.api.middlewares.auth import deny_service_tokens
 from app.config.ai_models.registry import ai_model_registry
 from app.config.ai_models.types import CAPABILITY_TO_MODEL_TYPE, ModelCapability
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(deny_service_tokens)])
 
 
 @router.get("/ai-models/registry")

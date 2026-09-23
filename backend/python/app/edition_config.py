@@ -16,7 +16,6 @@ from app.api.routes.toolset_resolvers import (
     resolve_inherited_from_org_id,
 )
 from app.api.routes.mcp_resolvers import (
-    build_mcp_fallback_config_services,
     build_schedule_refresh_kwargs,
     forbid_inherited_mcp_mutation,
     get_mcp_instance as get_mcp_instance_resolved,
@@ -28,10 +27,12 @@ from app.api.routes.mcp_resolvers import (
 from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.api.middlewares.auth import (
     authMiddleware,
+    deny_service_tokens,
     extract_bearer_token,
     get_config_service,
     isJwtTokenValid,
     require_scopes,
+    require_service_token,
 )
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router

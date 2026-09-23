@@ -32,6 +32,9 @@ class _FakeProvider(IRedisConnectionProvider):
     def get_client(self): ...
     def create_client(self, options=None): ...
     def create_pubsub_client(self): ...
+    async def publish(self, channel, message):
+        return 0
+
     async def scan_keys(self, pattern, count=100):
         return
         yield  # pragma: no cover - never reached; keeps this an async generator

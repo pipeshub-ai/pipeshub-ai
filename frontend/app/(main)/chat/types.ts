@@ -100,6 +100,12 @@ export interface SharedWithEntry {
   _id: string;
 }
 
+/** Initiator of a chat, present on conversations shared with the current user */
+export interface SharedByInfo {
+  userId: string;
+  name: string;
+}
+
 /**
  * Pagination metadata returned by the conversation detail API.
  * `hasNextPage` means there are older message batches to load;
@@ -133,6 +139,10 @@ export interface ConversationApiResponse {
   updatedAt: string;
   isOwner: boolean;
   accessLevel: string;
+  /** Present when this conversation is linked to a Project. */
+  projectId?: string;
+  projectVisibility?: 'private' | 'project';
+  sharedBy?: SharedByInfo;
 }
 
 export type ConversationSource = 'owned' | 'shared';
@@ -161,6 +171,10 @@ export interface Conversation {
   status?: string;
   modelInfo?: ModelInfo;
   isOwner?: boolean;
+  /** Present when this conversation is linked to a Project. */
+  projectId?: string;
+  projectVisibility?: 'private' | 'project';
+  sharedBy?: SharedByInfo;
 }
 
 export interface ChatSuggestion {
@@ -764,6 +778,8 @@ export interface ConversationMessage {
   reasoning?: ReasoningTurn[];
   /** Persisted agent-activity transcript (`agui` protocol only) — see MessagePart. */
   parts?: MessagePart[];
+  /** Set when this bot response was cut short by a user-initiated Stop (see Node's `IMessage.status`). */
+  status?: 'stopped';
 }
 
 export interface ConversationCompleteData {
@@ -784,6 +800,8 @@ export interface ConversationCompleteData {
   createdAt: string;
   updatedAt: string;
   __v: number;
+  projectId?: string;
+  projectVisibility?: 'private' | 'project';
 }
 
 export interface SSECompleteEvent {
@@ -864,6 +882,21 @@ export interface StreamChatRequest {
    * reasoning-capable model. Omitted → backend uses the model's own default.
    */
   reasoningEffort?: ReasoningEffort;
+  /**
+   * Client-generated UUID for this run, minted before the fetch in
+   * `streamMessageForSlot`/`streamRegenerateForSlot`. Lets a later
+   * `POST .../cancel` (see `ChatApi.cancelStream`) target this exact run —
+   * see `cancelRunBodySchema` (Node) / `CancelRunRequest` (Python).
+   */
+  runId?: string;
+  /**
+   * Links a brand-new conversation to a Project. Only meaningful when
+   * `conversationId` is absent — once a session exists its `projectId` is
+   * the source of truth server-side and this field is ignored on follow-ups
+   * (see Node `es_controller.ts` / plan's "projectId on follow-up requests
+   * is ignored").
+   */
+  projectId?: string;
 }
 
 /**
@@ -961,6 +994,13 @@ export interface ChatSlot {
    * relying on the global `agentStreamTools` (which tracks the current URL agent only).
    */
   agentStreamTools: string[] | null;
+  /**
+   * Project this thread is linked to (`/chat?projectId=…`), or null.
+   * Only used to seed `StreamChatRequest.projectId` on the first message of
+   * a brand-new chat — once `convId` is assigned, the session row is the
+   * source of truth and this field is not sent on follow-ups.
+   */
+  projectId: string | null;
   /** True until the server assigns a real convId. */
   isTemp: boolean;
   /** True once messages have been loaded (or immediately for new chats). */
@@ -1020,6 +1060,23 @@ export interface ChatSlot {
 
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
+
+  /**
+   * Client-generated UUID for the in-flight run, minted in
+   * `streamMessageForSlot`/`streamRegenerateForSlot` and sent to the backend
+   * so a later Stop can target this exact run. `null` when nothing is
+   * streaming. NOT cleared until the run fully settles (grace-timeout abort
+   * fallback in `stopStreamForSlot` still needs it after `stopping` starts).
+   */
+  runId: string | null;
+  /**
+   * True from the moment Stop is clicked until the run actually ends
+   * (`RUN_FINISHED` with `status: 'stopped'`, or the 5s grace-timeout abort
+   * fallback in `stopStreamForSlot`). Disables a second Stop click / shows a
+   * "Stopping…" affordance instead of hard-aborting immediately, so Python
+   * gets a chance to persist the partial answer before the connection dies.
+   */
+  stopping: boolean;
 
   /**
    * Tracks message pagination for the "load older messages" flow.

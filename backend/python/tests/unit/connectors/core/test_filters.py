@@ -23,7 +23,9 @@ from app.connectors.core.registry.filters import (
     NumberOperator,
     OptionSourceType,
     StringOperator,
+    SelectOperator,
     SyncFilterKey,
+    sync_filter_selection_problems,
     TYPE_OPERATORS,
     get_operator_enum_class,
     get_operators_for_type,
@@ -351,7 +353,6 @@ class TestFilterField:
         assert schema["displayName"] == "Modified Date"
         assert schema["filterType"] == "datetime"
         assert schema["category"] == "sync"
-        assert schema["required"] is True
         assert "operators" in schema
         assert "is_after" in schema["operators"]
         assert "noImplicitOperatorDefault" not in schema
@@ -1095,3 +1096,85 @@ class TestIndexingFilterKeySlackValues:
     def test_pre_existing_values_intact(self):
         assert IndexingFilterKey.COMMENTS == "comments"
         assert IndexingFilterKey.ATTACHMENTS == "attachments"
+
+
+class TestSelectFilterType:
+    def test_select_has_the_single_in_operator(self) -> None:
+        assert FilterType.SELECT == "select"
+        assert [op.value for op in SelectOperator] == [FilterOperator.IN]
+
+    def test_select_field_accepts_dynamic_options_and_defaults(self) -> None:
+        field = FilterField(
+            name="repo_ids", display_name="Repository", filter_type=FilterType.SELECT,
+            option_source_type=OptionSourceType.DYNAMIC, required=True,
+        )
+        schema = field.to_schema_dict()
+        assert schema["required"] is True
+        assert schema["operators"] == [FilterOperator.IN]
+        assert field._get_default_for_type() == []
+        assert field._get_default_operator() == FilterOperator.IN
+
+    def test_select_value_parses_like_a_list(self) -> None:
+        col = FilterCollection.from_dict({
+            "repo_ids": {"type": "select", "operator": "in", "value": [{"id": "o/r", "label": "o/r"}]},
+        })
+        assert col.get_value("repo_ids") == ["o/r"]
+
+
+REPO_FIELD = {"name": "repo_ids", "displayName": "Repository", "filterType": "select", "required": True}
+ORG_FIELD = {"name": "org_ids", "displayName": "Organizations", "filterType": "multiselect"}
+
+
+class TestSyncFilterSelectionProblems:
+    def test_one_value_is_fine(self) -> None:
+        values = {"repo_ids": {"operator": "in", "value": ["o/r"]}}
+        assert sync_filter_selection_problems([REPO_FIELD, ORG_FIELD], values) == []
+
+    @pytest.mark.parametrize(
+        "entry", [None, {"operator": "in", "value": []}, {"operator": "in", "value": ""}, "junk"]
+    )
+    def test_required_field_without_a_value_blocks_enable(self, entry: object) -> None:
+        values = {} if entry is None else {"repo_ids": entry}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == [
+            "Select a repository before enabling this connector. "
+            "Each connector instance syncs exactly one repository."
+        ]
+        assert sync_filter_selection_problems([REPO_FIELD], values, "saving") == [
+            "Select a repository before saving. "
+            "Each connector instance syncs exactly one repository."
+        ]
+
+    def test_legacy_multi_value_select_blocks_enable(self) -> None:
+        values = {"repo_ids": {"operator": "in", "value": ["a/b", "c/d"]}}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == [
+            "Repository has 2 selections. Narrow it down to one to continue, "
+            "as each connector instance syncs exactly one repository."
+        ]
+
+    def test_optional_multiselect_is_not_constrained(self) -> None:
+        values = {"org_ids": {"operator": "in", "value": ["a", "b"]}}
+        assert sync_filter_selection_problems([ORG_FIELD], values) == []
+
+    def test_required_non_list_field_is_not_flagged(self) -> None:
+        """A set datetime value is not a list, so it must not read as a missing selection."""
+        field = {"name": "modified", "displayName": "Modified", "filterType": "datetime", "required": True}
+        values = {"modified": {"operator": "is_after", "value": {"start": 1700000000000}}}
+        assert sync_filter_selection_problems([field], values) == []
+
+    def test_legacy_not_in_select_blocks_enable(self) -> None:
+        values = {"repo_ids": {"operator": "not_in", "value": [{"id": "o/r", "label": "o/r"}]}}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == [
+            "Re-select the repository to continue. The saved configuration "
+            "uses an unsupported 'not_in' rule."
+        ]
+
+    def test_blank_ids_do_not_count_as_a_selection(self) -> None:
+        values = {"repo_ids": {"operator": "in", "value": ["", {"id": "  "}]}}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == [
+            "Select a repository before enabling this connector. "
+            "Each connector instance syncs exactly one repository."
+        ]

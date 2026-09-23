@@ -16,6 +16,10 @@ class SlackResponse:
     data: Optional[dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    # Slack reports most failures in a 200 body, but not all: rate limiting is a
+    # real HTTP 429 with Retry-After, and only the transport carries that.
+    status_code: Optional[int] = None
+    retry_after: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""

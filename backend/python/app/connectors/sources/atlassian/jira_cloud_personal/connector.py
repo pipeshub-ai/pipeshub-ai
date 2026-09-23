@@ -19,7 +19,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors
+from app.config.constants.arangodb import AppGroups, Connectors, PermissionModel
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -69,6 +69,7 @@ from app.services.notification.types import NotificationSeverity, NotificationTy
     )
     .with_categories(["IT Service Management", "Storage"])
     .with_scopes([ConnectorScope.PERSONAL.value])
+    .with_permission_model(PermissionModel.APP_LEVEL)
     .with_auth(
         [
             AuthBuilder.type(AuthType.OAUTH).oauth(
@@ -341,8 +342,8 @@ class JiraCloudPersonalConnector(JiraConnector):
                 preview = ", ".join(failed_keys[:10])
                 if len(failed_keys) > 10:
                     preview = f"{preview}, and {len(failed_keys) - 10} more"
-                self.logger.error(
-                    "❌ Jira Cloud Personal sync: %s/%s project(s) failed to sync issues: %s",
+                self.logger.warning(
+                    "⚠️ Jira Cloud Personal sync: %s/%s project(s) failed to sync issues: %s",
                     len(failed_keys), len(projects), preview,
                 )
                 await self.notify(
@@ -353,7 +354,6 @@ class JiraCloudPersonalConnector(JiraConnector):
                         f"Couldn't sync issues for {len(failed_keys)} project(s): {preview}. "
                         "Retry sync; check Jira access if it keeps failing."
                     ),
-                    recipient_user_ids=[self.created_by],
                 )
 
             self.logger.info(
@@ -379,7 +379,6 @@ class JiraCloudPersonalConnector(JiraConnector):
                         "may not be reflected yet. Run the sync again; if it keeps failing, "
                         "check the connector's configuration."
                     ),
-                    recipient_user_ids=[self.created_by],
                 )
             raise
 

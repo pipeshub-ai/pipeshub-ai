@@ -160,6 +160,11 @@ services:
       - ENABLE_PDFPLUMBER_PROCESSOR=true
 
     depends_on:
+      # Blocks until the bucket exists. Without it pytest can start while
+      # minio-init is still running, and the MinIO suite fails on a bucket
+      # that is merely late rather than missing.
+      minio-init:
+        condition: service_completed_successfully
       qdrant:
         condition: service_healthy
       redis:
@@ -170,8 +175,17 @@ services:
         condition: service_healthy
       mailpit:
         condition: service_healthy
+      # Only started with the kafka profile (a Kafka run); required: false lets
+      # the default Redis Streams run start without it.
+      kafka-1:
+        condition: service_healthy
+        required: false
     volumes:
       - pipeshub_data:/data/pipeshub
+      # Local FS connector tests write files here and the connector reads them
+      # (integration-tests/connectors/local_fs). Committed, so the checkout
+      # owns it and the test process can write to it.
+      - ../../integration-tests/local_fs_root:/srv/local-fs-it:ro
       - pipeshub_root_local:/root/.local
       # Persist the HuggingFace model cache so models pulled at runtime survive
       # container recreation instead of being re-downloaded on every restart.
@@ -198,6 +212,131 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  # PostgreSQL here is a connector *source* — data to be indexed — not a store
+  # the platform uses. It lets the PostgreSQL connector be tested without an
+  # external database, the same way MinIO covers object storage.
+  postgres-source:
+    image: postgres:16.4-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_TEST_USER:-pipeshubtest}
+      POSTGRES_PASSWORD: ${POSTGRES_TEST_PASSWORD:-pipeshubtest123}
+      POSTGRES_DB: ${POSTGRES_TEST_DB:-pipeshub_connector_test}
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_TEST_USER:-pipeshubtest} -d ${POSTGRES_TEST_DB:-pipeshub_connector_test}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # A website and feeds for the Web and RSS connectors to sync from, so both
+  # have live coverage without depending on a public site. Tests change what it
+  # serves through its control API (integration-tests/helper/web_fixtures.py).
+  web-fixtures:
+    image: python:3.12.11-alpine3.22
+    restart: always
+    command: ["python", "/srv/server.py", "--seed", "/srv/seed", "--port", "8080", "--base-url", "http://web-fixtures:8080"]
+    volumes:
+      - ../../integration-tests/web_fixtures:/srv:ro
+    ports:
+      - "127.0.0.1:8089:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__fixtures__/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # MariaDB, like postgres-source, is a connector *source* for the MariaDB
+  # connector's tests, not a store the platform uses.
+  mariadb-source:
+    image: mariadb:11.4
+    restart: always
+    environment:
+      MARIADB_USER: ${MARIADB_TEST_USER:-pipeshubtest}
+      MARIADB_PASSWORD: ${MARIADB_TEST_PASSWORD:-pipeshubtest123}
+      MARIADB_DATABASE: ${MARIADB_TEST_DB:-pipeshub_connector_test}
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    ports:
+      - "127.0.0.1:3307:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Nextcloud and BookStack are connector *sources*, like mariadb-source, and
+  # large enough to start only where their tests run: the workflow sets
+  # COMPOSE_PROFILES=selfhosted-sources for that shard.
+  nextcloud-source:
+    image: nextcloud:31.0.9-apache
+    profiles: ["selfhosted-sources"]
+    restart: always
+    environment:
+      SQLITE_DATABASE: nextcloud
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:-pipeshubadmin}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:-pipeshub-nc-admin-123}
+      NEXTCLOUD_TRUSTED_DOMAINS: "localhost nextcloud-source"
+    volumes:
+      # Turns off sample files before the test user's first login.
+      - ../../integration-tests/nextcloud_source/post-installation:/docker-entrypoint-hooks.d/post-installation:ro
+    ports:
+      - "127.0.0.1:8090:80"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/status.php | grep -q '\"installed\":true'"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  bookstack-db:
+    image: mariadb:11.4
+    profiles: ["selfhosted-sources"]
+    restart: always
+    environment:
+      MARIADB_USER: bookstack
+      MARIADB_PASSWORD: ${BOOKSTACK_DB_PASSWORD:-bookstack123}
+      MARIADB_DATABASE: bookstack
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    ports:
+      # Published so the tests can create BookStack's API token (see
+      # integration-tests/connectors/bookstack/bookstack_source_helper.py).
+      - "127.0.0.1:3308:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  bookstack-source:
+    image: lscr.io/linuxserver/bookstack:v26.05.4-ls282
+    profiles: ["selfhosted-sources"]
+    restart: always
+    depends_on:
+      bookstack-db:
+        condition: service_healthy
+    environment:
+      APP_URL: http://bookstack-source
+      # Any valid Laravel key; this instance holds only test data.
+      APP_KEY: base64:cGlwZXNodWItaW50ZWdyYXRpb24tYm9va3N0YWNrMDA=
+      DB_HOST: bookstack-db
+      DB_PORT: "3306"
+      DB_USERNAME: bookstack
+      DB_PASSWORD: ${BOOKSTACK_DB_PASSWORD:-bookstack123}
+      DB_DATABASE: bookstack
+    # The image's nginx also listens on IPv6, and fails to start on hosts
+    # without it. Seed its site config without those lines, then start as usual.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - mkdir -p /config/nginx/site-confs && sed '/listen \[::\]/d' /defaults/nginx/site-confs/default.conf.sample > /config/nginx/site-confs/default.conf && exec /init
+    ports:
+      - "127.0.0.1:8094:80"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -o /dev/null http://localhost/login"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
 
   redis:
     image: redis:7.4-bookworm
@@ -226,6 +365,43 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  # MinIO gives the MinIO connector a real S3-compatible endpoint to sync from,
+  # so that connector has live coverage without an external account. The bucket
+  # is created by minio-init rather than by the tests, which never create or
+  # delete buckets.
+  minio:
+    # MinIO no longer publishes these images on Docker Hub (the minio/minio and
+    # minio/mc repositories now return "repository does not exist"), so pull the
+    # identical release tags from quay.io, MinIO's own registry, pinned by
+    # manifest digest because quay is a historical archive rather than a
+    # maintained channel, so a re-pushed tag would not change what CI pulls.
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-pipeshubtest}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-pipeshubtest123}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z@sha256:aead63c77f9db9107f1696fb08ecb0faeda23729cde94b0f663edf4fe09728e3
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-pipeshubtest} ${MINIO_ROOT_PASSWORD:-pipeshubtest123} &&
+      mc mb --ignore-existing local/${MINIO_TEST_BUCKET:-pipeshub-connector-test} &&
+      echo 'minio bucket ready'
+      "
 
   neo4j:
     image: neo4j:5.26.0
@@ -347,7 +523,120 @@ services:
       retries: 5
       start_period: 30s
 
+
+  # Zammad is a connector *source*, like bookstack-source, behind its own
+  # profile because it is the heaviest of them: the workflow sets
+  # COMPOSE_PROFILES=zammad-source only for the shard that runs its tests.
+  #
+  # Elasticsearch is not optional here. The connector lists tickets through
+  # Zammad's search API with queries like `group_id:3 AND updated_at:[... TO *]`.
+  # Zammad serves those with Elasticsearch; without it, it falls back to a SQL
+  # LIKE over the ticket title and article body, which treats that query as a
+  # literal string and matches nothing. The connector would sync no tickets,
+  # and a test written against that would pass while proving nothing.
+  zammad-db:
+    image: postgres:16-alpine
+    profiles: ["zammad-source"]
+    restart: always
+    environment:
+      POSTGRES_USER: zammad
+      POSTGRES_PASSWORD: ${ZAMMAD_DB_PASSWORD:-zammad123}
+      POSTGRES_DB: zammad
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zammad"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  zammad-redis:
+    image: redis:7-alpine
+    profiles: ["zammad-source"]
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  zammad-elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.3
+    profiles: ["zammad-source"]
+    restart: always
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+
+  zammad-init:
+    image: zammad/zammad-docker-compose:6.4.1-63
+    profiles: ["zammad-source"]
+    depends_on:
+      zammad-db:
+        condition: service_healthy
+      zammad-elasticsearch:
+        condition: service_healthy
+    environment: &zammad-env
+      POSTGRESQL_HOST: zammad-db
+      POSTGRESQL_USER: zammad
+      POSTGRESQL_PASS: ${ZAMMAD_DB_PASSWORD:-zammad123}
+      POSTGRESQL_DB: zammad
+      REDIS_URL: redis://zammad-redis:6379
+      ELASTICSEARCH_ENABLED: "true"
+      ELASTICSEARCH_HOST: zammad-elasticsearch
+      ELASTICSEARCH_PORT: "9200"
+    command: ["zammad-init"]
+    volumes:
+      - zammad-storage:/opt/zammad/storage
+
+  zammad-railsserver:
+    image: zammad/zammad-docker-compose:6.4.1-63
+    profiles: ["zammad-source"]
+    restart: always
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+      zammad-redis:
+        condition: service_healthy
+    environment: *zammad-env
+    # The image's entrypoint binds puma to IPv6 only, so it will not start on a
+    # host without IPv6. Bind IPv4 instead, then start as usual. Serving the API
+    # straight from puma also keeps the nginx and websocket containers out of
+    # the stack; the connector only calls the REST API.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - sed 's#tcp://\[::\]#tcp://0.0.0.0#' /docker-entrypoint.sh > /tmp/zammad-entrypoint.sh && chmod +x /tmp/zammad-entrypoint.sh && exec /tmp/zammad-entrypoint.sh zammad-railsserver
+    ports:
+      - "127.0.0.1:8096:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -o /dev/null http://localhost:3000/api/v1/getting_started"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+    volumes:
+      - zammad-storage:/opt/zammad/storage
+
+  zammad-scheduler:
+    image: zammad/zammad-docker-compose:6.4.1-63
+    profiles: ["zammad-source"]
+    restart: always
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+      zammad-redis:
+        condition: service_healthy
+    environment: *zammad-env
+    command: ["zammad-scheduler"]
+    volumes:
+      - zammad-storage:/opt/zammad/storage
+
 volumes:
+  zammad-storage:
   mongodb_data:
     driver: local
   redis_data:

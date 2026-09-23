@@ -17,6 +17,7 @@ import {
 } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
 import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-token-service.provider';
 import * as XLSX from 'xlsx';
+import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 
 /** Query chain stub for OAuthApp.find(...).select().lean().exec() used in softDeleteOAuthAppsForUser */
 function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
@@ -132,6 +133,15 @@ describe('UserController', () => {
     };
 
     next = sinon.stub();
+
+    // deleteUser calls find-then-revoke-then-pull; default both to no-op
+    // so tests that don't care about project cleanup aren't affected.
+    if (!(ProjectService.findProjectsWithLinkedKbForUser as any).restore) {
+      sinon.stub(ProjectService, 'findProjectsWithLinkedKbForUser').resolves([]);
+    }
+    if (!(ProjectService.removeUserFromAllProjects as any).restore) {
+      sinon.stub(ProjectService, 'removeUserFromAllProjects').resolves();
+    }
   });
 
   afterEach(() => {
@@ -953,6 +963,7 @@ describe('UserController', () => {
         .stub(UserActivities, 'insertMany')
         .resolves([] as any);
       sinon.stub(NotificationContainer, 'getNotificationService').returns(null);
+      sinon.stub(Users, 'countDocuments').resolves(4);
 
       await controller.updateUser(req, res, next);
 
@@ -1045,6 +1056,39 @@ describe('UserController', () => {
       expect(next.firstCall.args[0].message).to.equal(
         'Cannot demote the last admin. Promote another user to admin first.',
       );
+      expect(res.json.called).to.be.false;
+    });
+
+    it('should reject promoting to admin when the org already has 5 admins', async () => {
+      const targetId = '507f1f77bcf86cd799439013';
+      req.params.id = targetId;
+      req.body = { role: 'admin' };
+
+      const mockUser = {
+        _id: targetId,
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        fullName: 'Member',
+        email: 'member@test.com',
+        role: 'member',
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({}),
+      };
+
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+      findOneStub.onSecondCall().resolves(mockUser as any);
+      sinon.stub(Users, 'countDocuments').resolves(5);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'An organization can have at most 5 admins.',
+      );
+      expect(mockUser.save.called).to.be.false;
       expect(res.json.called).to.be.false;
     });
 
@@ -2440,7 +2484,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
 
     it('should throw InternalServerError when mail sending fails (password disabled)', async () => {
@@ -2463,7 +2507,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
   });
 
@@ -2706,6 +2750,7 @@ describe('UserController', () => {
           }),
         }),
       } as any);
+      sinon.stub(Users, 'countDocuments').resolves(2);
 
       mockAuthService.passwordMethodEnabled.resolves({
         statusCode: 200,
@@ -2786,6 +2831,69 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       const error = next.firstCall.args[0];
       expect(error.message).to.equal('Members can only invite users as member');
+    });
+
+    it('should reject inviting as admin when the org already has 5 admins', async () => {
+      req.body = {
+        emails: ['new@test.com'],
+        role: 'admin',
+      };
+
+      stubActorAsOrgAdmin();
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([] as any);
+      const createStub = sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(Users, 'countDocuments').resolves(5);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'An organization can have at most 5 admins.',
+      );
+      expect(createStub.called).to.be.false;
+    });
+
+    it('should allow inviting an existing pending admin when already at 5 admins', async () => {
+      const pendingId = new mongoose.Types.ObjectId();
+      req.body = {
+        emails: ['pending-admin@test.com'],
+        role: 'admin',
+      };
+
+      stubActorAsOrgAdmin();
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org', shortName: 'TO' } as any);
+      sinon.stub(Users, 'find').resolves([
+        {
+          _id: pendingId,
+          email: 'pending-admin@test.com',
+          isDeleted: false,
+          hasLoggedIn: false,
+          role: 'admin',
+        },
+      ] as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(Users, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([]),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(5);
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: true },
+      });
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(200)).to.be.true;
     });
 
     it('should reject a member inviting with groupIds', async () => {
@@ -4198,7 +4306,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
 
     it('should throw when password mail sending fails', async () => {
@@ -4225,7 +4333,7 @@ describe('UserController', () => {
       await controller.resendInvite(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Error sending invite');
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to send the invitation');
     });
   });
 

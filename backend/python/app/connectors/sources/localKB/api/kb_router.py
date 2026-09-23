@@ -1,4 +1,5 @@
 # router.py fixes - Add return type annotations
+import logging
 from typing import Any, Dict, List, Optional, Union
 
 from dependency_injector.wiring import inject
@@ -31,6 +32,11 @@ from app.connectors.sources.localKB.api.models import (
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.containers.connector import ConnectorAppContainer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import action_failed
+
+# Handlers bind their own ``logger`` from the container inside the request, so the
+# module logger needs a name that a half-run handler cannot shadow.
+_log = logging.getLogger(__name__)
 
 
 async def get_kb_service(request: Request) -> KnowledgeBaseService:
@@ -103,12 +109,21 @@ async def create_knowledge_base(
                 detail="Knowledge base name is required (use 'name' or 'kbName' field)"
             )
 
+        raw_is_hidden = body.get("isHidden", False)
+        if not isinstance(raw_is_hidden, bool):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="'isHidden' must be a boolean",
+            )
+        is_hidden = raw_is_hidden
+
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         result = await kb_service.create_knowledge_base(
             user_id=user_id,
             org_id=org_id,
             name=name.strip(),
+            is_hidden=is_hidden,
         )
 
         if not result or result.get("success") is False:
@@ -124,9 +139,10 @@ async def create_knowledge_base(
     except HTTPException as he:
         raise he
     except Exception as e:
+        _log.error("create_knowledge_base failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("create this knowledge base")
         )
 
 
@@ -179,9 +195,10 @@ async def list_user_knowledge_bases(
     except HTTPException as he:
         raise he
     except Exception as e:
+        _log.error("list_user_knowledge_bases failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("load your knowledge bases")
         )
 
 
@@ -214,9 +231,10 @@ async def get_knowledge_base(
         raise he
 
     except Exception as e:
+        _log.error("get_knowledge_base failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("open this knowledge base")
         )
 
 @kb_router.put(
@@ -270,9 +288,10 @@ async def update_knowledge_base(
         raise he
 
     except Exception as e:
+        _log.error("update_knowledge_base failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("update this knowledge base")
         )
 
 @kb_router.delete(
@@ -331,9 +350,10 @@ async def delete_knowledge_base(
         raise he
 
     except Exception as e:
+        _log.error("delete_knowledge_base failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("delete this knowledge base")
         )
 
 @kb_router.post(
@@ -376,9 +396,10 @@ async def create_records_in_kb(
         raise he
 
     except Exception as e:
+        _log.error("create_records_in_kb failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("add these files")
         )
 
 @kb_router.post(
@@ -480,9 +501,10 @@ async def upload_records_to_kb(
     except HTTPException as he:
         raise he
     except Exception as e:
+        _log.error("upload_records_to_kb failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error during KB upload: {str(e)}"
+            detail=action_failed("upload these files")
         )
 
 @kb_router.post(
@@ -585,9 +607,10 @@ async def upload_records_to_folder(
     except HTTPException as he:
         raise he
     except Exception as e:
+        _log.error("upload_records_to_folder failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error during folder upload: {str(e)}"
+            detail=action_failed("upload these files")
         )
 
 @kb_router.get(
@@ -639,9 +662,10 @@ async def validate_folder_for_upload(
     except HTTPException as he:
         raise he
     except Exception as e:
+        _log.error("validate_folder_for_upload failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error during folder validation: {str(e)}",
+            detail=action_failed("check this folder before uploading"),
         )
 
 
@@ -695,7 +719,8 @@ async def create_folder_in_kb_root(
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        _log.error("create_folder_in_kb_root failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("create this folder"))
 
 @kb_router.post(
     "/{kb_id}/folder/{parent_folder_id}/subfolder",
@@ -749,7 +774,8 @@ async def create_nested_folder(
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        _log.error("create_nested_folder failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("create this folder"))
 
 @kb_router.get(
     "/{kb_id}/folder/{folder_id}/user/{user_id}",
@@ -780,9 +806,10 @@ async def get_folder_contents(
         raise he
 
     except Exception as e:
+        _log.error("get_folder_contents failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("open this folder")
         )
 
 
@@ -822,9 +849,10 @@ async def update_folder(
         raise he
 
     except Exception as e:
+        _log.error("update_folder failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("rename this folder")
         )
 
 @kb_router.delete(
@@ -881,9 +909,10 @@ async def delete_folder(
         raise he
 
     except Exception as e:
+        _log.error("delete_folder failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("delete this folder")
         )
 
 @kb_router.get(
@@ -980,9 +1009,10 @@ async def get_kb_children(
     except HTTPException as he:
         raise he
     except Exception as e:
+        _log.error("get_kb_children failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("open this knowledge base")
         )
 
 
@@ -1041,9 +1071,10 @@ async def get_folder_children(
     except HTTPException as he:
         raise he
     except Exception as e:
+        _log.error("get_folder_children failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("open this folder")
         )
 
 @kb_router.post(
@@ -1099,9 +1130,10 @@ async def create_kb_permissions(
         raise he
 
     except Exception as e:
+        _log.error("create_kb_permissions failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("share this knowledge base")
         )
 
 
@@ -1165,9 +1197,10 @@ async def update_kb_permission(
         raise he
 
     except Exception as e:
+        _log.error("update_kb_permission failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("update this person's access")
         )
 
 
@@ -1214,9 +1247,10 @@ async def remove_kb_permission(
         raise he
 
     except Exception as e:
+        _log.error("remove_kb_permission failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("remove this person's access")
         )
 
 @kb_router.get(
@@ -1247,9 +1281,10 @@ async def list_kb_permissions(
         raise he
 
     except Exception as e:
+        _log.error("list_kb_permissions failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("load who this knowledge base is shared with")
         )
 
 
@@ -1295,9 +1330,10 @@ async def create_records_in_folder(
         raise he
 
     except Exception as e:
+        _log.error("create_records_in_folder failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("add these files")
         )
 
 
@@ -1444,9 +1480,10 @@ async def update_record(
         raise he
 
     except Exception as e:
+        _log.error("update_record failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("update this file")
         )
 
 @kb_router.delete(
@@ -1492,9 +1529,10 @@ async def delete_records_in_kb(
         raise he
 
     except Exception as e:
+        _log.error("delete_records_in_kb failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("delete these files")
         )
 
 
@@ -1543,9 +1581,10 @@ async def delete_record_in_folder(
         raise he
 
     except Exception as e:
+        _log.error("delete_record_in_folder failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("delete this file")
         )
 
 
@@ -1662,7 +1701,8 @@ async def move_record(
     except HTTPException as he:
         raise he
     except Exception as e:
+        _log.error("move_record failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("move this file")
         )

@@ -4,14 +4,21 @@ import {
   BadRequestError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import mongoose from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import { getMimeType } from '../mimetypes/mimetypes';
-import { Document, StorageVendor } from '../types/storage.service.types';
+import {
+  Document,
+  FilePayload,
+  StorageServiceResponse,
+  StorageVendor,
+} from '../types/storage.service.types';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { ErrorMetadata } from '../../../libs/errors/base.error';
 import { createReadStream } from 'fs';
+import { STORAGE_WRITE_FAILED_MESSAGE } from '../constants/constants';
 import fs from 'fs';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
 import {
@@ -22,6 +29,37 @@ import {
 const logger = Logger.getInstance({
   service: 'storage',
 });
+
+/**
+ * Write a file to the storage vendor, or fail with a message the uploader can act on.
+ * The vendor's own error (a path, an OS code, an S3 or Azure response) goes to the log only.
+ */
+export async function writeToStorage(
+  adapter: StorageServiceAdapter,
+  payload: FilePayload,
+  context: Record<string, unknown> = {},
+): Promise<StorageServiceResponse<string>> {
+  let response: StorageServiceResponse<string>;
+  try {
+    response = await adapter.uploadDocumentToStorageService(payload);
+  } catch (error) {
+    logger.error('Writing a file to storage failed', {
+      ...context,
+      error: error instanceof Error ? error.message : String(error),
+      metadata: (error as { metadata?: unknown }).metadata,
+    });
+    throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+  }
+  if (response.statusCode !== HTTP_STATUS.OK || !response.data) {
+    logger.error('Writing a file to storage failed', {
+      ...context,
+      statusCode: response.statusCode,
+      error: response.msg,
+    });
+    throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+  }
+  return response;
+}
 
 // Interface for document storage info response
 export interface DocumentInfoResponse {

@@ -3,6 +3,10 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { EmailTemplateType, MailBody, SmtpConfig } from '../middlewares/types';
 import { MailModel } from '../schema/mailInfo.schema';
 import {
@@ -40,7 +44,11 @@ export class MailController {
       }
       result = await this.emailSender(body, this.config.smtp);
       if (!result.status) {
-        throw new InternalServerError(result.data || 'Error sending mail');
+        // `data` is the mail library's own complaint, packed in by emailSender.
+        this.logger.error('Sending the email failed', { reason: result.data });
+        throw markClientSafe(
+          new InternalServerError(serverFailureMessage('send that email')),
+        );
       }
       res.status(200).json({
         data: result,

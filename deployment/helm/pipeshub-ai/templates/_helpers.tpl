@@ -376,3 +376,24 @@ back to localhost, and the subchart still deploys. Both failures are silent.
   {{- fail (printf "redis.mode=%s requires redis.external.enabled=true with redis.external.clusterEndpoints. The bundled Redis subchart is a replication deployment, not a Redis Cluster, so a cluster-mode client cannot connect to it. Use redis.mode=standalone with the bundled chart." (.Values.redis.mode | default "standalone")) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Validate that each store the app is told to use is actually deployed.
+
+The services default DATA_STORE to arangodb and read KV_STORE_TYPE as given,
+so a missing graph database or an etcd store with no etcd renders cleanly and
+only fails once the pod is crash-looping. An ExternalSecret with no secretKey
+mapping likewise renders, and the pod then waits forever on a key that the
+synced Secret never gets.
+*/}}
+{{- define "pipeshub-ai.validateStores" -}}
+{{- if and (not .Values.neo4j.enabled) (not .Values.arango.enabled) -}}
+  {{- fail "No graph database is enabled. Set neo4j.enabled=true (default) or arango.enabled=true." -}}
+{{- end -}}
+{{- if and (eq (.Values.config.kvStoreType | default "redis") "etcd") (not .Values.etcd.enabled) -}}
+  {{- fail "config.kvStoreType=etcd requires etcd.enabled=true; otherwise the app has no etcd to connect to." -}}
+{{- end -}}
+{{- if and .Values.secretManagement.externalSecrets.enabled (not .Values.secretManagement.externalSecrets.remoteRefs.secretKey) -}}
+  {{- fail "secretManagement.externalSecrets.remoteRefs.secretKey is required when externalSecrets is enabled; the app cannot start without secret-key." -}}
+{{- end -}}
+{{- end -}}

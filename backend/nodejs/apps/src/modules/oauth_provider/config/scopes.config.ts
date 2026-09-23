@@ -180,6 +180,46 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     requiresUserConsent: true,
   },
 
+  // MCP Servers
+  'mcp:read': {
+    name: 'mcp:read',
+    description: 'Read MCP servers and their tools',
+    category: 'MCP Servers',
+    requiresUserConsent: true,
+  },
+  'mcp:write': {
+    name: 'mcp:write',
+    description: 'Add, configure and authenticate MCP servers',
+    category: 'MCP Servers',
+    requiresUserConsent: true,
+  },
+  'mcp:delete': {
+    name: 'mcp:delete',
+    description: 'Remove MCP servers and their credentials',
+    category: 'MCP Servers',
+    requiresUserConsent: true,
+  },
+
+  // Projects
+  'project:read': {
+    name: 'project:read',
+    description: 'Read projects and their conversations',
+    category: 'Projects',
+    requiresUserConsent: true,
+  },
+  'project:write': {
+    name: 'project:write',
+    description: 'Create, update and share projects',
+    category: 'Projects',
+    requiresUserConsent: true,
+  },
+  'project:delete': {
+    name: 'project:delete',
+    description: 'Delete projects',
+    category: 'Projects',
+    requiresUserConsent: true,
+  },
+
   // Connectors
   'connector:read': {
     name: 'connector:read',
@@ -299,6 +339,24 @@ export const DefaultMcpScopes = [
   'connector:read',
 ];
 
+/**
+ * Scopes the CLI/agent preset mints. The first-party device app
+ * (`pipeshub-agent`) and Dynamic Client Registration default to this set
+ * (intersected with instance MCP_SCOPES). Never grant
+ * `client_credentials` to the first-party device app: the grant carries no
+ * identity of its own, so AuthMiddleware resolves its tokens to the app's
+ * `createdBy` and they run as that person. DCR needs no such care — it
+ * refuses the grant outright, in OAuthDcrService and again in
+ * `createDynamicClient`.
+ */
+export const AgentMcpScopes = [
+  'conversation:chat',
+  'semantic:write',
+  'kb:read',
+  'user:read',
+  'connector:read',
+] as const;
+
 export const ScopeCategories = [
   'Identity',
   'Access',
@@ -310,6 +368,8 @@ export const ScopeCategories = [
   'Semantic',
   'Conversations',
   'Agents',
+  'MCP Servers',
+  'Projects',
   'Connectors',
   'Configuration',
   'Crawling',

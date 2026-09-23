@@ -7,7 +7,7 @@ import * as fs from 'fs';
  * The auth store persists each token as a plain string under
  * localStorage key "jwt_access_token" / "jwt_refresh_token".
  */
-function getAccessToken(): string {
+export function getAccessToken(): string {
   const raw = fs.readFileSync('.auth/user.json', 'utf-8');
   const storageState = JSON.parse(raw);
 
@@ -22,6 +22,10 @@ function getAccessToken(): string {
   return tokenEntry.value;
 }
 
+export function apiBaseURL(): string {
+  return process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3000';
+}
+
 type ApiFixtures = {
   apiContext: APIRequestContext;
 };
@@ -29,10 +33,9 @@ type ApiFixtures = {
 export const test = base.extend<ApiFixtures>({
   apiContext: async ({}, use) => {
     const token = getAccessToken();
-    const apiBaseURL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3000';
 
     const ctx = await request.newContext({
-      baseURL: apiBaseURL,
+      baseURL: apiBaseURL(),
       extraHTTPHeaders: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',

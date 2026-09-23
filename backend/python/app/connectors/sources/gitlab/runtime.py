@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from gitlab.exceptions import GitlabAuthenticationError
 
+from app.config.constants.http_status_code import HttpStatusCode
 from app.sources.client.gitlab.gitlab import GitLabResponse
 
 from .constants import (
@@ -294,6 +295,7 @@ class RuntimeHelper:
                 success=False,
                 data=None,
                 error=f"GitLab op timed out after {budget:.0f}s",
+                status_code=HttpStatusCode.GATEWAY_TIMEOUT.value,
             )
 
     async def call_with_auth_retry(

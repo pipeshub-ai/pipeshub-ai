@@ -48,6 +48,10 @@ class TokenScopes(Enum):
     # Deliberately separate from STORAGE_TOKEN so a leaked storage token
     # cannot also grant connector record reads.
     RECORD_CONTENT = "record:content"
+    # Indexing's admin-level read of record bytes from the connectors service
+    # (the name predates the route; it is not tied to signed URLs).
+    CONNECTOR_SIGNED_URL = "connector:signedUrl"
+    CONVERSATION_CREATE = "conversation:create"
 
 
 class OAuthScopes(str, Enum):
@@ -71,6 +75,11 @@ class OAuthScopes(str, Enum):
     # Agent Skills
     SKILL_READ = "skill:read"
     SKILL_WRITE = "skill:write"
+
+    # MCP Servers
+    MCP_READ = "mcp:read"
+    MCP_WRITE = "mcp:write"
+    MCP_DELETE = "mcp:delete"
 
     # Knowledge Base
     KB_READ = "kb:read"

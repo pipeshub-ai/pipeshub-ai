@@ -57,6 +57,7 @@ from app.services.notification.types import (
 )
 from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import not_found
 
 # Re-export for client builders / token refresh .
 __all__ = [
@@ -669,7 +670,7 @@ def _parse_request_json(request: Request, data: bytes) -> dict[str, Any]:
     except json.JSONDecodeError as e:
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail=f"Invalid JSON in request body: {str(e)}"
+            detail="We couldn't read that request. Refresh the page and try again."
         ) from e
 
 
@@ -1130,7 +1131,7 @@ async def create_toolset_instance(
                 if inherited_probe is None:
                     raise HTTPException(
                         status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"OAuth configuration '{oauth_config_id_from_body}' not found.",
+                        detail=not_found("This sign-in app"),
                     )
             oauth_config_id = oauth_config_id_from_body
             logger.debug(f"Using existing OAuth config for instance {instance_name}")
@@ -1312,7 +1313,7 @@ async def get_toolset_instance(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     registry = _get_registry(request)
     toolset_type = instance.get("toolsetType", "")
@@ -1455,7 +1456,7 @@ async def update_toolset_instance(
 
     idx = next((i for i, inst in enumerate(instances) if inst.get("_id") == instance_id and inst.get("orgId") == org_id), None)
     if idx is None:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     instance = instances[idx]
     toolset_type = instance.get("toolsetType", "")
@@ -1618,7 +1619,7 @@ async def delete_toolset_instance(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     # Safe-delete check: block if any agent is using this toolset instance
     # This check must happen BEFORE deleting user credentials to prevent data loss
@@ -1915,7 +1916,7 @@ async def authenticate_toolset_instance(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_type = instance.get("authType", "")
     if auth_type == "OAUTH":
@@ -2057,7 +2058,7 @@ async def reauthenticate_toolset_instance(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_path = _get_user_auth_path(instance_id, user_id)
 
@@ -2106,7 +2107,7 @@ async def get_instance_oauth_authorization_url(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_type = instance.get("authType", "")
     if auth_type != "OAUTH":
@@ -2243,7 +2244,7 @@ async def _validate_toolset_oauth_setup(
                 logger=logger,
             )
     except ToolsetAuthError as e:
-        setup_error_msg = str(e)
+        setup_error_msg = str(e)  # user-written message
         setup_error_title = e.title  # factory-supplied notification heading
     except Exception as e:
         logger.warning("Toolset %s setup validation skipped: %s", toolset_type, e)
@@ -2319,7 +2320,7 @@ async def handle_toolset_oauth_callback(
 
         instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
         if not instance:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
         toolset_type = instance.get("toolsetType", "")
         oauth_config_id = instance.get("oauthConfigId")
@@ -2674,7 +2675,7 @@ async def get_instance_status(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_path = _get_user_auth_path(instance_id, user_id)
     try:
@@ -3097,7 +3098,7 @@ async def authenticate_agent_toolset(
     instances = await _load_toolset_instances(org_id, config_service)
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_type = instance.get("authType", "")
     if auth_type.upper() == "OAUTH":
@@ -3230,7 +3231,7 @@ async def reauthenticate_agent_toolset(
     instances = await _load_toolset_instances(org_id, config_service)
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_path = _get_agent_auth_path(instance_id, agent_key)
 
@@ -3274,7 +3275,7 @@ async def get_agent_toolset_oauth_url(
     instances = await _load_toolset_instances(org_id, config_service)
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_type = instance.get("authType", "")
     if auth_type != "OAUTH":

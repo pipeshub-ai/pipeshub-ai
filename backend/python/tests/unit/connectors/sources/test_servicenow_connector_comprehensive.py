@@ -537,8 +537,9 @@ class TestGetFreshDatasource:
     @pytest.mark.asyncio
     async def test_no_client_raises(self, connector):
         connector.servicenow_client = None
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_updates_token_when_changed(self, connector):
@@ -549,14 +550,17 @@ class TestGetFreshDatasource:
         })
         with patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowDataSource"):
             ds = await connector._get_fresh_datasource()
-        assert connector.servicenow_client.access_token == "new-token"
+        # The transport authenticates from headers, so a refreshed token that
+        # only reaches the attribute leaves every request on the stale one.
+        connector.servicenow_client.set_access_token.assert_called_once_with("new-token")
 
     @pytest.mark.asyncio
     async def test_no_config_raises(self, connector):
         connector.servicenow_client = MagicMock()
         connector.config_service.get_config = AsyncMock(return_value=None)
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_token_raises(self, connector):
@@ -564,8 +568,9 @@ class TestGetFreshDatasource:
         connector.config_service.get_config = AsyncMock(return_value={
             "credentials": {},
         })
-        with pytest.raises(Exception, match="No access token"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
 
 # ===========================================================================
@@ -641,8 +646,10 @@ class TestFetchAllGroups:
             side_effect=ServiceNowAPIError(500, "API error", None)
         )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        groups = await connector._fetch_all_groups()
-        assert groups == []
+        # An empty list reads as "this instance has no groups", so the
+        # failure has to leave the loop rather than be answered with one.
+        with pytest.raises(ServiceNowAPIError):
+            await connector._fetch_all_groups()
 
 
 class TestFetchAllMemberships:

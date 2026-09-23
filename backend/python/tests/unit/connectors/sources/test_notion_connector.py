@@ -11,10 +11,13 @@ import pytest
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.connectors.sources.notion.block_parser import NotionBlockParser
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.notion.connector import (
     NotionConnector,
     UnconvertibleImageError,
+    _DatabaseGone,
 )
+from app.sources.client.notion.notion import NotionRESTClientViaOAuth
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -70,6 +73,7 @@ def _make_connector():
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+    data_entities_processor.get_records_by_record_type = AsyncMock(return_value=[])
     data_store_provider = MagicMock()
     config_service = AsyncMock()
     connector_id = "notion-conn-1"
@@ -106,6 +110,7 @@ def _make_api_response(success=True, data=None, error=None, status=None):
         resp.data.json.return_value = data
     else:
         resp.data = None
+    resp.status_code = status
     if status is not None:
         if resp.data is None:
             resp.data = MagicMock()
@@ -614,6 +619,74 @@ class TestNotionConnector:
             assert result is False
 
     @pytest.mark.asyncio
+    async def test_oauth_introspect_with_read_comment_skips_comments_api(self):
+        connector = _make_connector()
+        oauth_client = NotionRESTClientViaOAuth(
+            "cid", "csec", "http://cb", access_token="tok"
+        )
+        oauth_client.introspect_access_token = AsyncMock(
+            return_value={
+                "active": True,
+                "scope": (
+                    "read_comment read_content "
+                    "read_user_with_email read_user_without_email"
+                ),
+            }
+        )
+        connector.notion_client = MagicMock()
+        connector.notion_client.get_client.return_value = oauth_client
+        ds = MagicMock()
+        ds.retrieve_comments = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        assert await connector.test_connection_and_access() is True
+        ds.retrieve_comments.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_oauth_introspect_without_read_comment_fails(self):
+        connector = _make_connector()
+        oauth_client = NotionRESTClientViaOAuth(
+            "cid", "csec", "http://cb", access_token="tok"
+        )
+        oauth_client.introspect_access_token = AsyncMock(
+            return_value={"active": True, "scope": "read_content"}
+        )
+        connector.notion_client = MagicMock()
+        connector.notion_client.get_client.return_value = oauth_client
+        connector._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        with pytest.raises(ConnectorInitError, match="Read comments"):
+            await connector.test_connection_and_access()
+
+    @pytest.mark.asyncio
+    async def test_oauth_introspect_without_read_content_fails(self):
+        connector = _make_connector()
+        oauth_client = NotionRESTClientViaOAuth(
+            "cid", "csec", "http://cb", access_token="tok"
+        )
+        oauth_client.introspect_access_token = AsyncMock(
+            return_value={"active": True, "scope": "read_comment"}
+        )
+        connector.notion_client = MagicMock()
+        connector.notion_client.get_client.return_value = oauth_client
+        connector._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        with pytest.raises(ConnectorInitError, match="Read content"):
+            await connector.test_connection_and_access()
+
+    @pytest.mark.asyncio
+    async def test_oauth_introspect_failure_raises(self):
+        connector = _make_connector()
+        oauth_client = NotionRESTClientViaOAuth(
+            "cid", "csec", "http://cb", access_token="tok"
+        )
+        oauth_client.introspect_access_token = AsyncMock(
+            side_effect=Exception("Token introspect failed with status 500")
+        )
+        connector.notion_client = MagicMock()
+        connector.notion_client.get_client.return_value = oauth_client
+        connector._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        with pytest.raises(ConnectorInitError, match="Could not validate"):
+            await connector.test_connection_and_access()
+
+    @pytest.mark.asyncio
     async def test_test_connection_no_client(self):
         connector = _make_connector()
         connector.notion_client = None
@@ -626,19 +699,43 @@ class TestNotionConnector:
         connector.notion_client = MagicMock()
         mock_ds = MagicMock()
         mock_ds.retrieve_bot_user = AsyncMock(return_value=_make_api_response(success=True, data={"bot": {}}))
+        mock_ds.search = AsyncMock(
+            return_value=_make_api_response(True, {"results": [{"id": "page-1"}]})
+        )
+        mock_ds.retrieve_page = AsyncMock(
+            return_value=_make_api_response(True, {"id": "page-1"})
+        )
+        mock_ds.retrieve_comments = AsyncMock(
+            return_value=_make_api_response(True, {"results": []})
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         result = await connector.test_connection_and_access()
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_test_connection_failure_response(self):
+    async def test_test_connection_api_token_skips_capability_check(self):
         connector = _make_connector()
         connector.notion_client = MagicMock()
-        mock_ds = MagicMock()
-        mock_ds.retrieve_bot_user = AsyncMock(return_value=_make_api_response(success=False, error="Unauthorized"))
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        result = await connector.test_connection_and_access()
-        assert result is False
+        ds = MagicMock()
+        ds.retrieve_bot_user = AsyncMock(
+            return_value=_make_api_response(success=True, data={"bot": {}})
+        )
+        ds.retrieve_comments = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        assert await connector.test_connection_and_access() is True
+        ds.retrieve_bot_user.assert_awaited_once()
+        ds.retrieve_comments.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_api_token_invalid_bot_user_fails(self):
+        connector = _make_connector()
+        connector.notion_client = MagicMock()
+        ds = MagicMock()
+        ds.retrieve_bot_user = AsyncMock(
+            return_value=_make_api_response(success=False, error="HTTP 401")
+        )
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        assert await connector.test_connection_and_access() is False
 
     @pytest.mark.asyncio
     async def test_test_connection_exception(self):
@@ -669,8 +766,9 @@ class TestNotionConnector:
             version=1,
             is_file=True,
         )
-        result = await connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_get_signed_url_routes_to_comment_attachment(self):
@@ -738,10 +836,12 @@ class TestNotionConnector:
 
     @pytest.mark.asyncio
     async def test_get_block_file_url_failure(self):
-        """_get_block_file_url returns signed_url from record on API failure."""
+        """_get_block_file_url surfaces the source status instead of the stale URL."""
         connector = _make_connector()
         mock_ds = MagicMock()
-        mock_ds.retrieve_block = AsyncMock(return_value=_make_api_response(success=False, error="Not found"))
+        mock_ds.retrieve_block = AsyncMock(
+            return_value=_make_api_response(success=False, error="Not found", status=404)
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = FileRecord(
             external_record_id="block-file-1",
@@ -754,8 +854,9 @@ class TestNotionConnector:
             is_file=True,
             signed_url="https://fallback.example.com/file.pdf",
         )
-        result = await connector._get_block_file_url(record)
-        assert result == "https://fallback.example.com/file.pdf"
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._get_block_file_url(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_get_block_file_url_empty_block_id_raises(self):
@@ -1055,6 +1156,8 @@ class TestNotionRunSync:
 
         with patch("app.connectors.sources.notion.connector.load_connector_filters", new_callable=AsyncMock) as mock_load:
             mock_load.return_value = (FilterCollection(), FilterCollection())
+            connector._get_fresh_datasource = AsyncMock()
+            connector._assert_required_capabilities = AsyncMock()
             connector._sync_users = AsyncMock()
             connector._sync_objects_by_type = AsyncMock()
 
@@ -1192,18 +1295,18 @@ class TestNotionFetchAttachmentBlocks:
 class TestNotionFetchDataSource:
     @pytest.mark.asyncio
     async def test_fetch_data_source_as_blocks_metadata_failure(self):
-        """Returns empty BlocksContainer when metadata fetch fails."""
+        """A failed metadata fetch raises instead of streaming an empty container."""
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.retrieve_data_source_by_id = AsyncMock(
-            return_value=_make_api_response(success=False, error="Not found")
+            return_value=_make_api_response(success=False, error="Unauthorized", status=401)
         )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         parser = _make_parser()
-        result = await connector._fetch_data_source_as_blocks("ds-1", parser)
-        assert result.blocks == []
-        assert result.block_groups == []
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._fetch_data_source_as_blocks("ds-1", parser)
+        assert exc_info.value.status_code == 409
 
 
 class TestNotionAddWorkspacePermissions:
@@ -1379,6 +1482,8 @@ class TestNotionRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_calls_sync_users_and_objects(self):
         connector = _make_connector()
+        connector._get_fresh_datasource = AsyncMock()
+        connector._assert_required_capabilities = AsyncMock()
         connector._sync_users = AsyncMock()
         connector._sync_objects_by_type = AsyncMock()
         with patch(
@@ -1396,6 +1501,8 @@ class TestNotionRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_raises_on_error(self):
         connector = _make_connector()
+        connector._get_fresh_datasource = AsyncMock()
+        connector._assert_required_capabilities = AsyncMock()
         connector._sync_users = AsyncMock(side_effect=Exception("sync fail"))
         with patch(
             "app.connectors.sources.notion.connector.load_connector_filters",
@@ -1919,13 +2026,14 @@ class TestNotionFetchBlockChildrenRecursive:
     @pytest.mark.asyncio
     async def test_api_failure_returns_empty(self):
         connector = _make_connector()
-        fail_resp = _make_api_response(success=False, error="Not found")
+        fail_resp = _make_api_response(success=False, error="Unauthorized", status=401)
         connector._get_fresh_datasource = AsyncMock(
             return_value=MagicMock(retrieve_block_children=AsyncMock(return_value=fail_resp))
         )
 
-        blocks = await connector._fetch_block_children_recursive("bad-id")
-        assert blocks == []
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._fetch_block_children_recursive("bad-id")
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_non_dict_data_returns_empty(self):
@@ -1942,7 +2050,9 @@ class TestNotionFetchBlockChildrenRecursive:
         assert blocks == []
 
     @pytest.mark.asyncio
-    async def test_exception_breaks_loop(self):
+    async def test_transport_error_is_not_swallowed(self):
+        """Returning the blocks gathered so far would stream a truncated page
+        with a 200. This helper is only reached from stream_record."""
         connector = _make_connector()
         connector._get_fresh_datasource = AsyncMock(
             return_value=MagicMock(
@@ -1950,8 +2060,24 @@ class TestNotionFetchBlockChildrenRecursive:
             )
         )
 
-        blocks = await connector._fetch_block_children_recursive("page-1")
-        assert blocks == []
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._fetch_block_children_recursive("page-1")
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_failure_mid_pagination_does_not_truncate(self):
+        connector = _make_connector()
+        first = _make_api_response(data={
+            "results": [{"id": "b1"}],
+            "has_more": True,
+            "next_cursor": "c2",
+        })
+        ds = MagicMock()
+        ds.retrieve_block_children = AsyncMock(side_effect=[first, Exception("network")])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        with pytest.raises(HTTPException):
+            await connector._fetch_block_children_recursive("page-1")
 
 
 class TestNotionFetchAttachmentBlocksRecursive:
@@ -2230,6 +2356,7 @@ def _make_connector_fullcov():
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_record_group_by_external_id = AsyncMock(return_value=None)
     dep.get_user_by_source_id = AsyncMock(return_value=None)
+    dep.get_records_by_record_type = AsyncMock(return_value=[])
     dsp = MagicMock()
     mock_tx = MagicMock()
     mock_tx.get_record_group_by_external_id = AsyncMock(return_value=None)
@@ -2261,6 +2388,7 @@ def _api_resp(success=True, data=None, error=None, status=None):
         resp.data.json.return_value = data
     else:
         resp.data = None
+    resp.status_code = status
     if status is not None:
         if resp.data is None:
             resp.data = MagicMock()
@@ -2349,19 +2477,22 @@ class TestInit:
         conn.notion_client = MagicMock()
         ds = MagicMock()
         ds.retrieve_bot_user = AsyncMock(return_value=_api_resp(True, {"object": "user"}))
+        ds.search = AsyncMock(return_value=_api_resp(True, {"results": [{"id": "page-1"}]}))
+        ds.retrieve_page = AsyncMock(return_value=_api_resp(True, {"id": "page-1"}))
+        ds.retrieve_comments = AsyncMock(return_value=_api_resp(True, {"results": []}))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         result = await conn.test_connection_and_access()
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_test_connection_failure(self):
+    async def test_test_connection_api_token_skips_capability_check(self):
         conn = _make_connector_fullcov()
         conn.notion_client = MagicMock()
         ds = MagicMock()
-        ds.retrieve_bot_user = AsyncMock(return_value=_api_resp(False, error="unauthorized"))
+        ds.retrieve_bot_user = AsyncMock(return_value=_api_resp(True, {"object": "user"}))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn.test_connection_and_access()
-        assert result is False
+        assert await conn.test_connection_and_access() is True
+        ds.retrieve_bot_user.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_test_connection_exception(self):
@@ -2408,12 +2539,13 @@ class TestInit:
 
 class TestGetSignedUrl:
     @pytest.mark.asyncio
-    async def test_no_datasource_returns_none(self):
+    async def test_no_datasource_raises_connector_not_ready(self):
         conn = _make_connector_fullcov()
         conn.data_source = None
         record = _make_file_record(external_record_id="block-1")
-        result = await conn.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await conn.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_comment_attachment_prefix_ca(self):
@@ -2448,8 +2580,9 @@ class TestGetSignedUrl:
         conn.data_source = MagicMock()
         conn._get_block_file_url = AsyncMock(side_effect=Exception("fail"))
         record = _make_file_record(external_record_id="block-abc")
-        with pytest.raises(Exception, match="fail"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
 
 # ===================================================================
@@ -2482,14 +2615,15 @@ class TestGetCommentAttachmentUrl:
     async def test_api_failure_returns_signed_url(self):
         conn = _make_connector_fullcov()
         ds = MagicMock()
-        ds.retrieve_comment = AsyncMock(return_value=_api_resp(False))
+        ds.retrieve_comment = AsyncMock(return_value=_api_resp(False, status=404))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         record = _make_file_record(
             external_record_id="ca_commentid_report.pdf",
             signed_url="https://fallback.url",
         )
-        result = await conn._get_comment_attachment_url(record)
-        assert result == "https://fallback.url"
+        with pytest.raises(HTTPException) as exc_info:
+            await conn._get_comment_attachment_url(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_no_attachments_returns_signed_url(self):
@@ -2586,14 +2720,15 @@ class TestGetBlockFileUrl:
     async def test_api_failure_returns_signed_url(self):
         conn = _make_connector_fullcov()
         ds = MagicMock()
-        ds.retrieve_block = AsyncMock(return_value=_api_resp(False))
+        ds.retrieve_block = AsyncMock(return_value=_api_resp(False, status=403))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         record = _make_file_record(
             external_record_id="block-1",
             signed_url="https://old.url",
         )
-        result = await conn._get_block_file_url(record)
-        assert result == "https://old.url"
+        with pytest.raises(HTTPException) as exc_info:
+            await conn._get_block_file_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_file_key_returns_url(self):
@@ -2641,13 +2776,13 @@ class TestGetBlockFileUrl:
 
 class TestStreamRecord:
     @pytest.mark.asyncio
-    async def test_no_datasource_raises_500(self):
+    async def test_no_datasource_raises_409(self):
         conn = _make_connector_fullcov()
         conn.data_source = None
         record = _make_webpage_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_file_record_no_signed_url_raises_404(self):
@@ -2728,10 +2863,19 @@ class TestStreamRecord:
     async def test_unsupported_record_type_raises_400(self):
         conn = _make_connector_fullcov()
         conn.data_source = MagicMock()
-        record = _make_webpage_record(record_type=RecordType.DATABASE)
+        record = _make_webpage_record(record_type=RecordType.TICKET)
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
         assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_database_container_stream_returns_404(self):
+        conn = _make_connector_fullcov()
+        conn.data_source = MagicMock()
+        record = _make_webpage_record(record_type=RecordType.DATABASE)
+        with pytest.raises(HTTPException) as exc_info:
+            await conn.stream_record(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_generic_exception_wraps_in_500(self):
@@ -3247,16 +3391,18 @@ class TestGetFreshDatasource:
     async def test_no_client_raises(self):
         conn = _make_connector_fullcov()
         conn.notion_client = None
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_config_raises(self):
         conn = _make_connector_fullcov()
         conn.notion_client = MagicMock()
         conn.config_service.get_config = AsyncMock(return_value=None)
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_access_token_raises(self):
@@ -3265,8 +3411,9 @@ class TestGetFreshDatasource:
         conn.config_service.get_config = AsyncMock(
             return_value={"auth": {"authType": "API_TOKEN"}, "credentials": {}}
         )
-        with pytest.raises(Exception, match="No access token"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_api_token_auth(self):
@@ -3958,10 +4105,13 @@ class TestFetchBlockChildrenRecursive:
     async def test_api_failure(self):
         conn = _make_connector_fullcov()
         ds = MagicMock()
-        ds.retrieve_block_children = AsyncMock(return_value=_api_resp(False, error="err"))
+        ds.retrieve_block_children = AsyncMock(
+            return_value=_api_resp(False, error="err", status=429)
+        )
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn._fetch_block_children_recursive("page-1")
-        assert result == []
+        with pytest.raises(HTTPException) as exc_info:
+            await conn._fetch_block_children_recursive("page-1")
+        assert exc_info.value.status_code == 429
 
     @pytest.mark.asyncio
     async def test_non_dict_response(self):
@@ -3985,13 +4135,13 @@ class TestFetchBlockChildrenRecursive:
         assert len(result) == 2
 
     @pytest.mark.asyncio
-    async def test_exception_breaks_loop(self):
+    async def test_transport_error_is_not_swallowed(self):
         conn = _make_connector_fullcov()
         ds = MagicMock()
         ds.retrieve_block_children = AsyncMock(side_effect=Exception("network"))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn._fetch_block_children_recursive("page-1")
-        assert result == []
+        with pytest.raises(HTTPException):
+            await conn._fetch_block_children_recursive("page-1")
 
 
 # ===================================================================
@@ -4558,13 +4708,17 @@ class TestTransformToWebpageRecord:
     @pytest.mark.asyncio
     async def test_page_with_database_parent(self):
         conn = _make_connector_fullcov()
+        conn._resolve_database_id_as_record_parent = AsyncMock(
+            return_value=("ds-1", RecordType.DATASOURCE)
+        )
         data = {
             "id": "p3",
             "parent": {"type": "database_id", "database_id": "db-parent"},
             "properties": {},
         }
         result = await conn._transform_to_webpage_record(data, "page")
-        assert result.parent_record_type == RecordType.DATABASE
+        assert result.parent_external_record_id == "ds-1"
+        assert result.parent_record_type == RecordType.DATASOURCE
 
     @pytest.mark.asyncio
     async def test_page_with_block_parent(self):
@@ -4598,7 +4752,7 @@ class TestTransformToWebpageRecord:
             "parent": {"type": "workspace"},
         }
         result = await conn._transform_to_webpage_record(data, "database")
-        assert result.record_type == RecordType.DATABASE
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):
@@ -4646,9 +4800,12 @@ class TestResolveBlockParentRecursive:
             "parent": {"type": "database_id", "database_id": "db-parent"}
         }))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
+        conn._resolve_database_id_as_record_parent = AsyncMock(
+            return_value=("ds-parent", RecordType.DATASOURCE)
+        )
         parent_id, parent_type = await conn._resolve_block_parent_recursive("block-1")
-        assert parent_id == "db-parent"
-        assert parent_type == RecordType.DATABASE
+        assert parent_id == "ds-parent"
+        assert parent_type == RecordType.DATASOURCE
 
     @pytest.mark.asyncio
     async def test_datasource_parent(self):
@@ -4745,12 +4902,13 @@ class TestGetDatabaseParentRef:
     async def test_database_parent(self):
         conn = _make_connector_fullcov()
         ds = MagicMock()
-        ds.retrieve_database = AsyncMock(return_value=_api_resp(True, {
-            "parent": {"type": "database_id", "database_id": "db-p"}
-        }))
+        ds.retrieve_database = AsyncMock(side_effect=[
+            _api_resp(True, {"parent": {"type": "database_id", "database_id": "db-p"}}),
+            _api_resp(True, {"parent": {"type": "page_id", "page_id": "page-p"}}),
+        ])
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         result = await conn._get_database_parent_ref("db-1")
-        assert result == ("db-p", RecordType.DATABASE)
+        assert result == ("page-p", RecordType.WEBPAGE)
 
     @pytest.mark.asyncio
     async def test_block_parent(self):
@@ -5547,6 +5705,8 @@ class TestRunSync:
         conn = _make_connector_fullcov()
         with patch("app.connectors.sources.notion.connector.load_connector_filters", new_callable=AsyncMock) as mock_filters:
             mock_filters.return_value = (MagicMock(), MagicMock())
+            conn._get_fresh_datasource = AsyncMock()
+            conn._assert_required_capabilities = AsyncMock()
             conn._sync_users = AsyncMock()
             conn._sync_objects_by_type = AsyncMock()
             await conn.run_sync()
@@ -5558,6 +5718,8 @@ class TestRunSync:
         conn = _make_connector_fullcov()
         with patch("app.connectors.sources.notion.connector.load_connector_filters", new_callable=AsyncMock) as mock_filters:
             mock_filters.return_value = (MagicMock(), MagicMock())
+            conn._get_fresh_datasource = AsyncMock()
+            conn._assert_required_capabilities = AsyncMock()
             conn._sync_users = AsyncMock(side_effect=Exception("sync fail"))
             with pytest.raises(Exception, match="sync fail"):
                 await conn.run_sync()
@@ -5615,12 +5777,15 @@ class TestFetchAsBlocks:
     async def test_fetch_data_source_metadata_failure(self):
         conn = _make_connector_fullcov()
         ds = MagicMock()
-        ds.retrieve_data_source_by_id = AsyncMock(return_value=_api_resp(False, error="not found"))
+        ds.retrieve_data_source_by_id = AsyncMock(
+            return_value=_api_resp(False, error="not found", status=404)
+        )
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         parser = MagicMock()
 
-        result = await conn._fetch_data_source_as_blocks("ds-1", parser)
-        assert result.blocks == []
+        with pytest.raises(HTTPException) as exc_info:
+            await conn._fetch_data_source_as_blocks("ds-1", parser)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_fetch_data_source_query_failure(self):
@@ -5839,10 +6004,13 @@ class TestResolveDatabaseToDataSourcesParents:
     async def test_database_parent_types(self):
         conn = _make_connector_fullcov()
         ds = MagicMock()
-        ds.retrieve_database = AsyncMock(return_value=_api_resp(True, {
-            "data_sources": [{"id": "ds-1", "name": "View 1"}],
-            "parent": {"type": "database_id", "database_id": "parent-db"},
-        }))
+        ds.retrieve_database = AsyncMock(side_effect=[
+            _api_resp(True, {
+                "data_sources": [{"id": "ds-1", "name": "View 1"}],
+                "parent": {"type": "database_id", "database_id": "parent-db"},
+            }),
+            _api_resp(True, {"parent": {"type": "page_id", "page_id": "page-p"}}),
+        ])
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         conn._batch_get_or_create_child_records = AsyncMock(return_value={
             "ds-1": ChildRecord(child_type=ChildType.RECORD, child_id="r1", child_name="View 1"),
@@ -5850,7 +6018,8 @@ class TestResolveDatabaseToDataSourcesParents:
         result = await conn._resolve_database_to_data_sources("db-1")
         assert len(result) == 1
         args = conn._batch_get_or_create_child_records.await_args[0][0]
-        assert args["ds-1"][2] == "parent-db"
+        assert args["ds-1"][2] == "page-p"
+        assert args["ds-1"][3] == RecordType.WEBPAGE
 
     @pytest.mark.asyncio
     async def test_block_id_and_data_source_id_parents(self):
@@ -5941,7 +6110,7 @@ class TestTransformWebpageRecordExtended:
             {"id": "db-1", "title": [{"plain_text": "DB"}], "created_time": "2025-01-01T00:00:00.000Z"},
             "database",
         )
-        assert record.record_type == RecordType.DATABASE
+        assert record is None
 
     @pytest.mark.asyncio
     async def test_data_source_with_database_parent_id(self):
@@ -5957,6 +6126,21 @@ class TestTransformWebpageRecordExtended:
         )
         assert record.parent_external_record_id == "page-parent"
         assert record.parent_record_type == RecordType.WEBPAGE
+
+    @pytest.mark.asyncio
+    async def test_data_source_parented_by_another_data_source(self):
+        conn = _make_connector_fullcov()
+        record = await conn._transform_to_webpage_record(
+            {
+                "id": "ds-child",
+                "title": [{"plain_text": "Synced"}],
+                "created_time": "2025-01-01T00:00:00.000Z",
+                "parent": {"type": "data_source_id", "data_source_id": "ds-parent"},
+            },
+            "data_source",
+        )
+        assert record.parent_external_record_id == "ds-parent"
+        assert record.parent_record_type == RecordType.DATASOURCE
 
     @pytest.mark.asyncio
     async def test_page_parent_block_id_and_data_source_id(self):
@@ -6041,6 +6225,37 @@ class TestSyncObjectsByTypeExtended:
         conn.data_entities_processor.on_new_records.assert_not_awaited()
         conn._transform_to_webpage_record.assert_not_awaited()
         conn.pages_sync_point.update_sync_point.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_data_source_gone_database_parent_is_skipped(self):
+        conn = _make_connector_fullcov()
+        conn.indexing_filters = MagicMock()
+        conn.indexing_filters.is_enabled = MagicMock(return_value=True)
+        conn.pages_sync_point = MagicMock()
+        conn.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        conn.pages_sync_point.update_sync_point = AsyncMock()
+
+        ds = MagicMock()
+        ds.search = AsyncMock(return_value=_api_resp(True, {
+            "results": [{
+                "id": "ds-1",
+                "last_edited_time": "2025-06-15T00:00:00.000Z",
+                "title": [{"plain_text": "DS"}],
+                "parent": {"type": "database_id", "database_id": "db-parent"},
+            }],
+            "has_more": False,
+        }))
+        conn._get_fresh_datasource = AsyncMock(return_value=ds)
+        conn._get_database_parent_ref = AsyncMock(
+            side_effect=_DatabaseGone("database db-parent is archived")
+        )
+        conn._transform_to_webpage_record = AsyncMock()
+        conn.data_entities_processor.on_new_records = AsyncMock()
+
+        await conn._sync_objects_by_type("data_source")
+
+        conn._transform_to_webpage_record.assert_not_awaited()
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_page_attachment_fetch_error_continues(self):
@@ -6561,8 +6776,12 @@ class TestNotionConnectorResilience:
 # 404 classification, reindex suppression, and the placeholder sweep
 # ===================================================================
 
-from app.config.constants.arangodb import CollectionNames  # noqa: E402
-from app.connectors.sources.notion.connector import RECORD_GONE  # noqa: E402
+from app.config.constants.arangodb import CollectionNames, RecordRelations  # noqa: E402
+from app.connectors.sources.notion.connector import (  # noqa: E402
+    RECORD_GONE,
+    _DatabaseGone,
+    _DatabaseUnavailable,
+)
 
 
 def _make_stub(**kwargs):
@@ -6823,6 +7042,38 @@ class TestSweepPlaceholderRecords:
         conn.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_database_container_stub_is_retired(self):
+        stub = _make_stub(record_type=RecordType.DATABASE)
+        conn = self._conn_with_stubs([stub])
+        conn._retire_database_container_record = AsyncMock()
+
+        await conn._sweep_placeholder_records()
+
+        conn._retire_database_container_record.assert_awaited_once_with(stub)
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_data_source_stub_with_gone_database_parent_is_removed(self):
+        stub = _make_stub()
+        ds = MagicMock(retrieve_data_source_by_id=AsyncMock(return_value=_api_resp(True, {
+            "id": stub.external_record_id,
+            "object": "data_source",
+            "title": [{"plain_text": "Key results"}],
+            "last_edited_time": "2026-08-20T13:51:00.000Z",
+            "url": "https://notion.so/keyresults",
+            "parent": {"type": "database_id", "database_id": "db-1"},
+        })))
+        conn = self._conn_with_stubs([stub], ds)
+        conn._get_database_parent_ref = AsyncMock(
+            side_effect=_DatabaseGone("database db-1 is archived")
+        )
+
+        await conn._sweep_placeholder_records()
+
+        conn.data_entities_processor.on_record_deleted.assert_awaited_once_with(stub.id)
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_duplicate_external_ids_are_resolved_once(self):
         stub = _make_stub()
         twin = _make_stub()
@@ -6841,27 +7092,360 @@ class TestSweepIsWiredIntoSync:
     async def test_run_sync_sweeps_after_both_passes(self):
         conn = _make_connector_fullcov()
         order = []
+        conn._get_fresh_datasource = AsyncMock()
+        conn._assert_required_capabilities = AsyncMock()
         conn._sync_users = AsyncMock(side_effect=lambda: order.append("users"))
         conn._sync_objects_by_type = AsyncMock(side_effect=lambda t: order.append(t))
         conn._sweep_placeholder_records = AsyncMock(side_effect=lambda: order.append("sweep"))
+        conn._retire_leftover_database_records = AsyncMock(
+            side_effect=lambda: order.append("retire")
+        )
         with patch(
             "app.connectors.sources.notion.connector.load_connector_filters",
             new=AsyncMock(return_value=(MagicMock(), MagicMock())),
         ):
             await conn.run_sync()
-        assert order == ["users", "data_source", "page", "sweep"]
+        assert order == ["users", "data_source", "page", "sweep", "retire"]
 
     @pytest.mark.asyncio
     async def test_sweep_failure_does_not_fail_the_sync(self):
         conn = _make_connector_fullcov()
+        conn._get_fresh_datasource = AsyncMock()
+        conn._assert_required_capabilities = AsyncMock()
         conn._sync_users = AsyncMock()
         conn._sync_objects_by_type = AsyncMock()
         conn._sweep_placeholder_records = AsyncMock(side_effect=Exception("sweep boom"))
+        conn._retire_leftover_database_records = AsyncMock()
         with patch(
             "app.connectors.sources.notion.connector.load_connector_filters",
             new=AsyncMock(return_value=(MagicMock(), MagicMock())),
         ):
             await conn.run_sync()  # must not raise
+        conn._retire_leftover_database_records.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_leftover_pass_failure_does_not_fail_the_sync(self):
+        conn = _make_connector_fullcov()
+        conn._get_fresh_datasource = AsyncMock()
+        conn._assert_required_capabilities = AsyncMock()
+        conn._sync_users = AsyncMock()
+        conn._sync_objects_by_type = AsyncMock()
+        conn._sweep_placeholder_records = AsyncMock()
+        conn._retire_leftover_database_records = AsyncMock(
+            side_effect=Exception("retire boom")
+        )
+        with patch(
+            "app.connectors.sources.notion.connector.load_connector_filters",
+            new=AsyncMock(return_value=(MagicMock(), MagicMock())),
+        ):
+            await conn.run_sync()
+
+
+class TestRetireDatabaseContainer:
+    @staticmethod
+    def _conn(*, children=None, parents=None):
+        conn = _make_connector_fullcov()
+        conn.data_entities_processor.get_records_by_parent = AsyncMock(
+            return_value=children or []
+        )
+        conn.data_entities_processor.on_record_deleted = AsyncMock()
+        lookup = parents or {}
+
+        async def _get(connector_id, external_id):
+            return lookup.get(external_id)
+
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=_get
+        )
+        conn._mock_tx.batch_update_nodes = AsyncMock(return_value=True)
+        conn._mock_tx.delete_parent_child_edge_to_record = AsyncMock()
+        conn._mock_tx.create_record_relation = AsyncMock()
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_retrieve_404_is_database_gone(self):
+        conn = _make_connector_fullcov()
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            retrieve_database=AsyncMock(return_value=_api_resp(False, status=404))
+        ))
+        with pytest.raises(_DatabaseGone):
+            await conn._retrieve_database_payload("db-gone")
+
+    @pytest.mark.asyncio
+    async def test_retrieve_429_is_unavailable(self):
+        conn = _make_connector_fullcov()
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            retrieve_database=AsyncMock(
+                return_value=_api_resp(False, status=429, error="rate limited")
+            )
+        ))
+        with pytest.raises(_DatabaseUnavailable, match="rate limited"):
+            await conn._retrieve_database_payload("db-busy")
+
+    @pytest.mark.asyncio
+    async def test_404_detaches_children_and_deletes_container(self):
+        container = _make_webpage_record(
+            record_type=RecordType.DATABASE, external_record_id="db-1"
+        )
+        child = _make_webpage_record(
+            external_record_id="row-1",
+            parent_external_record_id="db-1",
+            parent_record_type=RecordType.DATABASE,
+        )
+        conn = self._conn(children=[child])
+        conn._retrieve_database_payload = AsyncMock(
+            side_effect=_DatabaseGone("database db-1 not found")
+        )
+
+        await conn._retire_database_container_record(container)
+
+        conn._mock_tx.delete_parent_child_edge_to_record.assert_awaited_once_with(child.id)
+        conn._mock_tx.create_record_relation.assert_not_awaited()
+        assert child.parent_external_record_id is None
+        conn.data_entities_processor.on_record_deleted.assert_awaited_once_with(
+            container.id
+        )
+
+    @pytest.mark.asyncio
+    async def test_429_leaves_container_and_edges_alone(self):
+        container = _make_webpage_record(
+            record_type=RecordType.DATABASE, external_record_id="db-1"
+        )
+        child = _make_webpage_record(external_record_id="row-1")
+        conn = self._conn(children=[child])
+        conn._retrieve_database_payload = AsyncMock(
+            side_effect=RuntimeError("Failed to retrieve database db-1: rate limited")
+        )
+
+        with pytest.raises(RuntimeError, match="rate limited"):
+            await conn._retire_database_container_record(container)
+
+        conn._mock_tx.batch_update_nodes.assert_not_awaited()
+        conn.data_entities_processor.on_record_deleted.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rehomes_children_with_parent_child_edges(self):
+        container = _make_webpage_record(
+            record_type=RecordType.DATABASE, external_record_id="db-1"
+        )
+        hop_page = _make_webpage_record(external_record_id="page-parent")
+        ds_record = _make_webpage_record(
+            record_type=RecordType.DATASOURCE, external_record_id="ds-real"
+        )
+        ds_child = _make_webpage_record(
+            record_type=RecordType.DATASOURCE,
+            external_record_id="ds-child",
+            parent_external_record_id="db-1",
+            parent_record_type=RecordType.DATABASE,
+        )
+        row = _make_webpage_record(
+            external_record_id="row-1",
+            parent_external_record_id="db-1",
+            parent_record_type=RecordType.DATABASE,
+        )
+        conn = self._conn(
+            children=[ds_child, row],
+            parents={"page-parent": hop_page, "ds-real": ds_record},
+        )
+        conn._retrieve_database_payload = AsyncMock(return_value={
+            "id": "db-1",
+            "data_sources": [{"id": "ds-real"}],
+            "parent": {"type": "page_id", "page_id": "page-parent"},
+        })
+
+        await conn._retire_database_container_record(container)
+
+        assert ds_child.parent_external_record_id == "page-parent"
+        assert ds_child.parent_record_type == RecordType.WEBPAGE
+        assert row.parent_external_record_id == "ds-real"
+        assert row.parent_record_type == RecordType.DATASOURCE
+        conn._mock_tx.delete_parent_child_edge_to_record.assert_any_await(ds_child.id)
+        conn._mock_tx.delete_parent_child_edge_to_record.assert_any_await(row.id)
+        conn._mock_tx.create_record_relation.assert_any_await(
+            hop_page.id, ds_child.id, RecordRelations.PARENT_CHILD.value
+        )
+        conn._mock_tx.create_record_relation.assert_any_await(
+            ds_record.id, row.id, RecordRelations.PARENT_CHILD.value
+        )
+        conn.data_entities_processor.on_record_deleted.assert_awaited_once_with(
+            container.id
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_new_parent_detaches_instead_of_hiding(self):
+        container = _make_webpage_record(
+            record_type=RecordType.DATABASE, external_record_id="db-1"
+        )
+        row = _make_webpage_record(
+            external_record_id="row-1",
+            parent_external_record_id="db-1",
+            parent_record_type=RecordType.DATABASE,
+        )
+        conn = self._conn(children=[row])
+        conn._retrieve_database_payload = AsyncMock(return_value={
+            "id": "db-1",
+            "data_sources": [{"id": "ds-missing"}],
+            "parent": {"type": "page_id", "page_id": "page-missing"},
+        })
+
+        await conn._retire_database_container_record(container)
+
+        assert row.parent_external_record_id is None
+        conn._mock_tx.create_record_relation.assert_not_awaited()
+        conn._mock_tx.delete_parent_child_edge_to_record.assert_awaited_once_with(row.id)
+        conn.data_entities_processor.on_record_deleted.assert_awaited_once_with(
+            container.id
+        )
+
+
+class TestRetireLeftoverDatabaseRecords:
+    @pytest.mark.asyncio
+    async def test_retires_each_leftover_container(self):
+        leftover = _make_webpage_record(
+            record_type=RecordType.DATABASE, external_record_id="db-old"
+        )
+        conn = _make_connector_fullcov()
+        conn.data_entities_processor.get_records_by_record_type = AsyncMock(
+            return_value=[leftover]
+        )
+        conn._retire_database_container_record = AsyncMock()
+
+        await conn._retire_leftover_database_records()
+
+        conn._retire_database_container_record.assert_awaited_once_with(leftover)
+
+    @pytest.mark.asyncio
+    async def test_per_record_failure_continues(self):
+        first = _make_webpage_record(
+            record_type=RecordType.DATABASE, external_record_id="db-1"
+        )
+        second = _make_webpage_record(
+            record_type=RecordType.DATABASE, external_record_id="db-2"
+        )
+        conn = _make_connector_fullcov()
+        conn.data_entities_processor.get_records_by_record_type = AsyncMock(
+            return_value=[first, second]
+        )
+        conn._retire_database_container_record = AsyncMock(
+            side_effect=[RuntimeError("429"), None]
+        )
+
+        await conn._retire_leftover_database_records()
+
+        assert conn._retire_database_container_record.await_count == 2
+
+
+class TestDatabaseParentLookupFailures:
+    """A transient database lookup must never save a record without its parent."""
+
+    _PAGE_UNDER_DATABASE = {
+        "id": "p1",
+        "parent": {"type": "database_id", "database_id": "db-1"},
+        "properties": {},
+    }
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_propagates_from_transform(self):
+        conn = _make_connector_fullcov()
+        conn._resolve_database_id_as_record_parent = AsyncMock(
+            side_effect=_DatabaseUnavailable("rate limited")
+        )
+        with pytest.raises(_DatabaseUnavailable):
+            await conn._transform_to_webpage_record(dict(self._PAGE_UNDER_DATABASE), "page")
+
+    @pytest.mark.asyncio
+    async def test_gone_database_syncs_page_without_parent(self):
+        conn = _make_connector_fullcov()
+        conn._resolve_database_id_as_record_parent = AsyncMock(
+            side_effect=_DatabaseGone("database db-1 not found")
+        )
+        record = await conn._transform_to_webpage_record(dict(self._PAGE_UNDER_DATABASE), "page")
+        assert record is not None
+        assert record.parent_external_record_id is None
+        assert record.parent_record_type is None
+
+    @pytest.mark.asyncio
+    async def test_block_under_database_propagates_transient_failure(self):
+        conn = _make_connector_fullcov()
+        ds = MagicMock()
+        ds.retrieve_block = AsyncMock(return_value=_api_resp(True, {
+            "parent": {"type": "database_id", "database_id": "db-1"}
+        }))
+        conn._get_fresh_datasource = AsyncMock(return_value=ds)
+        conn._resolve_database_id_as_record_parent = AsyncMock(
+            side_effect=_DatabaseUnavailable("rate limited")
+        )
+        with pytest.raises(_DatabaseUnavailable):
+            await conn._resolve_block_parent_recursive("block-1")
+
+    @pytest.mark.asyncio
+    async def test_page_sync_aborts_without_advancing_checkpoint(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_sync_time": "2024-01-01T00:00:00.000Z"}
+        )
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+        page = {
+            "id": "p-new",
+            "last_edited_time": "2024-06-02T10:00:00Z",
+            "url": "https://notion.so/p-new",
+            "parent": {"type": "database_id", "database_id": "db-1"},
+        }
+        connector._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            search=AsyncMock(return_value=_make_api_response(
+                data={"results": [page], "has_more": False, "next_cursor": None}
+            ))
+        ))
+        connector._transform_to_webpage_record = AsyncMock(
+            side_effect=_DatabaseUnavailable("rate limited")
+        )
+        connector._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {}))
+
+        with pytest.raises(_DatabaseUnavailable):
+            await connector._sync_objects_by_type("page")
+
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+        connector.pages_sync_point.update_sync_point.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_data_source_stubs_wait_for_transient_parent_failure(self):
+        conn = _make_connector_fullcov()
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            retrieve_database=AsyncMock(return_value=_api_resp(True, {
+                "data_sources": [{"id": "ds-1", "name": "View 1"}],
+                "parent": {"type": "page_id", "page_id": "page-p"},
+            }))
+        ))
+        conn._parent_ref_from_database_payload = AsyncMock(
+            side_effect=_DatabaseUnavailable("rate limited")
+        )
+        conn._batch_get_or_create_child_records = AsyncMock()
+
+        assert await conn._resolve_database_to_data_sources("db-1") == []
+        conn._batch_get_or_create_child_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_data_source_stubs_get_no_parent_when_parent_is_gone(self):
+        conn = _make_connector_fullcov()
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            retrieve_database=AsyncMock(return_value=_api_resp(True, {
+                "data_sources": [{"id": "ds-1", "name": "View 1"}],
+                "parent": {"type": "page_id", "page_id": "page-p"},
+            }))
+        ))
+        conn._parent_ref_from_database_payload = AsyncMock(side_effect=_DatabaseGone("gone"))
+        conn._batch_get_or_create_child_records = AsyncMock(return_value={
+            "ds-1": ChildRecord(child_type=ChildType.RECORD, child_id="r1", child_name="View 1"),
+        })
+
+        result = await conn._resolve_database_to_data_sources("db-1")
+
+        assert len(result) == 1
+        spec = conn._batch_get_or_create_child_records.await_args[0][0]["ds-1"]
+        assert spec[2] is None and spec[3] is None
 
 
 import re  # noqa: E402

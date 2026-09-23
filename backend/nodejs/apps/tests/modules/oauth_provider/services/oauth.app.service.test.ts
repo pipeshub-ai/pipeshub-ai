@@ -14,7 +14,7 @@ import {
   InvalidRedirectUriError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { NotFoundError, BadRequestError } from '../../../../src/libs/errors/http.errors'
-import { PAT_APP_CLIENT_ID_PREFIX } from '../../../../src/modules/oauth_provider/constants/constants'
+import { PAT_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 describe('OAuthAppService', () => {
@@ -311,10 +311,11 @@ describe('OAuthAppService', () => {
         // expected NotFoundError
       }
       const filter = findStub.firstCall.args[0] as Record<string, unknown>
-      const clientIdFilter = filter.clientId as { $not: RegExp }
+      const clientIdFilter = filter.clientId as { $not: RegExp; $nin: string[] }
       expect(clientIdFilter.$not.source).to.equal(`^${PAT_APP_CLIENT_ID_PREFIX}`)
       expect(clientIdFilter.$not.test(`${PAT_APP_CLIENT_ID_PREFIX}${fakeOrgId}`)).to.be.true
       expect(clientIdFilter.$not.test('some-other-client-id')).to.be.false
+      expect(clientIdFilter.$nin).to.deep.equal([FIRST_PARTY_DEVICE_CLIENT_ID])
     })
 
     it('should throw NotFoundError when app is not visible to caller (e.g. different creator in same org)', async () => {
@@ -1298,6 +1299,55 @@ describe('OAuthAppService - branch coverage', () => {
     it('should return false when grant type is not allowed', () => {
       const app = { allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE] } as any
       expect(service.isGrantTypeAllowed(app, 'client_credentials')).to.be.false
+    })
+  })
+
+  describe('createDynamicClient', () => {
+    it('should reject client_credentials', async () => {
+      try {
+        await service.createDynamicClient({
+          orgId: VALID_ORG_ID,
+          createdBy: VALID_USER_ID,
+          name: 'Cursor',
+          redirectUris: ['https://example.com/cb'],
+          allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+          allowedScopes: ['user:read'],
+          isConfidential: false,
+        })
+        expect.fail('should have thrown')
+      } catch (err: any) {
+        expect(err).to.be.instanceOf(BadRequestError)
+      }
+    })
+
+    it('should allow a private-use redirect URI', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(),
+        slug: 'dcr',
+        clientId: 'cid',
+        name: 'Cursor',
+        redirectUris: ['cursor://anysphere.cursor-mcp/oauth/callback'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.REFRESH_TOKEN],
+        allowedScopes: ['user:read'],
+        status: OAuthAppStatus.ACTIVE,
+        isConfidential: false,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 2592000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      const createStub = sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
+      await service.createDynamicClient({
+          orgId: VALID_ORG_ID,
+          createdBy: VALID_USER_ID,
+        name: 'Cursor',
+        redirectUris: ['cursor://anysphere.cursor-mcp/oauth/callback'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.REFRESH_TOKEN],
+        allowedScopes: ['user:read'],
+        isConfidential: false,
+      })
+      expect(createStub.calledOnce).to.be.true
+      expect(createStub.firstCall.args[0].isDynamic).to.be.true
     })
   })
 

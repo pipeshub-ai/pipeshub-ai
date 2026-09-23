@@ -244,7 +244,8 @@ check "health wait detects crash loops" "$inner" "crash_looping_containers"
 check "crash loop reported as the failure cause" "$inner" "keeps restarting"
 check "crash loop guidance is cause-neutral (137 vs 139)" "$inner" "exit 137"
 check "crash loop guidance covers segfault/corruption" "$inner" "exit 139"
-check "crash loop guidance still offers slim profile" "$inner" "drops Kafka/Zookeeper"
+check "eval is a deploy type" "$inner" 'prompt_choice DEPLOY_TYPE "Deployment type?" "slim" "slim" "full" "eval"'
+check "eval forces Neo4j even if an Arango volume exists" "$inner" 'Eval requires Neo4j'
 # Must not revert to asserting OOM as the definitive cause.
 if [[ "$inner" == *"almost always host memory pressure"* ]]; then
   fail "crash-loop message must not assert OOM as the certain cause"
@@ -255,6 +256,8 @@ fi
 echo "== Compose: app healthcheck reconciled with installer =="
 compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
 check "app healthcheck gates on core services" "$compose" "required=('query','connector','indexing','docling')"
+check "sandbox image is profile-gated" "$compose" 'profiles: ["sandbox"]'
+check "eval skip slackbot env is wired" "$compose" "PIPESHUB_SKIP_SLACKBOT"
 echo "== Compose: Hub slim empty ints are unset before start =="
 # Compose ${KEY:-} injects "". Hub slim int(os.getenv(KEY, default)) crashes
 # on that. The app entrypoint must unset blanks so the key is absent.
@@ -362,6 +365,25 @@ else
   pass "env.template does not pin pending indexing tasks 28"
 fi
 
+echo "== OAuth device / DCR launch defaults =="
+envtmpl="$(cat "$COMPOSE_DIR/env.template")"
+compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
+check "env.template documents PIPESHUB_ENABLE_DCR" "$envtmpl" "PIPESHUB_ENABLE_DCR"
+check "env.template documents PIPESHUB_ENABLE_DEVICE_GRANT" "$envtmpl" "PIPESHUB_ENABLE_DEVICE_GRANT"
+check "env.template names pipeshub_device_client_id" "$envtmpl" "pipeshub_device_client_id"
+if grep -qE '^PIPESHUB_ENABLE_DCR=true' "$COMPOSE_DIR/env.template"; then
+  fail "env.template must not enable DCR by default"
+else
+  pass "env.template does not enable DCR by default"
+fi
+if grep -qE '^PIPESHUB_ENABLE_DEVICE_GRANT=false' "$COMPOSE_DIR/env.template"; then
+  fail "env.template must not disable device grant by default"
+else
+  pass "env.template does not disable device grant by default"
+fi
+check "compose wires PIPESHUB_ENABLE_DCR" "$compose" 'PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}'
+check "compose wires PIPESHUB_ENABLE_DEVICE_GRANT" "$compose" 'PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}'
+
 echo "== In-tree installer: crash-loop detection (real function) =="
 eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
 (
@@ -385,12 +407,25 @@ eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
 # --stop must tear down ALL profile-gated containers (not just the active
 # profile) so leftover graph/broker containers do not block network removal.
 stop_block="$(awk '/if \$FLAG_STOP; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")"
-check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"'
+check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"'
 check "stop removes orphans" "$stop_block" "down --remove-orphans"
 check "stop uses COMPOSE_PROJECT_NAME from .env" "$stop_block" 'PROJECT_NAME="$(resolve_project_name)"'
 check "stop validates project name from .env" "$stop_block" 'require_valid_project_name "$PROJECT_NAME"'
 uninstall_block="$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")"
 check "uninstall removes orphans" "$uninstall_block" "down -v --remove-orphans"
+
+echo "== In-tree installer: --rotate-signing-secrets =="
+check "rotate flag is parsed" "$inner" "FLAG_ROTATE_SIGNING_SECRETS=true"
+check "rotate flag is in usage" "$inner" "--rotate-signing-secrets"
+check "rotate confirms with ROTATE" "$inner" "Type ROTATE to confirm"
+check "rotate force-recreates app container" "$inner" "--force-recreate --no-deps pipeshub-ai"
+check "rotate rejected with --stop" "$inner" "cannot be combined with --stop"
+check "rotate rejected with --uninstall" "$inner" "cannot be combined with --uninstall"
+check "rotate requires existing .env" "$inner" "Signing-secret rotation requires an existing install"
+check "rotate writes one-shot id" "$inner" "persist_env_var ROTATE_SIGNING_SECRETS"
+check "rotate without upgrade skips image pull" "$inner" "rotating signing secrets only"
+compose_yml="$(cat "$COMPOSE_DIR/docker-compose.yml")"
+check "compose passes ROTATE_SIGNING_SECRETS" "$compose_yml" "ROTATE_SIGNING_SECRETS=\${ROTATE_SIGNING_SECRETS:-}"
 
 echo "== In-tree installer: cross-directory + port helpers (real functions) =="
 eval "$(extract_fn compose_other_working_dirs "$INNER_INSTALLER")"
@@ -427,15 +462,17 @@ eval "$(extract_fn derive_compose_profiles "$INNER_INSTALLER")"
 eval "$(extract_fn persist_env_var "$INNER_INSTALLER")"
 
 dp() { DATA_STORE="$1" KV_STORE_TYPE="$2" MESSAGE_BROKER="$3" derive_compose_profiles; }
-check "arango + kafka + redis kv" "$(dp arangodb redis kafka)" "graph-arango,broker-kafka"
-check "neo4j + redis + redis (slim)" "$(dp neo4j redis redis)" "graph-neo4j"
-check "neo4j + etcd + kafka (full custom)" "$(dp neo4j etcd kafka)" "graph-neo4j,kv-etcd,broker-kafka"
-[[ -z "$(dp '' '' '')" ]] && pass "all-unset derives empty" || fail "all-unset derives empty"
+check "arango + kafka + redis kv" "$(dp arangodb redis kafka)" "graph-arango,broker-kafka,sandbox"
+check "neo4j + redis + redis (slim)" "$(dp neo4j redis redis)" "graph-neo4j,sandbox"
+check "eval omits sandbox" "$(DEPLOY_TYPE=eval dp neo4j redis redis)" "graph-neo4j"
+check "neo4j + etcd + kafka (full custom)" "$(dp neo4j etcd kafka)" "graph-neo4j,kv-etcd,broker-kafka,sandbox"
+[[ -z "$(DEPLOY_TYPE=eval dp '' '' '')" ]] && pass "eval all-unset derives empty" || fail "eval all-unset derives empty"
+check "all-unset still includes sandbox" "$(dp '' '' '')" "sandbox"
 # The exact stale value from the user's terminal must be corrected, not trusted.
-check "repairs stale 'kafka' to real profiles" "$(dp arangodb redis kafka)" "graph-arango,broker-kafka"
+check "repairs stale 'kafka' to real profiles" "$(dp arangodb redis kafka)" "graph-arango,broker-kafka,sandbox"
 # Missing DATA_STORE drops the graph profile (only broker-kafka) — this is why
 # the installer hard-validates DATA_STORE before launch.
-check "missing DATA_STORE yields no graph profile" "$(dp '' redis kafka)" "broker-kafka"
+check "missing DATA_STORE yields no graph profile" "$(dp '' redis kafka)" "broker-kafka,sandbox"
 if [[ "$(dp '' redis kafka)" == *"graph-"* ]]; then fail "must not invent a graph profile"; else pass "no graph profile when DATA_STORE empty"; fi
 
 echo "== In-tree installer: persist_env_var replaces in place =="
@@ -469,7 +506,8 @@ check "PIPESHUB_NO_PULL=yes skips the refresh" "$(should_pull_image false false 
 # tag argument, so assert the launch path builds _APP_IMAGE from IMAGE_TAG.
 check "refresh target honours the pinned tag" "$inner" '_APP_IMAGE="pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}"'
 # Launch-path guards.
-check "refreshes app and sandbox images" "$inner" "pull pipeshub-ai sandbox-image"
+check "refreshes app image via compose pull" "$inner" 'pull "${_PULL_SERVICES[@]}"'
+check "eval skips sandbox image pull" "$inner" 'DEPLOY_TYPE:-}" != "eval"'
 check "--no-pull flag is parsed" "$inner" "FLAG_NO_PULL=true"
 check "refresh decision uses the testable helper" "$inner" 'should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}"'
 # A pull failure must NOT abort when an image is already cached (flaky network).
@@ -644,6 +682,76 @@ eval "$(extract_fn project_has_pinned_container_names "$INNER_INSTALLER")"
 )
 
 echo
+echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
+(
+  # --version is parsed at the top of install.sh but is only consumed inside the
+  # configuration wizard, which --upgrade skips. Without apply_requested_tag,
+  # `--upgrade --version X` re-reads the old IMAGE_TAG from .env and restarts the
+  # version the user was trying to leave, exiting 0 with no warning.
+  work="$TMP_ROOT/upgrade-version"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  [[ -f "$COMPOSE_DIR/docker-compose.yml" ]] && cp "$COMPOSE_DIR/docker-compose.yml" "$work/"
+
+  seed_env() {
+    printf 'IMAGE_TAG=%s\nSECRET_KEY=do-not-touch\nMONGO_PASSWORD=keep-me\nAPP_PORT=3000\nPROJECT_NAME=testproj\n' \
+      "$1" >"$work/.env"
+  }
+
+  # Seed a .env whose SANDBOX_DOCKER_IMAGE is set; $2 is the value to write.
+  seed_env_with_sandbox() {
+    seed_env "$1"
+    printf 'SANDBOX_DOCKER_IMAGE=%s\n' "$2" >>"$work/.env"
+  }
+
+  # --print-env-only must exit 0. Without this an installer that prints the
+  # right summary and then dies would still satisfy the output assertions.
+  run_installer() { # run_installer <desc> [VAR=val ...] -- <installer args...>
+    local desc="$1"; shift
+    local -a envs=() args=()
+    while [[ $# -gt 0 ]]; do
+      [[ "$1" == "--" ]] && { shift; args=("$@"); break; }
+      envs+=("$1"); shift
+    done
+    local status=0
+    out="$(cd "$work" && env "${envs[@]}" bash ./install.sh "${args[@]}" --print-env-only 2>&1)" || status=$?
+    if [[ $status -eq 0 ]]; then pass "$desc exits 0"; else fail "$desc exits 0 (got $status)"; fi
+  }
+
+  seed_env "0.6.0-slim"
+  run_installer "--upgrade --version" -- --upgrade --version 0.7.0-slim
+  check "--upgrade --version reports the tag change" "$out" "0.6.0-slim -> 0.7.0-slim"
+  check "--upgrade --version resolves the new tag"   "$out" "Image tag:             0.7.0-slim"
+  check "--upgrade --version persists the new tag"   "$(cat "$work/.env")" "IMAGE_TAG=0.7.0-slim"
+  check "--upgrade leaves SECRET_KEY alone"          "$(cat "$work/.env")" "SECRET_KEY=do-not-touch"
+  check "--upgrade leaves other secrets alone"       "$(cat "$work/.env")" "MONGO_PASSWORD=keep-me"
+
+  seed_env "0.6.0-slim"
+  run_installer "--upgrade with PIPESHUB_VERSION" PIPESHUB_VERSION=0.7.0-slim -- --upgrade
+  check "--upgrade honours PIPESHUB_VERSION" "$out" "Image tag:             0.7.0-slim"
+
+  # The default sandbox image tracks IMAGE_TAG: re-tag it on upgrade.
+  seed_env_with_sandbox "0.6.0-slim" "pipeshubai/pipeshub-sandbox:0.6.0-slim"
+  run_installer "--upgrade re-tags the default sandbox image" -- --upgrade --version 0.7.0-slim
+  check "default sandbox image moves to the new tag" "$(cat "$work/.env")" \
+    "SANDBOX_DOCKER_IMAGE=pipeshubai/pipeshub-sandbox:0.7.0-slim"
+
+  # A custom sandbox image — an air-gapped mirror or private registry — was set
+  # deliberately, so an upgrade must leave it exactly as it is.
+  seed_env_with_sandbox "0.6.0-slim" "myregistry.example/pipeshub-sandbox:pinned"
+  run_installer "--upgrade preserves a custom sandbox image" -- --upgrade --version 0.7.0-slim
+  check "custom sandbox image is left untouched" "$(cat "$work/.env")" \
+    "SANDBOX_DOCKER_IMAGE=myregistry.example/pipeshub-sandbox:pinned"
+
+  seed_env "0.6.0-slim"
+  run_installer "plain --upgrade" -- --upgrade
+  check "plain --upgrade keeps the recorded tag" "$out" "Image tag:             0.6.0-slim"
+  check "plain --upgrade does not rewrite .env"  "$(cat "$work/.env")" "IMAGE_TAG=0.6.0-slim"
+
+  seed_env "0.7.0-slim"
+  run_installer "--upgrade to the tag already in use" -- --upgrade --version 0.7.0-slim
+  check "asking for the current tag is a no-op with a clear message" "$out" "Already on image tag 0.7.0-slim"
+)
+
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"
 FAIL="$(wc -l <"$FAIL_FILE" | tr -d ' ')"
 printf "Results: %s passed, %s failed\n" "$PASS" "$FAIL"

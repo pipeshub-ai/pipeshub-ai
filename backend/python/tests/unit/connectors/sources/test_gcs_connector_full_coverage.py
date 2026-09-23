@@ -5,12 +5,16 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
+    Filter,
     FilterCollection,
+    FilterType,
     IndexingFilterKey,
+    ListOperator,
     SyncFilterKey,
 )
 from app.connectors.sources.google_cloud_storage.connector import (
@@ -27,11 +31,12 @@ from app.connectors.sources.google_cloud_storage.connector import (
 from app.models.entities import FileRecord, RecordType, User
 
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -945,7 +950,9 @@ class TestGetSignedUrl95:
     @pytest.mark.asyncio
     async def test_not_initialized(self, connector):
         connector.data_source = None
-        assert await connector.get_signed_url(MagicMock()) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(MagicMock())
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_bucket(self, connector):
@@ -974,21 +981,61 @@ class TestGetSignedUrl95:
     async def test_access_denied(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_signed_url = AsyncMock(
-            return_value=_make_response(False, error="403 Forbidden")
+            return_value=_make_response(False, error="403 Forbidden", status_code=403)
         )
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_not_found(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_signed_url = AsyncMock(
-            return_value=_make_response(False, error="404 NotFound")
+            return_value=_make_response(False, error="404 NotFound", status_code=404)
         )
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_object_key_does_not_pick_the_status(self, connector):
+        """The GCS error text embeds bucket and key, so matching phrases in it
+        let a key like "hr/permissions/2024.xlsx" report a deleted object as 403."""
+        connector.data_source = MagicMock()
+        connector.data_source.generate_signed_url = AsyncMock(
+            return_value=_make_response(
+                False,
+                error="Blob not found: bucket/hr/permissions/2024.xlsx",
+                status_code=404,
+            )
+        )
+        record = MagicMock(id="r1", external_record_group_id="bucket",
+                           external_record_id="bucket/hr/permissions/2024.xlsx",
+                           record_name="2024.xlsx")
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_denial_on_a_key_containing_404_is_still_403(self, connector):
+        connector.data_source = MagicMock()
+        connector.data_source.generate_signed_url = AsyncMock(
+            return_value=_make_response(
+                False,
+                error="GCS API error: reports/404-page-analysis.pdf",
+                status_code=403,
+            )
+        )
+        record = MagicMock(id="r1", external_record_group_id="bucket",
+                           external_record_id="bucket/reports/404-page-analysis.pdf",
+                           record_name="404-page-analysis.pdf")
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_other_failure(self, connector):
@@ -998,7 +1045,9 @@ class TestGetSignedUrl95:
         )
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_exception(self, connector):
@@ -1006,7 +1055,9 @@ class TestGetSignedUrl95:
         connector.data_source.generate_signed_url = AsyncMock(side_effect=Exception("err"))
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_key_without_bucket_prefix(self, connector):
@@ -1435,3 +1486,245 @@ class TestGetGcsRevisionId95:
 
     def test_empty_object(self, connector):
         assert connector._get_gcs_revision_id({}) == ""
+
+
+def _folder_filter(values, exclude=False):
+    from app.connectors.core.registry.filters import Filter, FilterCollection, FilterType, ListOperator
+
+    operator = ListOperator.NOT_IN if exclude else ListOperator.IN
+    return FilterCollection(filters=[Filter(key="folder_paths", value=values, type=FilterType.LIST, operator=operator)])
+
+
+def _in_memory_sync_points():
+    saved = {}
+    sync_points = MagicMock()
+    sync_points.saved = saved
+    sync_points.read_sync_point = AsyncMock(side_effect=lambda key: saved.get(key))
+    sync_points.update_sync_point = AsyncMock(side_effect=lambda key, data: saved.setdefault(key, {}).update(data))
+    return sync_points
+
+
+def _out_of_scope_record():
+    return MagicMock(id="r1", external_record_id="b1/other/x.pdf", mime_type="application/pdf")
+
+
+class TestFolderFilter:
+    """The "Folders" sync filter: only the chosen folders are listed and synced."""
+
+    @staticmethod
+    def _prepare(connector, objects_by_prefix):
+        prefixes = []
+
+        async def list_blobs(**kwargs):
+            prefixes.append(kwargs.get("prefix"))
+            contents = objects_by_prefix.get(kwargs.get("prefix"), [])
+            return _make_response(True, {"Contents": [{"Key": k} for k in contents], "IsTruncated": False})
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_blobs = list_blobs
+        connector.record_sync_point = _in_memory_sync_points()
+        connector._process_gcs_object = AsyncMock(return_value=(None, []))
+        connector._ensure_parent_folders_exist = AsyncMock()
+        connector.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+        return prefixes
+
+    @pytest.mark.asyncio
+    async def test_include_lists_only_the_chosen_folder(self, connector):
+        connector.sync_filters = _folder_filter(["reports"])
+        prefixes = self._prepare(connector, {"reports/": ["reports/a.pdf"]})
+
+        await connector._sync_bucket("b1")
+
+        assert prefixes == ["reports/"]
+        assert [c.args[0]["Key"] for c in connector._process_gcs_object.await_args_list] == ["reports/a.pdf"]
+        connector.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_already_cleaned_scope_is_not_scanned_again(self, connector):
+        connector.sync_filters = _folder_filter(["reports"])
+        self._prepare(connector, {"reports/": []})
+
+        await connector._sync_bucket("b1")
+        await connector._sync_bucket("b1")
+
+        connector.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    def _page_then_listing_error(self, connector, processed):
+        connector.sync_filters = FilterCollection()
+        self._prepare(connector, {})
+        connector._process_gcs_object = AsyncMock(return_value=processed)
+        connector._process_records_with_retry = AsyncMock()
+        pages = iter([
+            _make_response(True, {
+                "Contents": [{"Key": "b.pdf", "LastModified": "2026-01-02T00:00:00Z"}],
+                "IsTruncated": True,
+                "NextContinuationToken": "t1",
+            }),
+            RuntimeError("network"),
+        ])
+
+        async def listing(**kwargs):
+            page = next(pages)
+            if isinstance(page, Exception):
+                raise page
+            return page
+
+        connector.data_source.list_blobs = listing
+
+    @pytest.mark.asyncio
+    async def test_a_listing_error_saves_no_checkpoint(self, connector):
+        self._page_then_listing_error(connector, (MagicMock(), []))
+
+        await connector._sync_bucket("b1")
+
+        assert [c.args[0]["Key"] for c in connector._process_gcs_object.await_args_list] == ["b.pdf"]
+        saved = connector.record_sync_point.saved
+        assert not any("last_sync_time" in v for v in saved.values())
+        assert {"page_token": "t1"} in saved.values()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_object_clears_the_resume_token(self, connector):
+        # Resuming from the page token would skip page one, where the failed object is.
+        self._page_then_listing_error(connector, (None, []))
+
+        await connector._sync_bucket("b1")
+
+        saved = connector.record_sync_point.saved
+        assert saved["FILE/bucket/b1"] == {"page_token": None}
+
+    @pytest.mark.asyncio
+    async def test_exclude_skips_the_folder(self, connector):
+        connector.sync_filters = _folder_filter(["tmp"], exclude=True)
+        prefixes = self._prepare(connector, {None: ["a.pdf", "tmp/cache.bin"]})
+
+        await connector._sync_bucket("b1")
+
+        assert prefixes == [None]
+        assert [c.args[0]["Key"] for c in connector._process_gcs_object.await_args_list] == ["a.pdf"]
+
+
+_JAN = [datetime(2026, 1, day, tzinfo=timezone.utc) for day in (1, 2, 3)]
+
+
+def _ms(moment):
+    return int(moment.timestamp() * 1000)
+
+
+class TestFailedObjectCheckpoint:
+    """An object that fails to process holds the checkpoint back, so the next sync retries it."""
+
+    @staticmethod
+    def _sync_points():
+        saved = {}
+        sync_points = MagicMock()
+        sync_points.saved = saved
+        sync_points.read_sync_point = AsyncMock(side_effect=lambda key: saved.get(key))
+        sync_points.update_sync_point = AsyncMock(side_effect=lambda key, data: saved.setdefault(key, {}).update(data))
+        return sync_points
+
+    def _prepare(self, connector, objects, failing=(), raising=()):
+        async def list_blobs(**kwargs):
+            contents = [{"Key": key, "LastModified": at} for key, at in objects]
+            return _make_response(True, {"Contents": contents, "IsTruncated": False})
+
+        async def process(obj, bucket_name):
+            if obj["Key"] in raising:
+                raise RuntimeError("boom")
+            return (None, []) if obj["Key"] in failing else (MagicMock(), [])
+
+        connector.sync_filters = FilterCollection()
+        connector.data_source = MagicMock()
+        connector.data_source.list_blobs = list_blobs
+        connector.record_sync_point = self._sync_points()
+        connector._ensure_parent_folders_exist = AsyncMock()
+        connector._process_gcs_object = AsyncMock(side_effect=process)
+        connector._process_records_with_retry = AsyncMock()
+
+    @staticmethod
+    def _saved_time(connector):
+        return connector.record_sync_point.saved.get("FILE/bucket/b1", {}).get("last_sync_time")
+
+    @staticmethod
+    async def _sync(connector):
+        from app.connectors.core.registry.folder_scope import FolderScope
+
+        await connector._sync_bucket_prefix("b1", "", FolderScope())
+
+    @pytest.mark.asyncio
+    async def test_a_failed_object_holds_the_checkpoint_before_it(self, connector):
+        self._prepare(connector, [("a.pdf", _JAN[0]), ("b.pdf", _JAN[1]), ("c.pdf", _JAN[2])], failing={"b.pdf"})
+
+        await self._sync(connector)
+
+        assert self._saved_time(connector) == _ms(_JAN[1]) - 1
+
+    @pytest.mark.asyncio
+    async def test_an_object_that_raises_holds_the_checkpoint_too(self, connector):
+        self._prepare(connector, [("a.pdf", _JAN[0]), ("b.pdf", _JAN[1]), ("c.pdf", _JAN[2])], raising={"b.pdf"})
+
+        await self._sync(connector)
+
+        assert self._saved_time(connector) == _ms(_JAN[1]) - 1
+
+    @pytest.mark.asyncio
+    async def test_the_next_sync_retries_it_and_then_advances(self, connector):
+        objects = [("a.pdf", _JAN[0]), ("b.pdf", _JAN[1]), ("c.pdf", _JAN[2])]
+        self._prepare(connector, objects, failing={"b.pdf"})
+        await self._sync(connector)
+        saved = connector.record_sync_point
+
+        self._prepare(connector, objects)
+        connector.record_sync_point = saved
+        await self._sync(connector)
+
+        retried = [c.args[0]["Key"] for c in connector._process_gcs_object.await_args_list]
+        assert retried == ["b.pdf", "c.pdf"]
+        assert self._saved_time(connector) == _ms(_JAN[2])
+
+    @pytest.mark.asyncio
+    async def test_a_filtered_out_object_does_not_hold_the_checkpoint(self, connector):
+        self._prepare(connector, [("a.pdf", _JAN[0]), ("b.txt", _JAN[1]), ("c.pdf", _JAN[2])])
+        connector.sync_filters = FilterCollection(
+            filters=[Filter(key="file_extensions", value=["pdf"], type=FilterType.LIST, operator=ListOperator.IN)]
+        )
+
+        await self._sync(connector)
+
+        assert self._saved_time(connector) == _ms(_JAN[2])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing", [{"b.pdf"}, set()])
+    async def test_a_failed_final_save_clears_the_token_and_fails_the_sync(self, connector, failing):
+        # The unsaved records sit on pages the resume token would skip.
+        self._prepare(connector, [], failing=failing)
+        connector.batch_size = 100
+        pages = iter([
+            _make_response(True, {
+                "Contents": [{"Key": k, "LastModified": at} for k, at in zip(("a.pdf", "b.pdf", "c.pdf"), _JAN)],
+                "IsTruncated": True,
+                "NextContinuationToken": "t1",
+            }),
+            _make_response(True, {"Contents": [], "IsTruncated": False}),
+        ])
+
+        async def listing(**kwargs):
+            return next(pages)
+
+        connector.data_source.list_blobs = listing
+        connector._process_records_with_retry = AsyncMock(side_effect=RuntimeError("db"))
+
+        with pytest.raises(RuntimeError, match="db"):
+            await self._sync(connector)
+
+        assert connector.record_sync_point.saved["FILE/bucket/b1"] == {"page_token": None}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_token_clear_does_not_hide_the_save_error(self, connector):
+        self._prepare(connector, [("a.pdf", _JAN[0])])
+        connector.batch_size = 100
+        connector._process_records_with_retry = AsyncMock(side_effect=RuntimeError("db"))
+        connector.record_sync_point.update_sync_point = AsyncMock(side_effect=OSError("kv down"))
+
+        with pytest.raises(RuntimeError, match="db"):
+            await self._sync(connector)

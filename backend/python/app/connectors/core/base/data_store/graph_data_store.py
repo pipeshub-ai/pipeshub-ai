@@ -165,7 +165,11 @@ class GraphTransactionStore(TransactionStore):
         after_key: Optional[str] = None,
         exclude_statuses: Optional[list[str]] = None,
     ) -> list[Record]:
-        """Get records by status. Returns properly typed Record instances."""
+        """Get records by status. Returns properly typed Record instances.
+
+        An empty list means no record matched. A listing that could not be read
+        raises GraphQueryError - callers must not read that as "nothing found".
+        """
         return await self.graph_provider.get_records_by_status(
             org_id,
             connector_id,
@@ -444,6 +448,16 @@ class GraphTransactionStore(TransactionStore):
         """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
         return await self.graph_provider.get_records_by_parent(
             connector_id, parent_external_record_id, record_type, transaction=self.txn
+        )
+
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: str,
+    ) -> list[Record]:
+        """Return this connector's records of ``record_type``."""
+        return await self.graph_provider.get_records_by_record_type(
+            connector_id, record_type, transaction=self.txn
         )
 
     async def get_record_path(self, record_id: str) -> Optional[str]:

@@ -1,22 +1,32 @@
 """Tests for app.services.skills.package_importer — archive extraction,
 zip-slip guards, and the three preview sources (npm / URL / upload).
 
-Network calls are always mocked (via a stubbed httpx.AsyncClient) — these
-tests never hit the real npm registry or any external URL.
+Network calls go through a fake `PublicUrlFetcher` — these tests never hit
+the real npm registry or any external URL.
 """
 import io
+import json
 import tarfile
 import zipfile
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-import httpx
 import pytest
 
+from app.services.skills import package_importer
 from app.services.skills.npm_command_parser import PackageSpec
 from app.services.skills.package_importer import (
     ImportPreview,
     PackageImportError,
     SkillPackageImporter,
+)
+from app.utils.public_http import (
+    PublicFetchError,
+    PublicFetchLimits,
+    PublicFetchResponse,
+    PublicUrlFetcher,
+    ResponseTooLargeError,
+    TooManyRedirectsError,
+    UnsafeUrlError,
 )
 
 _VALID_SKILL_MD = """---
@@ -92,14 +102,65 @@ class TestPreviewUpload:
         assert preview.skipped_binary_resources == ["assets/logo.png"]
         assert any("binary" in w for w in preview.warnings)
 
-    def test_ignores_files_outside_resource_kinds(self) -> None:
+    def test_root_level_file_outside_scripts_references_assets_is_kept(self) -> None:
+        """agentskills.io allows "any additional files or directories" — a
+        root-level reference file (e.g. Anthropic's `pdf` skill ships
+        `forms.md`/`reference.md` beside SKILL.md) must not be silently
+        dropped just because it isn't under scripts/references/assets."""
         data = _make_zip({
             "SKILL.md": _VALID_SKILL_MD.encode(),
-            "README.md": b"not a resource kind",
+            "forms.md": b"# extra reference doc",
+            "ooxml/schema.xsd": b"<xsd/>",
         })
         importer = SkillPackageImporter()
         preview = importer.preview_upload("archive.zip", data)
-        assert preview.resources == {}
+        assert preview.resources["forms.md"] == "# extra reference doc"
+        assert preview.resources["ooxml/schema.xsd"] == "<xsd/>"
+
+    def test_ignores_dotfiles_pycache_and_git_directories(self) -> None:
+        data = _make_zip({
+            "SKILL.md": _VALID_SKILL_MD.encode(),
+            ".gitignore": b"*.pyc",
+            ".git/config": b"[core]",
+            "scripts/__pycache__/run.cpython-312.pyc": b"\x00binary",
+            "scripts/run.py": b"print('hi')",
+        })
+        importer = SkillPackageImporter()
+        preview = importer.preview_upload("archive.zip", data)
+        assert preview.resources == {"scripts/run.py": "print('hi')"}
+
+    def test_resource_path_over_the_length_limit_is_skipped_not_fatal(self) -> None:
+        """`validate_resource_path` rejects an over-length path; the
+        importer's collection loop treats that the same as a binary
+        file — skip and log, never fail the whole preview over one bad
+        entry from a third-party archive."""
+        too_long = "assets/" + ("a" * 300) + ".txt"
+        data = _make_zip({
+            "SKILL.md": _VALID_SKILL_MD.encode(),
+            too_long: b"content",
+            "assets/ok.txt": b"kept",
+        })
+        importer = SkillPackageImporter()
+        preview = importer.preview_upload("archive.zip", data)
+        assert preview.resources == {"assets/ok.txt": "kept"}
+
+    def test_resources_exceeding_the_total_byte_budget_raise(self) -> None:
+        # Each file stays under the per-file cap; the SUM crosses the
+        # per-skill cap — proves the total check fires independently of
+        # the per-file check.
+        chunk = ("x" * (900 * 1024)).encode()
+        data = _make_zip({
+            "SKILL.md": _VALID_SKILL_MD.encode(),
+            "assets/a.bin": chunk,
+            "assets/b.bin": chunk,
+            "assets/c.bin": chunk,
+            "assets/d.bin": chunk,
+            "assets/e.bin": chunk,
+            "assets/f.bin": chunk,
+        })
+        importer = SkillPackageImporter()
+        with pytest.raises(PackageImportError, match="per-skill limit"):
+            importer.preview_upload("archive.zip", data)
 
     def test_missing_skill_md_raises(self) -> None:
         data = _make_zip({"README.md": b"no skill here"})
@@ -160,113 +221,367 @@ class TestPreviewUpload:
         preview = importer.preview_upload("download", data)
         assert preview.name == "pdf-extractor"
 
+_MANIFEST_URL = "https://registry.npmjs.org/pdf-extractor/latest"
+_TARBALL_URL = "https://registry.npmjs.org/pdf-extractor/-/pdf-extractor-1.2.0.tgz"
+_UNSAFE_URL_MESSAGE = "This URL is not allowed: it must point to a public address."
+
+
+class _FakeFetcher(PublicUrlFetcher):
+    """Serves a canned response, or raises a canned error, per URL."""
+
+    def __init__(self, outcomes: dict[str, PublicFetchResponse | Exception]) -> None:
+        super().__init__()
+        self._outcomes = outcomes
+        self.calls: list[tuple[str, PublicFetchLimits]] = []
+
+    async def get(self, url: str, limits: PublicFetchLimits) -> PublicFetchResponse:
+        self.calls.append((url, limits))
+        outcome = self._outcomes[url]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _response(
+    content: bytes = b"", status: int = 200, url: str = "https://example.com/"
+) -> PublicFetchResponse:
+    return PublicFetchResponse(url=url, status_code=status, headers={}, content=content)
+
+
+def _manifest(tarball: str | None = _TARBALL_URL) -> PublicFetchResponse:
+    dist = {"tarball": tarball} if tarball else {}
+    return _response(json.dumps({"version": "1.2.0", "dist": dist}).encode())
+
+
+def _make_deflated_zip(name: str, content: bytes) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(name, content)
+    return buf.getvalue()
+
+
+class TestExtractionBudget:
+    def test_zip_bomb_is_rejected_once_extracted_bytes_exceed_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(package_importer, "_MAX_EXTRACTED_BYTES", 64 * 1024)
+        data = _make_deflated_zip("assets/bomb.bin", b"\0" * (1024 * 1024))
+        with pytest.raises(PackageImportError, match="too large once extracted"):
+            SkillPackageImporter().preview_upload("bomb.zip", data)
+
+    def test_zip_bomb_with_understated_file_size_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(package_importer, "_MAX_EXTRACTED_BYTES", 64 * 1024)
+        data = bytearray(_make_deflated_zip("assets/bomb.bin", b"\0" * (1024 * 1024)))
+        central_dir = data.rfind(b"PK\x01\x02")
+        # Uncompressed size field of the central directory entry: claim 16 bytes.
+        data[central_dir + 24 : central_dir + 28] = (16).to_bytes(4, "little")
+        with pytest.raises(PackageImportError):
+            SkillPackageImporter().preview_upload("bomb.zip", bytes(data))
+
+    def test_tar_total_extracted_size_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(package_importer, "_MAX_EXTRACTED_BYTES", 1000)
+        data = _make_tar({
+            "SKILL.md": _VALID_SKILL_MD.encode(),
+            "scripts/a.txt": b"a" * 600,
+            "scripts/b.txt": b"b" * 600,
+        })
+        with pytest.raises(PackageImportError, match="too large once extracted"):
+            SkillPackageImporter().preview_upload("pack.tar.gz", data)
+
 
 class TestPreviewNpm:
-    @pytest.mark.asyncio
     async def test_successful_import(self) -> None:
         tarball = _make_tar({"package/SKILL.md": _VALID_SKILL_MD.encode()})
-        client = AsyncMock(spec=httpx.AsyncClient)
+        fetcher = _FakeFetcher({_MANIFEST_URL: _manifest(), _TARBALL_URL: _response(tarball)})
 
-        meta_resp = MagicMock()
-        meta_resp.status_code = 200
-        meta_resp.raise_for_status = MagicMock()
-        meta_resp.json = MagicMock(return_value={
-            "version": "1.2.0",
-            "dist": {"tarball": "https://registry.npmjs.org/pdf-extractor/-/pdf-extractor-1.2.0.tgz"},
-        })
-
-        tarball_resp = MagicMock()
-        tarball_resp.raise_for_status = MagicMock()
-        tarball_resp.content = tarball
-
-        client.get = AsyncMock(side_effect=[meta_resp, tarball_resp])
-
-        importer = SkillPackageImporter(http_client=client)
-        preview = await importer.preview_npm(PackageSpec(name="pdf-extractor", version="latest"))
+        preview = await SkillPackageImporter(fetcher).preview_npm(
+            PackageSpec(name="pdf-extractor", version="latest")
+        )
 
         assert preview.name == "pdf-extractor"
         assert preview.source_label == "npm:pdf-extractor@1.2.0"
+        assert [url for url, _ in fetcher.calls] == [_MANIFEST_URL, _TARBALL_URL]
 
-    @pytest.mark.asyncio
     async def test_404_raises_not_found(self) -> None:
-        client = AsyncMock(spec=httpx.AsyncClient)
-        resp = MagicMock()
-        resp.status_code = 404
-        client.get = AsyncMock(return_value=resp)
+        url = "https://registry.npmjs.org/does-not-exist/latest"
+        fetcher = _FakeFetcher({url: _response(status=404)})
+        with pytest.raises(PackageImportError, match="was not found on the npm registry"):
+            await SkillPackageImporter(fetcher).preview_npm(PackageSpec(name="does-not-exist"))
 
-        importer = SkillPackageImporter(http_client=client)
-        with pytest.raises(PackageImportError, match="not found"):
-            await importer.preview_npm(PackageSpec(name="does-not-exist"))
+    async def test_registry_server_error_reports_status(self) -> None:
+        fetcher = _FakeFetcher({_MANIFEST_URL: _response(status=500)})
+        with pytest.raises(PackageImportError) as exc_info:
+            await SkillPackageImporter(fetcher).preview_npm(PackageSpec(name="pdf-extractor"))
+        assert str(exc_info.value) == "Could not download the npm package metadata (HTTP 500)."
 
-    @pytest.mark.asyncio
+    async def test_invalid_manifest_json_raises(self) -> None:
+        fetcher = _FakeFetcher({_MANIFEST_URL: _response(b"<html>")})
+        with pytest.raises(PackageImportError, match="invalid entry"):
+            await SkillPackageImporter(fetcher).preview_npm(PackageSpec(name="pdf-extractor"))
+
     async def test_missing_tarball_raises(self) -> None:
-        client = AsyncMock(spec=httpx.AsyncClient)
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.raise_for_status = MagicMock()
-        resp.json = MagicMock(return_value={"version": "1.0.0", "dist": {}})
-        client.get = AsyncMock(return_value=resp)
-
-        importer = SkillPackageImporter(http_client=client)
+        fetcher = _FakeFetcher({_MANIFEST_URL: _manifest(tarball=None)})
         with pytest.raises(PackageImportError, match="no downloadable tarball"):
-            await importer.preview_npm(PackageSpec(name="pdf-extractor"))
+            await SkillPackageImporter(fetcher).preview_npm(PackageSpec(name="pdf-extractor"))
 
-    @pytest.mark.asyncio
-    async def test_network_error_wrapped(self) -> None:
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(side_effect=httpx.ConnectError("boom"))
+    async def test_network_error_is_generic_and_leaks_no_detail(self) -> None:
+        fetcher = _FakeFetcher({_MANIFEST_URL: PublicFetchError("GET failed: ConnectError: 10.0.0.3 refused")})
+        with pytest.raises(PackageImportError) as exc_info:
+            await SkillPackageImporter(fetcher).preview_npm(PackageSpec(name="pdf-extractor"))
+        assert str(exc_info.value) == "Could not download the npm package metadata."
 
-        importer = SkillPackageImporter(http_client=client)
-        with pytest.raises(PackageImportError, match="Failed to fetch"):
-            await importer.preview_npm(PackageSpec(name="pdf-extractor"))
-
-    @pytest.mark.asyncio
     async def test_oversized_tarball_rejected(self) -> None:
-        client = AsyncMock(spec=httpx.AsyncClient)
-        meta_resp = MagicMock()
-        meta_resp.status_code = 200
-        meta_resp.raise_for_status = MagicMock()
-        meta_resp.json = MagicMock(return_value={
-            "version": "1.0.0",
-            "dist": {"tarball": "https://registry.npmjs.org/pdf-extractor/-/pdf-extractor-1.0.0.tgz"},
+        fetcher = _FakeFetcher({
+            _MANIFEST_URL: _manifest(),
+            _TARBALL_URL: ResponseTooLargeError("Response body exceeds 26214400 bytes"),
         })
-        tarball_resp = MagicMock()
-        tarball_resp.raise_for_status = MagicMock()
-        tarball_resp.content = b"0" * (25 * 1024 * 1024 + 1)
-        client.get = AsyncMock(side_effect=[meta_resp, tarball_resp])
-
-        importer = SkillPackageImporter(http_client=client)
         with pytest.raises(PackageImportError, match="too large"):
-            await importer.preview_npm(PackageSpec(name="pdf-extractor"))
+            await SkillPackageImporter(fetcher).preview_npm(PackageSpec(name="pdf-extractor"))
+        assert fetcher.calls[1][1].max_bytes == 25 * 1024 * 1024
 
 
 class TestPreviewUrl:
-    @pytest.mark.asyncio
     async def test_rejects_non_http_scheme(self) -> None:
         importer = SkillPackageImporter()
-        with pytest.raises(PackageImportError, match="http"):
+        with pytest.raises(PackageImportError, match="Only http"):
             await importer.preview_url("ftp://example.com/skill.zip")
 
-    @pytest.mark.asyncio
     async def test_successful_zip_import(self) -> None:
+        url = "https://example.com/skill.zip"
         data = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode()})
-        client = AsyncMock(spec=httpx.AsyncClient)
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
-        resp.content = data
-        resp.headers = {"content-type": "application/zip"}
-        client.get = AsyncMock(return_value=resp)
-
-        importer = SkillPackageImporter(http_client=client)
-        preview = await importer.preview_url("https://example.com/skill.zip")
+        importer = SkillPackageImporter(_FakeFetcher({url: _response(data)}))
+        preview = await importer.preview_url(url)
         assert preview.name == "pdf-extractor"
         assert preview.source_label == "url:https://example.com/skill.zip"
 
-    @pytest.mark.asyncio
-    async def test_http_error_wrapped(self) -> None:
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(side_effect=httpx.ConnectTimeout("timed out"))
+    async def test_unsafe_url_maps_to_generic_message(self) -> None:
+        url = "https://internal.corp.example/skill.zip"
+        blocked = UnsafeUrlError("Blocked unsafe URL: hostname 'internal.corp.example' resolves to 10.0.0.5")
+        importer = SkillPackageImporter(_FakeFetcher({url: blocked}))
+        with pytest.raises(PackageImportError) as exc_info:
+            await importer.preview_url(url)
+        assert str(exc_info.value) == _UNSAFE_URL_MESSAGE
 
-        importer = SkillPackageImporter(http_client=client)
-        with pytest.raises(PackageImportError, match="Failed to fetch"):
-            await importer.preview_url("https://example.com/skill.zip")
+    @pytest.mark.parametrize(
+        "url", ["http://127.0.0.1:8088/health", "http://169.254.169.254/latest/meta-data"]
+    )
+    async def test_private_literal_is_blocked_by_the_real_fetcher(self, url: str) -> None:
+        with pytest.raises(PackageImportError) as exc_info:
+            await SkillPackageImporter().preview_url(url)
+        assert str(exc_info.value) == _UNSAFE_URL_MESSAGE
+
+    async def test_http_error_status_is_reported(self) -> None:
+        url = "https://example.com/skill.zip"
+        importer = SkillPackageImporter(_FakeFetcher({url: _response(status=500)}))
+        with pytest.raises(PackageImportError) as exc_info:
+            await importer.preview_url(url)
+        assert str(exc_info.value) == "Could not download the archive (HTTP 500)."
+
+    async def test_too_many_redirects_is_generic(self) -> None:
+        url = "https://example.com/skill.zip"
+        importer = SkillPackageImporter(_FakeFetcher({url: TooManyRedirectsError("More than 3 redirects")}))
+        with pytest.raises(PackageImportError) as exc_info:
+            await importer.preview_url(url)
+        assert str(exc_info.value) == "Could not download the archive."
+
+    @pytest.mark.parametrize(
+        "error", [UnsafeUrlError("blocked"), PublicFetchError("GET failed")], ids=["blocked", "failed"]
+    )
+    async def test_logged_url_carries_no_credentials(
+        self, monkeypatch: pytest.MonkeyPatch, error: Exception
+    ) -> None:
+        url = "https://user:hunter2@example.com/skill.zip?X-Amz-Signature=SECRET"
+        logger = MagicMock()
+        monkeypatch.setattr(package_importer, "logger", logger)
+        with pytest.raises(PackageImportError):
+            await SkillPackageImporter(_FakeFetcher({url: error})).preview_url(url)
+        logged = " ".join(str(arg) for call in logger.method_calls for arg in call.args)
+        assert "https://example.com/skill.zip" in logged
+        assert "SECRET" not in logged
+        assert "hunter2" not in logged
+
+
+class TestNormalizeGitHubUrl:
+    def test_github_repo_url_becomes_api_tarball(self) -> None:
+        result = SkillPackageImporter._normalize_url("https://github.com/netresearch/jira-skill")
+        assert result == "https://codeload.github.com/netresearch/jira-skill/tar.gz/HEAD"
+
+    def test_github_repo_url_with_trailing_slash(self) -> None:
+        result = SkillPackageImporter._normalize_url("https://github.com/acme/my-skill/")
+        assert result == "https://codeload.github.com/acme/my-skill/tar.gz/HEAD"
+
+    def test_github_repo_url_with_dot_git(self) -> None:
+        result = SkillPackageImporter._normalize_url("https://github.com/acme/my-skill.git")
+        assert result == "https://codeload.github.com/acme/my-skill/tar.gz/HEAD"
+
+    def test_non_github_url_unchanged(self) -> None:
+        url = "https://example.com/my-skill.tar.gz"
+        assert SkillPackageImporter._normalize_url(url) == url
+
+    def test_github_subpath_url_unchanged(self) -> None:
+        url = "https://github.com/acme/repo/archive/refs/heads/main.tar.gz"
+        assert SkillPackageImporter._normalize_url(url) == url
+
+    async def test_github_url_downloads_from_api(self) -> None:
+        api_url = "https://codeload.github.com/acme/my-skill/tar.gz/HEAD"
+        data = _make_tar({"SKILL.md": _VALID_SKILL_MD.encode()})
+        fetcher = _FakeFetcher({api_url: _response(data)})
+        preview = await SkillPackageImporter(fetcher).preview_url("https://github.com/acme/my-skill")
+        assert preview.name == "pdf-extractor"
+        assert preview.source_label == "url:https://github.com/acme/my-skill"
+
+
+class TestArchiveFormatComesFromTheBytes:
+    async def test_zip_named_url_that_serves_a_tarball(self) -> None:
+        url = "https://example.com/skill.zip"
+        data = _make_tar({"SKILL.md": _VALID_SKILL_MD.encode()})
+        preview = await SkillPackageImporter(_FakeFetcher({url: _response(data)})).preview_url(url)
+        assert preview.name == "pdf-extractor"
+
+    def test_upload_with_the_wrong_extension(self) -> None:
+        data = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode()})
+        assert SkillPackageImporter().preview_upload("skill.tar.gz", data).name == "pdf-extractor"
+
+    def test_uncompressed_tar(self) -> None:
+        content = _VALID_SKILL_MD.encode()
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            info = tarfile.TarInfo(name="SKILL.md")
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+        assert SkillPackageImporter().preview_upload("download", buf.getvalue()).name == "pdf-extractor"
+
+    def test_tar_problems_are_not_masked_by_a_zip_retry(self) -> None:
+        data = _make_tar({"../escape.sh": b"x", "SKILL.md": _VALID_SKILL_MD.encode()})
+        with pytest.raises(PackageImportError, match="unsafe path"):
+            SkillPackageImporter().preview_upload("skill.zip", data)
+
+    def test_neither_zip_nor_tar(self) -> None:
+        with pytest.raises(PackageImportError, match="Not a valid zip or tar/tgz archive"):
+            SkillPackageImporter().preview_upload("skill.tar.gz", b"\x1f\x8bnot really gzip")
+
+
+def _skill_md(name: str) -> bytes:
+    return (
+        f"---\nname: {name}\ndescription: Extracts tables from PDF files\n---\n\n"
+        f"# {name}\n\nUse this skill when the user asks.\n"
+    ).encode()
+
+
+class TestSkillFilter:
+    def test_multiple_skills_require_a_filter(self) -> None:
+        files = {
+            "skills/pptx/SKILL.md": _skill_md("pptx"),
+            "skills/xlsx/SKILL.md": _skill_md("xlsx"),
+        }
+        with pytest.raises(PackageImportError, match="multiple skills"):
+            package_importer._files_to_preview(files, source_label="t")
+
+    def test_filter_selects_one_skill_and_its_resources(self) -> None:
+        files = {
+            "skills/pptx/SKILL.md": _skill_md("pptx"),
+            "skills/xlsx/SKILL.md": _skill_md("xlsx"),
+            "skills/pptx/scripts/x.py": b"print(1)",
+            "skills/xlsx/scripts/y.py": b"print(2)",
+        }
+        preview = package_importer._files_to_preview(
+            files, source_label="t", skill_filter="pptx",
+        )
+        assert preview.name == "pptx"
+        assert preview.resources == {"scripts/x.py": "print(1)"}
+
+    def test_unknown_filter_lists_available_skills(self) -> None:
+        files = {"skills/pptx/SKILL.md": _skill_md("pptx")}
+        with pytest.raises(PackageImportError, match="Available skills"):
+            package_importer._files_to_preview(files, source_label="t", skill_filter="docx")
+
+    def test_root_skill_md_wins_over_nested_plugin_copy(self) -> None:
+        files = {
+            "SKILL.md": _skill_md("frontend-slides"),
+            "plugins/frontend-slides/SKILL.md": _skill_md("frontend-slides"),
+            "STYLE_PRESETS.md": b"# presets",
+        }
+        preview = package_importer._files_to_preview(files, source_label="t")
+        assert preview.name == "frontend-slides"
+        assert preview.resources["STYLE_PRESETS.md"] == "# presets"
+
+
+class TestGitHubSubdirectoryAndCatalog:
+    async def test_github_tree_url_fetches_subdirectory(self) -> None:
+        listing = json.dumps([
+            {
+                "type": "file",
+                "path": "skills/pptx/SKILL.md",
+                "download_url": "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md",
+            },
+            {
+                "type": "file",
+                "path": "skills/pptx/scripts/x.py",
+                "download_url": "https://raw.githubusercontent.com/a/s/main/skills/pptx/scripts/x.py",
+            },
+        ]).encode()
+        fetcher = _FakeFetcher({
+            "https://api.github.com/repos/anthropics/skills/contents/skills/pptx?ref=main": _response(listing),
+            "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md": _response(_skill_md("pptx")),
+            "https://raw.githubusercontent.com/a/s/main/skills/pptx/scripts/x.py": _response(b"print(1)"),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_url(
+            "https://github.com/anthropics/skills/tree/main/skills/pptx"
+        )
+        assert preview.name == "pptx"
+        assert preview.resources["scripts/x.py"] == "print(1)"
+
+    async def test_skill_filter_fetches_skills_subdir(self) -> None:
+        listing = json.dumps([
+            {
+                "type": "file",
+                "path": "skills/pptx/SKILL.md",
+                "download_url": "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md",
+            },
+        ]).encode()
+        fetcher = _FakeFetcher({
+            "https://api.github.com/repos/anthropics/skills/contents/skills/pptx": _response(listing),
+            "https://raw.githubusercontent.com/a/s/main/skills/pptx/SKILL.md": _response(_skill_md("pptx")),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_url(
+            "https://github.com/anthropics/skills", skill_filter="pptx",
+        )
+        assert preview.name == "pptx"
+
+    async def test_github_contents_403_falls_back_to_filtered_tarball(self) -> None:
+        tarball = _make_tar({
+            "repo/skills/pptx/SKILL.md": _skill_md("pptx"),
+            "repo/skills/xlsx/SKILL.md": _skill_md("xlsx"),
+        })
+        fetcher = _FakeFetcher({
+            "https://api.github.com/repos/anthropics/skills/contents/skills/pptx": _response(status=403),
+            "https://api.github.com/repos/anthropics/skills/contents/pptx": _response(status=403),
+            "https://codeload.github.com/anthropics/skills/tar.gz/HEAD": _response(tarball),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_url(
+            "https://github.com/anthropics/skills", skill_filter="pptx",
+        )
+        assert preview.name == "pptx"
+
+    async def test_catalog_slug_follows_github_source(self) -> None:
+        catalog = json.dumps({
+            "urls": {
+                "repository": "https://github.com/zarazhangrui/frontend-slides/blob/main/SKILL.md",
+            },
+            "recommended_command": "npx skills add zarazhangrui/frontend-slides",
+        }).encode()
+        tarball = _make_tar({"SKILL.md": _skill_md("frontend-slides")})
+        fetcher = _FakeFetcher({
+            "https://www.openagentskill.com/api/skills/zarazhangrui-frontend-slides/install": _response(catalog),
+            "https://codeload.github.com/zarazhangrui/frontend-slides/tar.gz/HEAD": _response(tarball),
+        })
+        preview = await SkillPackageImporter(fetcher).preview_catalog_slug(
+            "zarazhangrui-frontend-slides"
+        )
+        assert preview.name == "frontend-slides"
+
+    def test_github_tarball_url_includes_ref(self) -> None:
+        result = SkillPackageImporter._normalize_url("https://github.com/acme/my-skill#v1.2.3")
+        assert result == "https://codeload.github.com/acme/my-skill/tar.gz/v1.2.3"

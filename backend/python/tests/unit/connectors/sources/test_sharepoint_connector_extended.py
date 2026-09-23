@@ -729,8 +729,9 @@ class TestHandleRecordUpdates:
         update.is_deleted = True
         update.external_record_id = "ext-1"
         update.is_updated = False
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
         await c._handle_record_updates(update)
-        c.data_entities_processor.on_record_deleted.assert_called_once()
+        c.data_entities_processor.on_record_deleted.assert_called_once_with(record_id="rec-1")
 
     @pytest.mark.asyncio
     async def test_metadata_changed(self):
@@ -949,6 +950,8 @@ class TestGetSignedUrl:
 
     @pytest.mark.asyncio
     async def test_missing_drive_id(self):
+        from fastapi import HTTPException
+
         c = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
 
@@ -957,8 +960,10 @@ class TestGetSignedUrl:
         record.external_record_group_id = None
         record.id = "record-1"
 
-        result = await c.get_signed_url(record)
-        assert result is None
+        # A local metadata gap, not a file deleted in SharePoint.
+        with pytest.raises(HTTPException) as exc_info:
+            await c.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
 
 # ===========================================================================

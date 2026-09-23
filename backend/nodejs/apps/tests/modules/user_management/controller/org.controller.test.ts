@@ -570,7 +570,9 @@ describe('OrgController', () => {
       } catch (error: any) {
         expect(error).to.not.be.instanceOf(BadRequestError);
         expect(error.statusCode).to.equal(500);
-        expect(error.message).to.equal('Mongo connection lost');
+        // The database's own words stay in the log, not on someone's screen.
+        expect(error.message).to.contain('PipesHub tried to create the organisation');
+        expect(error.message).to.not.contain('Mongo');
       }
     });
 
@@ -695,9 +697,10 @@ describe('OrgController', () => {
 
       try {
         await controller.createOrg(req, res);
-        expect(mockEventService.start.calledOnce).to.be.true;
+        // Both events are still recorded. They are no longer bracketed by
+        // start/stop: the events go to the outbox, and the dispatcher owns
+        // the broker connection.
         expect(mockEventService.publishEvent.calledTwice).to.be.true;
-        expect(mockEventService.stop.calledOnce).to.be.true;
       } catch (error: any) {
         expect.fail(`Unexpected error: ${error.message}`);
       }

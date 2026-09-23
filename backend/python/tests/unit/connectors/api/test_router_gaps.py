@@ -44,6 +44,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.utils.user_messages import action_failed
 from app.connectors.api.router import (
     _check_connector_not_locked,
     _check_oauth_name_conflict,
@@ -969,17 +970,16 @@ class TestStreamRecordOrgMismatch:
 
 class TestGetRecordByIdGaps:
     @pytest.mark.asyncio
-    async def test_no_access_raises_500_wrapping_404(self):
-        """When has_access is falsy, the inner 404 gets caught by outer except -> 500."""
+    async def test_no_access_raises_404(self):
+        """When has_access is falsy, it raises 404."""
         gp = AsyncMock()
         gp.check_record_access_with_details = AsyncMock(return_value=None)
         req = _mock_request()
 
         with pytest.raises(HTTPException) as exc_info:
             await get_record_by_id("rec-1", req, graph_provider=gp)
-        # The function raises 404 inside try, but the outer except Exception catches it
-        # and re-wraps as 500. This is a known pattern in the codebase.
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "You do not have access to this record"
 
     @pytest.mark.asyncio
     async def test_exception_raises_500(self):
@@ -4319,17 +4319,16 @@ class TestStreamRecordOrgMismatchCoverage:
 
 class TestGetRecordByIdGapsCoverage:
     @pytest.mark.asyncio
-    async def test_no_access_raises_500_wrapping_404(self):
-        """When has_access is falsy, the inner 404 gets caught by outer except -> 500."""
+    async def test_no_access_raises_404(self):
+        """When has_access is falsy, it raises 404."""
         gp = AsyncMock()
         gp.check_record_access_with_details = AsyncMock(return_value=None)
         req = _mock_request()
 
         with pytest.raises(HTTPException) as exc_info:
             await get_record_by_id("rec-1", req, graph_provider=gp)
-        # The function raises 404 inside try, but the outer except Exception catches it
-        # and re-wraps as 500. This is a known pattern in the codebase.
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "You do not have access to this record"
 
     @pytest.mark.asyncio
     async def test_exception_raises_500(self):
@@ -6908,3 +6907,70 @@ class TestGetConnectorStatsPermissions:
             await get_connector_stats_endpoint(req, connector_id="conn1", graph_provider=gp)
         assert exc_info.value.status_code == 404
 
+
+class TestGraphFailuresNeverReachThePerson:
+    """These three routes answer from a returned dict, not from an exception.
+
+    The providers write their own 403/404/409 refusals and hand back `str(e)`
+    with a 500 for everything else. The dashboard shows whatever arrives in
+    `detail` as a toast, so only the first kind may travel.
+    """
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_file_does_not_toast_the_exception(self):
+        req = _mock_request()
+        gp = AsyncMock()
+        gp.delete_record = AsyncMock(return_value={
+            "success": False, "code": 500,
+            "reason": "psycopg2.OperationalError: could not connect to server",
+        })
+
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_record("rec-1", req, graph_provider=gp, kafka_service=AsyncMock())
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == action_failed("delete this file")
+        assert "OperationalError" not in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_file_keeps_a_refusal_the_provider_worded(self):
+        req = _mock_request()
+        gp = AsyncMock()
+        gp.delete_record = AsyncMock(return_value={
+            "success": False, "code": 403,
+            "reason": "User lacks permission to delete records",
+        })
+
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_record("rec-1", req, graph_provider=gp, kafka_service=AsyncMock())
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail == "User lacks permission to delete records"
+
+    @pytest.mark.asyncio
+    async def test_reindexing_a_file_does_not_toast_the_exception(self):
+        req = _mock_request()
+        gp = AsyncMock()
+        gp.reindex_single_record = AsyncMock(return_value={
+            "success": False, "code": 500,
+            "reason": "psycopg2.OperationalError: could not connect to server",
+        })
+
+        with pytest.raises(HTTPException) as exc_info:
+            await reindex_single_record("rec-1", req, graph_provider=gp, kafka_service=AsyncMock())
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == action_failed("reindex this file")
+        assert "OperationalError" not in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_reindexing_a_group_does_not_toast_the_exception(self):
+        req = _mock_request()
+        gp = AsyncMock()
+        gp.reindex_record_group_records = AsyncMock(return_value={
+            "success": False, "code": 500,
+            "reason": "psycopg2.OperationalError: could not connect to server",
+        })
+
+        with pytest.raises(HTTPException) as exc_info:
+            await reindex_record_group("rg-1", req, graph_provider=gp, kafka_service=AsyncMock())
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == action_failed("reindex these files")
+        assert "OperationalError" not in exc_info.value.detail

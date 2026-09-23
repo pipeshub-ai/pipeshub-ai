@@ -107,4 +107,32 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
       'Allow admins to clean up (delete all embeddings) and reindex the vector store from the Connectors page. Disable to hide these actions.',
     defaultEnabled: false,
   },
+  {
+    key: 'ENABLE_PROJECTS',
+    label: 'Enable Projects',
+    description:
+      'Organize conversations, files, and instructions into dedicated project workspaces. Disable to hide Projects from the chat sidebar and workspace.',
+    defaultEnabled: false,
+  },
+  {
+    key: 'ENABLE_SKILLS',
+    label: 'Enable Skills (Beta)',
+    description:
+      'Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them. Disable to hide Skills everywhere and stop agents from loading skill tools.',
+    defaultEnabled: true,
+  },
+  {
+    key: 'ENABLE_CONTAINER_PERMISSION_FILTER',
+    label: 'Enable Container Permission Filter',
+    description:
+      'Scope searches by the containers a user can reach (connector, record group) instead of sending every accessible record id to the vector database. Bounds the filter sent to the vector database on large workspaces. Records in an APP_LEVEL connector or a RECORD_GROUP_LEVEL record group are granted on container membership, without a per-record permission check. Disable to fall back to the record-id path.',
+    defaultEnabled: false,
+  },
+  {
+    key: 'ENABLE_USER_CONTEXT',
+    label: 'Send User & Organization Context to Agents',
+    description:
+      "Include the current user's name, email, and organization name in the default assistant and Universal Agent system prompts. When disabled, those agents rely solely on tools, actions, and knowledge sources without knowing who is asking. Agent Builder agents have a separate per-agent toggle.",
+    defaultEnabled: true,
+  },
 ];

@@ -1845,6 +1845,26 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
+    it('should accept sendUserContext true and false', () => {
+      expect(
+        createAgentSchema.safeParse({
+          body: { name: 'Agent', models: [validModel], sendUserContext: true },
+        }).success,
+      ).to.be.true
+      expect(
+        createAgentSchema.safeParse({
+          body: { name: 'Agent', models: [validModel], sendUserContext: false },
+        }).success,
+      ).to.be.true
+    })
+
+    it('should reject non-boolean sendUserContext', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel], sendUserContext: 'yes' },
+      })
+      expect(result.success).to.be.false
+    })
+
     it('should accept a valid mcpServers list', () => {
       const result = createAgentSchema.safeParse({
         body: {
@@ -2124,6 +2144,14 @@ describe('enterprise_search/validators/es_validators', () => {
         body: { defaultReasoningEffort: 'ultra' },
       })
       expect(result.success).to.be.false
+    })
+
+    it('should accept sendUserContext false on update', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { sendUserContext: false },
+      })
+      expect(result.success).to.be.true
     })
   })
 

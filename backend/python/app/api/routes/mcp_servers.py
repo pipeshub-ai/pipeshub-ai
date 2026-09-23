@@ -18,7 +18,6 @@ import uuid
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,6 +41,7 @@ from app.agents.mcp.discovery import discover_tools
 from app.agents.mcp.models import DiscoveredOAuthMetadata, MCPAuthMode, MCPServerInstanceConfig, MCPTransport
 from app.agents.mcp.registry import MCPRegistry
 from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
@@ -59,7 +59,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 logger = logging.getLogger(__name__)
 DEFAULT_TOOLS_DISCOVERY_TIMEOUT_SECONDS = 8.0
 DEFAULT_ENDPOINTS_PATH = "/services/endpoints"
-ADMIN_CHECK_TIMEOUT_SECONDS = 5.0
 
 
 # ============================================================================
@@ -118,35 +117,10 @@ async def _check_user_is_admin(
     request: Request,
     config_service: ConfigurationService,
 ) -> bool:
-    """Check admin status by calling the Node.js CM backend, mirroring toolsets' `_check_user_is_admin`.
-
-    Python never trusts a client- or proxy-supplied admin flag; it independently verifies via
-    GET /api/v1/users/{userId}/adminCheck using the caller's own auth headers.
-    """
-    try:
-        try:
-            endpoints = await config_service.get_config(DEFAULT_ENDPOINTS_PATH, use_cache=False)
-            nodejs_url = (
-                endpoints.get("nodejs", {}).get("endpoint") if isinstance(endpoints, dict) else None
-            ) or DefaultEndpoints.NODEJS_ENDPOINT.value
-        except Exception:
-            nodejs_url = DefaultEndpoints.NODEJS_ENDPOINT.value
-
-        auth_headers: dict[str, str] = {}
-        for header_name in ("authorization", "x-organization-id", "cookie"):
-            val = request.headers.get(header_name)
-            if val:
-                auth_headers[header_name] = val
-
-        async with httpx.AsyncClient(timeout=ADMIN_CHECK_TIMEOUT_SECONDS) as client:
-            resp = await client.get(
-                f"{nodejs_url}/api/v1/users/{user_id}/adminCheck",
-                headers=auth_headers,
-            )
-            return resp.status_code == HttpStatusCode.OK.value
-    except Exception as e:
-        logger.warning(f"Admin check via REST API failed for user {user_id}: {e}. Defaulting to non-admin.")
-        return False
+    """Admin gate for MCP routes: the live role Node reports for the caller's own token,
+    never a client- or proxy-supplied flag. ``user_id`` is kept for existing callers."""
+    del user_id
+    return (await fetch_caller_role(request, config_service)).is_admin
 
 
 def _get_config_service(request: Request) -> ConfigurationService:
@@ -318,7 +292,7 @@ _credentials_to_discovery_dict = mcp_service.credentials_to_discovery_dict
 # ============================================================================
 
 
-@router.get("/catalog", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/catalog", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
 async def list_catalog(
     request: Request,
     page: int = Query(default=1, ge=1),
@@ -341,7 +315,7 @@ async def list_catalog(
     }
 
 
-@router.get("/catalog/{type_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/catalog/{type_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
 async def get_catalog_template(request: Request, type_id: str) -> dict[str, Any]:
     _get_user_context(request)
     registry = _get_mcp_registry(request)
@@ -356,7 +330,7 @@ async def get_catalog_template(request: Request, type_id: str) -> dict[str, Any]
 # ============================================================================
 
 
-@router.get("/instances", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/instances", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
 async def list_instances(request: Request) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
@@ -377,7 +351,7 @@ async def list_instances(request: Request) -> dict[str, Any]:
 @router.post(
     "/instances",
     status_code=HttpStatusCode.CREATED.value,
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def create_instance(
     request: Request,
@@ -418,7 +392,7 @@ async def create_instance(
     return record
 
 
-@router.get("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
 async def get_instance(request: Request, instance_id: str) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
@@ -437,7 +411,7 @@ async def get_instance(request: Request, instance_id: str) -> dict[str, Any]:
     return instance
 
 
-@router.put("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def update_instance(
     request: Request,
     instance_id: str,
@@ -464,7 +438,7 @@ async def update_instance(
     return record
 
 
-@router.delete("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
+@router.delete("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_DELETE))])
 async def delete_instance(request: Request, instance_id: str) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
@@ -619,7 +593,7 @@ def _build_credential_record(instance: dict[str, Any], payload: AuthenticateRequ
 
 @router.post(
     "/instances/{instance_id}/authenticate",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def authenticate_instance(
     request: Request,
@@ -645,7 +619,7 @@ async def authenticate_instance(
 
 @router.put(
     "/instances/{instance_id}/credentials",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def update_credentials(
     request: Request,
@@ -659,7 +633,7 @@ async def update_credentials(
 
 @router.delete(
     "/instances/{instance_id}/credentials",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_DELETE))],
 )
 async def remove_credentials(request: Request, instance_id: str) -> dict[str, Any]:
     """Disconnect the caller's stored credentials/tokens, regardless of auth mode — an
@@ -693,7 +667,7 @@ async def remove_credentials(request: Request, instance_id: str) -> dict[str, An
 
 @router.post(
     "/instances/{instance_id}/auto-authenticate",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def auto_authenticate_instance(request: Request, instance_id: str) -> dict[str, Any]:
     """Adopt the admin's shared credential for a `useAdminAuth` instance (verifies it exists first)."""
@@ -719,7 +693,7 @@ async def auto_authenticate_instance(request: Request, instance_id: str) -> dict
 
 @router.post(
     "/instances/{instance_id}/reauthenticate",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def reauthenticate_instance(request: Request, instance_id: str) -> dict[str, Any]:
     """Clear the caller's stored credentials/tokens for this instance, forcing re-auth."""
@@ -936,7 +910,7 @@ async def _build_oauth_authorization_url(
 
 @router.get(
     "/instances/{instance_id}/oauth/authorize",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))],
 )
 async def get_oauth_authorization_url(
     request: Request,
@@ -957,7 +931,7 @@ async def get_oauth_authorization_url(
     )
 
 
-@router.post("/oauth/discover", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.post("/oauth/discover", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def discover_oauth_metadata_endpoint(request: Request, payload: OAuthDiscoveryRequest) -> dict[str, Any]:
     """Admin-only probe: does this MCP server support OAuth dynamic client registration,
     and if so, what are its real endpoints? Needed by the config panel in *create* mode,
@@ -1052,7 +1026,7 @@ async def _resolve_oauth_client_secret(
     raise ValueError("The OAuth app configuration for this instance changed during authorization.")
 
 
-@router.get("/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def handle_oauth_callback(
     request: Request,
     code: Optional[str] = Query(default=None),
@@ -1161,7 +1135,7 @@ async def handle_oauth_callback(
 
 @router.post(
     "/instances/{instance_id}/oauth/refresh",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, Any]:
     config_service = _get_config_service(request)
@@ -1169,9 +1143,7 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
     user_id = user_context["user_id"]
 
     try:
-        owner_svc = await resolve_instance_owner_config_service(instance_id, config_service)
-        fallbacks = [owner_svc] if owner_svc is not None and owner_svc is not config_service else None
-        await mcp_token_refresh.refresh_credential_record(instance_id, user_id, config_service, fallbacks)
+        await mcp_token_refresh.refresh_credential_record(instance_id, user_id, config_service)
     except mcp_token_refresh.MCPTokenRefreshError as e:
         # Covers "no credential record", "no refresh token", "no tokenUrl", and "no
         # resolvable OAuth client" — all mean the caller must re-authenticate or an admin
@@ -1203,7 +1175,7 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
 
 @router.get(
     "/instances/{instance_id}/oauth-config",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))],
 )
 async def get_oauth_config(request: Request, instance_id: str) -> dict[str, Any]:
     config_service = _get_config_service(request)
@@ -1237,7 +1209,7 @@ def _mask_secret(value: Optional[str]) -> Optional[str]:
 
 @router.put(
     "/instances/{instance_id}/oauth-config",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))],
 )
 async def update_oauth_config(
     request: Request,
@@ -1311,7 +1283,7 @@ async def _build_mcp_instance_entry(
     return entry
 
 
-@router.get("/my-mcp-servers", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/my-mcp-servers", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
 async def get_my_mcp_servers(
     request: Request,
     include_tools: bool = Query(default=True, alias="includeTools"),
@@ -1329,7 +1301,7 @@ async def get_my_mcp_servers(
 
 @router.get(
     "/instances/{instance_id}/tools",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
+    dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))],
 )
 async def get_instance_tools(request: Request, instance_id: str) -> dict[str, Any]:
     config_service = _get_config_service(request)

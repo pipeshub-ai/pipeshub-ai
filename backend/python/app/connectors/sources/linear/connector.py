@@ -16,6 +16,7 @@ from typing import (
 )
 from uuid import uuid4
 
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
@@ -25,12 +26,18 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    not_downloadable,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -96,6 +103,10 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import (
+    NotificationSeverity,
+    NotificationType,
+)
 from app.sources.client.linear.linear import LinearClient
 from app.sources.external.linear.linear import LinearDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -318,6 +329,9 @@ class LinearConnector(BaseConnector):
         self.sync_filters = None
         self.indexing_filters = None
 
+    def _notification_title(self, event: str) -> str:
+        return f"{self.connector_instance_name or 'Linear'} connector {event}"
+
     async def init(self) -> bool:
         """
         Initialize Linear client using proper Client + DataSource architecture
@@ -354,7 +368,7 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Linear client: {e}")
-            return False
+            raise ConnectorInitError(str(e)) from e
 
     async def _get_fresh_datasource(self) -> LinearDataSource:
         """
@@ -514,9 +528,12 @@ class LinearConnector(BaseConnector):
         try:
             self.logger.info(f"🚀 Starting Linear sync for connector {self.connector_id}")
 
-            # Ensure data source is initialized
             if not self.data_source:
-                await self.init()
+                init_error = RuntimeError(
+                    f"Linear connector {self.connector_id} not initialized. Call init() first."
+                )
+                init_error._notification_sent = True
+                raise init_error
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -583,7 +600,21 @@ class LinearConnector(BaseConnector):
                 self.logger.info(f"📁 Synced {len(team_record_groups)} Linear teams as RecordGroups")
 
             # Step 7: Sync issues for teams
-            full_sync_team_ids = await self._sync_issues_for_teams(team_record_groups)
+            full_sync_team_ids, failed_issue_team_keys = await self._sync_issues_for_teams(team_record_groups)
+
+            if failed_issue_team_keys:
+                preview = ", ".join(failed_issue_team_keys[:5])
+                if len(failed_issue_team_keys) > 5:
+                    preview += f" (+{len(failed_issue_team_keys) - 5} more)"
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("couldn't sync some teams"),
+                    message=(
+                        f"Couldn't sync issues for {len(failed_issue_team_keys)} team(s): {preview}. "
+                        "Retry sync; check Linear access if it keeps failing."
+                    ),
+                )
 
             # Step 8: Sync attachments separately (Linear doesn't update issue.updatedAt when attachments are added)
             await self._sync_attachments(team_record_groups)
@@ -616,6 +647,17 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during Linear sync: {e}", exc_info=True)
+            if not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("sync failed"),
+                    message=(
+                        f"The sync stopped due to an error: {str(e)[:200]}. Recent Linear changes "
+                        "may not be reflected yet. Run the sync again; if it keeps failing, "
+                        "check the connector's configuration."
+                    ),
+                )
             raise
 
     async def _fetch_users(self) -> List[AppUser]:
@@ -875,7 +917,7 @@ class LinearConnector(BaseConnector):
     async def _sync_issues_for_teams(
         self,
         team_record_groups: List[Tuple[RecordGroup, List[Permission]]]
-    ) -> set[str]:
+    ) -> Tuple[set[str], List[str]]:
         """
         Sync issues for all teams with batch processing and incremental sync.
         Uses simple team-level sync points.
@@ -890,13 +932,14 @@ class LinearConnector(BaseConnector):
             team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
 
         Returns:
-            Team external ids that ran a full issue sync (no prior checkpoint).
+            Tuple of (full_sync_team_ids, failed_team_keys).
         """
         if not team_record_groups:
             self.logger.info("ℹ️ No teams to sync issues for")
-            return set()
+            return set(), []
 
         full_sync_team_ids: set[str] = set()
+        failed_team_keys: List[str] = []
 
         for team_record_group, team_perms in team_record_groups:
             try:
@@ -968,9 +1011,10 @@ class LinearConnector(BaseConnector):
             except Exception as e:
                 team_name = team_record_group.name or team_record_group.short_name or "unknown"
                 self.logger.error(f"❌ Error syncing issues for team {team_name}: {e}", exc_info=True)
+                failed_team_keys.append(team_name)
                 continue
 
-        return full_sync_team_ids
+        return full_sync_team_ids, failed_team_keys
 
     async def _sweep_placeholder_records(
         self,
@@ -1542,6 +1586,15 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing attachments: {e}", exc_info=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("couldn't sync attachments"),
+                message=(
+                    f"Attachment sync failed: {str(e)[:200]}. "
+                    "Existing attachments are preserved; they'll retry on the next sync."
+                ),
+            )
 
     async def _sync_documents(
         self,
@@ -1704,6 +1757,15 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing documents: {e}", exc_info=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("couldn't sync documents"),
+                message=(
+                    f"Document sync failed: {str(e)[:200]}. "
+                    "Existing documents are preserved; they'll retry on the next sync."
+                ),
+            )
 
     async def _sync_projects_for_teams(
         self,
@@ -1724,6 +1786,8 @@ class LinearConnector(BaseConnector):
         if not team_record_groups:
             self.logger.info("ℹ️ No teams to sync projects for")
             return
+
+        failed_team_keys: List[str] = []
 
         for team_record_group, team_perms in team_record_groups:
             try:
@@ -1784,7 +1848,22 @@ class LinearConnector(BaseConnector):
             except Exception as e:
                 team_name = team_record_group.name or team_record_group.short_name or "unknown"
                 self.logger.error(f"❌ Error syncing projects for team {team_name}: {e}", exc_info=True)
+                failed_team_keys.append(team_name)
                 continue
+
+        if failed_team_keys:
+            preview = ", ".join(failed_team_keys[:5])
+            if len(failed_team_keys) > 5:
+                preview += f" (+{len(failed_team_keys) - 5} more)"
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=self._notification_title("couldn't sync projects for some teams"),
+                message=(
+                    f"Couldn't sync projects for {len(failed_team_keys)} team(s): {preview}. "
+                    "Retry sync; check Linear access if it keeps failing."
+                ),
+            )
 
     async def _fetch_projects_for_team_batch(
         self,
@@ -4521,12 +4600,25 @@ class LinearConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         project_response = await datasource.project(id=record_id)
 
-        if not project_response.success:
-            raise Exception(f"Failed to fetch project content: {project_response.message}")
+        if not project_response.success or not (
+            project_response.data and project_response.data.get("project")
+        ):
+            self.logger.warning(
+                "Failed to fetch project %s for streaming: %s",
+                record_id,
+                project_response.message if not project_response.success else "empty payload",
+            )
+            raise_for_stream_fetch(
+                success=project_response.success,
+                has_payload=bool(
+                    project_response.data and project_response.data.get("project")
+                ),
+                connector=self.display_name,
+                status=project_response.status_code,
+                message=project_response.message,
+            )
 
-        project_data = project_response.data.get("project", {}) if project_response.data else {}
-        if not project_data:
-            raise Exception(f"No project data found for ID: {record_id}")
+        project_data = project_response.data.get("project", {})
 
         # Get project weburl for BlockGroup
         project_weburl = project_data.get("url") or f"https://linear.app/project/{record_id}"
@@ -4626,12 +4718,21 @@ class LinearConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         response = await datasource.issue(id=issue_id)
 
-        if not response.success:
-            raise Exception(f"Failed to fetch issue content: {response.message}")
+        if not response.success or not (response.data and response.data.get("issue")):
+            self.logger.warning(
+                "Failed to fetch issue %s for streaming: %s",
+                issue_id,
+                response.message if not response.success else "empty payload",
+            )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data and response.data.get("issue")),
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.message,
+            )
 
-        issue_data = response.data.get("issue", {}) if response.data else {}
-        if not issue_data:
-            raise Exception(f"No issue data found for ID: {issue_id}")
+        issue_data = response.data.get("issue", {})
 
         issue_weburl = issue_data.get("url")
         issue_description = issue_data.get("description", "")
@@ -4721,12 +4822,21 @@ class LinearConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         response = await datasource.document(id=document_id)
 
-        if not response.success:
-            raise Exception(f"Failed to fetch document content: {response.message}")
+        if not response.success or not (response.data and response.data.get("document")):
+            self.logger.warning(
+                "Failed to fetch document %s for streaming: %s",
+                document_id,
+                response.message if not response.success else "empty payload",
+            )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data and response.data.get("document")),
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.message,
+            )
 
-        document_data = response.data.get("document", {}) if response.data else {}
-        if not document_data:
-            raise Exception(f"No document data found for ID: {document_id}")
+        document_data = response.data.get("document", {})
 
         # Get the content field (markdown)
         content = document_data.get("content", "")
@@ -4759,9 +4869,10 @@ class LinearConnector(BaseConnector):
                 await self.init()
 
             if getattr(record, "is_placeholder", False) is True:
-                raise ValueError(
+                raise not_downloadable(
                     f"Cannot stream placeholder record {record.external_record_id}: "
-                    "it is a stub for an out-of-scope ancestor and has no content"
+                    "it is a stub for an out-of-scope ancestor and has no content",
+                    connector=self.display_name,
                 )
 
             if record.record_type == RecordType.PROJECT:
@@ -4792,7 +4903,10 @@ class LinearConnector(BaseConnector):
             elif record.record_type == RecordType.LINK:
                 # Stream attachment/link as markdown (clickable link format)
                 if not record.weburl:
-                    raise ValueError(f"LinkRecord {record.external_record_id} missing weburl")
+                    raise not_downloadable(
+                        f"LinkRecord {record.external_record_id} has no URL to open.",
+                        connector=self.display_name,
+                    )
 
                 # Return simple markdown link format (same as issue/comment descriptions)
                 link_name = record.record_name or 'Link'
@@ -4822,7 +4936,10 @@ class LinearConnector(BaseConnector):
             elif record.record_type == RecordType.FILE:
                 # Stream file content from external_record_id (file URL)
                 if not record.external_record_id:
-                    raise ValueError(f"FileRecord {record.id} missing external_record_id (file URL)")
+                    raise not_downloadable(
+                        f"FileRecord {record.id} has no source URL to download from.",
+                        connector=self.display_name,
+                    )
 
                 # Download file content and stream it with authentication
                 async def file_stream() -> AsyncGenerator[bytes, None]:
@@ -4856,11 +4973,16 @@ class LinearConnector(BaseConnector):
                 )
 
             else:
-                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Unsupported record type for streaming: {record.record_type}",
+                )
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error streaming record {record.external_record_id} ({record.record_type}): {e}", exc_info=True)
-            raise
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def run_incremental_sync(self) -> None:
         """

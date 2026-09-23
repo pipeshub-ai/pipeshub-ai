@@ -384,6 +384,7 @@ class EntityEventService(BaseEventService):
             connector_id = payload.get("connectorId", "")
             scope = payload.get("scope", ConnectorScopes.PERSONAL.value)
             full_sync = payload.get("fullSync", False)
+            synced_by = payload.get("syncedBy", "")
             # Get org details to check account type
             org = await self.graph_provider.get_document(
                 org_id, CollectionNames.ORGS.value
@@ -403,6 +404,7 @@ class EntityEventService(BaseEventService):
                             "connectorId": connector_id,
                             "scope": scope,
                             "fullSync": full_sync,
+                            "syncedBy": synced_by,
                         },
                     )
 

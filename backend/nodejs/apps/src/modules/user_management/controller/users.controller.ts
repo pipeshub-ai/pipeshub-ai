@@ -18,6 +18,10 @@ import {
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { inject, injectable } from 'inversify';
 import { MailService } from '../services/mail.service';
 import {
@@ -32,6 +36,7 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { UserGroups } from '../schema/userGroup.schema';
+import { isServiceAccountEmail } from '../constants/service-account.constants';
 import type {
   GraphUserListResponse,
   UserGroupSummary,
@@ -42,6 +47,8 @@ import {
   normalizeUserRole,
   resolveOptionalUserRole,
   saveUserEnsuringOrgRetainsAdmin,
+  saveUserEnsuringAdminCap,
+  assertCanPromoteAdmin,
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
@@ -62,12 +69,17 @@ import { NotificationContainer } from '../../notification/container/notification
 import { INotification } from '../../notification/schema/notification.schema';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
-import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+import {
+  validateNoFormatSpecifiers,
+  validateNoXSS,
+} from '../../../utils/xss-sanitization';
 import {
   OAuthApp,
   OAuthAppStatus,
 } from '../../oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
+import { ProjectService } from '../../projects/services/project.service';
+import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
 
 export const MAX_BULK_INVITE = 1000;
 
@@ -100,25 +112,43 @@ export class UserController {
     protected eventService: EntitiesEventProducer,
     @inject('NotificationProducer')
     protected notificationProducer: NotificationProducer,
-  ) { }
+  ) {}
 
   async getAllUsers(
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-
-    const { page: pageParam, limit: limitParam, search, hasLoggedIn, isBlocked, groupIds } = req.query;
+    const {
+      page: pageParam,
+      limit: limitParam,
+      search,
+      hasLoggedIn,
+      isBlocked,
+      groupIds,
+    } = req.query;
 
     const orgId = req.user?.orgId;
     const orgIdObj = new mongoose.Types.ObjectId(orgId);
     const { page, limit, skip } = safeParsePagination(
       (pageParam as string) ?? '1',
       limitParam as string,
-      1, 25, 100,
+      1,
+      25,
+      100,
     );
 
     // Build MongoDB filter
-    const filter: Record<string, any> = { orgId: orgIdObj, isDeleted: { $ne: true } };
+    const filter: Record<string, any> = {
+      orgId: orgIdObj,
+      isDeleted: { $ne: true },
+      // This is the list of people. Service accounts are users in every way
+      // the permission graph cares about, but they are managed in their own
+      // admin screen, and listing them here has consequences beyond the
+      // cosmetic: they can never log in, so they would sit in the
+      // pending-invite set forever and be swept into bulk invite actions
+      // aimed at colleagues who have not signed in yet.
+      kind: { $ne: 'service' },
+    };
 
     if (search) {
       const searchRegex = { $regex: String(search), $options: 'i' };
@@ -133,8 +163,13 @@ export class UserController {
     if (isBlockedFilter) {
       // Resolve blocked user IDs once and apply blocked/non-blocked constraint.
       const blockedCreds = await UserCredentials.find({
-        orgId, isBlocked: true, isDeleted: false,
-      }).select('userId').lean().exec();
+        orgId,
+        isBlocked: true,
+        isDeleted: false,
+      })
+        .select('userId')
+        .lean()
+        .exec();
       const blockedIds = blockedCreds
         .filter((c) => c.userId)
         .map((c) => new mongoose.Types.ObjectId(c.userId!));
@@ -142,7 +177,9 @@ export class UserController {
       if (String(isBlocked) === 'true') {
         const statusConditions: Record<string, any>[] = [];
         if (hasLoggedInFilter) {
-          statusConditions.push({ hasLoggedIn: String(hasLoggedIn) === 'true' });
+          statusConditions.push({
+            hasLoggedIn: String(hasLoggedIn) === 'true',
+          });
         }
         // Always include the blocked constraint when isBlocked=true; an empty
         // $in correctly matches nothing so "Blocked" with zero blocked users
@@ -175,36 +212,61 @@ export class UserController {
           _id: { $in: gids.map((id) => new mongoose.Types.ObjectId(id)) },
           orgId: orgIdObj,
           isDeleted: false,
-        }).select('users').lean().exec();
+        })
+          .select('users')
+          .lean()
+          .exec();
         const userIdsInGroups = groups.flatMap((g) =>
-          g.users.map((u: any) => new mongoose.Types.ObjectId(u.toString()))
+          g.users.map((u: any) => new mongoose.Types.ObjectId(u.toString())),
         );
         filter._id = { ...filter._id, $in: userIdsInGroups };
       }
     }
 
     const [mongoUsers, totalCount] = await Promise.all([
-      Users.find(filter).sort({ fullName: 1 }).skip(skip).limit(limit).lean().exec(),
+      Users.find(filter)
+        .sort({ fullName: 1 })
+        .skip(skip)
+        .limit(limit)
+        .lean()
+        .exec(),
       Users.countDocuments(filter),
     ]);
 
     const userIds = mongoUsers.map((u) => u._id.toString());
 
     // Enrich with profile pictures, groups, and blocked status
-    const [dpDocs, groupDocs, credDocs] = userIds.length > 0
-      ? await Promise.all([
-        UserDisplayPicture.find({
-          orgId, userId: { $in: userIds }, pic: { $ne: null },
-        }).lean().exec(),
-        UserGroups.find({
-          orgId: orgIdObj, isDeleted: false,
-          users: { $in: userIds.map((id) => new mongoose.Types.ObjectId(id)) },
-        }).select('_id name type users').lean().exec(),
-        UserCredentials.find({
-          orgId, userId: { $in: userIds }, isBlocked: true, isDeleted: false,
-        }).select('userId').lean().exec(),
-      ])
-      : [[], [], []];
+    const [dpDocs, groupDocs, credDocs] =
+      userIds.length > 0
+        ? await Promise.all([
+            UserDisplayPicture.find({
+              orgId,
+              userId: { $in: userIds },
+              pic: { $ne: null },
+            })
+              .lean()
+              .exec(),
+            UserGroups.find({
+              orgId: orgIdObj,
+              isDeleted: false,
+              users: {
+                $in: userIds.map((id) => new mongoose.Types.ObjectId(id)),
+              },
+            })
+              .select('_id name type users')
+              .lean()
+              .exec(),
+            UserCredentials.find({
+              orgId,
+              userId: { $in: userIds },
+              isBlocked: true,
+              isDeleted: false,
+            })
+              .select('userId')
+              .lean()
+              .exec(),
+          ])
+        : [[], [], []];
 
     const dpMap = new Map<string, string>();
     for (const dp of dpDocs) {
@@ -217,12 +279,17 @@ export class UserController {
     const blockedUserIds = new Set(credDocs.map((c) => c.userId?.toString()));
 
     // Build per-user group data
-    const userGroupsMap = new Map<string, { _id: string; name: string; type: string }[]>();
+    const userGroupsMap = new Map<
+      string,
+      { _id: string; name: string; type: string }[]
+    >();
     for (const g of groupDocs) {
       for (const uid of g.users) {
         const uidStr = uid.toString();
         if (!userGroupsMap.has(uidStr)) userGroupsMap.set(uidStr, []);
-        userGroupsMap.get(uidStr)!.push({ _id: g._id.toString(), name: g.name, type: g.type });
+        userGroupsMap
+          .get(uidStr)!
+          .push({ _id: g._id.toString(), name: g.name, type: g.type });
       }
     }
 
@@ -239,8 +306,12 @@ export class UserController {
         isActive: !blockedUserIds.has(uid) && (u.hasLoggedIn ?? false),
         hasLoggedIn: u.hasLoggedIn ?? false,
         isBlocked: blockedUserIds.has(uid),
-        createdAtTimestamp: timestamps.createdAt ? new Date(timestamps.createdAt).getTime() : undefined,
-        updatedAtTimestamp: timestamps.updatedAt ? new Date(timestamps.updatedAt).getTime() : undefined,
+        createdAtTimestamp: timestamps.createdAt
+          ? new Date(timestamps.createdAt).getTime()
+          : undefined,
+        updatedAtTimestamp: timestamps.updatedAt
+          ? new Date(timestamps.updatedAt).getTime()
+          : undefined,
         profilePicture: dpMap.get(uid),
         role: toDisplayUserRole(u.role),
         groupCount: groups.filter((g) => g.type !== 'everyone').length,
@@ -353,22 +424,18 @@ export class UserController {
   async unblockUser(
     req: AuthenticatedUserRequest,
     res: Response,
-    next: NextFunction
+    next: NextFunction,
   ): Promise<void> {
     try {
       const userId = req.params.id;
       const orgId = req.user?.orgId;
 
       if (!userId) {
-        throw new BadRequestError(
-          'userId must be provided',
-        );
+        throw new BadRequestError('userId must be provided');
       }
 
       if (!orgId) {
-        throw new BadRequestError(
-          'orgId must be provided',
-        );
+        throw new BadRequestError('orgId must be provided');
       }
 
       const credential = await UserCredentials.findOneAndUpdate(
@@ -378,27 +445,27 @@ export class UserController {
           isBlocked: true,
           isDeleted: false,
         },
-        { $set: { isBlocked: false, wrongCredentialCount: 0, blockExpiresAt: null } },
-        { new: true }
+        {
+          $set: {
+            isBlocked: false,
+            wrongCredentialCount: 0,
+            blockExpiresAt: null,
+          },
+        },
+        { new: true },
       );
 
       if (!credential) {
-        throw new BadRequestError(
-          'User not found or not blocked',
-        );
-
+        throw new BadRequestError('User not found or not blocked');
       }
 
       res.status(200).json({
-        message: "User unblocked successfully",
+        message: 'User unblocked successfully',
       });
     } catch (error) {
       next(error);
     }
   }
-
-
-
 
   async getUserEmailByUserId(
     req: AuthenticatedUserRequest,
@@ -630,7 +697,9 @@ export class UserController {
       isDeleted: true,
     });
     if (user) {
-      throw new BadRequestError('User account deleted by admin. Please contact your admin to restore your account.');
+      throw new BadRequestError(
+        'User account deleted by admin. Please contact your admin to restore your account.',
+      );
     }
 
     const newUser = new Users({
@@ -727,17 +796,11 @@ export class UserController {
   extractOAuthUserDetails(userInfo: any, email: string) {
     // Common OAuth/OIDC claims
     const firstName =
-      userInfo?.given_name ||
-      userInfo?.first_name ||
-      userInfo?.firstName;
+      userInfo?.given_name || userInfo?.first_name || userInfo?.firstName;
     const lastName =
-      userInfo?.family_name ||
-      userInfo?.last_name ||
-      userInfo?.lastName;
+      userInfo?.family_name || userInfo?.last_name || userInfo?.lastName;
     const displayName =
-      userInfo?.name ||
-      userInfo?.displayName ||
-      userInfo?.preferred_username;
+      userInfo?.name || userInfo?.displayName || userInfo?.preferred_username;
 
     const fullName =
       displayName ||
@@ -762,7 +825,6 @@ export class UserController {
       }
       let emailChangeRequested = 'notNeeded';
 
-
       // Define whitelist of allowed fields that can be updated
       const ALLOWED_UPDATE_FIELDS = [
         'firstName',
@@ -779,12 +841,7 @@ export class UserController {
       ] as const;
 
       // List of sensitive system fields that must never be updated via API
-      const RESTRICTED_FIELDS = [
-        '_id',
-        'orgId',
-        'slug',
-        '__v',
-      ];
+      const RESTRICTED_FIELDS = ['_id', 'orgId', 'slug', '__v'];
 
       // Check for restricted fields in request body
       const restrictedFieldsFound = RESTRICTED_FIELDS.filter(
@@ -818,7 +875,9 @@ export class UserController {
       }
 
       // Extract only allowed fields from request body
-      const updateFields: Partial<Record<typeof ALLOWED_UPDATE_FIELDS[number], any>> = {};
+      const updateFields: Partial<
+        Record<(typeof ALLOWED_UPDATE_FIELDS)[number], any>
+      > = {};
       for (const field of ALLOWED_UPDATE_FIELDS) {
         if (field in req.body && req.body[field] !== undefined) {
           updateFields[field] = req.body[field];
@@ -845,8 +904,7 @@ export class UserController {
       // Unset/legacy role is treated as member so setting role=member is not a change.
       const previousRole = normalizeUserRole(user.role) ?? 'member';
       const roleChanging =
-        updateFields.role !== undefined &&
-        updateFields.role !== previousRole;
+        updateFields.role !== undefined && updateFields.role !== previousRole;
       const demotingAdmin =
         updateFields.role === 'member' &&
         (user.role === 'admin' ||
@@ -854,6 +912,8 @@ export class UserController {
             !!id &&
             !!orgId &&
             (await isUserOrgAdmin(String(id), String(orgId)))));
+      const promotingAdmin =
+        updateFields.role === 'admin' && previousRole !== 'admin';
 
       if (demotingAdmin && (!id || !orgId)) {
         throw new BadRequestError('User or organization not found');
@@ -888,7 +948,7 @@ export class UserController {
             email,
             newEmail,
             user,
-          )
+          );
 
           if (emailSentResponse.statusCode !== 200) {
             emailChangeRequested = 'failed';
@@ -898,12 +958,12 @@ export class UserController {
         }
       }
 
-      // Demotion: RS = Org touch + check + save in one txn; non-RS = check, save, restore if zero
+      // Demotion / promotion: RS = Org touch + check + save in one txn
+      const rsAvailable = this.config.rsAvailable === 'true';
       if (demotingAdmin && id && orgId) {
-        await saveUserEnsuringOrgRetainsAdmin(
-          user,
-          this.config.rsAvailable === 'true',
-        );
+        await saveUserEnsuringOrgRetainsAdmin(user, rsAvailable);
+      } else if (promotingAdmin && id && orgId) {
+        await saveUserEnsuringAdminCap(user, rsAvailable);
       } else {
         await user.save();
       }
@@ -920,9 +980,7 @@ export class UserController {
                 .exec()
             : [];
           const memberships =
-            allMemberships.length > 0
-              ? allMemberships
-              : [{ _id: id, orgId }];
+            allMemberships.length > 0 ? allMemberships : [{ _id: id, orgId }];
 
           await UserActivities.insertMany(
             memberships.map((member) => ({
@@ -1307,7 +1365,9 @@ export class UserController {
 
       // Fail closed: only explicit members may be deleted (unset/legacy ≠ deletable).
       if (user.role !== 'member') {
-        throw new BadRequestError('User cannot be deleted. Please demote the user from admin first.');
+        throw new BadRequestError(
+          'User cannot be deleted. Please demote the user from admin first.',
+        );
       }
 
       await UserGroups.updateMany(
@@ -1316,6 +1376,28 @@ export class UserController {
       );
 
       await this.softDeleteOAuthAppsForUser(orgId, userId, req.user);
+
+      // Revoke KB permissions BEFORE pulling memberships so a failed
+      // revocation leaves the membership row intact — a retry of
+      // deleteUser will re-find the same projects and reattempt.
+      const projectsWithLinkedKb =
+        await ProjectService.findProjectsWithLinkedKbForUser(
+          orgId.toString(),
+          userId.toString(),
+        );
+      for (const project of projectsWithLinkedKb) {
+        await ProjectKnowledgeBaseService.revokePrincipalPermission(
+          this.config,
+          req.headers as Record<string, string>,
+          project,
+          userId.toString(),
+          'user',
+        );
+      }
+      await ProjectService.removeUserFromAllProjects(
+        orgId.toString(),
+        userId.toString(),
+      );
 
       user.isDeleted = true;
       user.hasLoggedIn = false;
@@ -1522,7 +1604,13 @@ export class UserController {
           },
         });
         if (result.statusCode !== 200) {
-          throw new InternalServerError(result.data || 'Error sending invite');
+          this.logger.error('Sending the invitation failed', {
+            statusCode: result.statusCode,
+            reason: result.data,
+          });
+          throw markClientSafe(
+            new InternalServerError(serverFailureMessage('send the invitation')),
+          );
         }
       } else {
         result = await this.mailService.sendMail({
@@ -1540,7 +1628,13 @@ export class UserController {
           },
         });
         if (result.statusCode !== 200) {
-          throw new InternalServerError(result.data || 'Error sending invite');
+          this.logger.error('Sending the invitation failed', {
+            statusCode: result.statusCode,
+            reason: result.data,
+          });
+          throw markClientSafe(
+            new InternalServerError(serverFailureMessage('send the invitation')),
+          );
         }
       }
 
@@ -1568,9 +1662,7 @@ export class UserController {
     }
 
     const actorIsAdmin =
-      !!actorUserId &&
-      !!orgId &&
-      (await isUserOrgAdmin(actorUserId, orgId));
+      !!actorUserId && !!orgId && (await isUserOrgAdmin(actorUserId, orgId));
     if (actorIsAdmin) {
       return;
     }
@@ -1703,7 +1795,9 @@ export class UserController {
       // CastError deep in the background task, surfacing only as a generic
       // failure notification.
       if (groupIds?.some((id) => !mongoose.isValidObjectId(id))) {
-        throw new BadRequestError('groupIds must contain valid MongoDB ObjectIds');
+        throw new BadRequestError(
+          'groupIds must contain valid MongoDB ObjectIds',
+        );
       }
 
       await this.assertMemberInviteConstraints(
@@ -1764,7 +1858,10 @@ export class UserController {
     const result: string[] = [];
     for (const raw of emails) {
       if (raw == null) continue;
-      const email = String(raw).trim().replace(/^\uFEFF/, "").toLowerCase();
+      const email = String(raw)
+        .trim()
+        .replace(/^\uFEFF/, '')
+        .toLowerCase();
       if (email && !seen.has(email)) {
         seen.add(email);
         result.push(email);
@@ -1824,7 +1921,18 @@ export class UserController {
     org: { registeredName?: string; shortName?: string } | null,
     inviteRole: 'admin' | 'member' = 'member',
   ): Promise<InviteResult> {
-    const existingUsers = await Users.find({ email: { $in: emails }, orgId });
+    // Service-account addresses are not invitable, and are dropped before
+    // anything is derived from the list. They belong to machine identities
+    // managed on their own screen: inviting one would try to send mail to a
+    // domain that does not resolve, and a deleted one would be restored as a
+    // person — which would also let an invite occupy a name the service
+    // account screen then could not use. They must not count toward the
+    // administrator limit either.
+    emails = emails.filter((email) => !isServiceAccountEmail(email));
+
+    const existingUsers = (
+      await Users.find({ email: { $in: emails }, orgId })
+    ).filter((user) => user.kind !== 'service');
     const activeUsers = existingUsers.filter((user) => !user.isDeleted);
     const deletedUsers = existingUsers.filter((user) => user.isDeleted);
 
@@ -1835,17 +1943,18 @@ export class UserController {
       .map((user) => user._id)
       .filter((userId): userId is mongoose.Types.ObjectId => Boolean(userId));
 
-    const blockedPendingCredentialDocs = pendingUserIds.length > 0
-      ? await UserCredentials.find({
-        orgId,
-        userId: { $in: pendingUserIds.map((userId) => userId.toString()) },
-        isBlocked: true,
-        isDeleted: false,
-      })
-        .select('userId')
-        .lean()
-        .exec()
-      : [];
+    const blockedPendingCredentialDocs =
+      pendingUserIds.length > 0
+        ? await UserCredentials.find({
+            orgId,
+            userId: { $in: pendingUserIds.map((userId) => userId.toString()) },
+            isBlocked: true,
+            isDeleted: false,
+          })
+            .select('userId')
+            .lean()
+            .exec()
+        : [];
 
     const blockedPendingUserIds = new Set(
       blockedPendingCredentialDocs
@@ -1855,6 +1964,21 @@ export class UserController {
     const pendingUsersToReinvite = pendingUsers.filter(
       (user) => user._id && !blockedPendingUserIds.has(user._id.toString()),
     );
+
+    const emailsForNewAccounts = emails.filter(
+      (email) =>
+        !activeEmails.includes(email) && !deletedEmails.includes(email),
+    );
+
+    if (inviteRole === 'admin') {
+      const additionalAdmins =
+        emailsForNewAccounts.length +
+        deletedUsers.length +
+        pendingUsersToReinvite.filter(
+          (user) => normalizeUserRole(user.role) !== 'admin',
+        ).length;
+      await assertCanPromoteAdmin(String(orgId), additionalAdmins);
+    }
 
     let restoredUsers: User[] = [];
     if (deletedUsers.length > 0) {
@@ -1884,11 +2008,6 @@ export class UserController {
       );
     }
 
-    const emailsForNewAccounts = emails.filter(
-      (email) =>
-        !activeEmails.includes(email) && !deletedEmails.includes(email),
-    );
-
     let newUsers: User[] = [];
     if (emailsForNewAccounts.length > 0) {
       newUsers = await Users.create(
@@ -1909,8 +2028,11 @@ export class UserController {
         ...pendingUsersToReinvite.map((u) => u._id),
       ].filter(Boolean);
       if (promoteIds.length > 0) {
+        // Narrowed to people. The schema refuses to promote a service
+        // account, so without this a batch that happened to include one
+        // would fail as a whole and take the genuine invites with it.
         await Users.updateMany(
-          { _id: { $in: promoteIds }, orgId },
+          { _id: { $in: promoteIds }, orgId, kind: { $ne: 'service' } },
           { $set: { role: 'admin' } },
         );
       }
@@ -1930,7 +2052,8 @@ export class UserController {
         orgId,
         this.config.scopedJwtSecret,
       );
-      const authResult = await this.authService.passwordMethodEnabled(authToken);
+      const authResult =
+        await this.authService.passwordMethodEnabled(authToken);
       if (authResult.statusCode !== 200) {
         throw new InternalServerError('Error fetching auth methods');
       }
@@ -2211,11 +2334,14 @@ export class UserController {
           validateNoFormatSpecifiers(String(search), 'search parameter');
 
           if (String(search).length > 1000) {
-            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+            throw new BadRequestError(
+              'Search parameter too long (max 1000 characters)',
+            );
           }
         } catch (error: any) {
           throw new BadRequestError(
-            error.message || 'Search parameter contains potentially dangerous content'
+            error.message ||
+              'Search parameter contains potentially dangerous content',
           );
         }
       }
@@ -2234,7 +2360,9 @@ export class UserController {
         },
         method: HttpMethod.GET,
       };
-      const aiCommand = new AIServiceCommand<GraphUserListResponse>(aiCommandOptions);
+      const aiCommand = new AIServiceCommand<GraphUserListResponse>(
+        aiCommandOptions,
+      );
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
         throw new BadRequestError('Failed to get users');
@@ -2253,16 +2381,28 @@ export class UserController {
             orgId,
             userId: { $in: userMongoIds },
             pic: { $ne: null },
-          }).lean().exec(),
+          })
+            .lean()
+            .exec(),
           Users.find({
             _id: { $in: userMongoIds },
             orgId: orgIdObj,
-          }).select('_id hasLoggedIn fullName role').lean().exec(),
+          })
+            .select('_id hasLoggedIn fullName role')
+            .lean()
+            .exec(),
           UserGroups.find({
             orgId: orgIdObj,
             isDeleted: false,
-            users: { $in: userMongoIds.map((id: string) => new mongoose.Types.ObjectId(id)) },
-          }).select('_id name type users').lean().exec(),
+            users: {
+              $in: userMongoIds.map(
+                (id: string) => new mongoose.Types.ObjectId(id),
+              ),
+            },
+          })
+            .select('_id name type users')
+            .lean()
+            .exec(),
         ]);
 
         // Build lookup maps
@@ -2330,7 +2470,6 @@ export class UserController {
       next(error);
     }
   }
-
 
   /**
    * Extract user details from SAML assertion with fallbacks for different IdP formats
@@ -2412,8 +2551,7 @@ export class UserController {
         data: 'Failed to send email',
       };
     }
-  };
-
+  }
 
   async sendValidateEmailIdEmail(user: Record<string, any>, newEmail: string) {
     try {
@@ -2430,7 +2568,10 @@ export class UserController {
       const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
       const emailSentResponse = await this.mailService.sendMail({
         emailTemplateType: 'resetEmail',
-        initiator: { jwtAuthToken: mailAuthToken, orgId: user.orgId?.toString() },
+        initiator: {
+          jwtAuthToken: mailAuthToken,
+          orgId: user.orgId?.toString(),
+        },
         usersMails: [newEmail],
         subject: 'PipesHub | Verify your email !',
         templateData: {
@@ -2439,7 +2580,6 @@ export class UserController {
           link: validateEmailLink,
         },
       });
-
 
       if (emailSentResponse.statusCode !== 200) {
         return {
@@ -2460,4 +2600,3 @@ export class UserController {
     }
   }
 }
-
