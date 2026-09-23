@@ -3017,6 +3017,55 @@ const CONVERSATION_PERMISSION_SYNC_TIMEOUT_MS = 15_000;
 // not stall the read.
 const CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS = 3_000;
 
+const CHAT_ATTACHMENT_CONNECTOR = 'ATTACHMENTS';
+
+const collectChatAttachmentRecordIds = (messages: any[]): string[] => {
+  const ids = new Set<string>();
+  for (const msg of messages ?? []) {
+    for (const att of msg.attachments ?? []) {
+      if (typeof att?.recordId === 'string' && att.recordId) {
+        ids.add(att.recordId);
+      }
+    }
+    for (const cit of msg.citations ?? []) {
+      const populated =
+        cit?.citationData ??
+        (cit?.citationId &&
+        typeof cit.citationId === 'object' &&
+        cit.citationId.metadata
+          ? cit.citationId
+          : null);
+      const recordId = populated?.metadata?.recordId;
+      if (typeof recordId !== 'string' || !recordId) {
+        continue;
+      }
+      if (
+        String(populated?.metadata?.connector ?? '').toUpperCase() ===
+        CHAT_ATTACHMENT_CONNECTOR
+      ) {
+        ids.add(recordId);
+      }
+    }
+  }
+  return [...ids];
+};
+
+const loadConversationChatAttachmentRecordIds = async (
+  conversationId: string,
+): Promise<string[]> => {
+  const sessionMessages = await ChatSessionMessage.find(
+    { sessionId: conversationId },
+    { attachments: 1, citations: 1 },
+  )
+    .populate({
+      path: 'citations.citationId',
+      model: 'citation',
+      select: 'metadata.recordId metadata.connector',
+    })
+    .lean();
+  return collectChatAttachmentRecordIds(sessionMessages as any[]);
+};
+
 interface ConversationPermissionSyncOptions {
   appConfig: AppConfig;
   records: 'attachments' | 'artifacts';
@@ -3200,6 +3249,27 @@ export const getConversationById =
       limit: effectiveLimit,
       populateCitations: true,
     });
+
+    // Sharing only grants READER on attachments that existed at share time. Catch
+    // up the chips and ATTACHMENTS citations on every page the viewer loads — an
+    // attachment added after the share can already sit on an older page.
+    if (initiatorId && initiatorId !== userId) {
+      const attachmentRecordIds = collectChatAttachmentRecordIds(messages);
+      if (attachmentRecordIds.length > 0) {
+        await syncConversationRecordPermissions({
+          appConfig,
+          records: 'attachments',
+          method: HttpMethod.POST,
+          grantorUserId: initiatorId,
+          orgId,
+          body: { userIds: [userId], recordIds: attachmentRecordIds },
+          requestId,
+          conversationId,
+          timeoutMs: CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS,
+          maxAttempts: 1,
+        });
+      }
+    }
 
     const conversationWithMessages = attachMessages(session, messages);
 
@@ -3561,20 +3631,9 @@ export const shareConversationById =
         updatedConversation = await performShareConversation();
       }
 
-      // Grant READER permission edges on all attachments in this conversation
-      // to every user it was just shared with.
-      const sessionMessages = await ChatSessionMessage.find(
-        { sessionId: conversationId },
-        { attachments: 1 },
-      ).lean();
-      const attachmentRecordIds = [
-        ...new Set(
-          sessionMessages
-            .flatMap((msg) => msg.attachments ?? [])
-            .map((att: any) => att.recordId as string | undefined)
-            .filter((id): id is string => Boolean(id)),
-        ),
-      ];
+      // Grant READER on chat attachments (message chips and ATTACHMENTS citations).
+      const attachmentRecordIds =
+        await loadConversationChatAttachmentRecordIds(String(conversationId));
 
       const grantor = {
         appConfig,
@@ -3731,20 +3790,9 @@ export const unshareConversationById =
       updatedConversation = await performUnshareConversation();
     }
 
-    // Revoke READER permission edges on all attachments in this conversation
-    // for the users who were just removed from sharing.
-    const sessionMessages = await ChatSessionMessage.find(
-      { sessionId: conversationId },
-      { attachments: 1 },
-    ).lean();
-    const attachmentRecordIds = [
-      ...new Set(
-        sessionMessages
-          .flatMap((msg) => msg.attachments ?? [])
-          .map((att: any) => att.recordId as string | undefined)
-          .filter((id): id is string => Boolean(id)),
-      ),
-    ];
+    // Revoke READER on chat attachments (message chips and ATTACHMENTS citations).
+    const attachmentRecordIds =
+      await loadConversationChatAttachmentRecordIds(String(conversationId));
 
     const grantor = {
       appConfig,
