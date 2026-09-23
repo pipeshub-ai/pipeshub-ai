@@ -656,6 +656,13 @@ class Neo4jProvider(IGraphDBProvider):
 
             self.logger.info(f"✅ Created {len(unique_constraints)} unique id constraints")
 
+            # Add CorpusRevision orgId uniqueness constraint
+            try:
+                await self.client.execute_query("CREATE CONSTRAINT corpus_revision_org_id IF NOT EXISTS FOR (r:CorpusRevision) REQUIRE r.orgId IS UNIQUE")
+                self.logger.debug("Created unique constraint on CorpusRevision.orgId")
+            except Exception as e:
+                self.logger.debug(f"CorpusRevision constraint creation failed: {e}")
+
             # Create property existence constraints for required fields from schemas
             property_constraints = self._generate_required_field_constraints()
 
@@ -19631,12 +19638,9 @@ class Neo4jProvider(IGraphDBProvider):
         MATCH (r:CorpusRevision {orgId: $org_id})
         RETURN toString(r.revision) AS revision
         """
-        try:
-            results = await self.client.execute_query(query, {"org_id": org_id})
-            if results and results[0].get("revision") is not None:
-                return str(results[0]["revision"])
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get corpus revision for {org_id}: {e}")
+        results = await self.client.execute_query(query, {"org_id": org_id})
+        if results and results[0].get("revision") is not None:
+            return str(results[0]["revision"])
         return "0"
 
     async def increment_corpus_revision(self, org_id: str) -> str:
@@ -19649,10 +19653,7 @@ class Neo4jProvider(IGraphDBProvider):
         ON MATCH SET r.revision = coalesce(r.revision, 0) + 1
         RETURN toString(r.revision) AS revision
         """
-        try:
-            results = await self.client.execute_query(query, {"org_id": org_id})
-            if results and results[0].get("revision") is not None:
-                return str(results[0]["revision"])
-        except Exception as e:
-            self.logger.error(f"❌ Failed to increment corpus revision for {org_id}: {e}")
+        results = await self.client.execute_query(query, {"org_id": org_id})
+        if results and results[0].get("revision") is not None:
+            return str(results[0]["revision"])
         return "0"

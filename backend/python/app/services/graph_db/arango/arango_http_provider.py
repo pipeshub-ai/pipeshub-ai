@@ -211,6 +211,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.SQL_TABLES.value, sql_table_record_schema),
     (CollectionNames.SQL_VIEWS.value, sql_view_record_schema),
     (CollectionNames.CODE_FILES.value, code_file_record_schema),
+    (CollectionNames.CORPUS_REVISION.value, None),
 ]
 
 EDGE_COLLECTIONS = [
@@ -22730,12 +22731,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET r = DOCUMENT("CorpusRevision", @org_id)
         RETURN r != null ? TO_STRING(r.revision) : "0"
         """
-        try:
-            results = await self.execute_query(query, bind_vars={"org_id": org_id})
-            if results and results[0] is not None:
-                return str(results[0])
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get corpus revision for {org_id}: {e}")
+        results = await self.execute_query(query, bind_vars={"org_id": org_id})
+        if results and results[0] is not None:
+            return str(results[0])
         return "0"
 
     async def increment_corpus_revision(self, org_id: str) -> str:
@@ -22747,10 +22745,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         IN CorpusRevision
         RETURN TO_STRING(NEW.revision)
         """
-        try:
-            results = await self.execute_query(query, bind_vars={"org_id": org_id})
-            if results and results[0] is not None:
-                return str(results[0])
-        except Exception as e:
-            self.logger.error(f"❌ Failed to increment corpus revision for {org_id}: {e}")
+        results = await self.execute_query(query, bind_vars={"org_id": org_id})
+        if results and results[0] is not None:
+            return str(results[0])
         return "0"

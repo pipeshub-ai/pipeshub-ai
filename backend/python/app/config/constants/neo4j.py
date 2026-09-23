@@ -47,6 +47,7 @@ class Neo4jLabel(Enum):
     # Other
     PAGE_TOKENS = "PageToken"
     BLOCKS = "Block"
+    CORPUS_REVISION = "CorpusRevision"
 
     # Tools
     TOOLS = "Tool"
@@ -152,6 +153,7 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.DEALS.value: Neo4jLabel.DEALS.value,
     CollectionNames.PRODUCTS.value: Neo4jLabel.PRODUCTS.value,
     CollectionNames.ARTIFACTS.value: Neo4jLabel.ARTIFACTS.value,
+    CollectionNames.CORPUS_REVISION.value: Neo4jLabel.CORPUS_REVISION.value,
 
     # Tools collections (not in CollectionNames enum, using string names)
     "tools": Neo4jLabel.TOOLS.value,

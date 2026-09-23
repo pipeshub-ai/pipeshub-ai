@@ -415,6 +415,8 @@ class TestAbstractMethodInventory:
         "filter_nodes_with_permission_role",
         "filter_accessible_virtual_record_ids",
         "get_record_parent_adjacency",
+        "get_corpus_revision",
+        "increment_corpus_revision",
     ]
 
     def test_all_expected_methods_are_abstract(self):

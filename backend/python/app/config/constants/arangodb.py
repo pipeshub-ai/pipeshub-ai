@@ -229,6 +229,7 @@ class CollectionNames(Enum):
     # Other
     CHANNEL_HISTORY = "channelHistory"
     PAGE_TOKENS = "pageTokens"
+    CORPUS_REVISION = "CorpusRevision"
 
     APPS = "apps"
     ORG_APP_RELATION = "orgAppRelation"

@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 OCR_IMAGE_PAGE_CAP = 30
 
 router = APIRouter()
+_background_tasks = set()
 
 # Pydantic models
 class ChatQuery(BaseModel):
@@ -1284,6 +1285,7 @@ async def askAIStream(
                 try:
                     corpus_revision = await graph_provider.get_corpus_revision(org_id)
                 except Exception:
+                    logger.warning(f"Failed to get corpus revision for {org_id}, bypassing cache.")
                     corpus_revision = None
 
                 if corpus_revision is not None:
@@ -1329,6 +1331,7 @@ async def askAIStream(
             full_response_parts = []
             run_finished = False
             run_failed = False
+            has_complex_state = False
             try:
                 async for chunk in base_stream:
                     yield chunk
@@ -1344,11 +1347,13 @@ async def askAIStream(
                                 run_failed = True
                             elif event_name == "RUN_FINISHED":
                                 run_finished = True
+                            elif event_name not in ["TEXT_MESSAGE_START", "TEXT_MESSAGE_END", "RUN_STARTED"]:
+                                has_complex_state = True
                         except Exception:
                             pass
 
                 # After stream completes, save to cache asynchronously
-                if query_vector and corpus_revision is not None and run_finished and not run_failed and full_response_parts:
+                if query_vector and corpus_revision is not None and run_finished and not run_failed and not has_complex_state and full_response_parts:
                     full_text = "".join(full_response_parts)
                     try:
                         current_revision = await graph_provider.get_corpus_revision(org_id)
@@ -1356,11 +1361,13 @@ async def askAIStream(
                         current_revision = None
                         
                     if current_revision is not None and current_revision == corpus_revision:
-                        asyncio.create_task(
+                        task = asyncio.create_task(
                             semantic_cache.set_cached_response(
                                 query_info.query, full_text, query_vector, filters_hash_val
                             )
                         )
+                        _background_tasks.add(task)
+                        task.add_done_callback(_background_tasks.discard)
             except Exception:
                 logger.exception("Error during stream generation")
                 raise
