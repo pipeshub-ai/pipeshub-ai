@@ -126,9 +126,10 @@ class Calculator:
         short_description="Evaluate an arithmetic expression exactly",
         description=(
             "Evaluate an arithmetic expression, e.g. '(90 - 16) * 1954'. Supports "
-            "numbers, + - * / // % ** and parentheses, and abs, round, min, max, "
-            "sqrt, floor, ceil. Use it for any calculation with more than one step, "
-            "copying the numbers exactly from their source."
+            "numbers, pi, e, + - * / // % ** and parentheses; abs, round, min, max, "
+            "sqrt, floor, ceil, exp, log, log10; and sin, cos, tan, asin, acos, atan, "
+            "atan2, radians, degrees (angles in radians). Use it for any calculation "
+            "with more than one step, copying the numbers exactly from their source."
         ),
         parameters=[
             ToolParameter(

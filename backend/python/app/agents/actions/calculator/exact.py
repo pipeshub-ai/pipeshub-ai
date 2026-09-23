@@ -46,7 +46,20 @@ _FUNCTIONS: dict[str, Callable[..., object]] = {
     "sqrt": math.sqrt,
     "floor": math.floor,
     "ceil": math.ceil,
+    "exp": math.exp,
+    "log": math.log,
+    "log10": math.log10,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "asin": math.asin,
+    "acos": math.acos,
+    "atan": math.atan,
+    "atan2": math.atan2,
+    "radians": math.radians,
+    "degrees": math.degrees,
 }
+_CONSTANTS: dict[str, float] = {"pi": math.pi, "e": math.e}
 
 
 class ExpressionError(ValueError):
@@ -56,8 +69,9 @@ class ExpressionError(ValueError):
 def evaluate_expression(expression: str) -> Number:
     """The value of an arithmetic expression.
 
-    Numbers, `+ - * / // % **`, parentheses, and `abs round min max sqrt
-    floor ceil`. Anything else -- names, attributes, strings -- is refused.
+    Numbers, `pi`, `e`, `+ - * / // % **`, parentheses, and the functions in
+    `_FUNCTIONS` (rounding, roots, logs, trigonometry in radians). Anything
+    else -- other names, attributes, strings -- is refused.
     """
     text = expression.strip()
     if not text:
@@ -81,6 +95,8 @@ def _number(value: object) -> Number:
 def _evaluate(node: ast.AST) -> Number:
     if isinstance(node, ast.Constant):
         return _number(node.value)
+    if isinstance(node, ast.Name) and node.id in _CONSTANTS:
+        return _CONSTANTS[node.id]
     if isinstance(node, ast.BinOp):
         left, right = _evaluate(node.left), _evaluate(node.right)
         if isinstance(node.op, ast.Pow):
@@ -109,7 +125,7 @@ def _evaluate(node: ast.AST) -> Number:
         except (TypeError, ValueError, OverflowError) as exc:
             raise ExpressionError(f"{node.func.id}(): {exc}.") from exc
     raise ExpressionError(
-        "Only numbers, + - * / // % **, parentheses and "
+        "Only numbers, pi, e, + - * / // % **, parentheses and "
         f"{', '.join(sorted(_FUNCTIONS))} are allowed.",
     )
 

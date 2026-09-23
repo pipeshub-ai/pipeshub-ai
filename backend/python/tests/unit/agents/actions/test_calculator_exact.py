@@ -30,6 +30,8 @@ class TestEvaluateExpression:
         ("max(3, 9, 4) - min(3, 9, 4)", 6),
         ("sqrt(144) + abs(-2)", 14),
         ("floor(2.7) + ceil(2.1)", 5),
+        ("round(degrees(pi), 6)", 180.0),
+        ("round(log10(1000) + log(e), 9)", 4.0),
     ])
     def test_arithmetic(self, expression: str, expected: object) -> None:
         assert evaluate_expression(expression) == expected
@@ -54,6 +56,24 @@ class TestEvaluateExpression:
     def test_powers_that_cannot_be_answered_are_refused(self, expression: str) -> None:
         with pytest.raises(ExpressionError):
             evaluate_expression(expression)
+
+    def test_a_great_circle_distance(self) -> None:
+        """Haversine between two points: the kind of multi-step formula a
+        model gets wrong by a few percent in its head."""
+        lat1, lon1, lat2, lon2 = 40.7128, -74.0060, 51.5074, -0.1278
+        expression = (
+            f"2 * 3958.8 * asin(sqrt(sin(radians({lat2} - {lat1}) / 2) ** 2 + "
+            f"cos(radians({lat1})) * cos(radians({lat2})) * "
+            f"sin(radians({lon2} - {lon1}) / 2) ** 2))"
+        )
+
+        assert evaluate_expression(expression) == pytest.approx(3461, abs=5)
+
+    def test_a_domain_error_is_an_expression_error(self) -> None:
+        with pytest.raises(ExpressionError):
+            evaluate_expression("log(0)")
+        with pytest.raises(ExpressionError):
+            evaluate_expression("asin(2)")
 
     def test_division_by_zero_is_an_expression_error(self) -> None:
         with pytest.raises(ExpressionError, match="zero"):
