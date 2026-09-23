@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.agent_loop_lib.core.types import UserMessage
+from app.agent_loop_lib.core.messages import ToolMessage
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.hooks.middleware.builtin.budget_guard import require_budget
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext, TurnContext
@@ -89,35 +89,47 @@ def _can_call(scope: TurnScope | None, tool_name: str) -> bool:
     return not granted or tool_name in granted
 
 
-def deadline_note(turns_left: int, scope: TurnScope | None) -> str:
-    """The wrap-up note, naming only a way to finish this run actually has.
+def deadline_note(scope: TurnScope | None) -> str:
+    """The wrap-up line added to the latest tool result's loop footer,
+    naming only a way to finish this run actually has.
 
     Agents built without `task_complete` finish with a plain-text reply, and
     telling one to call a tool it does not have leaves it no valid move.
     """
     finish = (
-        f"call {_TASK_COMPLETE} with your best answer"
+        f"call {_TASK_COMPLETE} with your final answer"
         if _can_call(scope, _TASK_COMPLETE)
-        else "reply with your final answer as plain text, without calling any tools"
+        else "reply with your final answer as plain text, without calling tools"
     )
-    return (
-        f"[You have {turns_left} turns left. Stop gathering information and "
-        f"{finish}, using what you have found. Say which parts you could not "
-        "confirm.]"
-    )
+    return f"\n[loop: last tool round: {finish}; say which parts you could not confirm]"
 
 
 def warn_before_deadline(warn_at_turns_left: int = 2):
-    """PRE_MODEL middleware: nudges the model to wrap up `warn_at_turns_left`
+    """PRE_MODEL middleware: tells the model to wrap up `warn_at_turns_left`
     turns before `ctx.max_turns` is hit, so it can synthesize gracefully
-    instead of running into the hard cap mid-thought."""
+    instead of running into the hard cap mid-thought.
+
+    The note rides on the latest tool result's loop footer -- the channel the
+    `[loop: step N/MAX]` state already uses -- not on an injected user
+    message. An instruction posing as the user right after tool output reads
+    as a prompt attack: Azure OpenAI's content filter rejected every such
+    request in the FRAMES runs, and the agent answered with a canned refusal.
+    Only this call's copy of the message changes; history keeps the plain
+    footer. With no tool result to carry it the note is skipped: the run
+    then has not been gathering anything to stop.
+    """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
-        if ctx.max_turns is not None and (ctx.max_turns - ctx.turn_index) == warn_at_turns_left:
-            ctx.messages.append(UserMessage(
-                content=deadline_note(warn_at_turns_left, ctx.scope),
-                injected=True,
-            ))
+        if (
+            ctx.max_turns is not None
+            and (ctx.max_turns - ctx.turn_index) == warn_at_turns_left
+            and ctx.messages
+            and isinstance(ctx.messages[-1], ToolMessage)
+        ):
+            last = ctx.messages[-1]
+            ctx.messages[-1] = last.model_copy(
+                update={"step_footer": last.step_footer + deadline_note(ctx.scope)},
+            )
         await next_fn()
 
     return _middleware

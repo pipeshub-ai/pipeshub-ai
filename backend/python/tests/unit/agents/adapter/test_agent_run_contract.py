@@ -135,3 +135,34 @@ class TestScriptedToolCallLifecycle:
         tools: list[ToolSchema] | None = transport.calls[0]["tools"]
         assert tools is not None
         assert any(t.name == _CALC_TOOL_NAME for t in tools)
+
+
+class TestWrapUpNote:
+    """Two turns before `max_turns`, the model is told to answer. The note
+    must reach it as loop state on a tool result, never as a user message:
+    Azure OpenAI's content filter rejected every injected "stop and answer"
+    user message in the FRAMES runs."""
+
+    async def test_the_wrap_up_call_sees_it_in_the_last_tool_footer(self) -> None:
+        from app.agent_loop_lib.core.messages import ToolMessage, UserMessage
+        from app.agent_loop_lib.core.types import Goal
+
+        context = make_context()
+        transport = ScriptedTransport()
+        for n in range(4):
+            transport.add_tool_call(ToolCall(id=f"call-{n}", name=_CALC_TOOL_NAME, arguments={"a": n, "b": 1}))
+        transport.add_text("The sums are 1, 2, 3 and 4.")
+
+        agent = _build_agent(context, transport, max_turns=6)
+        result = await agent.run(Goal(description="Add some numbers"))
+
+        assert result.success is True
+        wrap_up = transport.calls[4]["messages"]
+        assert isinstance(wrap_up[-1], ToolMessage)
+        assert "last tool round" in wrap_up[-1].step_footer
+        assert "plain text, without calling tools" in wrap_up[-1].step_footer
+        assert not any(
+            isinstance(m, UserMessage) and m.injected for m in wrap_up
+        ), "no injected user message"
+        earlier = transport.calls[3]["messages"]
+        assert "last tool round" not in earlier[-1].step_footer
