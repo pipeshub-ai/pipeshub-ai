@@ -203,6 +203,40 @@ class TestMembershipMerge:
         assert point.payload["recordGroupIds"] == ["group_A"]
 
     @pytest.mark.asyncio
+    async def test_duplicate_entity_in_one_batch_unions_membership(self) -> None:
+        """Two extracted names can resolve to one canonical node, so a batch
+        can carry the same entity twice. Both build the same point id, and the
+        later one must not overwrite the earlier one's membership."""
+        vector_db_service = MagicMock()
+        vector_db_service.upsert_points = AsyncMock(return_value=None)
+        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
+        vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(points=[], next_offset=None)
+        )
+        store = _make_store(vector_db_service)
+        entities = [
+            _entity(
+                entity_id="bug-bash",
+                entity_type=EntityType.TOPIC,
+                name="Bug bash testing",
+                connector_ids=["conn-a"],
+            ),
+            _entity(
+                entity_id="bug-bash",
+                entity_type=EntityType.TOPIC,
+                name="Bug bash testing",
+                connector_ids=["conn-b"],
+                record_group_ids=["group-1"],
+            ),
+        ]
+
+        await store.upsert_entities_batch(entities)
+
+        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
+        assert point.payload["connectorIds"] == ["conn-a", "conn-b"]
+        assert point.payload["recordGroupIds"] == ["group-1"]
+
+    @pytest.mark.asyncio
     async def test_merge_read_failure_skips_the_write(self) -> None:
         """The point ID is deterministic, so upserting against an unknown
         state would replace the stored membership with only this caller's

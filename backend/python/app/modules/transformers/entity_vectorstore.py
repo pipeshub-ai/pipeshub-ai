@@ -32,12 +32,14 @@ remembering only the last writer's single group/connector instead of the
 union across all of them. See ``_merge_membership`` and the per-entity lock
 in ``_entity_lock``.
 
-That lock is per process (it lives on the instance, keyed by event loop), so
-it serialises writers inside one service only. Two indexing workers in
-separate processes can still each merge against the same stale read and drop
-one another's membership; the loser is restored when the affected record is
-next reindexed. Making this safe across processes needs a distributed lock or
-a backend compare-and-set, neither of which exists here yet.
+That lock is keyed by ``(event loop, entity)``, so it serialises writers only
+within one loop of one process. It does not cover the two cases that occur in
+practice: indexing runs some work on the main loop and some on a worker-thread
+loop, which take different locks for the same entity, and separate indexing
+workers hold separate instances entirely. Either pair can merge against the
+same stale read and drop one another's membership; the loser is restored when
+the affected record is next reindexed. Closing that needs a distributed lock
+or a backend compare-and-set, neither of which exists here yet.
 """
 
 from __future__ import annotations
@@ -267,6 +269,7 @@ class EntityVectorStore:
         await self._ensure_initialized()
         if not entities:
             return
+        entities = self._coalesce_by_key(entities)
 
         for start in range(0, len(entities), batch_size):
             batch = entities[start : start + batch_size]
@@ -363,6 +366,35 @@ class EntityVectorStore:
                 self.logger.error(
                     "Failed to upsert entity batch starting at %d: %s", start, exc
                 )
+
+    @staticmethod
+    def _coalesce_by_key(entities: list["EntityRecord"]) -> list["EntityRecord"]:
+        """Collapse repeats of one entity, unioning their membership.
+
+        Two extracted names in a record can resolve to the same canonical node,
+        so one batch can carry that entity twice. Both would build the same
+        deterministic point id, and the later one would overwrite the earlier
+        one's membership instead of adding to it.
+        """
+        merged: dict[tuple[str, str, str], EntityRecord] = {}
+        for entity in entities:
+            key = (entity.org_id, entity.entity_type.value, entity.entity_id)
+            first = merged.get(key)
+            if first is None:
+                merged[key] = entity
+                continue
+            merged[key] = first.model_copy(update={
+                "connector_ids": EntityVectorStore._union_ids(
+                    first.connector_ids, entity.connector_ids
+                ),
+                "record_group_ids": EntityVectorStore._union_ids(
+                    first.record_group_ids, entity.record_group_ids
+                ),
+                "aliases": EntityVectorStore._union_ids(
+                    first.aliases, entity.aliases
+                ),
+            })
+        return list(merged.values())
 
     def _entity_lock(self, key: str) -> asyncio.Lock:
         """Get-or-create the lock for an entity key on the running event loop.

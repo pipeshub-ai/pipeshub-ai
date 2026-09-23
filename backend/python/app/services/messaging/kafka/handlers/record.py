@@ -1380,8 +1380,9 @@ class RecordEventHandler(BaseEventService):
                         promoted = await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
                         # Reconciliation walks every sibling of the vrid, so
                         # running it when nothing was promoted costs the whole
-                        # duplicate group on each completion.
-                        if promoted:
+                        # duplicate group on each completion. -1 is the
+                        # providers' query-failure return, not a promotion.
+                        if promoted > 0:
                             await self._reconcile_promoted_duplicates(record_id, virtual_record_id)
                         if indexing_status == ProgressStatus.COMPLETED.value:
                             # Duplicates just became searchable too. They can live in

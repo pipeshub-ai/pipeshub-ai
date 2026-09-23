@@ -78,6 +78,8 @@ class TestGetEntityAccessContext:
             '"ORG"',
             '"GROUP"',
             "app.type == @kb_type",
+            # A hidden KB is reachable only when source_ids names it.
+            "NOT_NULL(app.isHidden, false) == false",
             "app.permissionModel != @app_level",
         ):
             assert fragment in query, fragment

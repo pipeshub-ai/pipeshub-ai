@@ -1012,7 +1012,7 @@ class TestAlreadyIndexed:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
         events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
@@ -1032,7 +1032,7 @@ class TestAlreadyIndexed:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
         events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
@@ -1063,7 +1063,7 @@ class TestConnectorActiveCheck:
         # First call returns the record, second call for connector returns None,
         # third call in finally block returns record again for status check
         gp.get_document = AsyncMock(side_effect=[record, None, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
         events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
@@ -1091,7 +1091,7 @@ class TestConnectorActiveCheck:
         # fourth call: finally block record fetch
         gp.get_document = AsyncMock(side_effect=[record, connector_instance, record, record])
         gp.update_node = AsyncMock(return_value=True)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
         events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
@@ -1126,7 +1126,7 @@ class TestConnectorActiveCheck:
             {"event": "indexing_complete", "data": {"record_id": "r1"}},
         ]))
 
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
             "recordId": "r1",
@@ -1159,7 +1159,7 @@ class TestConnectorActiveCheck:
 
         # Only the record fetch + final status check - no connector fetch
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1201,7 +1201,7 @@ class TestUpdateRecordEvent:
             "mimeType": xlsx_mime,
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock(
@@ -1250,7 +1250,7 @@ class TestUnsupportedFileType:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
             "recordId": "r1",
@@ -1276,7 +1276,7 @@ class TestUnsupportedFileType:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1311,7 +1311,7 @@ class TestUnsupportedFileType:
             "mimeType": "unknown",
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1344,7 +1344,7 @@ class TestUnsupportedFileType:
             "mimeType": "application/epub+zip",
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1378,7 +1378,7 @@ class TestUnsupportedFileType:
             "mimeType": "application/json",
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1412,7 +1412,7 @@ class TestUnsupportedFileType:
             "mimeType": "application/yaml",
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1447,7 +1447,7 @@ class TestUnsupportedFileType:
             "mimeType": "application/x-yaml",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1488,7 +1488,7 @@ class TestMimeAndExtensionFallback:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1522,7 +1522,7 @@ class TestMimeAndExtensionFallback:
             "mimeType": "application/x-some-unknown",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1557,7 +1557,7 @@ class TestMimeAndExtensionFallback:
             "mimeType": "text/gmail_content",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1592,7 +1592,7 @@ class TestMimeAndExtensionFallback:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1634,7 +1634,7 @@ class TestSignedUrlPath:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1722,7 +1722,7 @@ class TestSignedUrlPath:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1764,7 +1764,7 @@ class TestSignedUrlPath:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         # Return different generators for signed_url path and connector path
@@ -1814,7 +1814,7 @@ class TestConnectorStreamingPath:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -2368,7 +2368,7 @@ class TestProcessEventErrors:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record_initial, record_final])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -2411,7 +2411,7 @@ class TestProcessEventErrors:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record_initial, record_final])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -2516,7 +2516,7 @@ class TestProcessEventErrors:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1"})
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock(
@@ -2645,7 +2645,12 @@ class TestReconcilePromotedDuplicates:
         gp.get_records_by_virtual_record_id.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("promoted,expected_calls", [(0, 0), (2, 1)])
+    @pytest.mark.parametrize(
+        "promoted,expected_calls",
+        # -1 is the providers' query-failure return: nothing was promoted, so
+        # the sibling sweep would be pure waste.
+        [(0, 0), (-1, 0), (2, 1)],
+    )
     async def test_reconcile_runs_only_when_a_duplicate_was_promoted(
         self, promoted, expected_calls
     ):
@@ -2827,7 +2832,7 @@ class TestTriggerNextQueuedDuplicate:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.find_next_queued_duplicate = AsyncMock(side_effect=Exception("DB error"))
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         await handler._trigger_next_queued_duplicate("r1", "vr1")
 
@@ -3156,7 +3161,7 @@ class TestFullHappyPath:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record_completed])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -3198,7 +3203,7 @@ class TestFullHappyPath:
             "indexingStatus": ProgressStatus.COMPLETED.value,
         }
         gp.get_document = AsyncMock(side_effect=[record, record_completed])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -3247,7 +3252,7 @@ class TestFolderRecordSkip:
         }
         gp.get_document = AsyncMock(side_effect=[record, record, record])
         gp.update_node = AsyncMock(return_value=True)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
             "recordId": "r1",
@@ -3274,7 +3279,7 @@ class TestFolderRecordSkip:
         }
         gp.get_document = AsyncMock(side_effect=[record, record, record])
         gp.update_node = AsyncMock(return_value=True)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
             "recordId": "r1",
@@ -3298,7 +3303,7 @@ class TestFolderRecordSkip:
         }
         gp.get_document = AsyncMock(side_effect=[record, record, record])
         gp.update_node = AsyncMock(return_value=True)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
             "recordId": "r1",
@@ -3332,7 +3337,7 @@ class TestCodeFileHandling:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
             "recordId": "r1",
@@ -3359,7 +3364,7 @@ class TestCodeFileHandling:
             "recordName": "main.py",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -3397,7 +3402,7 @@ class TestCodeFileHandling:
             "recordName": "index.ts",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -3435,7 +3440,7 @@ class TestKbUploadedCodeFileHandling:
             "recordName": "main.py",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -3473,7 +3478,7 @@ class TestKbUploadedCodeFileHandling:
             "recordName": "main.py",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -3511,7 +3516,7 @@ class TestKbUploadedCodeFileHandling:
             "recordName": "main.py",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -3550,7 +3555,7 @@ class TestKbUploadedCodeFileHandling:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
             "recordId": "r1",
@@ -3584,7 +3589,7 @@ class TestReconciliationPath:
             "mimeType": sql_mime,
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
@@ -3621,7 +3626,7 @@ class TestReconciliationPath:
             "mimeType": pptx_mime,
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
@@ -3666,7 +3671,7 @@ class TestSignedUrlExceptionFallback:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -3742,7 +3747,7 @@ class TestAdditionalCoverage:
         # record + finally
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
             "recordId": "r1",
@@ -3769,7 +3774,7 @@ class TestAdditionalCoverage:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
-        gp.update_queued_duplicates_status = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
             "recordId": "r1",

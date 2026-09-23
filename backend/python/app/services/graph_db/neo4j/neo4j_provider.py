@@ -4987,7 +4987,10 @@ class Neo4jProvider(IGraphDBProvider):
                 RETURN app
             }
             WITH app
-            WHERE size($source_ids) = 0 OR app.id IN $source_ids
+            // A hidden KB (a project's linked collection) is reachable only
+            // when the caller names it, as in get_accessible_containers.
+            WHERE (size($source_ids) = 0 AND coalesce(app.isHidden, false) = false)
+               OR app.id IN $source_ids
             RETURN collect(app {.id, .name, .type, .permissionModel}) AS apps
         }
 

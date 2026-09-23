@@ -20479,7 +20479,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET accessible_apps = (
             FOR app IN UNION(direct_apps, team_apps, kb_apps_direct, kb_apps_team)
                 FILTER app != null
-                FILTER LENGTH(@source_ids) == 0 OR app._key IN @source_ids
+                // A hidden KB (a project's linked collection) is reachable
+                // only when the caller names it, as in the Knowledge Hub paths.
+                FILTER (LENGTH(@source_ids) == 0 AND NOT_NULL(app.isHidden, false) == false)
+                    OR app._key IN @source_ids
                 COLLECT key = app._key INTO grouped KEEP app
                 LET a = grouped[0].app
                 RETURN {{
