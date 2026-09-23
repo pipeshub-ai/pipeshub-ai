@@ -29,6 +29,11 @@ from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
 )
+from app.modules.retrieval.result_merging import (
+    CollectionResults,
+    ReciprocalRankFusionMerger,
+    search_hit_identity,
+)
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import (
@@ -84,6 +89,21 @@ _RETRIEVED_COUNT_RE = re.compile(
 _RETRIEVED_COUNT_RE_LEGACY = re.compile(
     r"^Retrieved (\d+) knowledge blocks? from (\d+) documents?", re.IGNORECASE | re.MULTILINE
 )
+
+
+def _fuse_sources(per_source: list[CollectionResults]) -> list[dict[str, Any]]:
+    """One ranked list from the per-source searches of a fan-out.
+
+    Each source's scores are rank-fused positions within that search, so they
+    do not compare across sources, and appending the lists puts every hit of
+    the first source ahead of the next. Fusing the ranks interleaves the
+    sources by position, and the fused score replaces each hit's so that
+    later ranking by score or by order follows it.
+    """
+    fused = ReciprocalRankFusionMerger(identity=search_hit_identity).fuse(per_source)
+    for hit, score in fused:
+        hit["score"] = score
+    return [hit for hit, _ in fused]
 
 
 def resolve_entity_filter_groups(
@@ -465,7 +485,7 @@ async def execute_search(
                     ))
 
                 raw_results = await asyncio.gather(*tasks, return_exceptions=True)
-                attempt_results: list[dict[str, Any]] = []
+                per_source: list[CollectionResults] = []
                 attempt_map: dict[str, Any] = {}
                 any_success = False
                 error_status: int | None = None
@@ -486,7 +506,10 @@ async def execute_search(
                         error_message = raw.get("message", error_message)
                         continue
                     any_success = True
-                    attempt_results.extend(raw.get("searchResults", []))
+                    per_source.append(CollectionResults(
+                        collection_name=f"source-{len(per_source)}",
+                        results=raw.get("searchResults", []),
+                    ))
                     attempt_map.update(raw.get("virtual_to_record_map", {}))
 
                 if not any_success:
@@ -498,7 +521,7 @@ async def execute_search(
                         })
                     # Every source raised or returned nothing: nothing was searched.
                     return [], {}, json.dumps({"status": "error", "message": error_message})
-                return attempt_results, attempt_map, None
+                return _fuse_sources(per_source), attempt_map, None
 
             results = await _search_one(filter_groups, entity_fg, vrids)
             if results is None:
