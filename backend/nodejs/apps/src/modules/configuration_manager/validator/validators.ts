@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { googleWorkspaceTypes, storageTypes } from '../constants/constants';
+import {
+  AI_MODEL_TYPES,
+  AIModelType,
+  googleWorkspaceTypes,
+  storageTypes,
+} from '../constants/constants';
 import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
@@ -468,17 +473,7 @@ export const metricsCollectionRemoteServerSchema = z.object({
 
 
 // Enum definitions
-export const modelType = z.enum([
-  'llm',
-  'embedding',
-  'ocr',
-  'slm',
-  'reasoning',
-  'multiModal',
-  'imageGeneration',
-  'tts',
-  'stt',
-]);
+export const modelType = z.enum(AI_MODEL_TYPES);
 
 // Provider validation is now dynamic — the Python backend registry is the
 // source of truth.  We only enforce that a non-empty string is provided.
@@ -564,22 +559,22 @@ export const addProviderRequestSchema = z.object({
   }),
 });
 
+const modelBucketsShape = Object.fromEntries(
+  AI_MODEL_TYPES.map((type) => [
+    type,
+    z.array(modelConfigurationSchema).optional(),
+  ]),
+) as Record<
+  AIModelType,
+  z.ZodOptional<z.ZodArray<typeof modelConfigurationSchema>>
+>;
+
 // Updated AI Models Config schema with proper typing
 export const aiModelsConfigSchema = z.object({
   body: z
-    .object({
-      ocr: z.array(modelConfigurationSchema).optional(),
-      embedding: z.array(modelConfigurationSchema).optional(),
-      slm: z.array(modelConfigurationSchema).optional(),
-      llm: z.array(modelConfigurationSchema).optional(),
-      reasoning: z.array(modelConfigurationSchema).optional(),
-      multiModal: z.array(modelConfigurationSchema).optional(),
-      imageGeneration: z.array(modelConfigurationSchema).optional(),
-      tts: z.array(modelConfigurationSchema).optional(),
-      stt: z.array(modelConfigurationSchema).optional(),
-    })
+    .object(modelBucketsShape)
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt',
+      message: `Valid properties for aiModels are ${AI_MODEL_TYPES.join(', ')}`,
     })
     .refine(
       (data) => {
@@ -598,50 +593,20 @@ export const aiModelsConfigSchema = z.object({
 
 export const modelTypeSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType: modelType,
   }),
 });
 
 export const updateDefaultModelSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType: modelType,
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });
 
 export const deleteProviderSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType: modelType,
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });

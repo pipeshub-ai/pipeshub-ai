@@ -41,6 +41,7 @@ import {
   metricsCollectionPushIntervalSchema,
   metricsCollectionRemoteServerSchema,
   modelTypeSchema,
+  aiModelsConfigSchema,
 } from '../../../../src/modules/configuration_manager/validator/validators'
 
 describe('CM Validators', () => {
@@ -250,7 +251,7 @@ describe('CM Validators', () => {
 
   describe('AI model schemas', () => {
     it('modelType should accept valid types', () => {
-      for (const t of ['llm', 'embedding', 'ocr', 'slm', 'reasoning', 'multiModal', 'imageGeneration', 'tts', 'stt']) {
+      for (const t of ['llm', 'embedding', 'ocr', 'slm', 'reasoning', 'multiModal', 'imageGeneration', 'tts', 'stt', 'reranker']) {
         expect(modelType.safeParse(t).success).to.be.true
       }
     })
@@ -306,9 +307,19 @@ describe('CM Validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('aiModelsConfigSchema accepts every model type and names them when rejecting', () => {
+      const model = { provider: 'cohere', configuration: { model: 'rerank-v3.5' } }
+      expect(aiModelsConfigSchema.safeParse({ body: { reranker: [model] } }).success).to.be.true
+
+      const rejected = aiModelsConfigSchema.safeParse({ body: { llm: [model], unknown: [] } })
+      expect(rejected.success).to.be.false
+      expect(JSON.stringify(rejected.error?.issues)).to.include('tts, stt, reranker')
+    })
+
     it('modelTypeSchema should validate params.modelType', () => {
       expect(modelTypeSchema.safeParse({ params: { modelType: 'llm' } }).success).to.be.true
       expect(modelTypeSchema.safeParse({ params: { modelType: 'invalid' } }).success).to.be.false
+      expect(modelTypeSchema.safeParse({ params: { modelType: 'reranker' } }).success).to.be.true
     })
 
     it('updateDefaultModelSchema should require modelType and modelKey', () => {

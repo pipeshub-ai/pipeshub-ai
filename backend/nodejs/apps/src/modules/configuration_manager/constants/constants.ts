@@ -31,14 +31,29 @@ export const googleWorkspaceServiceTypes = {
   GOOGLE_MAIL: 'gmail',
 };
 
-export const aiModelsTypes = {
-  OCR: 'ocr',
-  EMBEDDING: 'embedding',
-  SLM: 'slm',
-  REASONING: 'reasoning',
-  LLM: 'llm',
-  MULTI_MODAL: 'multiModal',
-  IMAGE_GENERATION: 'imageGeneration',
+/** Every bucket of the aiModels config. Validators, routes and responses derive from this list. */
+export const AI_MODEL_TYPES = [
+  'llm',
+  'embedding',
+  'ocr',
+  'slm',
+  'reasoning',
+  'multiModal',
+  'imageGeneration',
+  'tts',
+  'stt',
+  'reranker',
+] as const;
+
+export type AIModelType = (typeof AI_MODEL_TYPES)[number];
+
+export const isAIModelType = (value: unknown): value is AIModelType =>
+  typeof value === 'string' && (AI_MODEL_TYPES as readonly string[]).includes(value);
+
+/** Model types the local model server can download, and the `kind` it loads them as. */
+export const LOCAL_MODEL_KINDS: Partial<Record<AIModelType, 'embedding' | 'reranker'>> = {
+  embedding: 'embedding',
+  reranker: 'reranker',
 };
 
 /**
@@ -126,6 +141,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Enable Container Permission Filter',
     description:
       'Scope searches by the containers a user can reach (connector, record group) instead of sending every accessible record id to the vector database. Bounds the filter sent to the vector database on large workspaces. Records in an APP_LEVEL connector or a RECORD_GROUP_LEVEL record group are granted on container membership, without a per-record permission check. Disable to fall back to the record-id path.',
+    defaultEnabled: false,
+  },
+  {
+    key: 'ENABLE_RERANKER',
+    label: 'Enable Reranker',
+    description:
+      'Reorder search results with the configured reranker model before the agent reads them, keeping the most relevant passages. Uses the default reranker model when none is configured under AI Models. Adds a reranking call to every search.',
     defaultEnabled: false,
   },
   {

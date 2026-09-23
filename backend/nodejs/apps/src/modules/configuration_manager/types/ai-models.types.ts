@@ -1,3 +1,5 @@
+import type { AIModelType } from '../constants/constants';
+
 /**
  * Model configuration for AI models
  */
@@ -26,16 +28,7 @@ export interface ModelRoleAssignment {
 /**
  * AI Models Configuration structure
  */
-export interface AIModelsConfig {
-  ocr?: AIModelConfiguration[];
-  embedding?: AIModelConfiguration[];
-  slm?: AIModelConfiguration[];
-  llm?: AIModelConfiguration[];
-  reasoning?: AIModelConfiguration[];
-  multiModal?: AIModelConfiguration[];
-  imageGeneration?: AIModelConfiguration[];
-  tts?: AIModelConfiguration[];
-  stt?: AIModelConfiguration[];
+export interface AIModelsConfig extends Partial<Record<AIModelType, AIModelConfiguration[]>> {
   /**
    * @deprecated Prompts are now stored at /services/systemPrompts via SystemPromptsConfig.
    * These fields remain here only so the OSS backward-compat GET fallback can read

@@ -13140,7 +13140,10 @@ components:
             - ENABLE_MCP: Allow agents to use MCP servers and show MCP server management in the UI
             - ENABLE_ACTIONS: Allow agents to use toolset actions and show Actions management in the UI
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
+            - ENABLE_PROJECTS: Organize conversations, files and instructions into project workspaces (default: false)
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
+            - ENABLE_CONTAINER_PERMISSION_FILTER: Scope searches by the containers a user can reach instead of every accessible record id (default: false)
+            - ENABLE_RERANKER: Reorder search results with the configured reranker model (default: false)
             - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
           example:
             ENABLE_BETA_CONNECTORS: false
@@ -13156,7 +13159,7 @@ components:
 
     ModelType:
       type: string
-      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration, tts, stt]
+      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration, tts, stt, reranker]
       description: Type of AI model
 
     AIModelProviderConfig:
@@ -13210,6 +13213,7 @@ components:
         - imageGeneration
         - tts
         - stt
+        - reranker
       properties:
         ocr:
           type: array
@@ -13247,6 +13251,13 @@ components:
         stt:
           type: array
           description: Speech-to-Text providers used to transcribe chat audio.
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        reranker:
+          type: array
+          description: |
+            Reranker models that reorder search results by relevance to the
+            query. Used only while the ENABLE_RERANKER feature flag is on.
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
         modelRoles:
@@ -13826,7 +13837,8 @@ components:
           type: string
           description: |
             Unique feature flag key. Current keys: ENABLE_BETA_CONNECTORS,
-            ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_SKILLS,
+            ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_PROJECTS,
+            ENABLE_SKILLS, ENABLE_CONTAINER_PERMISSION_FILTER, ENABLE_RERANKER,
             ENABLE_USER_CONTEXT.
           example: "ENABLE_BETA_CONNECTORS"
         label:
@@ -14420,6 +14432,13 @@ components:
             `owner/name` or bare-model-id form. Must match
             `^[\w.-]+(\/[\w.-]+)?$`.
           example: "BAAI/bge-m3"
+        modelType:
+          type: string
+          enum: [embedding, reranker]
+          default: embedding
+          description: |
+            Which kind of model to load. A reranker is loaded as a
+            cross-encoder; anything else is rejected with 400.
         trustRemoteCode:
           type: boolean
           default: false
@@ -38852,10 +38871,10 @@ paths:
                                   type: string
                                   description: Human-readable Zod validation message.
                                   example: >-
-                                    Invalid enum value. Expected 'ocr' |
-                                    'embedding' | 'llm' | 'slm' | 'reasoning' |
+                                    Invalid enum value. Expected 'llm' |
+                                    'embedding' | 'ocr' | 'slm' | 'reasoning' |
                                     'multiModal' | 'imageGeneration' | 'tts' |
-                                    'stt', received 'llmr'
+                                    'stt' | 'reranker', received 'llmr'
                                 code:
                                   type: string
                                   description: Machine-readable error code mapped from the Zod issue code.
@@ -38884,9 +38903,10 @@ paths:
                     errors:
                       - field: "params.modelType"
                         message: >-
-                          Invalid enum value. Expected 'ocr' | 'embedding' |
-                          'llm' | 'slm' | 'reasoning' | 'multiModal' |
-                          'imageGeneration' | 'tts' | 'stt', received 'llmr'
+                          Invalid enum value. Expected 'llm' | 'embedding' |
+                          'ocr' | 'slm' | 'reasoning' | 'multiModal' |
+                          'imageGeneration' | 'tts' | 'stt' | 'reranker',
+                          received 'llmr'
                         code: INVALID_ENUM
                         value: ""
         '401':
@@ -39113,7 +39133,7 @@ paths:
         - name: modelType
           in: path
           required: true
-          description: Model category (ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt)
+          description: Model category (ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, reranker)
           schema:
             $ref: '#/components/schemas/ModelType'
         - name: modelKey
@@ -39750,7 +39770,10 @@ paths:
         - ENABLE_MCP: Enable MCP servers (default: false)
         - ENABLE_ACTIONS: Enable toolset actions (default: true)
         - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
+        - ENABLE_PROJECTS: Organize conversations, files and instructions into project workspaces (default: false)
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
+        - ENABLE_CONTAINER_PERMISSION_FILTER: Scope searches by the containers a user can reach instead of every accessible record id (default: false)
+        - ENABLE_RERANKER: Reorder search results with the configured reranker model (default: false)
         - ENABLE_USER_CONTEXT: Include user name, email, and organization in default assistant / Universal Agent system prompts (default: true)
       operationId: setPlatformSettings
       security:
@@ -40784,6 +40807,7 @@ paths:
               - video
               - ocr
               - reasoning
+              - reranking
           description: Filter providers by capability
       responses:
         '200':

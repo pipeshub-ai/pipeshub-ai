@@ -658,6 +658,18 @@ describe('ConfigurationManager Controller', () => {
       expect(skillsFlag.defaultEnabled).to.equal(true)
     })
 
+    it('should include ENABLE_RERANKER, defaulting to disabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const res = createMockResponse()
+
+      await handler(createMockRequest(), res, createMockNext())
+
+      const flags = res.json.firstCall.args[0].flags
+      const rerankerFlag = flags.find((f: any) => f.key === 'ENABLE_RERANKER')
+      expect(rerankerFlag).to.exist
+      expect(rerankerFlag.defaultEnabled).to.equal(false)
+    })
+
     it('should include ENABLE_USER_CONTEXT, defaulting to enabled', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()
@@ -4939,6 +4951,62 @@ describe('ConfigurationManager Controller', () => {
       }
     })
 
+    it('should publish no ai-config event for a reranker, which is read per request', async () => {
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(null) })
+      const eventService = createMockEventService()
+      const appConfig = { aiBackend: 'http://localhost:8000', cmBackend: 'http://localhost:3001' } as any
+      const healthCheck = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'healthy' },
+      } as any)
+
+      const handler = addAIModelProvider(kvs, eventService, appConfig)
+      const req = createMockRequest({
+        body: {
+          modelType: 'reranker',
+          provider: 'cohere',
+          configuration: { model: 'rerank-v3.5', apiKey: 'k' },
+          isDefault: true,
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(healthCheck.calledOnce).to.be.true
+      const saved = JSON.parse(mockEncService.decrypt(kvs.set.firstCall.args[1]))
+      expect(saved.reranker).to.have.length(1)
+      expect(eventService.publishEvent.called).to.be.false
+    })
+
+    it('should still publish the embedding event for an embedding model', async () => {
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(null) })
+      const eventService = createMockEventService()
+      const appConfig = { aiBackend: 'http://localhost:8000', cmBackend: 'http://localhost:3001' } as any
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'healthy' },
+      } as any)
+
+      const handler = addAIModelProvider(kvs, eventService, appConfig)
+      const req = createMockRequest({
+        body: {
+          modelType: 'embedding',
+          provider: 'openai',
+          configuration: { model: 'text-embedding-3-small', apiKey: 'sk-test' },
+          isDefault: true,
+        },
+      })
+
+      await handler(req, createMockResponse(), createMockNext())
+
+      expect(eventService.publishEvent.calledOnce).to.be.true
+      expect(eventService.publishEvent.firstCall.args[0].eventType).to.equal('embeddingModelConfigured')
+    })
+
     it('should set new model as default and unset others', async () => {
       const existingConfig = {
         llm: [{ provider: 'openai', configuration: { model: 'gpt-3.5' }, modelKey: 'existing-key', isDefault: true }],
@@ -6605,7 +6673,7 @@ describe('ConfigurationManager Controller', () => {
 
     it('should proxy to the embedding server and return its status on success', async () => {
       const scope = nock('http://localhost:8002')
-        .post('/prepare-model', { model: 'BAAI/bge-m3', trust_remote_code: false })
+        .post('/prepare-model', { model: 'BAAI/bge-m3', trust_remote_code: false, kind: 'embedding' })
         .reply(202, { model: 'BAAI/bge-m3', status: 'downloading', progress: 0 })
 
       const handler = prepareEmbeddingModel()
@@ -6623,7 +6691,7 @@ describe('ConfigurationManager Controller', () => {
 
     it('should pass trustRemoteCode through to the embedding server', async () => {
       const scope = nock('http://localhost:8002')
-        .post('/prepare-model', { model: 'org/model', trust_remote_code: true })
+        .post('/prepare-model', { model: 'org/model', trust_remote_code: true, kind: 'embedding' })
         .reply(202, { model: 'org/model', status: 'ready', progress: 100 })
 
       const handler = prepareEmbeddingModel()
@@ -6635,6 +6703,39 @@ describe('ConfigurationManager Controller', () => {
 
       expect(scope.isDone()).to.be.true
       expect(res.status.calledWith(202)).to.be.true
+    })
+
+    it('should load a reranker as a reranker', async () => {
+      const scope = nock('http://localhost:8002')
+        .post('/prepare-model', {
+          model: 'BAAI/bge-reranker-v2-m3',
+          trust_remote_code: false,
+          kind: 'reranker',
+        })
+        .reply(202, { model: 'BAAI/bge-reranker-v2-m3', status: 'downloading', progress: 0 })
+
+      const handler = prepareEmbeddingModel()
+      const req = createMockRequest({
+        body: { model: 'BAAI/bge-reranker-v2-m3', modelType: 'reranker' },
+      })
+      const res = createMockResponse()
+
+      await handler(req, res, createMockNext())
+
+      expect(scope.isDone()).to.be.true
+      expect(res.status.calledWith(202)).to.be.true
+    })
+
+    it('should reject a model type the model server cannot load', async () => {
+      const handler = prepareEmbeddingModel()
+      const req = createMockRequest({ body: { model: 'gpt-4o', modelType: 'llm' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(next.called).to.be.false
     })
 
     it('should relay the embedding server error response when the request fails', async () => {

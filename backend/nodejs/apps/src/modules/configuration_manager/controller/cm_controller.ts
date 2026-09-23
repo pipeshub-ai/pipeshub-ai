@@ -58,7 +58,13 @@ import {
   AIServiceCommand,
 } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
+import {
+  AI_MODEL_TYPES,
+  AIModelType,
+  isAIModelType,
+  LOCAL_MODEL_KINDS,
+  PLATFORM_FEATURE_FLAGS,
+} from '../constants/constants';
 import { getPlatformSettingsFromStore } from '../utils/util';
 import { AIModelConfiguration, AIModelsConfig, SystemPromptsConfig } from '../types/ai-models.types';
 import { WebSearchConfig } from '../types/web-search.types';
@@ -2562,6 +2568,38 @@ export const setMetricsCollectionRemoteServer =
     }
   };
 
+function emptyModelBuckets(): Record<AIModelType, AIModelConfiguration[]> {
+  return Object.fromEntries(AI_MODEL_TYPES.map((type) => [type, []])) as unknown as Record<
+    AIModelType,
+    AIModelConfiguration[]
+  >;
+}
+
+/**
+ * The event that tells downstream services to drop their cached client for a
+ * model type. Embedding changes MUST NOT use the LLM event: the Python
+ * retrieval service only invalidates its embedding instance on
+ * `embeddingModelConfigured`. Rerankers need none, because the query service
+ * reads their config on every request.
+ */
+function aiConfigEventFor(modelType: string, appConfig: AppConfig): Event | null {
+  if (modelType === 'reranker') {
+    return null;
+  }
+  const payload = { credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}` };
+  return modelType === 'embedding'
+    ? {
+        eventType: EventType.EmbeddingModelConfiguredEvent,
+        timestamp: Date.now(),
+        payload: payload as EmbeddingModelConfiguredEvent,
+      }
+    : {
+        eventType: EventType.LLMConfiguredEvent,
+        timestamp: Date.now(),
+        payload: payload as LLMConfiguredEvent,
+      };
+}
+
 async function sendEvent(eventService: EntitiesEventProducer | AiConfigEventProducer, event: Event) {
   try {
     await eventService.start();
@@ -2759,17 +2797,7 @@ export const getAIModelsProviders =
       if (!encryptedAIConfig) {
         res.status(200).json({
           status: 'success',
-          models: {
-            ocr: [],
-            embedding: [],
-            slm: [],
-            llm: [],
-            reasoning: [],
-            multiModal: [],
-            imageGeneration: [],
-            tts: [],
-            stt: [],
-          },
+          models: emptyModelBuckets(),
           message: 'No AI models found',
         });
         return;
@@ -2783,19 +2811,7 @@ export const getAIModelsProviders =
       );
 
       // Ensure all top-level keys exist
-      const defaultStructure = {
-        ocr: [],
-        embedding: [],
-        slm: [],
-        llm: [],
-        reasoning: [],
-        multiModal: [],
-        imageGeneration: [],
-        tts: [],
-        stt: [],
-      };
-
-      for (const key of Object.keys(defaultStructure)) {
+      for (const key of AI_MODEL_TYPES) {
         if (!aiModels[key]) {
           aiModels[key] = [];
         }
@@ -2827,21 +2843,10 @@ export const getModelsByType =
         });
         return;
       }
-      const validTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-        'imageGeneration',
-        'tts',
-        'stt',
-      ];
-      if (!validTypes.includes(modelType)) {
+      if (!isAIModelType(modelType)) {
         res.status(400).json({
           status: 'error',
-          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
+          message: `Invalid model type. Must be one of: ${AI_MODEL_TYPES.join(', ')}`,
         });
         return;
       }
@@ -2899,21 +2904,10 @@ export const getAvailableModelsByType =
         return;
       }
       // Validate model type
-      const validTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-        'imageGeneration',
-        'tts',
-        'stt',
-      ];
-      if (!validTypes.includes(modelType)) {
+      if (!isAIModelType(modelType)) {
         res.status(400).json({
           status: 'error',
-          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
+          message: `Invalid model type. Must be one of: ${AI_MODEL_TYPES.join(', ')}`,
         });
         return;
       }
@@ -3021,7 +3015,7 @@ export const prepareEmbeddingModel =
   () =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { model, trustRemoteCode = false } = req.body;
+      const { model, trustRemoteCode = false, modelType = 'embedding' } = req.body;
 
       if (!model || typeof model !== 'string' || !MODEL_NAME_PATTERN.test(model)) {
         res.status(400).json({
@@ -3030,17 +3024,25 @@ export const prepareEmbeddingModel =
         });
         return;
       }
+      const kind = isAIModelType(modelType) ? LOCAL_MODEL_KINDS[modelType] : undefined;
+      if (!kind) {
+        res.status(400).json({
+          status: 'error',
+          message: `Only ${Object.keys(LOCAL_MODEL_KINDS).join(', ')} models can be downloaded`,
+        });
+        return;
+      }
 
       const embeddingServerUrl = resolveEmbeddingServerUrl();
       const response = await axios.post(
         `${embeddingServerUrl}/prepare-model`,
-        { model, trust_remote_code: Boolean(trustRemoteCode) },
+        { model, trust_remote_code: Boolean(trustRemoteCode), kind },
         { timeout: 5000 },
       );
 
       res.status(response.status).json(response.data);
     } catch (error: any) {
-      logger.error('Error preparing embedding model', { error });
+      logger.error('Error preparing local model', { error });
       if (error.response) {
         res.status(error.response.status).json(error.response.data);
         return;
@@ -3147,21 +3149,10 @@ export const addAIModelProvider =
       }
 
       // Validate model type
-      const validTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-        'imageGeneration',
-        'tts',
-        'stt',
-      ];
-      if (!validTypes.includes(modelType)) {
+      if (!isAIModelType(modelType)) {
         res.status(400).json({
           status: 'error',
-          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
+          message: `Invalid model type. Must be one of: ${AI_MODEL_TYPES.join(', ')}`,
         });
         return;
       }
@@ -3228,18 +3219,7 @@ export const addAIModelProvider =
       }
 
       // Ensure all top-level keys exist
-      const defaultStructure = {
-        ocr: [],
-        embedding: [],
-        slm: [],
-        llm: [],
-        reasoning: [],
-        multiModal: [],
-        imageGeneration: [],
-        tts: [],
-        stt: [],
-      };
-      for (const key of Object.keys(defaultStructure)) {
+      for (const key of AI_MODEL_TYPES) {
         if (!(key in aiModels)) {
           aiModels[key] = [];
         }
@@ -3294,27 +3274,10 @@ export const addAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      // Emit an event specific to the model type so downstream services
-      // refresh the right cache. Embedding changes MUST NOT use the LLM
-      // event because the Python retrieval service only invalidates its
-      // embedding instance on `embeddingModelConfigured`.
-      const event: Event =
-        modelType === 'embedding'
-          ? {
-              eventType: EventType.EmbeddingModelConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as EmbeddingModelConfiguredEvent,
-            }
-          : {
-              eventType: EventType.LLMConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as LLMConfiguredEvent,
-            };
-      await sendEvent(eventService, event);
+      const event = aiConfigEventFor(modelType, appConfig);
+      if (event) {
+        await sendEvent(eventService, event);
+      }
 
       res.status(200).json({
         status: 'success',
@@ -3510,23 +3473,10 @@ export const updateAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      const event: Event =
-        targetModelType === 'embedding'
-          ? {
-              eventType: EventType.EmbeddingModelConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as EmbeddingModelConfiguredEvent,
-            }
-          : {
-              eventType: EventType.LLMConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as LLMConfiguredEvent,
-            };
-      await sendEvent(eventService, event);
+      const event = aiConfigEventFor(targetModelType, appConfig);
+      if (event) {
+        await sendEvent(eventService, event);
+      }
       const modelForResponse = stripAiModelSecrets(
         targetModel as AIModelConfiguration,
       );
@@ -3717,23 +3667,10 @@ export const deleteAIModelProvider =
         encryptedUpdatedConfig,
       );
 
-      const event: Event =
-        targetModelType === 'embedding'
-          ? {
-              eventType: EventType.EmbeddingModelConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as EmbeddingModelConfiguredEvent,
-            }
-          : {
-              eventType: EventType.LLMConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as LLMConfiguredEvent,
-            };
-      await sendEvent(eventService, event);
+      const event = aiConfigEventFor(targetModelType, appConfig);
+      if (event) {
+        await sendEvent(eventService, event);
+      }
       const modelForResponse = stripAiModelSecrets(
         deletedModel as AIModelConfiguration,
       );
@@ -3840,18 +3777,7 @@ export const updateDefaultAIModel =
       // changes). For other model types we use the generic per-model
       // `/health-check/{type}` endpoint which validates reachability and
       // credentials.
-      const healthCheckSupportedTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-        'imageGeneration',
-        'tts',
-        'stt',
-      ];
-      if (healthCheckSupportedTypes.includes(targetModelType)) {
+      if (isAIModelType(targetModelType)) {
         const healthCheckPayload = {
           provider: targetModel.provider,
           configuration: targetModel.configuration,
@@ -3924,23 +3850,10 @@ export const updateDefaultAIModel =
         encryptedUpdatedConfig,
       );
 
-      const event: Event =
-        targetModelType === 'embedding'
-          ? {
-              eventType: EventType.EmbeddingModelConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as EmbeddingModelConfiguredEvent,
-            }
-          : {
-              eventType: EventType.LLMConfiguredEvent,
-              timestamp: Date.now(),
-              payload: {
-                credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-              } as LLMConfiguredEvent,
-            };
-      await sendEvent(eventService, event);
+      const event = aiConfigEventFor(targetModelType, appConfig);
+      if (event) {
+        await sendEvent(eventService, event);
+      }
 
       res.status(200).json({
         status: 'success',
@@ -4902,10 +4815,6 @@ export const updateModelRoles =
 
       // Validate each role assignment: the modelKey must exist in the
       // specified modelType array, and modelType must be a valid bucket.
-      const validModelTypes = [
-        'llm', 'slm', 'embedding', 'ocr', 'reasoning', 'multiModal',
-        'imageGeneration', 'tts', 'stt',
-      ];
 
       for (const [roleName, assignment] of Object.entries(roles)) {
         if (!assignment || typeof assignment !== 'object' || Array.isArray(assignment)) {
@@ -4926,7 +4835,7 @@ export const updateModelRoles =
           return;
         }
 
-        if (!validModelTypes.includes(modelType)) {
+        if (!isAIModelType(modelType)) {
           res.status(400).json({
             status: 'error',
             message: `Role "${roleName}": modelType "${modelType}" is not valid`,
