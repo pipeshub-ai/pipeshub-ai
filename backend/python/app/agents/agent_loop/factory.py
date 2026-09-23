@@ -128,6 +128,7 @@ from app.agents.agent_loop.hooks import (
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
 )
+from app.agents.agent_loop.hooks.duplicate_blocks import shape_duplicate_block_elision
 from app.agents.agent_loop.hooks.progressive_tools import (
     ENTITY_TOOL_NAMES,
     PROGRESSIVE_TOOL_NAMES,
@@ -1030,6 +1031,10 @@ class PipesHubAgentFactory:
             ))
 
         hooks.on(HookEvent.PRE_MODEL).use(shape_synthesis_guard())            # L8
+        # Last before pairing repair: it removes a knowledge block's extra
+        # copies from the view the model is about to get, so it must see what
+        # every shaper above already cleared, truncated or compacted.
+        hooks.on(HookEvent.PRE_MODEL).use(shape_duplicate_block_elision(context))  # L8.5
         hooks.on(HookEvent.PRE_MODEL).use(shape_tool_pairing_repair())       # L9
 
         # LLM transport retry (429/5xx/network) with SSE "retrying..." status

@@ -458,6 +458,19 @@ class TestCreate:
         assert isinstance(agent.spec.loop, ReActLoop)
 
 
+class TestDuplicateBlockElisionWiring:
+    def test_runs_after_every_shaper_that_can_change_the_view(self) -> None:
+        """It must see what clearing, compaction and the synthesis guard left,
+        and pairing repair must still see its output."""
+        hooks = PipesHubAgentFactory._build_hooks(make_context(llm=FakeChatModel()))
+        names = _pre_model_qualnames(hooks)
+
+        position = next(i for i, n in enumerate(names) if "shape_duplicate_block_elision" in n)
+        assert position > next(i for i, n in enumerate(names) if "shape_synthesis_guard" in n)
+        assert position > next(i for i, n in enumerate(names) if "shape_deterministic_compact" in n)
+        assert position < next(i for i, n in enumerate(names) if "shape_tool_pairing_repair" in n)
+
+
 class TestRetrievedImageInjectionHookWiring:
     """`shape_retrieved_image_injection` (the Ollama PRE_MODEL fallback for
     images stripped out of multipart `ToolMessage` content) must be
