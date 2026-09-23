@@ -1,6 +1,7 @@
 """Tests for ``app.agents.actions.knowledge_graph.ops.search``."""
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -435,6 +436,25 @@ class TestExecuteSearchFullPath:
             await execute_search(state, "test query")
 
         assert mock_builder.return_value.build.call_args.kwargs["max_units"] == 50
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_record_written_by_a_parallel_fetch_survives(self, mock_parse) -> None:
+        """Fetch writes into the records map it was handed; a search in the
+        same turn must add to that dict, not swap in a new one."""
+        state = _full_path_state(_one_hit_retrieval())
+        live = state["virtual_record_id_to_result"] = {"vr-old": {"id": "r-old"}}
+
+        async def parallel_fetch() -> None:
+            await asyncio.sleep(0)
+            live["vr-fetched"] = {"id": "r-fetched"}
+
+        builder_patch, render_patch, blob_patch = _pipeline()
+        with builder_patch, render_patch, blob_patch:
+            await asyncio.gather(execute_search(state, "test query"), parallel_fetch())
+
+        assert state["virtual_record_id_to_result"] is live
+        assert {"vr-old", "vr1", "vr-fetched"} <= live.keys()
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
