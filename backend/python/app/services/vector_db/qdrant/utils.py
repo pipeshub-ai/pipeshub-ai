@@ -182,6 +182,16 @@ class QdrantUtils:
             else None
         )
 
+        # Single-leg dense query: bypass RRF to preserve cosine score
+        if req.dense_query is not None and req.sparse_query is None and getattr(req, 'text_query', None) is None:
+            return QueryRequest(
+                query=req.dense_query,
+                using="dense",
+                with_payload=req.with_payload,
+                limit=req.limit,
+                filter=qdrant_filter,
+            )
+
         # Only RRF is supported; default to RRF if anything else is requested
         fusion = Fusion.RRF
 

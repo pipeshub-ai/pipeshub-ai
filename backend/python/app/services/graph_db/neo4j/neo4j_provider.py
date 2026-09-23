@@ -19622,3 +19622,37 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error("❌ Failed to get app creator user: %s", str(e))
             return None
+
+    async def get_corpus_revision(self, org_id: str) -> str:
+        """Get the current corpus revision for an organization."""
+        if not self.client:
+            return "0"
+        query = """
+        MATCH (r:CorpusRevision {orgId: $org_id})
+        RETURN toString(r.revision) AS revision
+        """
+        try:
+            results = await self.client.execute_query(query, {"org_id": org_id})
+            if results and results[0].get("revision") is not None:
+                return str(results[0]["revision"])
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get corpus revision for {org_id}: {e}")
+        return "0"
+
+    async def increment_corpus_revision(self, org_id: str) -> str:
+        """Atomically increment and return the corpus revision for an organization."""
+        if not self.client:
+            return "0"
+        query = """
+        MERGE (r:CorpusRevision {orgId: $org_id})
+        ON CREATE SET r.revision = 1
+        ON MATCH SET r.revision = coalesce(r.revision, 0) + 1
+        RETURN toString(r.revision) AS revision
+        """
+        try:
+            results = await self.client.execute_query(query, {"org_id": org_id})
+            if results and results[0].get("revision") is not None:
+                return str(results[0]["revision"])
+        except Exception as e:
+            self.logger.error(f"❌ Failed to increment corpus revision for {org_id}: {e}")
+        return "0"

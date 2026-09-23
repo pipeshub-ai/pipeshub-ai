@@ -1378,6 +1378,15 @@ async def update_record(
                 detail=error_reason
             )
 
+        # Increment corpus revision
+        try:
+            org_id = request.state.user.get("orgId")
+            if org_id:
+                graph_provider = request.app.state.graph_provider
+                await graph_provider.increment_corpus_revision(org_id)
+        except Exception as e:
+            logger.warning(f"Could not increment corpus revision for org: {e}")
+
         # Publish update event
         event_data = result.get("eventData")
         if event_data and event_data.get("payload"):
@@ -1523,6 +1532,15 @@ async def delete_records_in_kb(
                 detail=error_reason
             )
 
+        if result and result.get("success") is True:
+            try:
+                org_id = request.state.user.get("orgId")
+                if org_id:
+                    graph_provider = request.app.state.graph_provider
+                    await graph_provider.increment_corpus_revision(org_id)
+            except Exception as e:
+                _log.warning(f"Could not increment corpus revision for org: {e}")
+
         return result
 
     except HTTPException as he:
@@ -1574,6 +1592,15 @@ async def delete_record_in_folder(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                 detail=error_reason
             )
+
+        if result and result.get("success") is True:
+            try:
+                org_id = request.state.user.get("orgId")
+                if org_id:
+                    graph_provider = request.app.state.graph_provider
+                    await graph_provider.increment_corpus_revision(org_id)
+            except Exception as e:
+                _log.warning(f"Could not increment corpus revision for org: {e}")
 
         return result
 

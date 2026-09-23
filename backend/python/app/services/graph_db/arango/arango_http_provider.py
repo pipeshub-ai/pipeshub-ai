@@ -22723,3 +22723,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error("❌ Failed to update agent template: %s", str(e))
             return False
+
+    async def get_corpus_revision(self, org_id: str) -> str:
+        """Get the current corpus revision for an organization."""
+        query = """
+        LET r = DOCUMENT("CorpusRevision", @org_id)
+        RETURN r != null ? TO_STRING(r.revision) : "0"
+        """
+        try:
+            results = await self.execute_query(query, bind_vars={"org_id": org_id})
+            if results and results[0] is not None:
+                return str(results[0])
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get corpus revision for {org_id}: {e}")
+        return "0"
+
+    async def increment_corpus_revision(self, org_id: str) -> str:
+        """Atomically increment and return the corpus revision for an organization."""
+        query = """
+        UPSERT { _key: @org_id }
+        INSERT { _key: @org_id, orgId: @org_id, revision: 1 }
+        UPDATE { revision: OLD.revision + 1 }
+        IN CorpusRevision
+        RETURN TO_STRING(NEW.revision)
+        """
+        try:
+            results = await self.execute_query(query, bind_vars={"org_id": org_id})
+            if results and results[0] is not None:
+                return str(results[0])
+        except Exception as e:
+            self.logger.error(f"❌ Failed to increment corpus revision for {org_id}: {e}")
+        return "0"

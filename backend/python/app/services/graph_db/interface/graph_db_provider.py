@@ -5126,3 +5126,19 @@ class IGraphDBProvider(ABC):
             }
         """
         pass
+
+    @abstractmethod
+    async def get_corpus_revision(self, org_id: str) -> str:
+        """Get the current corpus revision for an organization.
+        
+        Returns a string representation of the revision (e.g. "0" if not set).
+        """
+        pass
+
+    @abstractmethod
+    async def increment_corpus_revision(self, org_id: str) -> str:
+        """Atomically increment and return the corpus revision for an organization.
+        
+        Returns the new revision string.
+        """
+        pass

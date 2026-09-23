@@ -1270,61 +1270,97 @@ async def askAIStream(
         async def cached_or_live_stream(base_stream):
             from app.services.cache.semantic_cache import SemanticCacheService, hash_filters
             from app.agents.agent_loop.protocol import frame, AGUIEventType
+            from app.agents.agent_loop.protocol.agui import new_id
             import asyncio
             query_vector = None
             filters_hash_val = "none"
             semantic_cache = semantic_cache_service
+            corpus_revision = None
+            org_id = _chat_user.get("orgId")
             
             try:
                 await semantic_cache.initialize()
-                cache_scope = {
-                    "orgId": _chat_user.get("orgId"),
-                    "userId": _chat_user.get("userId"),
-                    "permissionsRevision": _chat_user.get("permissionsRevision", "0"),
-                    "filters": query_info.filters,
-                }
-                filters_hash_val = hash_filters(cache_scope)
                 
-                await retrieval_service.get_embedding_model_instance()
-                if retrieval_service.dense_embeddings:
-                    query_vector = await retrieval_service.dense_embeddings.aembed_query(query_info.query)
-                    if query_vector:
-                        cached_resp = await semantic_cache.get_cached_response(
-                            query_info.query, query_vector, filters_hash_val
-                        )
-                        if cached_resp:
-                            start = frame(AGUIEventType.RUN_START, run_id="cached")
-                            yield f"event: {start['event']}\ndata: {json.dumps(start['data'])}\n\n"
-                            chunk = frame(AGUIEventType.TEXT_DELTA, text=cached_resp)
-                            yield f"event: {chunk['event']}\ndata: {json.dumps(chunk['data'])}\n\n"
-                            end = frame(AGUIEventType.RUN_END)
-                            yield f"event: {end['event']}\ndata: {json.dumps(end['data'])}\n\n"
-                            return
+                try:
+                    corpus_revision = await graph_provider.get_corpus_revision(org_id)
+                except Exception:
+                    corpus_revision = None
+
+                if corpus_revision is not None:
+                    effective_filters = dict(query_info.filters or {})
+                    if query_info.strictScope:
+                        effective_filters["strictScope"] = True
+
+                    cache_scope = {
+                        "orgId": org_id,
+                        "userId": _chat_user.get("userId"),
+                        "permissionsRevision": _chat_user.get("permissionsRevision", "0"),
+                        "corpusRevision": corpus_revision,
+                        "filters": effective_filters,
+                    }
+                    filters_hash_val = hash_filters(cache_scope)
+                    
+                    await retrieval_service.get_embedding_model_instance()
+                    if retrieval_service.dense_embeddings:
+                        query_vector = await retrieval_service.dense_embeddings.aembed_query(query_info.query)
+                        if query_vector:
+                            cached_resp = await semantic_cache.get_cached_response(
+                                query_info.query, query_vector, filters_hash_val
+                            )
+                            if cached_resp:
+                                run_id = query_info.runId or new_id("run")
+                                conv_id = query_info.conversationId or new_id("conv")
+                                msg_id = new_id("msg")
+
+                                events = [
+                                    frame(AGUIEventType.RUN_STARTED, runId=run_id, conversationId=conv_id),
+                                    frame(AGUIEventType.TEXT_MESSAGE_START, messageId=msg_id, runId=run_id, role="assistant"),
+                                    frame(AGUIEventType.TEXT_MESSAGE_CONTENT, messageId=msg_id, delta=cached_resp, runId=run_id),
+                                    frame(AGUIEventType.TEXT_MESSAGE_END, messageId=msg_id, runId=run_id),
+                                    frame(AGUIEventType.RUN_FINISHED, runId=run_id)
+                                ]
+                                for e in events:
+                                    yield f"event: {e['event']}\ndata: {json.dumps(e['data'])}\n\n"
+                                return
             except Exception:
                 logger.warning("Semantic cache lookup failed", exc_info=True)
 
             # If no cache hit, run the live stream and accumulate text
             full_response_parts = []
+            run_finished = False
+            run_failed = False
             try:
                 async for chunk in base_stream:
                     yield chunk
-                    if chunk.startswith("event: text_delta"):
+                    if chunk.startswith("event: "):
                         try:
-                            data_line = chunk.split("\ndata: ")[1].strip()
+                            event_line, data_line = chunk.split("\ndata: ", 1)
+                            event_name = event_line.removeprefix("event: ").strip()
                             data_obj = json.loads(data_line)
-                            if "text" in data_obj:
-                                full_response_parts.append(data_obj["text"])
+                            
+                            if event_name == "TEXT_MESSAGE_CONTENT" and "delta" in data_obj:
+                                full_response_parts.append(data_obj["delta"])
+                            elif event_name == "RUN_ERROR":
+                                run_failed = True
+                            elif event_name == "RUN_FINISHED":
+                                run_finished = True
                         except Exception:
-                            logger.debug("Failed to parse text_delta for caching", exc_info=True)
+                            pass
 
                 # After stream completes, save to cache asynchronously
-                if query_vector and full_response_parts:
+                if query_vector and corpus_revision is not None and run_finished and not run_failed and full_response_parts:
                     full_text = "".join(full_response_parts)
-                    asyncio.create_task(
-                        semantic_cache.set_cached_response(
-                            query_info.query, full_text, query_vector, filters_hash_val
+                    try:
+                        current_revision = await graph_provider.get_corpus_revision(org_id)
+                    except Exception:
+                        current_revision = None
+                        
+                    if current_revision is not None and current_revision == corpus_revision:
+                        asyncio.create_task(
+                            semantic_cache.set_cached_response(
+                                query_info.query, full_text, query_vector, filters_hash_val
+                            )
                         )
-                    )
             except Exception:
                 logger.exception("Error during stream generation")
                 raise

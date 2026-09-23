@@ -2146,6 +2146,14 @@ async def delete_record(
         )
 
         if result["success"]:
+            # Increment corpus revision to invalidate cache
+            try:
+                org_id = request.state.user.get("orgId")
+                if org_id:
+                    await graph_provider.increment_corpus_revision(org_id)
+            except Exception as e:
+                logger.warning(f"Could not increment corpus revision for org: {e}")
+
             # Publish deletion event. The graph deletion above has already
             # committed, so a publish failure here cannot be undone by failing
             # the request — that would misreport an already-completed deletion.
