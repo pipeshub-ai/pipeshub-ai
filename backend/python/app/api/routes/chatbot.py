@@ -1300,8 +1300,8 @@ async def askAIStream(
                             end = frame(AGUIEventType.RUN_END)
                             yield f"event: {end['event']}\ndata: {json.dumps(end['data'])}\n\n"
                             return
-            except Exception as e:
-                logger.error(f"Semantic cache lookup failed: {e}")
+            except Exception:
+                logger.warning("Semantic cache lookup failed", exc_info=True)
 
             # If no cache hit, run the live stream and accumulate text
             full_response_parts = []
@@ -1314,8 +1314,8 @@ async def askAIStream(
                             data_obj = json.loads(data_line)
                             if "text" in data_obj:
                                 full_response_parts.append(data_obj["text"])
-                        except Exception as e:
-                            logger.debug(f"Failed to parse text_delta for caching: {e}")
+                        except Exception:
+                            logger.debug("Failed to parse text_delta for caching", exc_info=True)
 
                 # After stream completes, save to cache asynchronously
                 if query_vector and full_response_parts:
@@ -1325,8 +1325,9 @@ async def askAIStream(
                             query_info.query, full_text, query_vector, filters_hash_val
                         )
                     )
-            except Exception as e:
-                logger.error(f"Error during stream generation: {e}")
+            except Exception:
+                logger.exception("Error during stream generation")
+                raise
 
         final_stream = cached_or_live_stream(original_stream)
     else:
