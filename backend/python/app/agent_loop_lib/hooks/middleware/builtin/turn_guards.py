@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.agent_loop_lib.core.types import UserMessage
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.hooks.middleware.builtin.budget_guard import require_budget
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext, TurnContext
+
+if TYPE_CHECKING:
+    from app.agent_loop_lib.core.scope import TurnScope
 
 """Deterministic per-turn guards, extracted from `Agent.run()`'s inline
 `if config.budget...`/`if config.cancellation_token...`/"2 turns left"
@@ -35,6 +40,7 @@ hooks`, see `control_plane.py`) for the specific roles that want them.
 
 __all__ = [
     "check_not_cancelled",
+    "deadline_note",
     "install_stall_detection",
     "install_supervisor_confidence_gate",
     "install_turn_guards",
@@ -67,6 +73,40 @@ def check_not_cancelled(cancellation_token: object):
     return _middleware
 
 
+_TASK_COMPLETE = "task_complete"
+
+
+def _can_call(scope: TurnScope | None, tool_name: str) -> bool:
+    """Whether this run may call `tool_name`: registered, and inside the
+    spec's grant (an empty grant means every registered tool)."""
+    if scope is None:
+        return False
+    run = scope.run
+    registry = getattr(run.runtime, "tool_registry", None)
+    if registry is None or not registry.has(tool_name):
+        return False
+    granted = run.spec.tool_names
+    return not granted or tool_name in granted
+
+
+def deadline_note(turns_left: int, scope: TurnScope | None) -> str:
+    """The wrap-up note, naming only a way to finish this run actually has.
+
+    Agents built without `task_complete` finish with a plain-text reply, and
+    telling one to call a tool it does not have leaves it no valid move.
+    """
+    finish = (
+        f"call {_TASK_COMPLETE} with your best answer"
+        if _can_call(scope, _TASK_COMPLETE)
+        else "reply with your final answer as plain text, without calling any tools"
+    )
+    return (
+        f"[You have {turns_left} turns left. Stop gathering information and "
+        f"{finish}, using what you have found. Say which parts you could not "
+        "confirm.]"
+    )
+
+
 def warn_before_deadline(warn_at_turns_left: int = 2):
     """PRE_MODEL middleware: nudges the model to wrap up `warn_at_turns_left`
     turns before `ctx.max_turns` is hit, so it can synthesize gracefully
@@ -75,12 +115,8 @@ def warn_before_deadline(warn_at_turns_left: int = 2):
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
         if ctx.max_turns is not None and (ctx.max_turns - ctx.turn_index) == warn_at_turns_left:
             ctx.messages.append(UserMessage(
-                content=(
-                    f"[System: You have {warn_at_turns_left} turns remaining. "
-                    "Stop gathering information now. "
-                    "Synthesise everything you have found and call task_complete immediately "
-                    "with your best answer. Do not make any more search or scrape calls.]"
-                ),
+                content=deadline_note(warn_at_turns_left, ctx.scope),
+                injected=True,
             ))
         await next_fn()
 
