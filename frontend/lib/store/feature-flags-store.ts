@@ -99,4 +99,8 @@ export const selectSkillsEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_SKI
 export const selectUserContextEnabled = (s: FeatureFlagsStore) =>
   s.flags?.ENABLE_USER_CONTEXT !== false;
 
+/** Reranking defaults to disabled; admins opt in from Labs. */
+export const selectRerankerEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_RERANKER === true;
+
 export type FeatureFlagGate = 'mcp' | 'actions' | 'skills';

@@ -15,6 +15,7 @@ import {
   selectVectorStoreRebuildEnabled,
   selectSkillsEnabled,
   selectUserContextEnabled,
+  selectRerankerEnabled,
 } from '../feature-flags-store';
 
 describe('feature-flags-store selectors', () => {
@@ -110,6 +111,16 @@ describe('feature-flags-store selectors', () => {
     it('is false only when explicitly false', () => {
       useFeatureFlagsStore.setState({ flags: { ENABLE_USER_CONTEXT: false } });
       expect(selectUserContextEnabled(useFeatureFlagsStore.getState())).toBe(false);
+    });
+  });
+
+  describe('selectRerankerEnabled (defaults to disabled)', () => {
+    it('is false until the flag is loaded and on', () => {
+      expect(selectRerankerEnabled(useFeatureFlagsStore.getState())).toBe(false);
+      useFeatureFlagsStore.setState({ flags: {} });
+      expect(selectRerankerEnabled(useFeatureFlagsStore.getState())).toBe(false);
+      useFeatureFlagsStore.setState({ flags: { ENABLE_RERANKER: true } });
+      expect(selectRerankerEnabled(useFeatureFlagsStore.getState())).toBe(true);
     });
   });
 });

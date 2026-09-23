@@ -11,6 +11,7 @@ const CAP_BASE = 'workspace.aiModels.capabilities';
 const CAPABILITY_LABEL_FALLBACK: Record<string, string> = {
   text_generation: 'Text Generation',
   embedding: 'Embedding',
+  reranking: 'Reranking',
   image_generation: 'Image Generation',
   tts: 'Text-to-Speech',
   stt: 'Speech-to-Text',
@@ -22,6 +23,7 @@ const CAPABILITY_LABEL_FALLBACK: Record<string, string> = {
 const CAPABILITY_BADGE_FALLBACK: Record<string, string> = {
   text_generation: 'Text',
   embedding: 'Embedding',
+  reranking: 'Rerank',
   image_generation: 'Image',
   tts: 'TTS',
   stt: 'STT',

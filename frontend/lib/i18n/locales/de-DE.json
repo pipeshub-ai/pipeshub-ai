@@ -1611,10 +1611,12 @@
       "configInfoNoCapability": "Konfigurieren Sie Ihr Modell, um KI-Funktionen zu aktivieren. Geben Sie Ihre {{providerName}}-API-Anmeldedaten ein, um zu starten.",
       "configInfoTextGeneration": "Konfigurieren Sie Ihr LLM-Modell, um KI-Funktionen in Ihrer Anwendung zu aktivieren. Geben Sie Ihre {{providerName}}-API-Anmeldedaten ein, um zu starten.",
       "configInfoEmbedding": "Konfigurieren Sie Ihr Embedding-Modell für Suche und Abruf. Geben Sie Ihre {{providerName}}-API-Anmeldedaten ein, um zu starten.",
+      "configInfoReranking": "Konfigurieren Sie einen Reranker, der Suchergebnisse nach Relevanz neu ordnet, bevor der Agent sie liest. Geben Sie Ihre {{providerName}}-Einstellungen ein, um zu beginnen.",
       "configInfoImageGeneration": "Konfigurieren Sie Ihr Bildgenerierungsmodell. Geben Sie Ihre {{providerName}}-API-Anmeldedaten ein, um zu starten.",
       "configInfoFallback": "Konfigurieren Sie Ihr {{capLabel}}-Modell, um KI-Funktionen in Ihrer Anwendung zu aktivieren. Geben Sie Ihre {{providerName}}-API-Anmeldedaten ein, um zu starten.",
       "configInfoPlaceholderProvider": "Anbieter",
       "downloadDialogTitle": "Embedding-Modell wird heruntergeladen",
+      "downloadDialogTitleReranker": "Reranker-Modell wird heruntergeladen",
       "downloadDialogDescription": "\"{{modelName}}\" wird herunterladen. Dies kann je nach Modellgröße und Verbindung einige Minuten dauern.",
       "downloadDialogHint": "Sie können diesen Dialog schließen — der Download läuft im Hintergrund weiter. Speichern Sie erneut, sobald das Modell bereit ist.",
       "downloadStatusChecking": "Lokaler Cache wird überprüft...",
@@ -1627,6 +1629,8 @@
       "downloadPrepareError": "Die Modellvorbereitung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.",
       "downloadRetry": "Erneut versuchen",
       "downloadClose": "Schließen",
+      "rerankerOffHint": "Reranking ist deaktiviert, daher werden konfigurierte Reranker nicht verwendet. Aktivieren Sie „Enable Reranker“ in",
+      "rerankerOffHintLink": "Labs",
       "chipDefault": "Standard",
       "actionEdit": "Bearbeiten",
       "actionSetDefault": "Als Standard setzen",
@@ -1664,6 +1668,11 @@
           "label": "Embedding",
           "badge": "Embedding",
           "sectionTab": "Für Embeddings"
+        },
+        "reranking": {
+          "label": "Reranking",
+          "badge": "Rerank",
+          "sectionTab": "Für Reranking"
         },
         "image_generation": {
           "label": "Bildgenerierung",

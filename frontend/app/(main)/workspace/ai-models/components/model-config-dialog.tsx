@@ -15,25 +15,15 @@ import { resolveModelConfigSaveError } from '../resolve-model-config-save-error'
 import type { AIModelProvider, AIModelProviderField, ConfiguredModel } from '../types';
 import { CAPABILITY_TO_MODEL_TYPE } from '../types';
 import { AIModelsApi } from '../api';
-import { EmbeddingDownloadProgress } from './embedding-download-progress';
+import { ModelDownloadProgress } from './model-download-progress';
+import {
+  isSystemDefaultProvider,
+  localModelTypeFor,
+  resolveLocalModelName,
+  type LocalModelType,
+} from '../local-models';
 
 const COMPAT_FIELD_NAMES = ['isReasoning', 'isMultimodal', 'trustRemoteCode'] as const;
-
-// Providers whose model runs in-process on the embedding server (loaded via
-// SentenceTransformer) rather than calling a remote API — these are the only
-// ones that can trigger a slow, untracked Hub download on first use.
-const LOCAL_EMBEDDING_PROVIDERS = new Set(['default', 'sentenceTransformers', 'huggingFace']);
-
-function resolveLocalEmbeddingModelName(
-  provider: AIModelProvider,
-  values: Record<string, unknown>
-): string | null {
-  if (provider.providerId === 'default') {
-    return provider.modelName?.trim() || null;
-  }
-  const model = String(values.model ?? '').trim();
-  return model || null;
-}
 
 const READONLY_ROW_STYLE: React.CSSProperties = {
   display: 'flex',
@@ -221,6 +211,7 @@ export function ModelConfigDialog({
   const [error, setError] = useState<string | null>(null);
   const [downloadTarget, setDownloadTarget] = useState<{
     modelName: string;
+    modelType: LocalModelType;
     trustRemoteCode: boolean;
   } | null>(null);
   const downloadResolverRef = useRef<((ready: boolean) => void) | null>(null);
@@ -294,10 +285,10 @@ export function ModelConfigDialog({
   );
 
   const waitForModelDownload = useCallback(
-    (modelName: string, trustRemoteCode: boolean) =>
+    (modelName: string, modelType: LocalModelType, trustRemoteCode: boolean) =>
       new Promise<boolean>((resolve) => {
         downloadResolverRef.current = resolve;
-        setDownloadTarget({ modelName, trustRemoteCode });
+        setDownloadTarget({ modelName, modelType, trustRemoteCode });
       }),
     []
   );
@@ -315,7 +306,7 @@ export function ModelConfigDialog({
   }, []);
 
   /**
-   * For local embedding providers, both add AND edit hit the same backend
+   * For local embedding and reranker providers, both add AND edit hit the same backend
    * health-check (POST/PUT .../providers) that loads the model — editing the
    * `model` field to a not-yet-cached repo id is just as likely to trigger an
    * untracked multi-minute download as adding a brand-new provider. Pre-empt
@@ -323,17 +314,20 @@ export function ModelConfigDialog({
    * dialog until the model is ready, before calling add/updateProvider.
    * Returns `false` if the user cancels the download.
    */
-  const ensureLocalEmbeddingModelReady = useCallback(
+  const ensureLocalModelReady = useCallback(
     async (currentProvider: AIModelProvider, currentValues: Record<string, unknown>) => {
-      if (capability !== 'embedding' || !LOCAL_EMBEDDING_PROVIDERS.has(currentProvider.providerId)) {
-        return true;
-      }
-      const modelNameForDownload = resolveLocalEmbeddingModelName(currentProvider, currentValues);
+      const localModelType = localModelTypeFor(capability, currentProvider.providerId);
+      if (!localModelType) return true;
+      const modelNameForDownload = resolveLocalModelName(currentProvider, currentValues);
       if (!modelNameForDownload) return true;
 
       const trustRemoteCode = Boolean(currentValues.trustRemoteCode);
       try {
-        const prepareResult = await AIModelsApi.prepareModel(modelNameForDownload, trustRemoteCode);
+        const prepareResult = await AIModelsApi.prepareModel(
+          modelNameForDownload,
+          trustRemoteCode,
+          localModelType
+        );
         if (prepareResult?.status === 'ready') return true;
       } catch {
         // Embedding server may still be starting up (e.g. during onboarding
@@ -342,7 +336,7 @@ export function ModelConfigDialog({
         // model is ready, rather than failing the save outright.
       }
 
-      return waitForModelDownload(modelNameForDownload, trustRemoteCode);
+      return waitForModelDownload(modelNameForDownload, localModelType, trustRemoteCode);
     },
     [capability, waitForModelDownload]
   );
@@ -434,7 +428,7 @@ export function ModelConfigDialog({
         // only way to actually switch the default is via the explicit button.
         const shouldAutoDefault = existingModelsCount === 0;
 
-        const ready = await ensureLocalEmbeddingModelReady(provider, values);
+        const ready = await ensureLocalModelReady(provider, values);
         if (!ready) {
           setSaving(false);
           return;
@@ -443,7 +437,7 @@ export function ModelConfigDialog({
         await AIModelsApi.addProvider({
           modelType,
           provider: provider.providerId,
-          modelName: provider.providerId === 'default' ? provider.modelName : undefined,
+          modelName: isSystemDefaultProvider(provider) ? provider.modelName : undefined,
           configuration,
           isMultimodal: (topLevel.isMultimodal as boolean) ?? false,
           isReasoning: (topLevel.isReasoning as boolean) ?? false,
@@ -451,7 +445,7 @@ export function ModelConfigDialog({
           contextLength: topLevel.contextLength ? Number(topLevel.contextLength) : null,
         });
       } else if (editModel) {
-        const ready = await ensureLocalEmbeddingModelReady(provider, values);
+        const ready = await ensureLocalModelReady(provider, values);
         if (!ready) {
           setSaving(false);
           return;
@@ -569,9 +563,10 @@ export function ModelConfigDialog({
         onFieldChange={handleFieldChange}
       />
       {downloadTarget && (
-        <EmbeddingDownloadProgress
+        <ModelDownloadProgress
           open
           modelName={downloadTarget.modelName}
+          modelType={downloadTarget.modelType}
           trustRemoteCode={downloadTarget.trustRemoteCode}
           onReady={handleDownloadReady}
           onCancel={handleDownloadCancel}
@@ -595,6 +590,9 @@ function resolveConfigInfoMessage(
   }
   if (capability === 'embedding') {
     return t('workspace.aiModels.configInfoEmbedding', { providerName });
+  }
+  if (capability === 'reranking') {
+    return t('workspace.aiModels.configInfoReranking', { providerName });
   }
   if (capability === 'image_generation') {
     return t('workspace.aiModels.configInfoImageGeneration', { providerName });

@@ -10,39 +10,10 @@ import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
-import { LLM_SECTION_MODEL_TYPES, registryCapabilityForModelType } from '../types';
+import { modelTypesForSection, registryCapabilityForModelType } from '../types';
+import { builtinModelRow, isBuiltinModelRow } from '../builtin-models';
+import { selectRerankerEnabled, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { MODEL_ROW_ICON_CONTAINER_STYLE, modelRowCardStyle } from './model-row-layout';
-
-const EMBEDDING_BUILTIN_PLACEHOLDER_MODEL_KEY = 'builtin-default' as const;
-
-/** Shown when no embedding models are configured; matches backend built-in default shape. */
-const EMBEDDING_BUILTIN_PLACEHOLDER: ConfiguredModel = {
-  modelKey: EMBEDDING_BUILTIN_PLACEHOLDER_MODEL_KEY,
-  provider: 'default',
-  modelType: 'embedding',
-  configuration: { model: 'default' },
-  isMultimodal: false,
-  isReasoning: false,
-  isDefault: false,
-  contextLength: null,
-};
-
-function isEmbeddingBuiltinPlaceholder(model: ConfiguredModel): boolean {
-  return (
-    model.modelKey === EMBEDDING_BUILTIN_PLACEHOLDER_MODEL_KEY &&
-    model.modelType === 'embedding' &&
-    model.provider === 'default' &&
-    model.configuration?.model === 'default'
-  );
-}
-
-function modelTypesForSection(section: CapabilitySection): readonly string[] {
-  if (section === 'text_generation') return LLM_SECTION_MODEL_TYPES;
-  if (section === 'embedding') return ['embedding'];
-  if (section === 'tts') return ['tts'];
-  if (section === 'stt') return ['stt'];
-  return ['imageGeneration'];
-}
 
 function capabilityLabelForModelType(mt: string, t: TFunction): string {
   const cap = registryCapabilityForModelType(mt);
@@ -58,8 +29,8 @@ interface ConfiguredModelsGridProps {
   onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
   isLoading?: boolean;
-  /** When true (default), empty embedding shows the system built-in row. Disable on onboarding. */
-  showEmbeddingBuiltinPlaceholder?: boolean;
+  /** When true (default), an empty section shows the model the system falls back to. Disable on onboarding. */
+  showBuiltinPlaceholders?: boolean;
 }
 
 export function ConfiguredModelsGrid({
@@ -71,9 +42,10 @@ export function ConfiguredModelsGrid({
   onSetDefault,
   onDelete,
   isLoading = false,
-  showEmbeddingBuiltinPlaceholder = true,
+  showBuiltinPlaceholders = true,
 }: ConfiguredModelsGridProps) {
   const { t } = useTranslation();
+  const rerankerEnabled = useFeatureFlagsStore(selectRerankerEnabled);
   const rows = useMemo(() => {
     const types = modelTypesForSection(capabilitySection);
     const list: ConfiguredModel[] = [];
@@ -84,12 +56,11 @@ export function ConfiguredModelsGrid({
       }
     }
 
-    if (
-      showEmbeddingBuiltinPlaceholder &&
-      capabilitySection === 'embedding' &&
-      (configuredModels.embedding ?? []).length === 0
-    ) {
-      list.push(EMBEDDING_BUILTIN_PLACEHOLDER);
+    const builtin = showBuiltinPlaceholders
+      ? builtinModelRow(capabilitySection, configuredModels, { rerankerEnabled })
+      : null;
+    if (builtin) {
+      list.push(builtin);
     }
 
     if (!searchQuery.trim()) return list;
@@ -115,7 +86,8 @@ export function ConfiguredModelsGrid({
     searchQuery,
     providers,
     t,
-    showEmbeddingBuiltinPlaceholder,
+    showBuiltinPlaceholders,
+    rerankerEnabled,
   ]);
 
   if (isLoading) {
@@ -185,7 +157,7 @@ function ConfiguredModelRow({
   const capReg = registryCapabilityForModelType(model.modelType);
   const capChip = capabilityLabelForModelType(model.modelType, t);
   const mt = model.modelType;
-  const isBuiltinPlaceholder = isEmbeddingBuiltinPlaceholder(model);
+  const isBuiltinPlaceholder = isBuiltinModelRow(model);
 
   return (
     <Flex

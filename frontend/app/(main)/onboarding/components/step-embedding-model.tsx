@@ -275,7 +275,7 @@ export function StepEmbeddingModel({
             <ProviderGrid
               layout="embedded"
               hideCapabilityBadges
-              showEmbeddingBuiltinPlaceholder={false}
+              showBuiltinPlaceholders={false}
               providers={providers}
               configuredModels={configuredModels}
               searchQuery={searchQuery}

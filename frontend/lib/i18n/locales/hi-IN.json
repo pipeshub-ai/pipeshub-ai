@@ -1611,10 +1611,12 @@
       "configInfoNoCapability": "एआई क्षमताएँ सक्षम करने के लिए अपना मॉडल कॉन्फ़िगर करें। शुरू करने के लिए अपनी {{providerName}} API क्रेडेंशियल दर्ज करें।",
       "configInfoTextGeneration": "अपने अनुप्रयोग में एआई क्षमताएँ सक्षम करने के लिए अपना LLM मॉडल कॉन्फ़िगर करें। शुरू करने के लिए अपनी {{providerName}} API क्रेडेंशियल दर्ज करें।",
       "configInfoEmbedding": "खोज और पुनर्प्राप्ति के लिए अपना एम्बेडिंग मॉडल कॉन्फ़िगर करें। शुरू करने के लिए अपनी {{providerName}} API क्रेडेंशियल दर्ज करें।",
+      "configInfoReranking": "एजेंट के पढ़ने से पहले खोज परिणामों को प्रासंगिकता के अनुसार फिर से क्रमित करने के लिए रीरैंकर कॉन्फ़िगर करें। शुरू करने के लिए अपनी {{providerName}} सेटिंग्स दर्ज करें।",
       "configInfoImageGeneration": "अपना इमेज जनरेशन मॉडल कॉन्फ़िगर करें। शुरू करने के लिए अपनी {{providerName}} API क्रेडेंशियल दर्ज करें।",
       "configInfoFallback": "अपने अनुप्रयोग में एआई क्षमताएँ सक्षम करने के लिए अपना {{capLabel}} मॉडल कॉन्फ़िगर करें। शुरू करने के लिए अपनी {{providerName}} API क्रेडेंशियल दर्ज करें।",
       "configInfoPlaceholderProvider": "प्रदाता",
       "downloadDialogTitle": "एम्बेडिंग मॉडल डाउनलोड हो रहा है",
+      "downloadDialogTitleReranker": "रीरैंकर मॉडल डाउनलोड हो रहा है",
       "downloadDialogDescription": "\"{{modelName}}\" डाउनलोड हो रहा है। मॉडल के आकार और आपके कनेक्शन के आधार पर इसमें कुछ मिनट लग सकते हैं।",
       "downloadDialogHint": "आप इस डायलॉग को बंद कर सकते हैं — डाउनलोड बैकग्राउंड में जारी रहता है। मॉडल तैयार होने पर फिर से सेव करें।",
       "downloadStatusChecking": "स्थानीय कैश जाँचा जा रहा है...",
@@ -1627,6 +1629,8 @@
       "downloadPrepareError": "मॉडल तैयारी शुरू करने में विफल। कृपया पुन: प्रयास करें।",
       "downloadRetry": "पुनः प्रयास करें",
       "downloadClose": "बंद करें",
+      "rerankerOffHint": "रीरैंकिंग बंद है, इसलिए कॉन्फ़िगर किए गए रीरैंकर उपयोग नहीं होते। \"Enable Reranker\" चालू करें:",
+      "rerankerOffHintLink": "Labs",
       "chipDefault": "डिफ़ॉल्ट",
       "actionEdit": "संपादित करें",
       "actionSetDefault": "डिफ़ॉल्ट सेट करें",
@@ -1664,6 +1668,11 @@
           "label": "एम्बेडिंग",
           "badge": "एम्बेडिंग",
           "sectionTab": "एम्बेडिंग के लिए"
+        },
+        "reranking": {
+          "label": "रीरैंकिंग",
+          "badge": "रीरैंक",
+          "sectionTab": "रीरैंकिंग के लिए"
         },
         "image_generation": {
           "label": "इमेज जनरेशन",

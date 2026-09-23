@@ -1611,10 +1611,12 @@
       "configInfoNoCapability": "Configure your model to enable AI capabilities. Enter your {{providerName}} API credentials to get started.",
       "configInfoTextGeneration": "Configure your LLM model to enable AI capabilities in your application. Enter your {{providerName}} API credentials to get started.",
       "configInfoEmbedding": "Configure your embedding model for search and retrieval. Enter your {{providerName}} API credentials to get started.",
+      "configInfoReranking": "Configure a reranker to reorder search results by relevance before the agent reads them. Enter your {{providerName}} settings to get started.",
       "configInfoImageGeneration": "Configure your image generation model. Enter your {{providerName}} API credentials to get started.",
       "configInfoFallback": "Configure your {{capLabel}} model to enable AI capabilities in your application. Enter your {{providerName}} API credentials to get started.",
       "configInfoPlaceholderProvider": "provider",
       "downloadDialogTitle": "Downloading Embedding Model",
+      "downloadDialogTitleReranker": "Downloading Reranker Model",
       "downloadDialogDescription": "\"{{modelName}}\" is downloading. This can take a few minutes depending on model size and your connection.",
       "downloadDialogHint": "You can close this dialog — the download continues in the background. Save again once the model is ready.",
       "downloadStatusChecking": "Checking local cache...",
@@ -1627,6 +1629,8 @@
       "downloadPrepareError": "Failed to start model preparation. Please try again.",
       "downloadRetry": "Retry",
       "downloadClose": "Close",
+      "rerankerOffHint": "Reranking is off, so configured rerankers are not used. Turn on Enable Reranker in",
+      "rerankerOffHintLink": "Labs",
       "chipDefault": "Default",
       "actionEdit": "Edit",
       "actionSetDefault": "Set default",
@@ -1664,6 +1668,11 @@
           "label": "Embedding",
           "badge": "Embedding",
           "sectionTab": "For Embedding"
+        },
+        "reranking": {
+          "label": "Reranking",
+          "badge": "Rerank",
+          "sectionTab": "For Reranking"
         },
         "image_generation": {
           "label": "Image Generation",

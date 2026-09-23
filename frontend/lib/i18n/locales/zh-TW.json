@@ -1681,10 +1681,12 @@
       "configInfoNoCapability": "設定您的模型以啟用 AI 功能。請輸入您的 {{providerName}} API 憑證即可開始。",
       "configInfoTextGeneration": "設定您的 LLM 模型，在應用程式中啟用 AI 功能。請輸入您的 {{providerName}} API 憑證即可開始。",
       "configInfoEmbedding": "設定用於搜尋與檢索的嵌入模型。請輸入您的 {{providerName}} API 憑證即可開始。",
+      "configInfoReranking": "設定重新排序模型，在智慧代理讀取之前依相關性重新排列搜尋結果。輸入您的 {{providerName}} 設定以開始。",
       "configInfoImageGeneration": "設定您的圖片產生模型。請輸入您的 {{providerName}} API 憑證即可開始。",
       "configInfoFallback": "設定您的{{capLabel}}模型，在應用程式中啟用 AI 功能。請輸入您的 {{providerName}} API 憑證即可開始。",
       "configInfoPlaceholderProvider": "供應商",
       "downloadDialogTitle": "正在下載嵌入模型",
+      "downloadDialogTitleReranker": "正在下載重新排序模型",
       "downloadDialogDescription": "「{{modelName}}」正在下載中。視模型大小與您的連線速度而定，可能需要幾分鐘。",
       "downloadDialogHint": "您可以關閉此對話框——下載會在背景繼續進行。模型就緒後請再次儲存。",
       "downloadStatusChecking": "正在檢查本機快取...",
@@ -1697,6 +1699,8 @@
       "downloadPrepareError": "無法開始準備模型。請再試一次。",
       "downloadRetry": "重試",
       "downloadClose": "關閉",
+      "rerankerOffHint": "重新排序已關閉，因此已設定的重新排序模型不會被使用。請在以下位置開啟「Enable Reranker」：",
+      "rerankerOffHintLink": "Labs",
       "chipDefault": "預設",
       "actionEdit": "編輯",
       "actionSetDefault": "設為預設",
@@ -1734,6 +1738,11 @@
           "label": "嵌入",
           "badge": "嵌入",
           "sectionTab": "嵌入專用"
+        },
+        "reranking": {
+          "label": "重新排序",
+          "badge": "重新排序",
+          "sectionTab": "用於重新排序"
         },
         "image_generation": {
           "label": "圖片產生",

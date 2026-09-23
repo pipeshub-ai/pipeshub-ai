@@ -11,6 +11,8 @@ filesystem shared between the test runner and this container.
     GET    /__fixtures__/health         200 once serving
     POST   /__fixtures__/openai/v1/chat/completions
                                         a stand-in OpenAI-compatible model
+    POST   /__fixtures__/openai/v1/rerank
+                                        a stand-in reranker (Cohere/Jina shape)
     PUT    /__fixtures__/faults/<path>  misbehave at /<path>; JSON body, see Fault
     GET    /__fixtures__/faults/<path>  that fault, with how many requests it hit
     DELETE /__fixtures__/faults/<path>  behave again at /<path>
@@ -23,6 +25,8 @@ each other's, and ``reset`` clears them all. Faults answer GET only.
 The stand-in model lets a test configure an AI model through the product's
 own form, health check included, without a paid provider account. It answers
 every prompt with the same short reply, streamed or not, and ignores tools.
+The stand-in reranker scores a document by how many of the query's words it
+shares, which is enough to rank the passage that answers a question first.
 
 ``{{BASE_URL}}`` in a served text file becomes ``--base-url``, so feeds can
 carry absolute links that work from wherever the connector runs.
@@ -97,6 +101,16 @@ class Site:
                 if name.startswith(prefix):
                     return name[: len(prefix)]
         return None
+
+
+def _words(text: str) -> set[str]:
+    return {w.strip(".,?!;:\"'()").lower() for w in text.split()} - {""}
+
+
+def word_overlap(query: str, document: str) -> float:
+    """Share of the query's words that appear in the document, in [0, 1]."""
+    query_words = _words(query)
+    return len(query_words & _words(document)) / len(query_words) if query_words else 0.0
 
 
 def page_key(path: str) -> str:
@@ -313,12 +327,37 @@ def make_handler(site: Site, base_url: str) -> type[BaseHTTPRequestHandler]:
             if path == f"{CONTROL}/openai/v1/chat/completions":
                 self._chat_completion()
                 return
+            if path == f"{CONTROL}/openai/v1/rerank":
+                self._rerank()
+                return
             if path != f"{CONTROL}/reset":
                 self._send(HTTPStatus.NOT_FOUND)
                 return
             site.reset()
             faults.clear()
             self._send(HTTPStatus.NO_CONTENT)
+
+        def _rerank(self) -> None:
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                request = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError:
+                self._send(HTTPStatus.BAD_REQUEST, b"invalid JSON")
+                return
+            documents = [str(d) for d in request.get("documents") or []]
+            results = sorted(
+                (
+                    {"index": i, "relevance_score": word_overlap(str(request.get("query") or ""), doc)}
+                    for i, doc in enumerate(documents)
+                ),
+                key=lambda r: r["relevance_score"],
+                reverse=True,
+            )
+            top_n = request.get("top_n")
+            if isinstance(top_n, int) and top_n > 0:
+                results = results[:top_n]
+            body = {"id": "rerank-fixture", "results": results}
+            self._send(HTTPStatus.OK, json.dumps(body).encode(), "application/json")
 
         def _chat_completion(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)

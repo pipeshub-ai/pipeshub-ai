@@ -1681,10 +1681,12 @@
       "configInfoNoCapability": "配置您的模型以启用 AI 功能。输入您的 {{providerName}} API 凭证即可开始。",
       "configInfoTextGeneration": "配置您的 LLM 模型，为您的应用启用 AI 功能。输入您的 {{providerName}} API 凭证即可开始。",
       "configInfoEmbedding": "配置用于搜索和检索的嵌入模型。输入您的 {{providerName}} API 凭证即可开始。",
+      "configInfoReranking": "配置重排序模型，在智能体读取之前按相关性重新排列搜索结果。输入您的 {{providerName}} 设置以开始。",
       "configInfoImageGeneration": "配置您的图像生成模型。输入您的 {{providerName}} API 凭证即可开始。",
       "configInfoFallback": "配置您的{{capLabel}}模型，为您的应用启用 AI 功能。输入您的 {{providerName}} API 凭证即可开始。",
       "configInfoPlaceholderProvider": "提供商",
       "downloadDialogTitle": "正在下载嵌入模型",
+      "downloadDialogTitleReranker": "正在下载重排序模型",
       "downloadDialogDescription": "“{{modelName}}”正在下载。根据模型大小和您的网络连接情况，可能需要几分钟。",
       "downloadDialogHint": "您可以关闭此对话框——下载会在后台继续。模型就绪后请再次保存。",
       "downloadStatusChecking": "正在检查本地缓存…",
@@ -1697,6 +1699,8 @@
       "downloadPrepareError": "启动模型准备失败。请重试。",
       "downloadRetry": "重试",
       "downloadClose": "关闭",
+      "rerankerOffHint": "重排序已关闭，因此已配置的重排序模型不会被使用。请在以下位置开启“Enable Reranker”：",
+      "rerankerOffHintLink": "Labs",
       "chipDefault": "默认",
       "actionEdit": "编辑",
       "actionSetDefault": "设为默认",
@@ -1734,6 +1738,11 @@
           "label": "嵌入",
           "badge": "嵌入",
           "sectionTab": "嵌入专用"
+        },
+        "reranking": {
+          "label": "重排序",
+          "badge": "重排序",
+          "sectionTab": "用于重排序"
         },
         "image_generation": {
           "label": "图像生成",

@@ -1681,10 +1681,12 @@
       "configInfoNoCapability": "AI 기능을 활성화하려면 모델을 구성하세요. 시작하려면 {{providerName}} API 자격 증명을 입력하세요.",
       "configInfoTextGeneration": "애플리케이션에서 AI 기능을 활성화하려면 LLM 모델을 구성하세요. 시작하려면 {{providerName}} API 자격 증명을 입력하세요.",
       "configInfoEmbedding": "검색 및 검색 증강을 위한 임베딩 모델을 구성하세요. 시작하려면 {{providerName}} API 자격 증명을 입력하세요.",
+      "configInfoReranking": "에이전트가 읽기 전에 검색 결과를 관련성 순으로 다시 정렬하는 재순위화 모델을 구성하세요. 시작하려면 {{providerName}} 설정을 입력하세요.",
       "configInfoImageGeneration": "이미지 생성 모델을 구성하세요. 시작하려면 {{providerName}} API 자격 증명을 입력하세요.",
       "configInfoFallback": "애플리케이션에서 AI 기능을 활성화하려면 {{capLabel}} 모델을 구성하세요. 시작하려면 {{providerName}} API 자격 증명을 입력하세요.",
       "configInfoPlaceholderProvider": "제공업체",
       "downloadDialogTitle": "임베딩 모델 다운로드 중",
+      "downloadDialogTitleReranker": "재순위화 모델 다운로드 중",
       "downloadDialogDescription": "\"{{modelName}}\"을(를) 다운로드하고 있습니다. 모델 크기와 연결 상태에 따라 몇 분이 걸릴 수 있습니다.",
       "downloadDialogHint": "이 대화 상자를 닫아도 다운로드는 백그라운드에서 계속됩니다. 모델이 준비되면 다시 저장하세요.",
       "downloadStatusChecking": "로컬 캐시 확인 중...",
@@ -1697,6 +1699,8 @@
       "downloadPrepareError": "모델 준비를 시작하지 못했습니다. 다시 시도해 주세요.",
       "downloadRetry": "재시도",
       "downloadClose": "닫기",
+      "rerankerOffHint": "재순위화가 꺼져 있어 구성된 재순위화 모델이 사용되지 않습니다. 다음에서 \"Enable Reranker\"를 켜세요:",
+      "rerankerOffHintLink": "Labs",
       "chipDefault": "기본",
       "actionEdit": "편집",
       "actionSetDefault": "기본으로 설정",
@@ -1734,6 +1738,11 @@
           "label": "임베딩",
           "badge": "임베딩",
           "sectionTab": "임베딩용"
+        },
+        "reranking": {
+          "label": "재순위화",
+          "badge": "재순위",
+          "sectionTab": "재순위화용"
         },
         "image_generation": {
           "label": "이미지 생성",

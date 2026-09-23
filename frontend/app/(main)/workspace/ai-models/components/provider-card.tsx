@@ -35,6 +35,11 @@ const BADGE_STYLE: Record<
     color: 'var(--blue-11)',
     bg: 'color-mix(in srgb, var(--blue-3) 40%, transparent)',
   },
+  reranking: {
+    border: '1px solid var(--indigo-9)',
+    color: 'var(--indigo-11)',
+    bg: 'color-mix(in srgb, var(--indigo-3) 40%, transparent)',
+  },
   image_generation: {
     border: '1px solid var(--pink-9)',
     color: 'var(--pink-11)',

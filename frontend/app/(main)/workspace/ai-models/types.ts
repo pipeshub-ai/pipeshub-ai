@@ -116,6 +116,7 @@ export interface AllModelsResponse {
     imageGeneration?: ConfiguredModel[];
     tts?: ConfiguredModel[];
     stt?: ConfiguredModel[];
+    reranker?: ConfiguredModel[];
   };
   modelRoles?: Record<string, ModelRoleAssignment>;
   message: string;
@@ -140,6 +141,7 @@ export const CAPABILITY_TO_MODEL_TYPE: Record<string, string> = {
   tts: 'tts',
   stt: 'stt',
   video: 'video',
+  reranking: 'reranker',
 };
 
 export const MODEL_TYPE_TO_CAPABILITY: Record<string, string> = Object.fromEntries(
@@ -150,6 +152,7 @@ export const MODEL_TYPE_TO_CAPABILITY: Record<string, string> = Object.fromEntri
 export type CapabilitySection =
   | 'text_generation'
   | 'embedding'
+  | 'reranking'
   | 'image_generation'
   | 'tts'
   | 'stt';
@@ -158,6 +161,7 @@ export type CapabilitySection =
 export const CAPABILITY_SECTION_ORDER: CapabilitySection[] = [
   'text_generation',
   'embedding',
+  'reranking',
   'image_generation',
   'tts',
   'stt',
@@ -165,6 +169,12 @@ export const CAPABILITY_SECTION_ORDER: CapabilitySection[] = [
 
 /** Model API buckets shown under the "For LLMs" tab. */
 export const LLM_SECTION_MODEL_TYPES = ['llm', 'reasoning', 'multiModal', 'slm'] as const;
+
+/** Configured-model buckets listed under a capability tab. */
+export function modelTypesForSection(section: CapabilitySection): readonly string[] {
+  if (section === 'text_generation') return LLM_SECTION_MODEL_TYPES;
+  return [CAPABILITY_TO_MODEL_TYPE[section]];
+}
 
 /** Map configured `modelType` to registry capability key for schema / edit dialog. */
 export function registryCapabilityForModelType(modelType: string): string {
@@ -181,6 +191,7 @@ export const REGISTRY_BADGE_CAPABILITY_KEYS = [
   'video',
   'image_generation',
   'embedding',
+  'reranking',
   'tts',
   'stt',
 ] as const;

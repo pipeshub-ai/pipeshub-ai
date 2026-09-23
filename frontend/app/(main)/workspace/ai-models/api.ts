@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
 import { streamSSEGet, type SSEEvent } from '@/lib/api/streaming';
+import type { LocalModelType } from './local-models';
 import type {
   AllModelsResponse,
   CapabilitiesResponse,
@@ -61,10 +62,8 @@ export const AIModelsApi = {
     contextLength?: number | null;
   }) => {
     const { modelName, ...rest } = payload;
-    const body =
-      payload.provider === 'default' && modelName
-        ? { ...rest, configuration: { model: modelName } }
-        : rest;
+    // A system default provider's model comes from the registry, not the form.
+    const body = modelName ? { ...rest, configuration: { model: modelName } } : rest;
     const { data } = await apiClient.post(`${BASE}/ai-models/providers`, body);
     return data;
   },
@@ -103,11 +102,15 @@ export const AIModelsApi = {
     return data;
   },
 
-  // Local embedding model download progress
-  prepareModel: async (model: string, trustRemoteCode = false) => {
+  // Local (embedding / reranker) model download progress
+  prepareModel: async (
+    model: string,
+    trustRemoteCode = false,
+    modelType: LocalModelType = 'embedding'
+  ) => {
     const { data } = await apiClient.post<DownloadProgressPayload>(
       `${BASE}/ai-models/prepare-model`,
-      { model, trustRemoteCode }
+      { model, trustRemoteCode, modelType }
     );
     return data;
   },

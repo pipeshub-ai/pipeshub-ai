@@ -6,11 +6,13 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { formatFileSize } from '@/app/components/file-preview/utils';
 import { AIModelsApi } from '../api';
+import type { LocalModelType } from '../local-models';
 import type { DownloadProgressPayload, EmbeddingDownloadStatus } from '../types';
 
-interface EmbeddingDownloadProgressProps {
+interface ModelDownloadProgressProps {
   open: boolean;
   modelName: string;
+  modelType: LocalModelType;
   trustRemoteCode: boolean;
   onReady: () => void;
   onCancel: () => void;
@@ -33,20 +35,26 @@ function statusLabelKey(status: EmbeddingDownloadStatus): string {
   }
 }
 
+const TITLE_KEY: Record<LocalModelType, string> = {
+  embedding: 'workspace.aiModels.downloadDialogTitle',
+  reranker: 'workspace.aiModels.downloadDialogTitleReranker',
+};
+
 /**
- * Progress dialog for local embedding model downloads. On slim images the
+ * Progress dialog for local embedding and reranker model downloads. On slim images the
  * model isn't pre-baked, so the first health-check-and-save would otherwise
  * download several hundred MB to several GB behind an opaque spinner and
  * usually lose the race against the 90s axios timeout. This streams the
  * embedding server's real download progress instead.
  */
-export function EmbeddingDownloadProgress({
+export function ModelDownloadProgress({
   open,
   modelName,
+  modelType,
   trustRemoteCode,
   onReady,
   onCancel,
-}: EmbeddingDownloadProgressProps) {
+}: ModelDownloadProgressProps) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<EmbeddingDownloadStatus>('checking');
   const [progress, setProgress] = useState(0);
@@ -55,7 +63,9 @@ export function EmbeddingDownloadProgress({
   const [error, setError] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
   const onReadyRef = useRef(onReady);
-  onReadyRef.current = onReady;
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -77,7 +87,7 @@ export function EmbeddingDownloadProgress({
       for (let attempt = 0; attempt < MAX_PREPARE_RETRIES; attempt++) {
         if (controller.signal.aborted) return;
         try {
-          const result = await AIModelsApi.prepareModel(modelName, trustRemoteCode);
+          const result = await AIModelsApi.prepareModel(modelName, trustRemoteCode, modelType);
           if (result?.status === 'ready') {
             settled = true;
             onReadyRef.current();
@@ -130,8 +140,7 @@ export function EmbeddingDownloadProgress({
     void run();
 
     return () => controller.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, modelName, trustRemoteCode, retryToken]);
+  }, [open, modelName, modelType, trustRemoteCode, retryToken]);
 
   const isFailed = status === 'failed';
   // 'ready' closes the dialog via onReady before render.
@@ -140,7 +149,7 @@ export function EmbeddingDownloadProgress({
     <Dialog.Root open={open} onOpenChange={(next) => !next && onCancel()}>
       <Dialog.Content style={{ maxWidth: '28rem', width: '100%' }}>
         <VisuallyHidden>
-          <Dialog.Title>{t('workspace.aiModels.downloadDialogTitle')}</Dialog.Title>
+          <Dialog.Title>{t(TITLE_KEY[modelType])}</Dialog.Title>
         </VisuallyHidden>
         <Flex direction="column" gap="4">
           <Flex align="center" gap="3">
@@ -151,7 +160,7 @@ export function EmbeddingDownloadProgress({
             />
             <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
               <Text size="4" weight="bold">
-                {t('workspace.aiModels.downloadDialogTitle')}
+                {t(TITLE_KEY[modelType])}
               </Text>
               <Text size="2" style={{ color: 'var(--gray-11)', wordBreak: 'break-word' }}>
                 {t('workspace.aiModels.downloadDialogDescription', { modelName })}

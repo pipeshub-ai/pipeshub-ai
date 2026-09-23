@@ -8,7 +8,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
-import { CAPABILITY_SECTION_ORDER, LLM_SECTION_MODEL_TYPES } from '../types';
+import { CAPABILITY_SECTION_ORDER, modelTypesForSection } from '../types';
+import { RerankerFlagHint } from './reranker-flag-hint';
 import type { MainSection } from '../store';
 import { aiModelsCapabilityBadge, aiModelsCapabilityLabel, aiModelsCapabilitySectionTab } from '../capability-i18n';
 import { ProviderRow } from './provider-card';
@@ -39,16 +40,8 @@ interface ProviderGridProps {
   capabilityTabs?: 'all' | 'hidden';
   /** When true, hide capability chips on each provider row. */
   hideCapabilityBadges?: boolean;
-  /** Passed to configured-models list; false hides built-in embedding row (e.g. onboarding). */
-  showEmbeddingBuiltinPlaceholder?: boolean;
-}
-
-function modelTypesForSection(section: CapabilitySection): readonly string[] {
-  if (section === 'text_generation') return LLM_SECTION_MODEL_TYPES;
-  if (section === 'embedding') return ['embedding'];
-  if (section === 'tts') return ['tts'];
-  if (section === 'stt') return ['stt'];
-  return ['imageGeneration'];
+  /** Passed to configured-models list; false hides built-in model rows (e.g. onboarding). */
+  showBuiltinPlaceholders?: boolean;
 }
 
 function providerMatchesSearch(
@@ -90,7 +83,7 @@ export function ProviderGrid({
   showPageHeader: showPageHeaderProp,
   capabilityTabs: capabilityTabsProp,
   hideCapabilityBadges = false,
-  showEmbeddingBuiltinPlaceholder = true,
+  showBuiltinPlaceholders = true,
 }: ProviderGridProps) {
   const { t } = useTranslation();
   const isEmbedded = layout === 'embedded';
@@ -332,6 +325,12 @@ export function ProviderGrid({
         </Box>
       ) : null}
 
+      {capabilitySection === 'reranking' ? (
+        <Box style={{ width: '100%', marginTop: 16 }}>
+          <RerankerFlagHint />
+        </Box>
+      ) : null}
+
       {/* Body */}
       {mainSection === 'providers' ? (
         isLoading ? (
@@ -375,7 +374,7 @@ export function ProviderGrid({
           onSetDefault={onSetDefault}
           onDelete={onDelete}
           isLoading={isLoading}
-          showEmbeddingBuiltinPlaceholder={showEmbeddingBuiltinPlaceholder}
+          showBuiltinPlaceholders={showBuiltinPlaceholders}
         />
       )}
     </Flex>

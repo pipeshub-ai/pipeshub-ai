@@ -1632,10 +1632,12 @@
       "configInfoNoCapability": "Configure su modelo para habilitar capacidades de IA. Introduzca las credenciales de la API de {{providerName}} para empezar.",
       "configInfoTextGeneration": "Configure su modelo LLM para habilitar capacidades de IA en su aplicación. Introduzca las credenciales de la API de {{providerName}} para empezar.",
       "configInfoEmbedding": "Configure su modelo de incrustación para búsqueda y recuperación. Introduzca las credenciales de la API de {{providerName}} para empezar.",
+      "configInfoReranking": "Configura un modelo de reordenación (reranker) que ordene los resultados de búsqueda por relevancia antes de que el agente los lea. Introduce tu configuración de {{providerName}} para empezar.",
       "configInfoImageGeneration": "Configure su modelo de generación de imágenes. Introduzca las credenciales de la API de {{providerName}} para empezar.",
       "configInfoFallback": "Configure su modelo {{capLabel}} para habilitar capacidades de IA en su aplicación. Introduzca las credenciales de la API de {{providerName}} para empezar.",
       "configInfoPlaceholderProvider": "proveedor",
       "downloadDialogTitle": "Descargando modelo de embedding",
+      "downloadDialogTitleReranker": "Descargando modelo de reordenación",
       "downloadDialogDescription": "\"{{modelName}}\" se está descargando. Esto puede tardar unos minutos según el tamaño del modelo y tu conexión.",
       "downloadDialogHint": "Puedes cerrar este diálogo: la descarga continúa en segundo plano. Vuelve a guardar cuando el modelo esté listo.",
       "downloadStatusChecking": "Comprobando caché local...",
@@ -1648,6 +1650,8 @@
       "downloadPrepareError": "No se pudo iniciar la preparación del modelo. Inténtalo de nuevo.",
       "downloadRetry": "Reintentar",
       "downloadClose": "Cerrar",
+      "rerankerOffHint": "La reordenación está desactivada, así que los rerankers configurados no se usan. Activa «Enable Reranker» en",
+      "rerankerOffHintLink": "Labs",
       "chipDefault": "Predeterminado",
       "actionEdit": "Editar",
       "actionSetDefault": "Establecer como predeterminado",
@@ -1685,6 +1689,11 @@
           "label": "Embedding",
           "badge": "Embedding",
           "sectionTab": "Para embedding"
+        },
+        "reranking": {
+          "label": "Reordenación",
+          "badge": "Reordenar",
+          "sectionTab": "Para reordenación"
         },
         "image_generation": {
           "label": "Generación de imágenes",
