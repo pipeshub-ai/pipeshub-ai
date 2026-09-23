@@ -3683,10 +3683,9 @@ def record_to_message_content(
     try:
         content = []
         context_metadata = record.get("context_metadata", "")
-        content.append({
-            "type": "text",
-            "text": f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n"""
-        })
+        record_header = f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n"""
+        render_budget.charge_framing(record_header)
+        content.append({"type": "text", "text": record_header})
         # Process blocks
         block_containers = record.get("block_containers", {})
         blocks = block_containers.get("blocks", [])
@@ -3748,6 +3747,7 @@ def record_to_message_content(
             if include_blocks is not None and block_index not in include_blocks:
                 continue
             if block_index in gap_markers:
+                render_budget.charge_framing(gap_markers[block_index])
                 content.append({"type": "text", "text": gap_markers[block_index]})
 
             # Stop on either ceiling: the block count (unchanged meaning) or

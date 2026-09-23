@@ -22,9 +22,15 @@ record stopped so the model can continue it. `ImageAdmission` composes
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
+from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
+    DEFAULT_MAX_RESULT_CHARS,
+)
 from app.utils.env_utils import env_int
+
+logger = logging.getLogger(__name__)
 
 # Share of the model's context window one fetch may spend. The rest has to
 # hold the system prompt, the conversation so far, the other tool results and
@@ -36,9 +42,12 @@ _CHARS_PER_TOKEN = 4
 # A model whose configuration reports an optimistic context window -- unknown
 # and local models routinely claim 128k -- must not be handed 128k of document.
 MIN_RENDER_CHARS = 40_000
-# Beyond this, a single tool result is unusable regardless of window size: the
-# model stops attending to the middle long before it runs out of room.
-MAX_RENDER_CHARS = 240_000
+# Room left under the tool-result cap for what a fetch adds after its records:
+# the citation instruction, the unavailable-ids note and continuation hints.
+FETCH_RESULT_RESERVE = 6_000
+# Every tool result is capped at DEFAULT_MAX_RESULT_CHARS by cutting out its
+# middle, so a fetch sized past it would have lost blocks it reported as shown.
+MAX_RENDER_CHARS = DEFAULT_MAX_RESULT_CHARS - FETCH_RESULT_RESERVE
 
 DEFAULT_CONTEXT_LENGTH = 128_000
 
@@ -97,6 +106,9 @@ class RenderBudget:
     max_blocks: int | None = None
     chars_used: int = 0
     blocks_used: int = 0
+    # Framing (record headers, gap markers) counts against the size but is not
+    # content, so it must not stop the first block from rendering a prefix.
+    framing_chars: int = 0
     _records: dict[str, _RecordState] = field(default_factory=dict)
     _current: str | None = None
 
@@ -142,6 +154,11 @@ class RenderBudget:
         if self._current is not None:
             self._records[self._current].chars_rendered += len(text)
 
+    def charge_framing(self, text: str) -> None:
+        """Record characters spent on framing around the blocks."""
+        self.chars_used += len(text)
+        self.framing_chars += len(text)
+
     def take(self, text: str) -> str | None:
         """The text to emit, or None when there is no room left.
 
@@ -155,9 +172,9 @@ class RenderBudget:
         if self.can_afford(text):
             self.charge(text)
             return text
-        if self.chars_used == 0:
-            # Nothing rendered at all yet: emit what fits.
-            room = max(0, self.max_chars - len(TRUNCATION_MARKER))
+        if self.chars_used == self.framing_chars:
+            # No content rendered yet: emit what fits.
+            room = max(0, self.chars_remaining - len(TRUNCATION_MARKER))
             clipped = text[:room] + TRUNCATION_MARKER
             self.charge(clipped)
             return clipped
@@ -204,15 +221,21 @@ def resolve_render_budget(
     derived = int(window * _CONTEXT_SHARE * _CHARS_PER_TOKEN)
     max_chars = max(MIN_RENDER_CHARS, min(MAX_RENDER_CHARS, derived))
 
-    override = env_int(MAX_CHARS_ENV_VAR, default=None, lo=1_000, hi=2_000_000)
+    override = env_int(MAX_CHARS_ENV_VAR, default=None, lo=1_000)
     if override is not None:
-        max_chars = override
+        if override > MAX_RENDER_CHARS:
+            logger.warning(
+                "%s=%d exceeds the tool-result cap; using %d",
+                MAX_CHARS_ENV_VAR, override, MAX_RENDER_CHARS,
+            )
+        max_chars = min(override, MAX_RENDER_CHARS)
 
     return RenderBudget(max_chars=max_chars, max_blocks=max_blocks)
 
 
 __all__ = [
     "DEFAULT_CONTEXT_LENGTH",
+    "FETCH_RESULT_RESERVE",
     "MAX_CHARS_ENV_VAR",
     "MAX_RENDER_CHARS",
     "MIN_RENDER_CHARS",

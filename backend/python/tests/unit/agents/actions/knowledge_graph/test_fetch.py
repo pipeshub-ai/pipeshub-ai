@@ -8,11 +8,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
+    DEFAULT_MAX_RESULT_CHARS,
+)
 from app.agents.actions.knowledge_graph.ops.fetch import (
     FETCH_RECORD_TOOL_NAME,
     execute_fetch_record,
     resolve_block_cap,
 )
+from app.utils.render_budget import MAX_RENDER_CHARS
 
 
 class TestResolveBlockCap:
@@ -500,11 +504,13 @@ class TestWholeDocumentRequests:
         retrieval.search_with_filters.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_either_way_the_allowance_is_filled(self) -> None:
-        """The complaint that started this: far fewer blocks than the window
-        could hold."""
+    async def test_either_way_the_allowance_is_filled_and_nothing_is_cut(self) -> None:
+        """Far fewer blocks than the allowance could hold was the complaint
+        that started this; past the tool-result cap, the middle is cut out
+        instead."""
         whole, _ = await self._run(needs_whole_document=True)
         targeted, _ = await self._run(needs_whole_document=False)
 
         for text in (whole, targeted):
-            assert len(text) > 60_000, "the window was left unused"
+            assert len(text) > 0.9 * MAX_RENDER_CHARS, "the allowance was left unused"
+            assert len(text) <= DEFAULT_MAX_RESULT_CHARS, "the tool-result cap would cut it"
