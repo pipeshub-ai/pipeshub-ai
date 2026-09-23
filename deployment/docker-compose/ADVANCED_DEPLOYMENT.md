@@ -61,6 +61,7 @@ requires a full clone — see [Developer / local build](#developer--local-build)
 |---|---|---|---|
 | Image | `pipeshubai/pipeshub-ai:slim` | `pipeshubai/pipeshub-ai:latest` | `pipeshubai/pipeshub-ai:slim` |
 | Embedding model | Downloaded on first use | Bundled in image (~1.3 GB extra) | Downloaded on first use |
+| Reranker model (Labs) | Downloaded on first use | Bundled in image (~2.3 GB extra) | Downloaded on first use |
 | Graph DB (default) | Neo4j | Neo4j | Neo4j (required) |
 | Broker (default) | Redis Streams | Kafka + Zookeeper | Redis Streams |
 | KV store (default) | Redis | Redis | Redis |
@@ -83,7 +84,7 @@ KV store; the difference is the bundled embedding model and the message broker
 them at the prompts or via `PIPESHUB_GRAPH_DB` / `PIPESHUB_KV_STORE`.
 
 **Slim** uses no extra broker or KV-store containers (Redis handles both).  
-**Full** pre-bakes the [BAAI/bge-large-en-v1.5](https://huggingface.co/BAAI/bge-large-en-v1.5) embedding model so the first query does not stall waiting for a download.
+**Full** pre-bakes the [BAAI/bge-large-en-v1.5](https://huggingface.co/BAAI/bge-large-en-v1.5) embedding model so the first query does not stall waiting for a download, and the [BAAI/bge-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3) reranker so turning on **Enable Reranker** in Labs works at once (see [docs/reranker.md](../../docs/reranker.md)).
 **Eval** is slim without the sandbox image pull and without the Slack bot process.
 
 ---

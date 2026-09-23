@@ -9,3 +9,4 @@ In-repo design docs:
 
 - [Indexing service — architecture, data flow, admission control, and the throughput-collapse root cause](./indexing-service.md)
 - [Non-streaming chat endpoints — HLD, LLD, data flow, error contract, and tests](./non-streaming-chat.md)
+- [Reranker — the optional Labs reranking step in search, its fallbacks, models and images](./reranker.md)
