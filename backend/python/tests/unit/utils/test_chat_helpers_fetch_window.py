@@ -8,7 +8,11 @@ records sharing one allowance.
 from __future__ import annotations
 
 from app.models.blocks import BlockType, GroupType
-from app.utils.chat_helpers import CitationRefMapper, record_to_message_content
+from app.utils.chat_helpers import (
+    CitationRefMapper,
+    record_to_message_content,
+    table_summary_text,
+)
 from app.utils.render_budget import TRUNCATION_MARKER, RenderBudget
 
 
@@ -371,3 +375,34 @@ class TestShownBlocks:
 
         assert shown == frozenset()
         assert budget.outcome("rec-1").complete is False
+
+
+class TestTableSummary:
+    """A fetched table carries the same summary line as the search copy, so a
+    fetch can replace that copy without losing what the table is about."""
+
+    def test_the_summary_leads_a_fetched_table(self) -> None:
+        text = _render(_table_record("rec-t", rows=3), RenderBudget(max_chars=100_000))
+        assert "[Table #0: a wide table]" in text
+
+    def test_a_sql_table_leads_with_its_ddl(self) -> None:
+        record = _table_record("rec-t", rows=2)
+        record["block_containers"]["block_groups"][0]["data"]["ddl"] = "CREATE TABLE t (id INT)"
+
+        text = _render(record, RenderBudget(max_chars=100_000))
+
+        assert "[Table #0: DDL:\nCREATE TABLE t (id INT)\n\na wide table]" in text
+
+
+class TestTableSummaryText:
+    def test_summary_alone(self) -> None:
+        assert table_summary_text({"table_summary": "Revenue by quarter"}) == "Revenue by quarter"
+
+    def test_ddl_leads(self) -> None:
+        assert table_summary_text({"table_summary": "s", "ddl": "CREATE TABLE t ()"}) == (
+            "DDL:\nCREATE TABLE t ()\n\ns"
+        )
+
+    def test_missing_or_malformed_data_is_empty(self) -> None:
+        assert table_summary_text(None) == ""
+        assert table_summary_text({"table_summary": None}) == ""

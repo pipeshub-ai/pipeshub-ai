@@ -198,6 +198,15 @@ def build_record_page_web_url(frontend_url: str, record_id: str) -> str:
 
 
 
+def table_summary_text(group_data: object) -> str:
+    """A table's summary as the model reads it, led by its DDL for a SQL table."""
+    if not isinstance(group_data, dict):
+        return ""
+    summary = group_data.get("table_summary", "") or ""
+    ddl = group_data.get("ddl", "") or ""
+    return f"DDL:\n{ddl}\n\n{summary}" if ddl else summary
+
+
 def is_base64_image(s: str) -> bool:
     """
     Check if a string is a valid base64-encoded image.
@@ -2031,10 +2040,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                     continue
                 data = bg.get("data") or {}
                 if isinstance(data, dict):
-                    table_summary = data.get("table_summary", "")
-                    ddl = data.get("ddl", "")
-                    if ddl:
-                        table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+                    table_summary = table_summary_text(data)
                 else:
                     table_summary = str(data or "")
                 
@@ -2448,10 +2454,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     is_large_table = True
                 else:
                     is_large_table = num_of_cells > MAX_CELLS_IN_TABLE_THRESHOLD
-                table_summary = table_data.get("table_summary","")
-                ddl = table_data.get("ddl", "") or ""
-                if ddl:
-                    table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+                table_summary = table_summary_text(table_data)
 
                 if not is_large_table:
                     child_results=[]
@@ -2590,10 +2593,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             continue
         block_group = block_groups[block_group_index]
         data = block_group.get("data", {})
-        table_summary = data.get("table_summary","")
-        ddl = data.get("ddl", "") or ""
-        if ddl:
-            table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+        table_summary = table_summary_text(data)
         child_results = []
         for row_index, row_score, qdrant_content in sorted_rows_tuple:
             if row_index < len(blocks):
@@ -3976,7 +3976,7 @@ def record_to_message_content(
                                 rendered_form = template.render(
                                     block_group_index=block_group_index,
                                     block_group_web_url="",
-                                    table_summary="",
+                                    table_summary=table_summary_text(data),
                                     table_rows=child_results,
                                 )
                                 content.append({
@@ -3984,7 +3984,7 @@ def record_to_message_content(
                                     "text": f"{rendered_form}\n\n"
                                 })
                             else:
-                                header = f"[Table #{block_group_index}]\n"
+                                header = f"[Table #{block_group_index}: {table_summary_text(data)}]\n"
                                 content.append({
                                     "type": "text",
                                     "text": header,
