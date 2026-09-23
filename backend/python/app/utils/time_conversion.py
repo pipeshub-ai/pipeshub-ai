@@ -103,6 +103,8 @@ def parse_timestamp(timestamp_str: str) -> int:
         timestamp_str = timestamp_str[:-1] + "+00:00"
 
     dt = datetime.fromisoformat(timestamp_str)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
     timestamp = int(dt.timestamp())
 
     # Check if timestamp is already in milliseconds (13 digits)
