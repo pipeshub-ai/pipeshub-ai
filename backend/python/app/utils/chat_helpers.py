@@ -4367,9 +4367,14 @@ def build_message_content_array(
     collected_images: list[dict[str, Any]] | None = None,
     image_budget: "ImageBudget | None" = None,
     image_admission: "ImageAdmission | None" = None,
+    item_units: dict[int, int] | None = None,
 ) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
     """
     Args (new):
+        item_units: When provided, filled with ``id(item) -> position`` in
+            ``flattened_results`` for every content item that renders that
+            unit. Record framing (header, "Record blocks (sorted):", summary
+            citation, closing tag) belongs to no unit and is left out.
         collected_images: When `from_tool=True` and provided, IMAGE blocks
             (standalone and inline table/group images) are routed into
             this list instead of being silently dropped or embedded
@@ -4431,16 +4436,33 @@ def build_message_content_array(
         current_record_has_blocks = False
 
     def prepend_record_blocks_sorted_header(text: str) -> str:
+        # Its own item, so it is framing rather than part of the first unit;
+        # the rendered text is unchanged because items are joined with "".
         nonlocal pending_record_blocks_sorted_header
         if pending_record_blocks_sorted_header:
             pending_record_blocks_sorted_header = False
-            return f"Record blocks (sorted):\n{text}"
+            header_item = {"type": "text", "text": "Record blocks (sorted):\n"}
+            framing_items.add(id(header_item))
+            content.append(header_item)
         return text
+
+    framing_items: set[int] = set()
+    unit_start: tuple[int, list[dict[str, Any]], int] | None = None
+
+    def attribute_items_to_unit() -> None:
+        if item_units is None or unit_start is None:
+            return
+        position, unit_content, first = unit_start
+        for item in unit_content[first:]:
+            if id(item) not in framing_items:
+                item_units[id(item)] = position
 
     # Records that are gone or were never fetched. Their later hits must be skipped
     # too: rendering them would cite the previous record's URL.
     unavailable_vrids: set = set()
-    for result in flattened_results:
+    for i, result in enumerate(flattened_results):
+        attribute_items_to_unit()
+        unit_start = None
         virtual_record_id = result.get("virtual_record_id")
         if virtual_record_id in unavailable_vrids:
             continue
@@ -4487,6 +4509,7 @@ def build_message_content_array(
             summary_citation_insert_index = len(content)
             current_record_has_blocks = False
 
+        unit_start = (i, content, len(content))
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
         if result_id not in seen_blocks:
             seen_blocks.add(result_id)
@@ -4666,6 +4689,7 @@ def build_message_content_array(
         else:
             continue
 
+    attribute_items_to_unit()
     if content:
         insert_summary_citation_if_needed()
         content.append({

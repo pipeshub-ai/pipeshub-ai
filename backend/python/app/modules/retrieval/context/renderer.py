@@ -6,6 +6,11 @@ import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.modules.retrieval.context.manifest import (
+    ContentManifest,
+    ManifestSource,
+    build_manifest,
+)
 from app.utils.chat_helpers import (
     CitationRefMapper,
     ImageBudget,
@@ -28,6 +33,10 @@ class RenderedKnowledge:
     """Images collected for multimodal delivery alongside the text."""
     omitted_records: int = 0
     """Lower-ranked records left out to stay within ``max_chars``."""
+    manifest: ContentManifest = field(
+        default_factory=lambda: ContentManifest(ManifestSource.SEARCH, (), ()),
+    )
+    """Which characters of ``text`` show which blocks."""
 
     @property
     def text(self) -> str:
@@ -44,6 +53,7 @@ def render_knowledge(
     image_budget: ImageBudget | None = None,
     image_admission: ImageAdmission | None = None,
     max_chars: int | None = None,
+    source: ManifestSource = ManifestSource.SEARCH,
 ) -> RenderedKnowledge:
     """Render ``units`` (already in reading order) record by record.
 
@@ -68,6 +78,7 @@ def render_knowledge(
         omitted = 0
 
     images: list[dict[str, Any]] = []
+    item_units: dict[int, int] = {}
     content_array, _ = build_message_content_array(
         units,
         virtual_record_id_to_result,
@@ -78,12 +89,16 @@ def render_knowledge(
         collected_images=images,
         image_budget=image_budget,
         image_admission=image_admission,
+        item_units=item_units,
     )
     return RenderedKnowledge(
         records=[_record_text(record) for record in content_array],
         units=units,
         images=images,
         omitted_records=omitted,
+        manifest=build_manifest(
+            source, content_array, units, item_units, virtual_record_id_to_result,
+        ),
     )
 
 
