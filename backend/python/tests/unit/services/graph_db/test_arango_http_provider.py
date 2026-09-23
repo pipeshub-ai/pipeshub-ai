@@ -11481,6 +11481,38 @@ class TestCheckRecordAccessWithDetails:
             assert result is not None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("record_type,sub_record", [("MAIL", "mailRecord"), ("FILE", "fileRecord")])
+    async def test_weburl_uses_requesting_users_email(
+        self, connected_provider, record_type, sub_record
+    ):
+        template = "https://mail.google.com/mail?authuser={user.email}#all/m1"
+        with patch.object(
+            connected_provider, "get_user_by_user_id",
+            new_callable=AsyncMock,
+            return_value={"_key": "u1", "userId": "u1", "email": "viewer@t.com"}
+        ), patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1"]
+        ), patch.object(
+            connected_provider, "get_document",
+            new_callable=AsyncMock,
+            side_effect=lambda key, collection, txn=None: (
+                {"id": "r1", "recordType": record_type, "orgId": "org1", "webUrl": template}
+                if collection == "records"
+                else {"_key": "r1", "webUrl": template}
+            ),
+        ):
+            connected_provider.http_client.execute_aql.return_value = [
+                [{"type": "DIRECT", "role": "OWNER", "source": {"_key": "u1"}}]
+            ]
+            result = await connected_provider.check_record_access_with_details(
+                "u1", "org1", "r1"
+            )
+        expected = "https://mail.google.com/mail?authuser=viewer@t.com#all/m1"
+        assert result["record"]["webUrl"] == expected
+        assert result["record"][sub_record]["webUrl"] == expected
+
+    @pytest.mark.asyncio
     async def test_no_access(self, connected_provider):
         with patch.object(
             connected_provider, "get_user_by_user_id",
