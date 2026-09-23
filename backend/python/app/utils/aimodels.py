@@ -75,6 +75,7 @@ class ModelType(str, Enum):
     IMAGE_GENERATION = "imageGeneration"
     TTS = "tts"
     STT = "stt"
+    RERANKER = "reranker"
 
 class EmbeddingProvider(Enum):
     ANTHROPIC = "anthropic"
@@ -97,6 +98,16 @@ class EmbeddingProvider(Enum):
     SENTENCE_TRANSFOMERS = "sentenceTransformers"
     TOGETHER = "together"
     VERTEX_AI = "vertexAI"
+    VOYAGE = "voyage"
+
+class RerankerProvider(Enum):
+    DEFAULT = "defaultReranker"
+    COHERE = "cohere"
+    HUGGING_FACE = "huggingFace"
+    JINA_AI = "jinaAI"
+    LITELLM_PROXY = "litellmProxy"
+    OPENAI_COMPATIBLE = "openAICompatible"
+    SENTENCE_TRANSFORMERS = "sentenceTransformers"
     VOYAGE = "voyage"
 
 LOCAL_CPU_EMBEDDING_PROVIDERS = frozenset({

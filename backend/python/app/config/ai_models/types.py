@@ -18,6 +18,7 @@ class ModelCapability(str, Enum):
     VIDEO = "video"
     OCR = "ocr"
     REASONING = "reasoning"
+    RERANKING = "reranking"
 
 
 # Maps registry capability names to the existing model-type bucket keys
@@ -31,6 +32,7 @@ CAPABILITY_TO_MODEL_TYPE: dict[str, str] = {
     ModelCapability.TTS.value: "tts",
     ModelCapability.STT.value: "stt",
     ModelCapability.VIDEO.value: "video",
+    ModelCapability.RERANKING.value: "reranker",
 }
 
 MODEL_TYPE_TO_CAPABILITY: dict[str, str] = {v: k for k, v in CAPABILITY_TO_MODEL_TYPE.items()}

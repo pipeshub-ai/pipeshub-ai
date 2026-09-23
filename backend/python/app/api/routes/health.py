@@ -4,6 +4,7 @@ import ipaddress
 import os
 import re
 import shutil
+import time
 from logging import Logger
 from typing import Any
 from urllib.parse import urlparse
@@ -18,6 +19,8 @@ from langchain_core.tools import StructuredTool  #type: ignore
 from pydantic import BaseModel, Field
 
 from app.api.middlewares.auth import deny_service_tokens
+from app.modules.reranker.factory import create_reranker
+from app.modules.reranker.interface import RerankerError
 from app.utils.aimodels import (
     ImageGenerationProvider,
     LLMProvider,
@@ -43,7 +46,7 @@ _OUTBOUND_PROBE_TIMEOUT_S = 5.0
 # is rejected rather than reported healthy -- Node's model-type validator is
 # wider than this set (`ocr`, `slm`, `reasoning`, `multiModal`), and a type
 # that falls through would register a model nothing had checked.
-SUPPORTED_HEALTH_CHECK_TYPES = frozenset({"llm", "embedding", "imageGeneration", "tts", "stt"})
+SUPPORTED_HEALTH_CHECK_TYPES = frozenset({"llm", "embedding", "imageGeneration", "tts", "stt", "reranker"})
 
 # Outer cap vs I/O timeouts in web_search_tool / fetch_url (DDG 15s, httpx 30s).
 _WEB_SEARCH_HEALTH_TIMEOUTS_S = {
@@ -1586,6 +1589,88 @@ async def perform_image_generation_health_check(
         )
 
 
+# A reranker that cannot put the passage answering the question above an
+# unrelated one would make search worse, not better — reachability is not enough.
+_RERANK_PROBE_QUERY = "What is the capital of France?"
+_RERANK_PROBE_DOCUMENTS = (
+    "Bananas are a good source of potassium and dietary fibre.",
+    "Paris is the capital and most populous city of France.",
+)
+_RERANK_PROBE_RELEVANT_INDEX = 1
+
+
+async def perform_reranker_health_check(
+    model_config: dict,
+    logger: Logger,
+) -> JSONResponse:
+    """Build the configured reranker and check that it ranks a relevant passage first."""
+    provider = model_config.get("provider")
+    try:
+        reranker = create_reranker(model_config)
+    except ValueError as e:
+        return _config_error(str(e), model_config, (model_config.get("configuration") or {}).get("model", ""))
+
+    started = time.monotonic()
+    try:
+        hits = await reranker.rerank(_RERANK_PROBE_QUERY, _RERANK_PROBE_DOCUMENTS)
+    except RerankerError as e:
+        if isinstance(e.__cause__, httpx.TimeoutException):
+            logger.error("Reranker health check timed out for %s/%s", provider, reranker.model_name)
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "status": "error",
+                    "message": (
+                        "Reranker health check timed out. If this is the first run, the model "
+                        "may still be downloading. Please wait for the download to complete "
+                        "and try again."
+                    ),
+                    "details": {
+                        "error_code": "health_check_timeout",
+                        "provider": provider,
+                        "model": reranker.model_name,
+                    },
+                },
+            )
+        logger.error(
+            "Reranker health check failed for %s/%s: %s", provider, reranker.model_name, e,
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": _model_setup_failed_message("reranking model", provider, e),
+                "details": {
+                    "provider": provider,
+                    "model": reranker.model_name,
+                    "error_type": type(e).__name__,
+                },
+            },
+        )
+
+    if not hits or hits[0].index != _RERANK_PROBE_RELEVANT_INDEX:
+        return _config_error(
+            "The model responded, but ranked an unrelated passage above one that answers "
+            "the question. Check that the model name is a reranking (cross-encoder) model.",
+            model_config,
+            reranker.model_name,
+        )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "healthy",
+            "message": "Reranking model is working",
+            "details": {
+                "provider": provider,
+                "model": reranker.model_name,
+                "latencyMs": int((time.monotonic() - started) * 1000),
+            },
+            "timestamp": get_epoch_timestamp_in_ms(),
+        },
+    )
+
+
 async def perform_tts_health_check(
     model_config: dict,
     logger: Logger,
@@ -1910,6 +1995,13 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
                 f"with configuration model {model_config.get('configuration', {}).get('model', '')}"
             )
             return await perform_tts_health_check(model_config, logger)
+
+        elif model_type == "reranker":
+            logger.info(
+                f"Performing reranker health check for {model_config.get('provider')} "
+                f"with configuration model {model_config.get('configuration', {}).get('model', '')}"
+            )
+            return await perform_reranker_health_check(model_config, logger)
 
         elif model_type == "stt":
             logger.info(

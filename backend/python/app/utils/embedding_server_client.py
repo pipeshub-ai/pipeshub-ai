@@ -34,6 +34,11 @@ def _embedding_server_base_url() -> str:
     return base
 
 
+def model_server_v1_url() -> str:
+    """Base ``…/v1`` URL of the local model server, which serves embeddings and reranking."""
+    return _embedding_server_base_url()
+
+
 def _embedding_server_max_retries() -> int:
     raw = os.getenv("EMBEDDING_SERVER_MAX_RETRIES")
     if raw is None:

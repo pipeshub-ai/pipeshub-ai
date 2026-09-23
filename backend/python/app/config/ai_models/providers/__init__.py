@@ -22,6 +22,7 @@ from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .openai_compatible import OpenAICompatibleProvider
 from .openrouter import OpenRouterProvider
+from .reranker_only import DefaultRerankerProvider
 from .together import TogetherProvider
 from .vertex_ai import VertexAIProvider
 from .whisper import WhisperProvider
@@ -52,6 +53,7 @@ ALL_PROVIDER_CLASSES: list[type] = [
     JinaAIProvider,
     VoyageProvider,
     HuggingFaceProvider,
+    DefaultRerankerProvider,
     WhisperProvider,
     WisprProvider,
 ]

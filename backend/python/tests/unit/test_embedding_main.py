@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.embedding_main import (
     DownloadStatus,
+    ModelKind,
     ModelManager,
     _compute_expected_total_bytes,
     _format_embedding_vector,
@@ -595,7 +596,9 @@ class TestModelManagerDownloadLifecycle:
             assert status.status == "checking"
             await manager._prepare_tasks["bg-model"]
 
-        mock_get.assert_awaited_once_with("bg-model", trust_remote_code=True)
+        mock_get.assert_awaited_once_with(
+            "bg-model", trust_remote_code=True, kind=ModelKind.EMBEDDING,
+        )
 
     @pytest.mark.asyncio
     async def test_start_prepare_marks_status_failed_on_background_error(self):
@@ -631,7 +634,7 @@ class TestPrepareModelEndpoint:
         assert body["model"] == DEFAULT_EMBEDDING_MODEL
         assert body["status"] == "downloading"
         mock_manager.start_prepare.assert_called_once_with(
-            DEFAULT_EMBEDDING_MODEL, trust_remote_code=False
+            DEFAULT_EMBEDDING_MODEL, trust_remote_code=False, kind=ModelKind.EMBEDDING,
         )
 
     def test_rejects_model_not_in_allowlist(self, client):
@@ -673,7 +676,7 @@ class TestPrepareModelEndpoint:
 
         assert response.status_code == 202
         mock_manager.start_prepare.assert_called_once_with(
-            DEFAULT_EMBEDDING_MODEL, trust_remote_code=True
+            DEFAULT_EMBEDDING_MODEL, trust_remote_code=True, kind=ModelKind.EMBEDDING,
         )
 
 
@@ -730,3 +733,116 @@ class TestDownloadProgressEndpoint:
         assert response.status_code == 200
         assert response.json()["model"] == "BAAI/bge-m3"
         mock_manager.get_download_status.assert_called_once_with("BAAI/bge-m3")
+
+
+class TestRerankEndpoint:
+    def test_returns_documents_most_relevant_first(self, client):
+        test_client, mock_manager = client
+        mock_manager.rerank = AsyncMock(return_value=[0.1, 0.9, 0.5])
+
+        response = test_client.post(
+            "/v1/rerank", json={"model": "reranker", "query": "q", "documents": ["a", "b", "c"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "model": "reranker",
+            "results": [
+                {"index": 1, "relevance_score": 0.9},
+                {"index": 2, "relevance_score": 0.5},
+                {"index": 0, "relevance_score": 0.1},
+            ],
+        }
+        mock_manager.rerank.assert_awaited_once_with(
+            "reranker", "q", ["a", "b", "c"], trust_remote_code=False,
+        )
+
+    def test_top_n_limits_results(self, client):
+        test_client, mock_manager = client
+        mock_manager.rerank = AsyncMock(return_value=[0.1, 0.9, 0.5])
+
+        response = test_client.post(
+            "/v1/rerank",
+            json={"model": "reranker", "query": "q", "documents": ["a", "b", "c"], "top_n": 1},
+        )
+
+        assert [r["index"] for r in response.json()["results"]] == [1]
+
+    @pytest.mark.parametrize("documents", [[], ["d"] * 257])
+    def test_rejects_empty_or_oversized_batches(self, client, documents):
+        test_client, _ = client
+        response = test_client.post(
+            "/v1/rerank", json={"model": "reranker", "query": "q", "documents": documents},
+        )
+        assert response.status_code == 422
+
+    def test_same_model_policy_as_embeddings(self, client):
+        test_client, mock_manager = client
+        with patch("app.embedding_main.ALLOWED_MODELS", frozenset({"other"})):
+            response = test_client.post(
+                "/v1/rerank", json={"model": "reranker", "query": "q", "documents": ["a"]},
+            )
+        assert response.status_code == 403
+        mock_manager.rerank.assert_not_called()
+
+    def test_model_failure_is_a_500(self, client):
+        test_client, mock_manager = client
+        mock_manager.rerank = AsyncMock(side_effect=RuntimeError("oom"))
+        response = test_client.post(
+            "/v1/rerank", json={"model": "reranker", "query": "q", "documents": ["a"]},
+        )
+        assert response.status_code == 500
+
+    def test_prepare_model_can_prepare_a_reranker(self, client):
+        test_client, mock_manager = client
+        mock_manager.start_prepare.return_value = DownloadStatus(status="downloading")
+
+        test_client.post("/prepare-model", json={"model": "reranker", "kind": "reranker"})
+
+        mock_manager.start_prepare.assert_called_once_with(
+            "reranker", trust_remote_code=False, kind=ModelKind.RERANKER,
+        )
+
+
+class TestModelManagerReranking:
+    @pytest.mark.asyncio
+    async def test_rerankers_load_as_cross_encoders_capped_at_the_trained_length(self):
+        from app.config.constants.ai_models import RERANKER_MAX_INPUT_TOKENS
+
+        manager = ModelManager(device="cpu")
+        cross_encoder = MagicMock()
+        cross_encoder.tokenizer.model_max_length = 8192
+        cross_encoder.predict.return_value = [0.2, 0.8]
+
+        with patch(
+            "sentence_transformers.CrossEncoder", return_value=cross_encoder,
+        ) as mock_ce, patch("sentence_transformers.SentenceTransformer") as mock_st, patch(
+            "app.embedding_main.asyncio.to_thread", side_effect=_passthrough_to_thread,
+        ):
+            scores = await manager.rerank("reranker", "q", ["a", "b"])
+
+        assert scores == [0.2, 0.8]
+        mock_ce.assert_called_once_with("reranker", local_files_only=True, device="cpu")
+        mock_st.assert_not_called()
+        assert cross_encoder.max_length == RERANKER_MAX_INPUT_TOKENS
+        cross_encoder.predict.assert_called_once_with(
+            [("q", "a"), ("q", "b")], convert_to_numpy=True, show_progress_bar=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_short_model_keeps_its_own_limit(self):
+        manager = ModelManager(device="cpu")
+        cross_encoder = MagicMock()
+        cross_encoder.tokenizer.model_max_length = 512
+
+        with patch("sentence_transformers.CrossEncoder", return_value=cross_encoder), patch(
+            "app.embedding_main.asyncio.to_thread", side_effect=_passthrough_to_thread,
+        ):
+            await manager.get_model("small-reranker", kind=ModelKind.RERANKER)
+
+        assert cross_encoder.max_length == 512
+
+    def test_reranker_and_embedding_copies_of_a_name_are_cached_apart(self):
+        assert ModelManager._cache_key("m", trust_remote_code=False) != ModelManager._cache_key(
+            "m", trust_remote_code=False, kind=ModelKind.RERANKER,
+        )

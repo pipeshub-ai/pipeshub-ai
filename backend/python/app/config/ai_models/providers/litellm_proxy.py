@@ -2,7 +2,8 @@
 
 LiteLLM Proxy is a self-hosted OpenAI-compatible AI gateway that routes
 requests to 100+ upstream LLM providers.  It exposes the full OpenAI API
-surface (chat, embeddings, images, TTS, STT) at a user-supplied endpoint.
+surface (chat, embeddings, images, TTS, STT) and a Cohere-compatible
+``/rerank`` at a user-supplied endpoint.
 """
 
 from app.config.ai_models.registry import AIModelProviderBuilder
@@ -13,6 +14,7 @@ from .common_fields import (
     EMBEDDING_COMMON_TAIL,
     FRIENDLY_NAME,
     LLM_COMMON_TAIL,
+    RERANKER_COMMON_TAIL,
     model_field,
 )
 from .openai import OPENAI_TTS_FORMAT, OPENAI_TTS_VOICE
@@ -35,6 +37,7 @@ _LITELLM_ENDPOINT = AIModelField(
         ModelCapability.IMAGE_GENERATION,
         ModelCapability.TTS,
         ModelCapability.STT,
+        ModelCapability.RERANKING,
     ]) \
     .with_icon("/icons/ai-models/litellm.svg") \
     .with_color("#0EA5E9") \
@@ -65,6 +68,10 @@ _LITELLM_ENDPOINT = AIModelField(
     .add_field(API_KEY, ModelCapability.STT) \
     .add_field(model_field("e.g. whisper-1"), ModelCapability.STT) \
     .add_field(FRIENDLY_NAME, ModelCapability.STT) \
+    .add_field(_LITELLM_ENDPOINT, ModelCapability.RERANKING) \
+    .add_field(API_KEY, ModelCapability.RERANKING) \
+    .add_field(model_field("e.g. cohere/rerank-v3.5"), ModelCapability.RERANKING) \
+    .add_field(RERANKER_COMMON_TAIL[0], ModelCapability.RERANKING) \
     .build_decorator()
 class LiteLLMProxyProvider:
     pass

@@ -49,7 +49,7 @@ class TestAllProviderRegistrations:
 
     def test_fields_for_each_capability_exist(self):
         for p in self.providers:
-            if p["providerId"] == "default":
+            if p.get("modelName"):  # system-provided: fixed model, nothing to ask
                 continue
             for cap in p["capabilities"]:
                 fields = p["fields"].get(cap, [])
@@ -58,9 +58,9 @@ class TestAllProviderRegistrations:
                 )
 
     def test_model_field_present_per_capability(self):
-        """Every non-default provider should expose a 'model' field."""
+        """Every provider the admin configures should expose a 'model' field."""
         for p in self.providers:
-            if p["providerId"] == "default":
+            if p.get("modelName"):  # system-provided: fixed model, nothing to ask
                 continue
             for cap in p["capabilities"]:
                 field_names = [f["name"] for f in p["fields"].get(cap, [])]

@@ -1,9 +1,16 @@
-"""Embedding-only providers: Sentence Transformers, Jina AI, Voyage, HuggingFace (default)."""
+"""Embedding providers without text generation: Sentence Transformers, Jina AI,
+Voyage, HuggingFace (default). All but the default also serve reranking."""
 
 from app.config.ai_models.registry import AIModelProviderBuilder
 from app.config.ai_models.types import ModelCapability
 
-from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, TRUST_REMOTE_CODE, model_field
+from .common_fields import (
+    API_KEY,
+    EMBEDDING_COMMON_TAIL,
+    RERANKER_COMMON_TAIL,
+    TRUST_REMOTE_CODE,
+    model_field,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -34,14 +41,17 @@ class DefaultEmbeddingProvider:
 
 @AIModelProviderBuilder("Sentence Transformers", "sentenceTransformers") \
     .with_description("Sentence Transformers models") \
-    .with_capabilities([ModelCapability.EMBEDDING]) \
+    .with_capabilities([ModelCapability.EMBEDDING, ModelCapability.RERANKING]) \
     .with_icon("/icons/ai-models/sentence-transformers.png") \
     .with_color("#0078D4") \
-    .add_field(model_field("e.g., nomic-ai/nomic-embed-text-v2-moe")) \
-    .add_field(EMBEDDING_COMMON_TAIL[0]) \
-    .add_field(EMBEDDING_COMMON_TAIL[1]) \
-    .add_field(EMBEDDING_COMMON_TAIL[2]) \
-    .add_field(TRUST_REMOTE_CODE) \
+    .add_field(model_field("e.g., nomic-ai/nomic-embed-text-v2-moe"), ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[1], ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
+    .add_field(TRUST_REMOTE_CODE, ModelCapability.EMBEDDING) \
+    .add_field(model_field("e.g., BAAI/bge-reranker-v2-m3"), ModelCapability.RERANKING) \
+    .add_field(RERANKER_COMMON_TAIL[0], ModelCapability.RERANKING) \
+    .add_field(TRUST_REMOTE_CODE, ModelCapability.RERANKING) \
     .build_decorator()
 class SentenceTransformersProvider:
     pass
@@ -53,14 +63,17 @@ class SentenceTransformersProvider:
 
 @AIModelProviderBuilder("Jina AI", "jinaAI") \
     .with_description("Jina AI models") \
-    .with_capabilities([ModelCapability.EMBEDDING]) \
+    .with_capabilities([ModelCapability.EMBEDDING, ModelCapability.RERANKING]) \
     .with_icon("/icons/ai-models/jina.svg") \
     .with_color("#0078D4") \
-    .add_field(model_field("e.g., jina-embeddings-v3")) \
-    .add_field(API_KEY) \
-    .add_field(EMBEDDING_COMMON_TAIL[0]) \
-    .add_field(EMBEDDING_COMMON_TAIL[1]) \
-    .add_field(EMBEDDING_COMMON_TAIL[2]) \
+    .add_field(model_field("e.g., jina-embeddings-v3"), ModelCapability.EMBEDDING) \
+    .add_field(API_KEY, ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[1], ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
+    .add_field(model_field("e.g., jina-reranker-v2-base-multilingual"), ModelCapability.RERANKING) \
+    .add_field(API_KEY, ModelCapability.RERANKING) \
+    .add_field(RERANKER_COMMON_TAIL[0], ModelCapability.RERANKING) \
     .build_decorator()
 class JinaAIProvider:
     pass
@@ -72,14 +85,17 @@ class JinaAIProvider:
 
 @AIModelProviderBuilder("Voyage", "voyage") \
     .with_description("Voyage models") \
-    .with_capabilities([ModelCapability.EMBEDDING]) \
+    .with_capabilities([ModelCapability.EMBEDDING, ModelCapability.RERANKING]) \
     .with_icon("/icons/ai-models/voyage-color.svg") \
     .with_color("#0078D4") \
-    .add_field(model_field("e.g., voyage-3.5")) \
-    .add_field(API_KEY) \
-    .add_field(EMBEDDING_COMMON_TAIL[0]) \
-    .add_field(EMBEDDING_COMMON_TAIL[1]) \
-    .add_field(EMBEDDING_COMMON_TAIL[2]) \
+    .add_field(model_field("e.g., voyage-3.5"), ModelCapability.EMBEDDING) \
+    .add_field(API_KEY, ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[1], ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
+    .add_field(model_field("e.g., rerank-2.5"), ModelCapability.RERANKING) \
+    .add_field(API_KEY, ModelCapability.RERANKING) \
+    .add_field(RERANKER_COMMON_TAIL[0], ModelCapability.RERANKING) \
     .build_decorator()
 class VoyageProvider:
     pass
@@ -91,14 +107,17 @@ class VoyageProvider:
 
 @AIModelProviderBuilder("HuggingFace", "huggingFace") \
     .with_description("Open-source transformer models") \
-    .with_capabilities([ModelCapability.EMBEDDING]) \
+    .with_capabilities([ModelCapability.EMBEDDING, ModelCapability.RERANKING]) \
     .with_icon("/icons/ai-models/huggingface-color.svg") \
     .with_color("#FFD21E") \
-    .add_field(model_field("e.g., nomic-ai/nomic-embed-text-v2-moe")) \
-    .add_field(EMBEDDING_COMMON_TAIL[0]) \
-    .add_field(EMBEDDING_COMMON_TAIL[1]) \
-    .add_field(EMBEDDING_COMMON_TAIL[2]) \
-    .add_field(TRUST_REMOTE_CODE) \
+    .add_field(model_field("e.g., nomic-ai/nomic-embed-text-v2-moe"), ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[1], ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
+    .add_field(TRUST_REMOTE_CODE, ModelCapability.EMBEDDING) \
+    .add_field(model_field("e.g., BAAI/bge-reranker-v2-m3"), ModelCapability.RERANKING) \
+    .add_field(RERANKER_COMMON_TAIL[0], ModelCapability.RERANKING) \
+    .add_field(TRUST_REMOTE_CODE, ModelCapability.RERANKING) \
     .build_decorator()
 class HuggingFaceProvider:
     pass

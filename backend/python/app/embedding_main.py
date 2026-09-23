@@ -1,7 +1,8 @@
-"""Standalone embedding server for local HuggingFace / SentenceTransformer models.
+"""Local model server for HuggingFace embedding and reranking models.
 
-Exposes OpenAI-compatible ``POST /v1/embeddings`` and ``GET /v1/models`` so
-indexing and query services can share a single in-process model load.
+Exposes OpenAI-compatible ``POST /v1/embeddings`` and ``GET /v1/models``, and a
+Cohere/Jina-compatible ``POST /v1/rerank`` backed by a cross-encoder, so the
+indexing and query services share one in-process copy of each model.
 """
 
 from __future__ import annotations
@@ -17,17 +18,19 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
     EMBEDDING_SERVER_PORT,
+    RERANKER_MAX_INPUT_TOKENS,
 )
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.telemetry.setup import setup_telemetry
@@ -95,6 +98,17 @@ MODEL_DOWNLOAD_IGNORE_PATTERNS: list[str] = [
     "openvino/**",
     "coreml/**",
 ]
+
+# Bounds one /v1/rerank call: every document is a full forward pass.
+MAX_RERANK_DOCUMENTS = 256
+
+
+class ModelKind(str, Enum):
+    """Which sentence-transformers class serves a model."""
+
+    EMBEDDING = "embedding"
+    RERANKER = "reranker"
+
 
 # Progress is measured by polling on-disk blob size rather than hooking
 # huggingface_hub's internal tqdm bars (whose class is bound by reference
@@ -280,10 +294,32 @@ class ModelListResponse(BaseModel):
 class PrepareModelRequest(BaseModel):
     model: str
     trust_remote_code: bool = False
+    kind: ModelKind = ModelKind.EMBEDDING
+
+
+class RerankRequest(BaseModel):
+    """Cohere/Jina rerank request shape."""
+
+    model: str
+    query: str
+    documents: list[str] = Field(min_length=1, max_length=MAX_RERANK_DOCUMENTS)
+    top_n: int | None = Field(default=None, ge=1)
+    trust_remote_code: bool = False
+
+
+class RerankResult(BaseModel):
+    index: int
+    relevance_score: float
+
+
+class RerankResponse(BaseModel):
+    model: str
+    results: list[RerankResult]
 
 
 class ModelManager:
-    """Thread-safe cache of loaded SentenceTransformer models."""
+    """Thread-safe cache of loaded embedding (SentenceTransformer) and
+    reranking (CrossEncoder) models."""
 
     def __init__(
         self,
@@ -303,8 +339,15 @@ class ModelManager:
         self._prepare_tasks: dict[str, asyncio.Task] = {}
 
     @staticmethod
-    def _cache_key(model_name: str, *, trust_remote_code: bool) -> str:
-        return f"{model_name}::trust_remote_code={trust_remote_code}"
+    def _cache_key(
+        model_name: str,
+        *,
+        trust_remote_code: bool,
+        kind: ModelKind = ModelKind.EMBEDDING,
+    ) -> str:
+        key = f"{model_name}::trust_remote_code={trust_remote_code}"
+        # Embedding keys keep their original shape; only other kinds are tagged.
+        return key if kind is ModelKind.EMBEDDING else f"{key}::kind={kind.value}"
 
     def list_loaded_models(self) -> list[str]:
         return list({key.split("::", 1)[0] for key in self._models})
@@ -329,6 +372,7 @@ class ModelManager:
         model_name: str,
         *,
         trust_remote_code: bool = False,
+        kind: ModelKind = ModelKind.EMBEDDING,
     ) -> DownloadStatus:
         """Kick off (or reuse) a background load/download for ``model_name``.
 
@@ -354,7 +398,9 @@ class ModelManager:
 
         async def _run() -> None:
             try:
-                await self.get_model(model_name, trust_remote_code=trust_remote_code)
+                await self.get_model(
+                    model_name, trust_remote_code=trust_remote_code, kind=kind,
+                )
             except Exception as exc:
                 logger.exception(
                     "Background model preparation failed for '%s'", model_name
@@ -377,8 +423,11 @@ class ModelManager:
         model_name: str,
         *,
         trust_remote_code: bool = False,
+        kind: ModelKind = ModelKind.EMBEDDING,
     ) -> Any:
-        cache_key = self._cache_key(model_name, trust_remote_code=trust_remote_code)
+        cache_key = self._cache_key(
+            model_name, trust_remote_code=trust_remote_code, kind=kind,
+        )
         if cache_key in self._models:
             return self._models[cache_key]
 
@@ -393,7 +442,8 @@ class ModelManager:
                 return self._models[cache_key]
 
             logger.info(
-                "Loading embedding model '%s' on device '%s' (trust_remote_code=%s)",
+                "Loading %s model '%s' on device '%s' (trust_remote_code=%s)",
+                kind.value,
                 model_name,
                 self._device,
                 trust_remote_code,
@@ -403,8 +453,6 @@ class ModelManager:
             status.updated_at = time.time()
 
             def _load() -> Any:
-                from sentence_transformers import SentenceTransformer
-
                 load_kwargs: dict[str, Any] = {"device": self._device}
                 if trust_remote_code:
                     load_kwargs["trust_remote_code"] = True
@@ -414,11 +462,7 @@ class ModelManager:
                 # network even when the model is already in the HF cache. Only
                 # reach out to the network when the model is not cached yet.
                 try:
-                    model = SentenceTransformer(
-                        model_name,
-                        local_files_only=True,
-                        **load_kwargs,
-                    )
+                    model = _construct_model(kind, model_name, load_kwargs)
                     with self._download_status_lock:
                         status.status = "ready"
                         status.progress = 100.0
@@ -460,11 +504,7 @@ class ModelManager:
                     with self._download_status_lock:
                         status.status = "loading"
                         status.updated_at = time.time()
-                    model = SentenceTransformer(
-                        model_name,
-                        local_files_only=True,
-                        **load_kwargs,
-                    )
+                    model = _construct_model(kind, model_name, load_kwargs)
                     with self._download_status_lock:
                         status.status = "ready"
                         status.progress = 100.0
@@ -473,7 +513,7 @@ class ModelManager:
 
             model = await asyncio.to_thread(_load)
             self._models[cache_key] = model
-            logger.info("Embedding model '%s' loaded", model_name)
+            logger.info("%s model '%s' loaded", kind.value.capitalize(), model_name)
             return model
 
     async def encode(
@@ -499,8 +539,66 @@ class ModelManager:
         async with self._encode_semaphore:
             return await asyncio.to_thread(_encode)
 
+    async def rerank(
+        self,
+        model_name: str,
+        query: str,
+        documents: list[str],
+        *,
+        trust_remote_code: bool = False,
+    ) -> list[float]:
+        """One relevance score per document, in document order."""
+        model = await self.get_model(
+            model_name, trust_remote_code=trust_remote_code, kind=ModelKind.RERANKER,
+        )
+
+        def _predict() -> list[float]:
+            scores = model.predict(
+                [(query, document) for document in documents],
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            )
+            return [float(score) for score in scores]
+
+        async with self._encode_semaphore:
+            return await asyncio.to_thread(_predict)
+
+
+def _construct_model(kind: ModelKind, model_name: str, load_kwargs: dict[str, Any]) -> Any:
+    """Load a cached model of ``kind``; raises when it is not in the local cache."""
+    if kind is ModelKind.RERANKER:
+        from sentence_transformers import CrossEncoder
+
+        model = CrossEncoder(model_name, local_files_only=True, **load_kwargs)
+        # The tokenizer's own limit can be far above what the model reranks
+        # well at (8192 for bge-reranker-v2-m3, trained at 1024).
+        model_limit = getattr(model.tokenizer, "model_max_length", None) or RERANKER_MAX_INPUT_TOKENS
+        model.max_length = min(RERANKER_MAX_INPUT_TOKENS, model_limit)
+        return model
+
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(model_name, local_files_only=True, **load_kwargs)
+
 
 model_manager = ModelManager()
+
+
+def _enforce_model_policy(model: str, *, trust_remote_code: bool) -> None:
+    """Reject models outside the allowlist and remote code the server does not allow."""
+    if ALLOWED_MODELS is not None and model not in ALLOWED_MODELS:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Model '{model}' is not in the server's allowed model list.",
+        )
+    if trust_remote_code and not ALLOW_REMOTE_CODE:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "trust_remote_code is disabled on this server. "
+                "Set environment variable EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true to enable it."
+            ),
+        )
 
 
 def _normalize_input(raw: str | list[str]) -> list[str]:
@@ -637,22 +735,10 @@ async def prepare_model(request: PrepareModelRequest) -> JSONResponse:
     progress instead of blocking a single request on a multi-GB download,
     which is what previously tripped health-check and axios timeouts.
     """
-    if ALLOWED_MODELS is not None and request.model not in ALLOWED_MODELS:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Model '{request.model}' is not in the server's allowed model list.",
-        )
-    if request.trust_remote_code and not ALLOW_REMOTE_CODE:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "trust_remote_code is disabled on this server. "
-                "Set environment variable EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true to enable it."
-            ),
-        )
+    _enforce_model_policy(request.model, trust_remote_code=request.trust_remote_code)
 
     status = model_manager.start_prepare(
-        request.model, trust_remote_code=request.trust_remote_code
+        request.model, trust_remote_code=request.trust_remote_code, kind=request.kind,
     )
     return JSONResponse(
         status_code=202,
@@ -686,20 +772,7 @@ async def download_progress(model_name: str) -> JSONResponse:
 
 @app.post("/v1/embeddings")
 async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
-    # --- server-side policy checks (fail fast, before any I/O) ---
-    if ALLOWED_MODELS is not None and request.model not in ALLOWED_MODELS:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Model '{request.model}' is not in the server's allowed model list.",
-        )
-    if request.trust_remote_code and not ALLOW_REMOTE_CODE:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "trust_remote_code is disabled on this server. "
-                "Set environment variable EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true to enable it."
-            ),
-        )
+    _enforce_model_policy(request.model, trust_remote_code=request.trust_remote_code)
 
     texts = _normalize_input(request.input)
     encoding_format = request.encoding_format or "float"
@@ -732,6 +805,30 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
             prompt_tokens=token_estimate,
             total_tokens=token_estimate,
         ),
+    )
+
+
+@app.post("/v1/rerank")
+async def rerank(request: RerankRequest) -> RerankResponse:
+    """Score documents against a query with a cross-encoder, most relevant first."""
+    _enforce_model_policy(request.model, trust_remote_code=request.trust_remote_code)
+    try:
+        scores = await model_manager.rerank(
+            request.model,
+            request.query,
+            request.documents,
+            trust_remote_code=request.trust_remote_code,
+        )
+    except Exception as exc:
+        logger.exception("Rerank failed for model=%s", request.model)
+        raise HTTPException(status_code=500, detail=f"Failed to rerank: {exc}") from exc
+
+    ranked = sorted(enumerate(scores), key=lambda item: item[1], reverse=True)
+    if request.top_n is not None:
+        ranked = ranked[: request.top_n]
+    return RerankResponse(
+        model=request.model,
+        results=[RerankResult(index=index, relevance_score=score) for index, score in ranked],
     )
 
 

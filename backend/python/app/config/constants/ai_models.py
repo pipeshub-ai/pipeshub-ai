@@ -13,6 +13,18 @@ EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS = 600.0
 # timeout with nothing to distinguish it from a slow model.
 REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS = 60.0
 
+# Multilingual, Apache-2.0, 8K window. Served by the local model server.
+DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+# Tokens per query+document pair a local reranker reads. bge-reranker-v2-m3
+# was fine-tuned at this length; beyond it quality drops while cost grows.
+RERANKER_MAX_INPUT_TOKENS = 1024
+# One rerank call to a hosted API. The search path applies its own, shorter
+# budget and falls back to retrieval order when that runs out.
+REMOTE_RERANK_REQUEST_TIMEOUT_SECONDS = 30.0
+COHERE_RERANK_URL = "https://api.cohere.com/v2/rerank"
+JINA_RERANK_URL = "https://api.jina.ai/v1/rerank"
+VOYAGE_RERANK_URL = "https://api.voyageai.com/v1/rerank"
+
 class OCRProvider(Enum):
     AZURE_DI = "azureDI"
     VLM_OCR = "vlmOCR"

@@ -3,7 +3,13 @@
 from app.config.ai_models.registry import AIModelProviderBuilder
 from app.config.ai_models.types import AIModelField, ModelCapability
 
-from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, LLM_COMMON_TAIL, model_field
+from .common_fields import (
+    API_KEY,
+    EMBEDDING_COMMON_TAIL,
+    LLM_COMMON_TAIL,
+    RERANKER_COMMON_TAIL,
+    model_field,
+)
 
 _COMPAT_ENDPOINT = AIModelField(
     name="endpoint",
@@ -21,10 +27,23 @@ _COMPAT_ENDPOINT_EMB = AIModelField(
     placeholder="e.g., https://api.openai.com/v1",
 )
 
+# Servers such as vLLM, Infinity and TEI's Cohere-compatible route expose
+# ``POST {endpoint}/rerank`` with the Cohere/Jina request shape.
+_COMPAT_ENDPOINT_RERANK = AIModelField(
+    name="endpoint",
+    display_name="Endpoint URL",
+    field_type="URL",
+    required=True,
+    placeholder="e.g., http://vllm:8000/v1",
+    description="Base URL of a server exposing POST /rerank (Cohere/Jina request format).",
+)
+
 
 @AIModelProviderBuilder("OpenAI Compatible", "openAICompatible") \
     .with_description("OpenAI-compatible models") \
-    .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
+    .with_capabilities([
+        ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING, ModelCapability.RERANKING,
+    ]) \
     .with_icon("/icons/ai-models/openai.svg") \
     .with_color("#0078D4") \
     .add_field(_COMPAT_ENDPOINT, ModelCapability.TEXT_GENERATION) \
@@ -40,6 +59,10 @@ _COMPAT_ENDPOINT_EMB = AIModelField(
     .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[1], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
+    .add_field(_COMPAT_ENDPOINT_RERANK, ModelCapability.RERANKING) \
+    .add_field(API_KEY, ModelCapability.RERANKING) \
+    .add_field(model_field("e.g., BAAI/bge-reranker-v2-m3"), ModelCapability.RERANKING) \
+    .add_field(RERANKER_COMMON_TAIL[0], ModelCapability.RERANKING) \
     .build_decorator()
 class OpenAICompatibleProvider:
     pass

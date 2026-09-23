@@ -3,12 +3,20 @@
 from app.config.ai_models.registry import AIModelProviderBuilder
 from app.config.ai_models.types import ModelCapability
 
-from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, LLM_COMMON_TAIL, model_field
+from .common_fields import (
+    API_KEY,
+    EMBEDDING_COMMON_TAIL,
+    LLM_COMMON_TAIL,
+    RERANKER_COMMON_TAIL,
+    model_field,
+)
 
 
 @AIModelProviderBuilder("Cohere", "cohere") \
-    .with_description("Command models for text generation and embeddings") \
-    .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
+    .with_description("Command models for text generation, embeddings and reranking") \
+    .with_capabilities([
+        ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING, ModelCapability.RERANKING,
+    ]) \
     .with_icon("/icons/ai-models/cohere-color.svg") \
     .with_color("#39C5BB") \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
@@ -22,6 +30,9 @@ from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, LLM_COMMON_TAIL, mode
     .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[1], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
+    .add_field(API_KEY, ModelCapability.RERANKING) \
+    .add_field(model_field("e.g., rerank-v3.5"), ModelCapability.RERANKING) \
+    .add_field(RERANKER_COMMON_TAIL[0], ModelCapability.RERANKING) \
     .build_decorator()
 class CohereProvider:
     pass
