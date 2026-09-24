@@ -42,7 +42,7 @@ systems:
 - kind: oracle
   concurrency: 8
 - kind: ragflow
-  concurrency: 3
+  concurrency: 6
   options:
     base_url: http://localhost:9380
     api_key_env: RAGFLOW_API_KEY
