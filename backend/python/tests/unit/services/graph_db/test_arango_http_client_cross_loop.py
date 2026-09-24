@@ -11,8 +11,11 @@ two loops behave as they do in production.
 """
 
 import asyncio
+import contextlib
 import logging
 import threading
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 from unittest.mock import MagicMock
 
 from aiohttp import web
@@ -20,6 +23,7 @@ from aiohttp import web
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 
 TIMEOUT = 10
+T = TypeVar("T")
 
 
 class _LoopThread:
@@ -30,7 +34,7 @@ class _LoopThread:
         self.thread = threading.Thread(target=self.loop.run_forever, name=name, daemon=True)
         self.thread.start()
 
-    def run(self, coro):
+    def run(self, coro: Coroutine[Any, Any, T]) -> T:
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(TIMEOUT)
 
     def stop(self) -> None:
@@ -48,10 +52,10 @@ class _FakeArango:
         self.server = _LoopThread("fake-arango")
         self.port = self.server.run(self._start())
 
-    async def _version(self, request):
+    async def _version(self, request: web.Request) -> web.Response:
         return web.json_response({"version": "3.11.0"})
 
-    async def _cursor(self, request):
+    async def _cursor(self, request: web.Request) -> web.Response:
         self.query_arrived.set()
         await asyncio.get_running_loop().run_in_executor(None, self.release_query.wait, TIMEOUT)
         return web.json_response({"result": [1], "hasMore": False, "error": False}, status=201)
@@ -72,7 +76,7 @@ class _FakeArango:
         self.server.stop()
 
 
-def test_call_from_second_loop_does_not_break_in_flight_request():
+def test_call_from_second_loop_does_not_break_in_flight_request() -> None:
     arango = _FakeArango()
     worker = _LoopThread("indexing-worker")
     main = _LoopThread("main")
@@ -99,9 +103,7 @@ def test_call_from_second_loop_does_not_break_in_flight_request():
         assert in_flight.result(TIMEOUT) == [1]
     finally:
         for loop_thread in (worker, main):
-            try:
+            with contextlib.suppress(Exception):
                 loop_thread.run(client.disconnect())
-            except Exception:
-                pass
             loop_thread.stop()
         arango.stop()
