@@ -74,7 +74,6 @@ jobs:
     permissions:
       contents: read
       issues: write
-      id-token: write
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -138,11 +137,20 @@ jobs:
           echo "Recently changed source files: $(wc -l < recently-changed.txt)"
 
       - name: Review for defects
+        id: review
         # Pinned to a commit rather than a tag because this step is handed the
         # API key: a moved tag could run different code with that secret.
         uses: anthropics/claude-code-action@bf38e86e58df9ebf3420326d019f955bb3be64dd # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Without a token the action swaps an OIDC token for a GitHub App
+          # token with the App's own permissions. The job token is limited to
+          # the permissions above, and needs no id-token.
+          github_token: ${{ github.token }}
+          # Both would put Claude-authored text, which may be a security
+          # finding, into the public log or step summary.
+          display_report: 'false'
+          show_full_output: 'false'
           prompt: |
             You are performing a scheduled defect sweep of ${{ github.repository }}.
             Nobody has asked you to look at anything in particular; you are looking for
@@ -198,7 +206,7 @@ jobs:
 
             ## Output
 
-            Write exactly one file, `sweep-findings.json`, at the repository root:
+            Return your report as the structured output, in this shape:
 
             {
               "scanned": {
@@ -227,18 +235,47 @@ jobs:
             ## Rules
 
             - Do NOT create issues, pull requests, advisories or comments. Do NOT push.
-              A separate step reads your file and decides what to file; that step is
-              the only thing that touches GitHub.
-            - Do NOT print any finding to standard output, and do not describe a
-              security finding anywhere except inside `sweep-findings.json`. This
-              repository is public and so are its logs.
-            - Your only output artifact is `sweep-findings.json`.
-          # Read-only commands only. No `find`: `find -exec` runs any child
-          # command, so prompt-injected repository content could run code in
-          # this step, which holds ANTHROPIC_API_KEY and can mint an OIDC token.
-          # A prefix allowlist cannot constrain find's arguments. Glob and Grep
-          # cover finding files.
-          claude_args: '--model claude-opus-5 --allowedTools "Read,Write,Glob,Grep,Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(head:*)"'
+              A separate step reads your report and decides what to file; that step
+              is the only thing that touches GitHub.
+            - Do NOT describe a security finding anywhere except in the structured
+              output. This repository is public and so are its logs.
+            - The structured output is your only output. You have no tool that
+              writes files, and do not need one.
+          # The reviewer reads repository content, which anyone can write to, so
+          # it gets no tool that writes a file or runs a command. Any writable
+          # path is one a later step might execute or git might read as config,
+          # and any shell command can read the process environment. Glob and
+          # Grep cover finding files; the report comes back as structured output.
+          # `Read(./**)` keeps reads inside the checkout; /proc is denied as well
+          # because it holds this process's environment, API key included.
+          settings: '{"permissions": {"deny": ["Read(//proc/**)", "Read(//sys/**)"]}}'
+          claude_args: >-
+            --model claude-opus-5
+            --allowedTools "Read(./**),Glob,Grep"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["findings"],"properties":{"scanned":{"type":"object"},"findings":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["kind","title","file","line","severity","summary","failure_scenario"],"properties":{"kind":{"enum":["security","bug"]},"title":{"type":"string"},"file":{"type":"string"},"line":{"type":"integer","minimum":1},"severity":{"enum":["critical","high","medium","low"]},"area":{"enum":["python","javascript","connectors","sdk","performance","agent_builder",""]},"summary":{"type":"string"},"failure_scenario":{"type":"string"},"suggested_fix":{"type":"string"},"cwe":{"type":"string"}}}}}}'
+
+      - name: Save the report
+        # The report is read from the action's execution file rather than its
+        # output: passing it through env or an expression would print it in
+        # this step's log header, and it may hold a security finding.
+        env:
+          EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          path = os.environ.get("EXECUTION_FILE", "")
+          report = None
+          if path and os.path.exists(path):
+              with open(path, encoding="utf-8") as handle:
+                  messages = json.load(handle)
+              for message in reversed(messages if isinstance(messages, list) else []):
+                  if isinstance(message, dict) and message.get("type") == "result":
+                      report = message.get("structured_output")
+                      break
+          if report is not None:
+              with open("sweep-findings.json", "w", encoding="utf-8") as handle:
+                  json.dump(report, handle)
+          PY
 
       - name: Check the report exists
         id: report

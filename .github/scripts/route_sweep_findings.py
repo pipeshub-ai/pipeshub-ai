@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -113,8 +114,85 @@ class GitHub:
             payload = response.read()
             return json.loads(payload) if payload else {}
 
+    def page(self, path: str) -> tuple[list[Any], str | None]:
+        """One page of a listing, and the path of the next page if there is one.
+
+        The next page comes from the `Link` header. Some listings (security
+        advisories) page by cursor and ignore a `page` number, so counting pages
+        would re-read the first one forever.
+        """
+        req = urllib.request.Request(
+            f"https://api.github.com{path}",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as response:
+            payload = response.read()
+            body = json.loads(payload) if payload else []
+            return body, next_page_path(response.headers.get("Link"))
+
 
 Requester = Callable[[str, str, dict[str, Any] | None], Any]
+Pager = Callable[[str], tuple[list[Any], str | None]]
+
+_API_ROOT = "https://api.github.com"
+_NEXT_LINK = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
+MAX_PAGES = 50
+
+
+def next_page_path(link_header: str | None) -> str | None:
+    """The API path of the `rel="next"` page, or None when this is the last.
+
+    Only a link back to the API host is followed: the token goes wherever
+    this path is sent.
+    """
+    if not link_header:
+        return None
+    match = _NEXT_LINK.search(link_header)
+    if not match:
+        return None
+    url = match.group(1)
+    if not url.startswith(_API_ROOT + "/"):
+        raise ValueError("next-page link points outside the GitHub API")
+    return url[len(_API_ROOT):]
+
+
+def read_all(pages: Pager, first_path: str) -> list[Any]:
+    """Every item of a listing, following `Link` until there is no next page."""
+    items: list[Any] = []
+    path: str | None = first_path
+    seen: set[str] = set()
+    while path is not None:
+        if path in seen or len(seen) >= MAX_PAGES:
+            # A listing that does not end is a listing that did not finish;
+            # treating what was read so far as complete would file duplicates.
+            raise RuntimeError(f"listing did not finish after {len(seen)} pages")
+        seen.add(path)
+        batch, path = pages(path)
+        if not isinstance(batch, list):
+            raise RuntimeError("listing returned something other than a list")
+        items.extend(batch)
+    return items
+
+
+def is_rate_limited(exc: urllib.error.HTTPError) -> bool:
+    """GitHub answers a primary or secondary rate limit with 403 (or 429)."""
+    if exc.code == 429:
+        return True
+    if exc.code != 403:
+        return False
+    headers = exc.headers or {}
+    if headers.get("x-ratelimit-remaining") == "0" or headers.get("retry-after"):
+        return True
+    try:
+        body = exc.read().decode("utf-8", "replace").lower()
+    except Exception:  # noqa: BLE001 - an unreadable body is simply not evidence
+        body = ""
+    return "rate limit" in body
 
 
 # --------------------------------------------------------------------------- #
@@ -205,49 +283,24 @@ def apply_caps(findings: list[Finding], outcome: Outcome) -> list[Finding]:
 # --------------------------------------------------------------------------- #
 
 
-def open_sweep_issue_titles(request: Requester, repo: str) -> list[str]:
-    titles: list[str] = []
-    page = 1
-    while True:
-        batch = request(
-            "GET",
-            f"/repos/{repo}/issues?state=open&labels={MARKER_LABEL}&per_page=100&page={page}",
-            None,
-        )
-        if not batch:
-            break
-        titles.extend(str(item.get("title", "")) for item in batch if "pull_request" not in item)
-        if len(batch) < 100:
-            break
-        page += 1
-    return titles
+def open_sweep_issue_titles(pages: Pager, repo: str) -> list[str]:
+    items = read_all(pages, f"/repos/{repo}/issues?state=open&labels={MARKER_LABEL}&per_page=100")
+    return [str(item.get("title", "")) for item in items if "pull_request" not in item]
 
 
-def open_advisory_summaries(request: Requester, repo: str) -> list[str]:
-    summaries: list[str] = []
-    page = 1
-    while True:
-        try:
-            batch = request(
-                "GET",
-                f"/repos/{repo}/security-advisories?state=draft&per_page=100&page={page}",
-                None,
-            )
-        except urllib.error.HTTPError as exc:
-            if exc.code in (403, 404):
-                # No permission to list means no permission to create either;
-                # the create is what fails visibly, so nothing is lost here.
-                return []
-            # Anything else is a listing that did not happen. Treating it as
-            # "no drafts exist" would file a duplicate on top of a real one.
-            raise
-        if not batch:
-            break
-        summaries.extend(str(item.get("summary", "")) for item in batch)
-        if len(batch) < 100:
-            break
-        page += 1
-    return summaries
+def open_advisory_summaries(pages: Pager, repo: str) -> list[str]:
+    try:
+        items = read_all(pages, f"/repos/{repo}/security-advisories?state=draft&per_page=100")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404 or (exc.code == 403 and not is_rate_limited(exc)):
+            # No permission to list means no permission to create either;
+            # the create is what fails visibly, so nothing is lost here.
+            return []
+        # Anything else, a rate limit included, is a listing that did not
+        # happen. Treating it as "no drafts exist" would file a duplicate on
+        # top of a real one.
+        raise
+    return [str(item.get("summary", "")) for item in items]
 
 
 def is_duplicate(finding: Finding, existing: list[str]) -> bool:
@@ -364,11 +417,12 @@ def route(
     request: Requester,
     repo: str,
     *,
+    pages: Pager,
     dry_run: bool,
     outcome: Outcome,
 ) -> Outcome:
-    existing_issues = open_sweep_issue_titles(request, repo)
-    existing_advisories = open_advisory_summaries(request, repo)
+    existing_issues = open_sweep_issue_titles(pages, repo)
+    existing_advisories = open_advisory_summaries(pages, repo)
 
     if not dry_run and any(f.kind == "bug" for f in findings):
         ensure_marker_label(request, repo)
@@ -442,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
     outcome = Outcome()
     findings = apply_caps(load_findings(args.report, outcome), outcome)
     github = GitHub(args.repo, token)
-    route(findings, github.request, args.repo, dry_run=args.dry_run, outcome=outcome)
+    route(findings, github.request, args.repo, pages=github.page, dry_run=args.dry_run, outcome=outcome)
 
     print(summarise(outcome))
     # A finding that could not be delivered must not disappear into a green run.

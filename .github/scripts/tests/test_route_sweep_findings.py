@@ -7,7 +7,9 @@ Everything else is bookkeeping.
 
 from __future__ import annotations
 
+import io
 import json
+import re
 import sys
 import urllib.error
 from pathlib import Path
@@ -25,23 +27,47 @@ REPO = "acme/widgets"
 class FakeGitHub:
     """Records every call; answers from a small script of canned responses."""
 
-    def __init__(self, *, open_issues=(), open_advisories=(), fail: dict[str, int] | None = None):
+    def __init__(
+        self,
+        *,
+        open_issues=(),
+        open_advisories=(),
+        fail: dict[str, int] | None = None,
+        fail_headers: dict[str, str] | None = None,
+        fail_body: bytes = b"",
+    ):
         self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
         self.open_issues = [{"title": t} for t in open_issues]
         self.open_advisories = [{"summary": s} for s in open_advisories]
         self.fail = fail or {}
+        self.fail_headers = fail_headers or {}
+        self.fail_body = fail_body
+
+    def _maybe_fail(self, method: str, path: str) -> None:
+        key = f"{method} {path.split('?')[0]}"
+        if key in self.fail:
+            raise urllib.error.HTTPError(
+                path, self.fail[key], "boom", self.fail_headers, io.BytesIO(self.fail_body)  # type: ignore[arg-type]
+            )
+
+    def page(self, path: str) -> tuple[list[Any], str | None]:
+        """Pages the way GitHub does: by an `after` cursor from `Link`.
+
+        A `page` number is ignored, as the advisories endpoint ignores it, so
+        code that counts pages instead of following `Link` re-reads page one.
+        """
+        self.calls.append(("GET", path, None))
+        self._maybe_fail("GET", path)
+        items = self.open_issues if "/issues" in path else self.open_advisories
+        match = re.search(r"[?&]after=(\d+)", path)
+        start = int(match.group(1)) if match else 0
+        end = start + 100
+        base = re.sub(r"&after=\d+", "", path)
+        return items[start:end], (f"{base}&after={end}" if end < len(items) else None)
 
     def __call__(self, method: str, path: str, body: dict[str, Any] | None) -> Any:
         self.calls.append((method, path, body))
-        key = f"{method} {path.split('?')[0]}"
-        if key in self.fail:
-            raise urllib.error.HTTPError(path, self.fail[key], "boom", {}, None)  # type: ignore[arg-type]
-        if method == "GET" and "/issues" in path:
-            return self.open_issues if "page=1" in path else []
-        if method == "GET" and "/security-advisories" in path:
-            page = int(path.split("page=")[-1]) if "page=" in path else 1
-            start = (page - 1) * 100
-            return self.open_advisories[start:start + 100]
+        self._maybe_fail(method, path)
         if method == "POST" and path.endswith("/issues"):
             return {"html_url": f"https://github.com/{REPO}/issues/{len(self.calls)}"}
         if method == "POST" and path.endswith("/security-advisories"):
@@ -49,6 +75,10 @@ class FakeGitHub:
         if method == "POST" and path.endswith("/labels"):
             return {}
         return {}
+
+    def as_client(self) -> Any:
+        """Stands in for router.GitHub, so main() can be driven end to end."""
+        return type("G", (), {"request": staticmethod(self), "page": staticmethod(self.page)})()
 
     def posts_to(self, suffix: str) -> list[dict[str, Any]]:
         return [b for m, p, b in self.calls if m == "POST" and p.endswith(suffix) and b]
@@ -95,7 +125,7 @@ def write_report(tmp_path: Path, findings: list[dict[str, Any]]) -> str:
 def run(tmp_path: Path, findings, gh: FakeGitHub, *, dry_run=False) -> router.Outcome:
     outcome = router.Outcome()
     parsed = router.apply_caps(router.load_findings(write_report(tmp_path, findings), outcome), outcome)
-    return router.route(parsed, gh, REPO, dry_run=dry_run, outcome=outcome)
+    return router.route(parsed, gh, REPO, pages=gh.page, dry_run=dry_run, outcome=outcome)
 
 
 # --------------------------------------------------------------------------- #
@@ -128,7 +158,7 @@ def test_a_failed_advisory_does_not_fall_back_to_a_public_issue(tmp_path) -> Non
 def test_a_failed_issue_makes_the_run_fail_too(tmp_path, monkeypatch) -> None:
     """A lost bug report is quieter than a lost security finding, not better."""
     gh = FakeGitHub(fail={"POST /repos/acme/widgets/issues": 500})
-    monkeypatch.setattr(router, "GitHub", lambda repo, token: type("G", (), {"request": staticmethod(gh)})())
+    monkeypatch.setattr(router, "GitHub", lambda repo, token: gh.as_client())
     monkeypatch.setenv("GITHUB_TOKEN", "t")
     assert router.main([write_report(tmp_path, [bug()]), "--repo", REPO]) == 1
 
@@ -136,7 +166,7 @@ def test_a_failed_issue_makes_the_run_fail_too(tmp_path, monkeypatch) -> None:
 def test_a_failed_advisory_makes_the_run_fail(tmp_path, monkeypatch) -> None:
     """Green with a lost security finding would be worse than red."""
     gh = FakeGitHub(fail={"POST /repos/acme/widgets/security-advisories": 403})
-    monkeypatch.setattr(router, "GitHub", lambda repo, token: type("G", (), {"request": staticmethod(gh)})())
+    monkeypatch.setattr(router, "GitHub", lambda repo, token: gh.as_client())
     monkeypatch.setenv("GITHUB_TOKEN", "t")
     assert router.main([write_report(tmp_path, [security()]), "--repo", REPO]) == 1
 
@@ -231,6 +261,37 @@ def test_a_permission_error_listing_advisories_is_not_fatal(tmp_path) -> None:
     })
     out = run(tmp_path, [security()], gh)
     assert out.security_failed == 1
+
+
+def test_a_rate_limited_advisory_listing_does_not_cause_a_duplicate(tmp_path) -> None:
+    """GitHub answers a rate limit with 403 too; that is not "no permission"."""
+    gh = FakeGitHub(
+        fail={"GET /repos/acme/widgets/security-advisories": 403},
+        fail_body=b'{"message": "You have exceeded a secondary rate limit."}',
+    )
+    with pytest.raises(urllib.error.HTTPError):
+        run(tmp_path, [security()], gh)
+    assert gh.posts_to("/security-advisories") == []
+
+
+def test_a_listing_that_never_ends_fails_instead_of_spinning() -> None:
+    def same_page_forever(path: str) -> tuple[list[Any], str | None]:
+        return [{"summary": "x"}], path
+
+    with pytest.raises(RuntimeError):
+        router.open_advisory_summaries(same_page_forever, REPO)
+
+
+def test_a_next_link_off_the_api_host_is_not_followed() -> None:
+    """The token goes wherever the next page is fetched from."""
+    with pytest.raises(ValueError):
+        router.next_page_path('<https://attacker.example/steal?after=1>; rel="next"')
+    assert router.next_page_path(
+        '<https://api.github.com/repositories/1/security-advisories?after=Y3Vy>; rel="next", '
+        '<https://api.github.com/repositories/1/security-advisories?before=Zm9v>; rel="prev"'
+    ) == "/repositories/1/security-advisories?after=Y3Vy"
+    assert router.next_page_path('<https://api.github.com/x?before=a>; rel="prev"') is None
+    assert router.next_page_path(None) is None
 
 
 def test_dedup_is_by_file_not_by_title(tmp_path) -> None:
