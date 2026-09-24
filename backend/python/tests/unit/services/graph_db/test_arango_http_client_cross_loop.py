@@ -107,3 +107,60 @@ def test_call_from_second_loop_does_not_break_in_flight_request() -> None:
                 loop_thread.run(client.disconnect())
             loop_thread.stop()
         arango.stop()
+
+
+def test_session_table_is_safe_when_two_threads_create_sessions() -> None:
+    """Two loop threads creating their first session at the same time.
+
+    The worker thread is part-way through dropping sessions of closed loops
+    when the main thread adds its own session. The other thread must not be
+    able to change the table in the middle of that walk.
+    """
+    worker = _LoopThread("indexing-worker")
+    main = _LoopThread("main")
+    client = ArangoHTTPClient(
+        base_url="http://127.0.0.1:1",
+        username="root",
+        password="secret",
+        database="test_db",
+        logger=MagicMock(spec=logging.Logger),
+    )
+    main_created = threading.Event()
+    main_errors: list[BaseException] = []
+
+    def main_gets_session() -> None:
+        try:
+            main.run(client._get_session())
+        except BaseException as e:  # reported by the assertions below
+            main_errors.append(e)
+        finally:
+            main_created.set()
+
+    interleaved = False
+
+    def dead_loop_is_closed() -> bool:
+        # The first check happens on the worker thread, mid-walk. Let the main
+        # thread run its own _get_session right here, and give it time to finish
+        # unless something makes it wait.
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            threading.Thread(target=main_gets_session, daemon=True).start()
+            main_created.wait(0.5)
+        return True
+
+    dead_loop = MagicMock()
+    dead_loop.is_closed.side_effect = dead_loop_is_closed
+    client._sessions[dead_loop] = MagicMock()
+
+    try:
+        worker.run(client._get_session())
+        assert main_created.wait(TIMEOUT)
+        assert main_errors == []
+        assert dead_loop not in client._sessions
+        assert set(client._sessions) == {worker.loop, main.loop}
+    finally:
+        for loop_thread in (worker, main):
+            with contextlib.suppress(Exception):
+                loop_thread.run(client.disconnect())
+            loop_thread.stop()
