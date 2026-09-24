@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from benchmarks.harness.errors import IngestError
-from benchmarks.harness.models import AskItem, CorpusDocument, CorpusManifest
+from benchmarks.harness.models import INDEXED, AskItem, CorpusDocument, CorpusManifest
 from benchmarks.harness.systems.ragflow.adapter import RagflowAdapter, retrieved_chunks
 from benchmarks.harness.systems.ragflow.ingest import RagflowIngestor, dataset_name
 
@@ -137,7 +137,8 @@ class TestIngest:
 
         report = ingestor.wait_ready(ingestor.prepare(manifest), manifest)
 
-        assert report.total == 230 and report.status_counts == {"DONE": 230}
+        assert report.total == 230 and report.status_counts == {INDEXED: 230}
+        assert report.indexed_ratio(230) == 1.0, "the pipeline gate reads the shared status key"
 
     def test_the_report_waits_for_parsing_and_counts_failures(self, tmp_path: Path) -> None:
         docs = [_doc(0), _doc(1), _doc(2, tier="distractor")]
@@ -150,7 +151,7 @@ class TestIngest:
 
         report = ingestor.wait_ready(ingestor.prepare(manifest), manifest)
 
-        assert report.status_counts == {"DONE": 2, "FAIL": 1}
+        assert report.status_counts == {INDEXED: 2, "FAIL": 1}
         assert (report.gold_total, report.gold_indexed) == (2, 1)
         assert report.unindexed_urls == [docs[1].canonical_url]
 

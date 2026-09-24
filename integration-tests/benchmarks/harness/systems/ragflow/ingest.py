@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from benchmarks.harness.corpus.manifest import read_article_html
 from benchmarks.harness.errors import IngestError
-from benchmarks.harness.models import CorpusDocument, CorpusManifest, IndexReport, IngestedRecord, IngestManifest
+from benchmarks.harness.models import INDEXED, CorpusDocument, CorpusManifest, IndexReport, IngestedRecord, IngestManifest
 from benchmarks.harness.store import atomic_write_text
 from benchmarks.harness.systems.base import PreparedCorpus
 from benchmarks.harness.systems.ragflow.client import RUN_DONE, RUN_FAILED
@@ -139,7 +139,7 @@ class RagflowIngestor:
         gold = {d.canonical_url for d in manifest.documents if d.tier == "gold"}
         return IndexReport(
             total=len(statuses),
-            status_counts=dict(Counter(statuses.values())),
+            status_counts=dict(Counter(INDEXED if run == RUN_DONE else run for run in statuses.values())),
             gold_total=len(gold),
             gold_indexed=len(gold & done),
             unindexed_urls=sorted(url_of[d] for d, run in statuses.items() if run != RUN_DONE),

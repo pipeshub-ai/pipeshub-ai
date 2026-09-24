@@ -159,6 +159,11 @@ class IngestManifest(_Model):
     records: list[IngestedRecord]
 
 
+# The status_counts key every ingestor reports a searchable article under,
+# whatever the system itself calls that state.
+INDEXED = "COMPLETED"
+
+
 class IndexReport(_Model):
     total: int
     status_counts: dict[str, int]
@@ -173,7 +178,7 @@ class IndexReport(_Model):
         return self.gold_indexed / self.gold_total if self.gold_total else 1.0
 
     def indexed_ratio(self, corpus_size: int) -> float:
-        return self.status_counts.get("COMPLETED", 0) / corpus_size if corpus_size else 1.0
+        return self.status_counts.get(INDEXED, 0) / corpus_size if corpus_size else 1.0
 
 
 class FetchedRange(_Wire):

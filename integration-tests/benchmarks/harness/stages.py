@@ -38,6 +38,7 @@ from benchmarks.harness.grading.prompts import answer_prompt_texts, verify_promp
 from benchmarks.harness.metrics.mapping import ArticleResolver
 from benchmarks.harness.metrics.scoring import Scorer, ScoringInputs
 from benchmarks.harness.models import (
+    INDEXED,
     AskItem,
     ClaimSupport,
     IngestManifest,
@@ -159,7 +160,7 @@ class PrepareStage:
             corpus_size = len(corpus.manifest.documents)
             if index_report.indexed_ratio(corpus_size) < ctx.config.pipeshub.min_indexed_ratio:
                 raise IndexTimeoutError(
-                    f"{system.id}: only {index_report.status_counts.get('COMPLETED', 0)}/{corpus_size} articles "
+                    f"{system.id}: only {index_report.status_counts.get(INDEXED, 0)}/{corpus_size} articles "
                     f"indexed ({index_report.status_counts})",
                 )
             logger.info("%s: indexed %s of %d articles", system.id, index_report.status_counts, corpus_size)

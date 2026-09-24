@@ -3,6 +3,8 @@ gets in -- against a fake client, no server."""
 
 from __future__ import annotations
 
+import time
+
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -11,7 +13,7 @@ import pytest
 
 from benchmarks.harness.errors import IngestError
 from benchmarks.harness.llm.client import ResolvedModel
-from benchmarks.harness.models import AskItem, CorpusDocument, CorpusManifest
+from benchmarks.harness.models import INDEXED, AskItem, CorpusDocument, CorpusManifest
 from benchmarks.harness.systems.base import PreparedCorpus
 from benchmarks.harness.systems.openwebui.adapter import (
     OpenWebUIAdapter,
@@ -53,6 +55,7 @@ class _FakeClient:
         self.reply: dict[str, Any] = {}
         self.linked: dict[str, list[str]] = {}
         self.status_calls: list[str] = []
+        self.updated_at: dict[str, float] = {}
 
     def knowledge_id(self, name: str) -> str | None:
         return self.knowledge.get(name)
@@ -76,6 +79,9 @@ class _FakeClient:
         self.status_calls.append(file_id)
         queue = self._statuses.get(file_id)
         return queue.pop(0) if queue and len(queue) > 1 else (queue[0] if queue else FILE_DONE)
+
+    def file_state(self, file_id: str) -> tuple[str, float]:
+        return self.file_status(file_id), self.updated_at.get(file_id, time.time())
 
     def chat(self, body: dict[str, Any]) -> dict[str, Any]:
         self.chats.append(body)
@@ -143,6 +149,54 @@ class TestIngest:
 
         assert [f for f, _kb in client.uploads] == [docs[0].filename]
 
+    def test_the_linked_file_wins_over_a_stale_checkpoint_entry(self, tmp_path: Path) -> None:
+        docs = [_doc(0)]
+        manifest = _manifest(docs)
+        client = _FakeClient({"file-dead": [FILE_FAILED]})
+        ingestor = _ingestor(client, tmp_path, docs)
+        knowledge_id = client.create_knowledge(knowledge_name(manifest.corpus_version), "")
+        ingestor._save(knowledge_id, {docs[0].canonical_url: "file-dead"})
+        client.linked = {docs[0].filename: ["file-live"]}
+
+        prepared = ingestor.prepare(manifest)
+
+        assert client.uploads == []
+        assert [r.record_id for r in prepared.ingest.records] == ["file-live"]
+
+    def test_a_file_stalled_in_processing_is_uploaded_again(self, tmp_path: Path) -> None:
+        """A server restart kills background processing; the file stays
+        'processing' forever and is never linked."""
+        docs = [_doc(0), _doc(1)]
+        manifest = _manifest(docs)
+        client = _FakeClient({"file-orphan": ["processing"], "file-busy": ["processing"]})
+        client.updated_at = {"file-orphan": time.time() - 7_200, "file-busy": time.time()}
+        ingestor = _ingestor(client, tmp_path, docs)
+        knowledge_id = client.create_knowledge(knowledge_name(manifest.corpus_version), "")
+        ingestor._save(knowledge_id, {docs[0].canonical_url: "file-orphan", docs[1].canonical_url: "file-busy"})
+
+        assert ingestor._reconcile(knowledge_id, manifest) == {docs[1].canonical_url: "file-busy"}
+
+    def test_files_that_fail_during_the_upload_are_retried_in_the_same_run(self, tmp_path: Path) -> None:
+        docs = [_doc(0), _doc(1)]
+        client = _FakeClient()
+        attempts: list[str] = []
+        real_upload = client.upload_file
+
+        def flaky_upload(filename: str, content: bytes, mime: str, knowledge_id: str) -> str:
+            attempts.append(filename)
+            if filename == docs[0].filename and attempts.count(filename) == 1:
+                client._statuses["file-bad"] = [FILE_FAILED]
+                client.uploads.append((filename, knowledge_id))
+                return "file-bad"
+            return real_upload(filename, content, mime, knowledge_id)
+
+        client.upload_file = flaky_upload  # type: ignore[method-assign]
+
+        prepared = _ingestor(client, tmp_path, docs).prepare(_manifest(docs))
+
+        assert attempts.count(docs[0].filename) == 2
+        assert {r.record_id for r in prepared.ingest.records} == {f"file-{d.filename}" for d in docs}
+
     def test_each_window_is_processed_before_the_next_is_uploaded(self, tmp_path: Path) -> None:
         docs = [_doc(n) for n in range(5)]
         client = _FakeClient()
@@ -181,9 +235,22 @@ class TestIngest:
 
         report = ingestor.wait_ready(ingestor.prepare(manifest), manifest)
 
-        assert report.status_counts == {FILE_DONE: 2, FILE_FAILED: 1}
+        assert report.status_counts == {INDEXED: 2, FILE_FAILED: 1}
         assert (report.gold_total, report.gold_indexed) == (2, 1)
         assert report.unindexed_urls == [docs[1].canonical_url]
+
+    def test_a_linked_file_is_indexed_whatever_its_status_says(self, tmp_path: Path) -> None:
+        docs = [_doc(0)]
+        client = _FakeClient()
+        ingestor = _ingestor(client, tmp_path, docs)
+        manifest = _manifest(docs)
+        prepared = ingestor.prepare(manifest)
+        client._statuses[prepared.ingest.records[0].record_id] = ["processing"]
+
+        report = ingestor.wait_ready(prepared, manifest)
+
+        assert report.status_counts == {INDEXED: 1} and report.unindexed_urls == []
+        assert report.indexed_ratio(1) == 1.0, "the pipeline gate reads the shared status key"
 
     def test_waiting_without_an_ingest_manifest_is_an_error(self, tmp_path: Path) -> None:
         ingestor = _ingestor(_FakeClient(), tmp_path, [_doc(0)])

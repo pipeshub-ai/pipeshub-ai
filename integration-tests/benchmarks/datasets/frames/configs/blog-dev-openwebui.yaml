@@ -43,7 +43,9 @@ systems:
 - kind: oracle
   concurrency: 8
 - kind: openwebui
-  concurrency: 3
+  # Each fallback from native hybrid search loads the whole collection
+  # (~300K chunks) into memory; more overlap than this runs out of RAM.
+  concurrency: 2
   options:
     base_url: http://localhost:8080
     api_key_env: OPENWEBUI_API_KEY

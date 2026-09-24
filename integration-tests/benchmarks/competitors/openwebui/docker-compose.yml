@@ -8,6 +8,7 @@ name: frames-openwebui
 services:
   pgvector:
     image: pgvector/pgvector:pg17
+    restart: unless-stopped
     environment:
       POSTGRES_USER: openwebui
       POSTGRES_PASSWORD: openwebui
@@ -23,6 +24,7 @@ services:
     # Slim: the full image's HTML loader decodes files as unicode_escape and
     # mangles or fails ~190 corpus articles.
     image: ghcr.io/open-webui/open-webui:v0.11.4-slim
+    restart: unless-stopped
     depends_on:
       pgvector:
         condition: service_healthy
@@ -44,6 +46,9 @@ services:
       VECTOR_DB: pgvector
       PGVECTOR_DB_URL: postgresql://openwebui:openwebui@pgvector:5432/openwebui
       PGVECTOR_INDEX_METHOD: hnsw
+      # The vector store has its own engine, also 5 + 10 unless set.
+      PGVECTOR_POOL_SIZE: "20"
+      PGVECTOR_POOL_MAX_OVERFLOW: "20"
       ENABLE_OLLAMA_API: "false"
       # Answer model: Azure Responses API.
       OPENAI_API_BASE_URLS: ${OWUI_AZURE_V1_BASE_URL:?run up.sh}

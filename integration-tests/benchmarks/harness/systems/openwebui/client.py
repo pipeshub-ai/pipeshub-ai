@@ -86,6 +86,12 @@ class OpenWebUIClient:
         resp = self._request("GET", f"/api/v1/files/{file_id}/process/status")
         return str(resp.json().get("status", ""))
 
+    @http_retry()
+    def file_state(self, file_id: str) -> tuple[str, float]:
+        """Processing status and the epoch second the file record last changed."""
+        body = self._request("GET", f"/api/v1/files/{file_id}").json()
+        return str((body.get("data") or {}).get("status", "")), float(body.get("updated_at") or 0)
+
     @http_retry(attempts=3)
     def retrieval_config(self) -> dict[str, Any]:
         return self._request("GET", "/api/v1/retrieval/config").json()
