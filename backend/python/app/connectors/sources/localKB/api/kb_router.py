@@ -70,9 +70,25 @@ HTTP_MIN_STATUS = 100
 HTTP_MAX_STATUS = 600
 HTTP_INTERNAL_SERVER_ERROR = 500
 
-async def _increment_org_corpus_revision(request: Request) -> None:
+async def _increment_org_corpus_revision(request: Request, org_id: str | None = None) -> None:
+    """Bump the corpus revision for *org_id* (the KB owner).
+
+    Always pass the org that *owns* the KB/record, not request.state.user["orgId"].
+    The latter would wrongly bump the requester's revision when a user with
+    cross-org access modifies another org's knowledge base.
+    """
     try:
-        org_id = request.state.user.get("orgId")
+        if not org_id:
+            # Explicit org_id should always be provided; fall back to the
+            # requester's org only as a last resort, and log a warning so it
+            # is easy to find during review.
+            org_id = request.state.user.get("orgId")
+            _log.warning(
+                "_increment_org_corpus_revision: org_id not supplied; "
+                "falling back to requester org '%s'. Ensure callers pass the "
+                "resource-owning org.",
+                org_id,
+            )
         if org_id:
             graph_provider = request.app.state.graph_provider
             await graph_provider.increment_corpus_revision(org_id)
@@ -1387,8 +1403,13 @@ async def update_record(
                 detail=error_reason
             )
 
-        # Increment corpus revision
-        await _increment_org_corpus_revision(request)
+        # Increment corpus revision on the KB-owning org (not the requester).
+        # The enrichment block below already fetches kb_context, but we need
+        # the org_id before that to match the resource — re-fetch here so the
+        # bump uses the authoritative value even if enrichment is skipped.
+        _kb_ctx_for_bump = await request.app.state.graph_provider._get_kb_context_for_record(record_id)
+        _bump_org_id = _kb_ctx_for_bump.get("org_id") if _kb_ctx_for_bump else None
+        await _increment_org_corpus_revision(request, _bump_org_id)
 
         # Publish update event
         event_data = result.get("eventData")
@@ -1536,7 +1557,14 @@ async def delete_records_in_kb(
             )
 
         if result and result.get("success") is True:
-            await _increment_org_corpus_revision(request)
+            # Use the KB's owning org, not the requester's org.
+            _kb_org = None
+            try:
+                _kb_doc = await request.app.state.graph_provider.get_document(kb_id, "apps")
+                _kb_org = (_kb_doc or {}).get("orgId")
+            except Exception:
+                pass
+            await _increment_org_corpus_revision(request, _kb_org)
 
         return result
 
@@ -1591,7 +1619,14 @@ async def delete_record_in_folder(
             )
 
         if result and result.get("success") is True:
-            await _increment_org_corpus_revision(request)
+            # Use the KB's owning org, not the requester's org.
+            _kb_org = None
+            try:
+                _kb_doc = await request.app.state.graph_provider.get_document(kb_id, "apps")
+                _kb_org = (_kb_doc or {}).get("orgId")
+            except Exception:
+                pass
+            await _increment_org_corpus_revision(request, _kb_org)
 
         return result
 

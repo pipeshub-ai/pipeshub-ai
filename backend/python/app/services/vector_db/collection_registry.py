@@ -210,7 +210,12 @@ class CollectionRegistry:
             )
             return
 
-        for collection_type in CollectionType:
+        # Only adopt managed data collections (RECORDS, ENTITIES).  SEMANTIC_CACHE
+        # is self-managed by SemanticCacheService and must never be adopted here —
+        # if it were, recreate_all_collections() would drop and recreate it, erasing
+        # all cached responses.
+        _ADOPTABLE = {CollectionType.RECORDS, CollectionType.ENTITIES}
+        for collection_type in _ADOPTABLE:
             name = self.resolve_write_collection(
                 RecordContext(org_id="", collection_type=collection_type)
             )

@@ -25,6 +25,11 @@ class SemanticCacheScope(BaseModel):
     permissionsRevision: str
     corpusRevision: str
     filters: dict | None = None
+    # All request inputs that influence the generated response.  Two requests
+    # that differ in any of these fields must not share a cached answer even
+    # when the query and corpus-revision match (e.g. quick vs internal_search
+    # mode, different model keys, different project instructions).
+    requestProfile: dict | None = None
 
 
 logger = logging.getLogger(__name__)

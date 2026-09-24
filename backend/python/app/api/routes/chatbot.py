@@ -1305,12 +1305,25 @@ async def askAIStream(
                         corpus_revision = None  # disable cache for this request
 
                 if corpus_revision is not None:
+                    # Build a profile of every request input that changes the
+                    # response so two callers with the same query but different
+                    # model/mode settings cannot share a cached answer.
+                    request_profile = {
+                        "searchMode": query_info.searchMode if hasattr(query_info, "searchMode") else None,
+                        "modelKey": query_info.modelKey if hasattr(query_info, "modelKey") else None,
+                        "modelName": query_info.modelName if hasattr(query_info, "modelName") else None,
+                        "reasoningEffort": query_info.reasoningEffort if hasattr(query_info, "reasoningEffort") else None,
+                        "quickMode": query_info.quickMode if hasattr(query_info, "quickMode") else None,
+                        "limit": query_info.limit if hasattr(query_info, "limit") else None,
+                        "projectInstructions": query_info.projectInstructions if hasattr(query_info, "projectInstructions") else None,
+                    }
                     cache_scope = SemanticCacheScope(
                         orgId=org_id,
                         userId=_chat_user.get("userId"),
                         permissionsRevision=permissions_revision,
                         corpusRevision=corpus_revision,
                         filters=effective_filters,
+                        requestProfile=request_profile,
                     )
                     filters_hash_val = hash_filters(cache_scope)
 
