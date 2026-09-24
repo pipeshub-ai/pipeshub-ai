@@ -170,13 +170,10 @@ class SemanticCacheService:
         the live run.  Storing them here lets ``get_cached_response`` re-emit
         them as a STATE_DELTA on cache-hit replays so source cards are preserved.
 
-        Purging stale entries is **not** triggered here.  The call-site in
-        ``chatbot.py`` already validates the corpus revision matches before
-        writing, so the new entry is already safe.  Bulk purging on every write
-        would add an O(n) delete scan to every cached response and compete with
-        the cache read on the same collection.  Callers that need a purge
-        (e.g. after a corpus revision bump) call ``purge_stale_entries``
-        directly.
+        Purging stale entries is **not** triggered here; it belongs at the
+        revision-bump call-site, not on every write.  Use
+        ``bump_corpus_revision`` (below) to atomically increment the revision
+        and immediately remove obsolete cache entries in one step.
         """
         try:
             # Store all cache-specific fields inside the `metadata` sub-document
@@ -205,12 +202,36 @@ class SemanticCacheService:
         except Exception as e:
             logger.error(f"Error writing to semantic cache: {e}", exc_info=True)
 
+    async def bump_corpus_revision(
+        self,
+        org_id: str,
+        graph_provider,
+    ) -> str:
+        """Increment the corpus revision and purge stale cache entries.
+
+        This is the single entry-point for callers that need to advance the
+        corpus revision (e.g. after a connector sync, a KB record deletion, or
+        an ACL change).  It:
+
+        1. Calls ``graph_provider.increment_corpus_revision(org_id)`` to
+           obtain the new revision string.
+        2. Immediately calls ``purge_stale_entries`` to delete every cache
+           entry that still references an older revision.
+
+        Returns the new revision string so callers can pass it downstream
+        if needed.
+        """
+        new_revision = await graph_provider.increment_corpus_revision(org_id)
+        await self.purge_stale_entries(org_id, new_revision)
+        return new_revision
+
     async def purge_stale_entries(self, org_id: str, current_revision: str) -> None:
         """Delete all cache entries for *org_id* whose ``corpusRevision`` does
         not match *current_revision*.
 
         Call this after a corpus revision bump (connector sync, KB mutation,
         record deletion) rather than automatically on every cache write.
+        Prefer ``bump_corpus_revision`` which combines both steps.
         """
         try:
             filter_expr = FilterExpression(

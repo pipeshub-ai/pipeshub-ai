@@ -1371,7 +1371,13 @@ async def askAIStream(
                                         frame(
                                             AGUIEventType.STATE_DELTA,
                                             runId=run_id,
-                                            delta={"citations": cached_citations},
+                                            # Use the same JSON Patch operation shape that
+                                            # AGUIFormatter.answer_delta emits on live runs,
+                                            # so the client's state reducer handles both paths
+                                            # identically.
+                                            delta=[
+                                                {"op": "replace", "path": "/citations", "value": cached_citations}
+                                            ],
                                         )
                                     )
                                 events += [
@@ -1410,9 +1416,20 @@ async def askAIStream(
                             elif event_name == "STATE_DELTA":
                                 # Accumulate citations so they can be stored in
                                 # the cache entry and replayed on subsequent hits.
-                                delta_citations = (data_obj or {}).get("citations")
-                                if isinstance(delta_citations, list):
-                                    accumulated_citations.extend(delta_citations)
+                                # Live STATE_DELTA events carry citations as a
+                                # JSON Patch list inside data["delta"], not as a
+                                # top-level key.  Walk the ops and pick out the
+                                # replace op on /citations.
+                                for op in (data_obj or {}).get("delta") or []:
+                                    if (
+                                        isinstance(op, dict)
+                                        and op.get("op") == "replace"
+                                        and op.get("path") == "/citations"
+                                        and isinstance(op.get("value"), list)
+                                    ):
+                                        # Each replace overwrites the full list;
+                                        # keep only the latest snapshot.
+                                        accumulated_citations = op["value"]
                             elif event_name not in ["TEXT_MESSAGE_START", "TEXT_MESSAGE_END", "RUN_STARTED", "STATE_SNAPSHOT"]:
                                 has_complex_state = True
                         except Exception:
